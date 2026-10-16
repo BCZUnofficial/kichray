@@ -24,6 +24,7 @@
 #include "kichgelkhut_save_request.h"
 #include "HUDManager.h"
 #include "UIGameCustom.h"
+#include "ui/UIStatic.h"
 #include "Actor.h"
 #include "MainMenu.h"
 
