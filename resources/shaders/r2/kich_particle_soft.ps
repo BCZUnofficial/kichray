@@ -1,0 +1,20 @@
+// Reuse the installed base particle shader for its colour / texture evaluation.
+#define main kich_original_particle
+#include "particle.ps"
+#undef main
+#include "kich_graphics_math.h"
+
+uniform float4 kich_particle_params; // enabled, inverse fade distance, 0, 0
+
+half4 main(v2p I, float4 projected : TEXCOORD1) : COLOR
+{
+    half4 result = kich_original_particle(I);
+    if (kich_particle_params.x > 0.5)
+    {
+        float scene_depth = tex2Dproj(s_position, projected).z;
+        // Both supported blend modes use SRCALPHA. Fade alpha only to avoid
+        // multiplying the particle's contribution by the fade factor twice.
+        result.a *= kich_particle_fade(scene_depth, projected.z, kich_particle_params.y);
+    }
+    return result;
+}
