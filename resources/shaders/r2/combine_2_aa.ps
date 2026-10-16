@@ -1,5 +1,6 @@
 #include "common.h"
 #include "mblur.h"
+#include "kich_distortion_depth.h"
 
 struct 	v2p
 {
@@ -55,6 +56,9 @@ half4 	main		( v2p I )	: COLOR
 	half4 	distort	= tex2D		(s_distort, I.tc0);
 	half2	doffs	= (distort.xy-.5h)*def_distort;
 	float2	center	= I.tc0 + doffs;
+    float source_depth = tex2D(s_position, I.tc0.xy).z;
+    float offset_depth = tex2D(s_position, center).z;
+    center = lerp(I.tc0.xy, center, kich_distortion_accept(source_depth, offset_depth));
 #else
 	float2	center 	= I.tc0;
 #endif
