@@ -6,6 +6,9 @@
 #pragma hdrstop
 
 #include "DetailManager.h"
+#ifndef _EDITOR
+#include "xrRender_console.h"
+#endif
 #include "cl_intersect.h"
 
 #ifdef _EDITOR
@@ -185,6 +188,9 @@ void CDetailManager::UpdateVisibleM()
 	View.CreateFromMatrix(Device.mFullTransform, FRUSTUM_P_LRTB + FRUSTUM_P_FAR);
 
 	float fade_limit = dm_fade;
+#ifndef _EDITOR
+    fade_limit = clampr(ps_r__Detail_radius, 20.f, dm_fade);
+#endif
 	fade_limit = fade_limit * fade_limit;
 	float fade_start = 1.f;
 	fade_start = fade_start * fade_start;

@@ -13,6 +13,7 @@ int ps_r__LightSleepFrames = 10;
 float ps_r__Detail_l_ambient = 0.9f;
 float ps_r__Detail_l_aniso = 0.25f;
 float ps_r__Detail_density = 0.3f;
+float ps_r__Detail_radius = 60.f;
 float ps_r__Detail_rainbow_hemi = 0.75f;
 
 float ps_r__Tree_w_rot = 10.0f;
@@ -301,6 +302,7 @@ void xrRender_initconsole()
 
 	//.	CMD4(CCC_Float,		"r__detail_density",	&ps_r__Detail_density,		.05f,	0.99f	);
 	CMD4(CCC_Float, "r__detail_density", &ps_r__Detail_density, .2f, 0.6f);
+	CMD4(CCC_Float, "r__detail_radius", &ps_r__Detail_radius, 20.f, 63.5f);
 
 #ifdef DEBUG
 	CMD4(CCC_Float, "r__detail_l_ambient", &ps_r__Detail_l_ambient, .5f, .95f);
