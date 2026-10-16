@@ -1,0 +1,23 @@
+
+src/.vs/XR_3DA/v16/.suo
+*.db
+*.db-shm
+*.db-wal
+*.opendb
+*.log
+*.ipch
+.vs/XR_3DA/v16/.suo
+
+# Локальные данные Visual Studio
+.vs/
+*.suo
+*.user
+
+# Промежуточные файлы сборки
+*.obj
+*.pch
+*.pdb
+*.idb
+*.ilk
+*.tlog
+*.lastbuildstate

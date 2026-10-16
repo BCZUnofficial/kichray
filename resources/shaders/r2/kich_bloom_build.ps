@@ -1,0 +1,19 @@
+// Mode 0 delegates to the installed original bloom build shader.
+#define main kich_original_bloom
+#include "bloom_build.ps"
+#undef main
+#include "kich_graphics_math.h"
+
+uniform float4 kich_bloom_params; // mode, strength, knee ratio, 0
+
+half4 main(v2p I) : COLOR
+{
+    half4 result = kich_original_bloom(I);
+    if (kich_bloom_params.x > 0.5)
+    {
+        float brightness = dot(result.rgb, float3(1.0, 1.0, 1.0));
+        result.a = kich_bloom_alpha(brightness, b_params.x, kich_bloom_params.z);
+        result.rgb *= kich_bloom_params.y;
+    }
+    return result;
+}
