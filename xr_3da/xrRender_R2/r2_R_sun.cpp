@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "kich_sun_stability.h"
 #include "..\igame_persistent.h"
 #include "..\irenderable.h"
 
@@ -492,13 +493,15 @@ D3DXVECTOR2 BuildTSMProjectionMatrix_caster_depth_bounds(D3DXMATRIX& lightSpaceB
 
 void CRender::render_sun()
 {
+	const bool stable_sun = ps_r2_ls_flags.test(R2FLAG_SUN_STABLE) && o.smapsize > 4;
+	const float far_plane = min(OLES_SUN_LIMIT_27_01_07, g_pGamePersistent->Environment().CurrentEnv.far_plane);
 	light* fuckingsun = (light*)Lights.sun_adapted._get();
 	D3DXMATRIX m_LightViewProj;
 
 	// calculate view-frustum bounds in world space
 	Fmatrix ex_project, ex_full, ex_full_inverse;
 	{
-		float _far_ = min(OLES_SUN_LIMIT_27_01_07, g_pGamePersistent->Environment().CurrentEnv.far_plane);
+		float _far_ = far_plane;
 		ex_project.build_projection(deg2rad(Device.fFOV /* *Device.fASPECT*/), Device.fASPECT, ps_r2_sun_near, _far_);
 		ex_full.mul(ex_project, Device.mView);
 		D3DXMatrixInverse((D3DXMATRIX*)&ex_full_inverse, 0, (D3DXMATRIX*)&ex_full);
@@ -562,6 +565,7 @@ void CRender::render_sun()
 		Fmatrix mdir_View, mdir_Project;
 		Fvector L_dir, L_up, L_right, L_pos;
 		L_pos.set(fuckingsun->position);
+		if (stable_sun) L_pos.set(0.f, 0.f, 0.f); // world-anchored light basis
 		L_dir.set(fuckingsun->direction).normalize();
 		L_up.set(0, 1, 0);
 		if (_abs(L_up.dotproduct(L_dir)) > .99f)
@@ -580,6 +584,21 @@ void CRender::render_sun()
 		}
 		Fbox& bb = frustum_bb;
 		bb.grow(EPS);
+        if (stable_sun)
+        {
+            Fvector center;
+            center.mad(Device.vCameraPosition, Device.vCameraDirection, (ps_r2_sun_near + far_plane) * 0.5f);
+            center = wform(mdir_View, center);
+            const float radius = kich_sun::radius(ps_r2_sun_near, far_plane, ex_project._11, ex_project._22);
+            const float half_extent = kich_sun::extent(radius, o.smapsize);
+            const float x = kich_sun::snap(center.x, half_extent, o.smapsize);
+            const float y = kich_sun::snap(center.y, half_extent, o.smapsize);
+            bb.min.x = x - half_extent;
+            bb.max.x = x + half_extent;
+            bb.min.y = y - half_extent;
+            bb.max.y = y + half_extent;
+            // Z bounds and extruded caster culling retain their original logic.
+        }
 		D3DXMatrixOrthoOffCenterLH((D3DXMATRIX*)&mdir_Project, bb.min.x, bb.max.x, bb.min.y, bb.max.y,
 								   bb.min.z - tweak_ortho_xform_initial_offs, bb.max.z);
 
@@ -632,7 +651,7 @@ void CRender::render_sun()
 
 	// Compute REAL sheared xform based on receivers/casters information
 	FPU::m64r();
-	if (_abs(m_fCosGamma) < 0.99f && ps_r2_ls_flags.test(R2FLAG_SUN_TSM))
+	if (!stable_sun && _abs(m_fCosGamma) < 0.99f && ps_r2_ls_flags.test(R2FLAG_SUN_TSM))
 	{
 		//  get the near and the far plane (points) in eye space.
 		D3DXVECTOR3 frustumPnts[8];
@@ -828,7 +847,7 @@ void CRender::render_sun()
 	FPU::m24r();
 
 	// perform "refit" or "focusing" on relevant
-	if (ps_r2_ls_flags.test(R2FLAG_SUN_FOCUS))
+	if (!stable_sun && ps_r2_ls_flags.test(R2FLAG_SUN_FOCUS))
 	{
 		FPU::m64r();
 

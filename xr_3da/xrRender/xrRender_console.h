@@ -127,6 +127,7 @@ enum
 
 	R2FLAG_EXP_MT_CALC = (1 << 17),
 	R2FLAG_SOFT_PARTICLES = (1 << 18),
+	R2FLAG_SUN_STABLE = (1 << 19),
 };
 
 extern void xrRender_initconsole();

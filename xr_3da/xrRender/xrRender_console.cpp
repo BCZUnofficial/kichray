@@ -339,6 +339,7 @@ void xrRender_initconsole()
 	// R2-specific
 	CMD2(CCC_R2GM, "r2em", &ps_r2_gmaterial);
 	CMD3(CCC_Mask, "r2_soft_particles", &ps_r2_ls_flags, R2FLAG_SOFT_PARTICLES);
+	CMD3(CCC_Mask, "r2_sun_stable", &ps_r2_ls_flags, R2FLAG_SUN_STABLE);
 	CMD4(CCC_Float, "r2_soft_particles_distance", &ps_r2_soft_particles_distance, 0.05f, 2.f);
 	CMD4(CCC_Integer, "r2_bloom_mode", &ps_r2_bloom_mode, 0, 1);
 	CMD4(CCC_Float, "r2_bloom_strength", &ps_r2_bloom_strength, 0.f, 2.f);
