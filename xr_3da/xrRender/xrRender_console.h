@@ -67,6 +67,8 @@ extern ECORE_API float ps_r2_ls_bloom_kernel_b;		// r2-only	// bilinear
 extern ECORE_API float ps_r2_ls_bloom_threshold;	// r2-only
 // Kichgelkhut: live R2 effects, default off for the original appearance.
 extern ECORE_API float ps_r2_soft_particles_distance;
+extern ECORE_API int ps_r2_sun_shafts;
+extern ECORE_API float ps_r2_sun_shafts_intensity;
 extern ECORE_API int ps_r2_bloom_mode;
 extern ECORE_API float ps_r2_bloom_strength;
 extern ECORE_API float ps_r2_bloom_knee;

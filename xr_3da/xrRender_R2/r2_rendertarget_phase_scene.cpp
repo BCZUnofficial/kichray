@@ -5,7 +5,7 @@ void CRenderTarget::phase_scene_prepare()
 {
 	// The original position target is not cleared at sky pixels. Clear it only
 	// when soft particles sample it, otherwise stale geometry can fade smoke.
-	if (ps_r2_ls_flags.test(R2FLAG_SOFT_PARTICLES))
+	if (ps_r2_ls_flags.test(R2FLAG_SOFT_PARTICLES) || ps_r2_sun_shafts > 0)
 	{
 		u_setrt(rt_Position, 0, 0, HW.pBaseZB);
 		CHK_DX(HW.pDevice->Clear(0L, NULL, D3DCLEAR_TARGET, 0x0, 1.0f, 0L));

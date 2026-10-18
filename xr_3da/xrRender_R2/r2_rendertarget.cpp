@@ -205,6 +205,7 @@ CRenderTarget::CRenderTarget()
 	param_color_add = color_rgba(0, 0, 0, 0);
 
 	dwAccumulatorClearMark = 0;
+	dwShaftsClearMark = 0;
 	Device.Resources->Evict();
 
 	// Blenders
@@ -253,6 +254,8 @@ CRenderTarget::CRenderTarget()
 		// generic(LDR) RTs
 		rt_Generic_0.create(r2_RT_generic0, w, h, D3DFMT_A8R8G8B8);
 		rt_Generic_1.create(r2_RT_generic1, w, h, D3DFMT_A8R8G8B8);
+		// Half linear resolution = one quarter of full-resolution pixels.
+		rt_SunShafts.create("$user$kich_sun_shafts", _max(1u, w / 2), _max(1u, h / 2), D3DFMT_A8R8G8B8);
 	}
 
 	// OCCLUSION
@@ -284,6 +287,10 @@ CRenderTarget::CRenderTarget()
 		s_accum_mask.create(b_accum_mask, "r2\\accum_mask");
 		s_accum_direct.create(b_accum_direct, "r2\\accum_direct");
 	}
+
+	// Sun shafts shader is available but remains disabled by default.
+	s_accum_direct_volumetric.create("accum_volumetric_sun");
+	s_sun_shafts_combine.create("kich_sun_shafts_combine");
 
 	// POINT
 	{

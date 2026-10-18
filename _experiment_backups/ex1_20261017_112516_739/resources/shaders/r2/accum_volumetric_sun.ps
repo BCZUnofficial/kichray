@@ -1,0 +1,52 @@
+// Experimental DX9 R2 sun shafts port based on the Clear Sky volumetric sun pass.
+// Unlike Clear Sky, this version accumulates directly into the existing FP16
+// light accumulator and splits ray marching into NEAR and FAR sun cascades.
+#include "common.h"
+#include "shadow.h"
+
+// x: active samples (12 / 20 / 40)
+// y: user intensity (0..2)
+// z: start of cascade in view-space metres
+// w: end of cascade in view-space metres
+uniform float4 kich_sun_shafts_params;
+
+float4 main(float2 tc : TEXCOORD0, float4 tcJ : TEXCOORD1) : COLOR
+{
+    // SoC stores the pixel's position in camera/view space.
+    float3 P = tex2D(s_position, tc).xyz;
+    if (P.z <= 0.3f)
+        return float4(0, 0, 0, 0);
+
+    float rayStart = kich_sun_shafts_params.z;
+    float rayEnd   = min(P.z, kich_sun_shafts_params.w);
+    float pathLength = rayEnd - rayStart;
+    if (pathLength <= 0.01f)
+        return float4(0, 0, 0, 0);
+
+    float samples = max(1.0f, kich_sun_shafts_params.x);
+    float3 rayPerDepth = P / P.z;
+    float3 stepVector  = rayPerDepth * (pathLength / samples);
+
+    // Original Clear Sky used jittered shadow-map ray marching.
+    // Offset the first sample within its interval to reduce banding.
+    float jitter = tex2D(jitter0, tcJ).x;
+    float3 startPosition = rayPerDepth * rayEnd - stepVector * jitter;
+    float4 current = mul(m_shadow, float4(startPosition, 1.0f));
+    float4 delta   = mul(m_shadow, float4(stepVector, 0.0f));
+
+    float visibility = 0.0f;
+    [loop]
+    for (int i = 0; i < 40; ++i)
+    {
+        if (i >= samples)
+            break;
+        visibility += shadow(current);
+        current -= delta;
+    }
+
+    float skyFactor = saturate(0.5f * -Ldynamic_dir.z + 0.5f);
+    skyFactor = 0.2f + 0.8f * skyFactor;
+    float segmentFade = saturate(pathLength / 12.0f);
+    float intensity = (visibility / samples) * kich_sun_shafts_params.y;
+    return float4(Ldynamic_color.rgb * intensity * skyFactor * segmentFade, 0.0f);
+}

@@ -1,0 +1,19 @@
+// Kichray EX1.2: upsample the separate volume RT into the deferred scene.
+// Executed before forward-rendered weapon/clouds and bloom.
+#include "common.h"
+uniform sampler2D s_kich_shafts;
+uniform float4 kich_shafts_texel; // x=1/half-width, y=1/half-height
+
+float4 main(float2 tc : TEXCOORD0) : COLOR
+{
+    // Four bilinear taps smooth the half-resolution scattering texture.
+    float2 stepUV = 0.5f * kich_shafts_texel.xy;
+    float3 c0 = tex2D(s_kich_shafts, tc + float2(-stepUV.x, -stepUV.y)).rgb;
+    float3 c1 = tex2D(s_kich_shafts, tc + float2( stepUV.x, -stepUV.y)).rgb;
+    float3 c2 = tex2D(s_kich_shafts, tc + float2(-stepUV.x,  stepUV.y)).rgb;
+    float3 c3 = tex2D(s_kich_shafts, tc + float2( stepUV.x,  stepUV.y)).rgb;
+    float3 shafts = (c0 + c1 + c2 + c3) * 0.25f;
+    // No near-surface mask: the ray marcher already ends at visible geometry.
+    // Avoid global darkening: this pass is strictly additive.
+    return float4(shafts, 0.0f);
+}

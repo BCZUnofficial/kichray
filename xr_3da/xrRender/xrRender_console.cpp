@@ -72,6 +72,8 @@ float ps_r2_ls_dsm_kernel = .7f;			 // r2-only
 float ps_r2_ls_psm_kernel = .7f;			 // r2-only
 float ps_r2_ls_ssm_kernel = .7f;			 // r2-only
 float ps_r2_soft_particles_distance = 0.5f; // metres in view space
+int ps_r2_sun_shafts = 0; // 0 disabled, 1=12, 2=20, 3=40 shadow samples
+float ps_r2_sun_shafts_intensity = 0.6f;
 int ps_r2_bloom_mode = 0;
 float ps_r2_bloom_strength = 0.75f;
 float ps_r2_bloom_knee = 0.5f;
@@ -342,6 +344,8 @@ void xrRender_initconsole()
 	CMD2(CCC_R2GM, "r2em", &ps_r2_gmaterial);
 	CMD3(CCC_Mask, "r2_soft_particles", &ps_r2_ls_flags, R2FLAG_SOFT_PARTICLES);
 	CMD3(CCC_Mask, "r2_sun_stable", &ps_r2_ls_flags, R2FLAG_SUN_STABLE);
+	CMD4(CCC_Integer, "r2_sun_shafts", &ps_r2_sun_shafts, 0, 3);
+	CMD4(CCC_Float, "r2_sun_shafts_intensity", &ps_r2_sun_shafts_intensity, 0.f, 2.f);
 	CMD4(CCC_Float, "r2_soft_particles_distance", &ps_r2_soft_particles_distance, 0.05f, 2.f);
 	CMD4(CCC_Integer, "r2_bloom_mode", &ps_r2_bloom_mode, 0, 1);
 	CMD4(CCC_Float, "r2_bloom_strength", &ps_r2_bloom_strength, 0.f, 2.f);

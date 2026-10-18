@@ -1,541 +1,116 @@
+; ============================================================
+;  weather_default.ltx  —  L01_escape (Кордон) и общая погода
+;  День 04:00–20:00 — светлее и теплее (kich_sun_halo).
+;  Ночь 21:00–03:00 — луна с гало, холодный направленный
+;  свет (тени), плавная кривая яркости. Пик темноты 02:00 —
+;  луна ярче и контрастнее (kich_moon_halo_bright).
+; ============================================================
+
+; --- Солнце с гало и бликами (для дня) ---
+[kich_sun_halo]
+flare_opacity            = 0.340, 0.260, 0.500, 0.420, 0.260, 0.260
+flare_position           = 1.300, 1.000, 0.500, -0.300, -0.600, -1.000
+flare_radius             = 0.080, 0.120, 0.040, 0.080, 0.120, 0.300
+flare_textures           = fx\fx_flare1.tga, fx\fx_flare2.tga, fx\fx_flare2.tga, fx\fx_flare2.tga, fx\fx_flare3.tga, fx\fx_flare1.tga
+flare_shader             = effects\flare
+flares                   = on
+gradient                 = on
+gradient_opacity         = 0.75
+gradient_radius          = 0.5000
+gradient_texture         = fx\fx_gradient.tga
+gradient_shader          = effects\flare
+source                   = on
+source_radius            = 0.150
+source_texture           = fx\fx_sun.tga
+source_shader            = effects\sun
+source_ignore_color      = false
+blend_time               = 1
+blend_rise_time          = 1
+blend_down_time          = 1
+
+; --- Луна с гало, холодный свет (тени), обычная яркость ---
+[kich_moon_halo]
+flares                   = off
+gradient                 = on
+gradient_opacity         = 0.8
+gradient_radius          = 0.10
+gradient_texture         = fx\fx_gradient_02.tga
+gradient_shader          = effects\flare
+source                   = on
+source_radius            = 0.04
+source_texture           = fx\fx_moon.tga
+source_shader            = effects\moon
+source_ignore_color      = false
+blend_time               = 1
+blend_rise_time          = 1
+blend_down_time          = 1
+
+; --- Луна с усиленным гало (для пика темноты 02:00) ---
+[kich_moon_halo_bright]
+flares                   = off
+gradient                 = on
+gradient_opacity         = 1.0
+gradient_radius          = 0.15
+gradient_texture         = fx\fx_gradient_02.tga
+gradient_shader          = effects\flare
+source                   = on
+source_radius            = 0.06
+source_texture           = fx\fx_moon.tga
+source_shader            = effects\moon
+source_ignore_color      = false
+blend_time               = 1
+blend_rise_time          = 1
+blend_down_time          = 1
+
+; ============================================================
+;  Расписание
+; ============================================================
 [sect_default_weather]
+00:00:00 = default_weather_00
+01:00:00 = default_weather_01
+02:00:00 = default_weather_02
+03:00:00 = default_weather_03
+03:57:00 = kich_weather_default_14220
+03:58:00 = kich_weather_default_14280
+03:59:00 = kich_weather_default_14340
+04:00:00 = default_weather_04
+05:00:00 = default_weather_05
+06:00:00 = default_weather_06
+07:00:00 = default_weather_07
+08:00:00 = default_weather_08
+09:00:00 = default_weather_09
+10:00:00 = default_weather_10
+11:00:00 = default_weather_11
+12:00:00 = default_weather_12
+13:00:00 = default_weather_13
+14:00:00 = default_weather_14
+15:00:00 = default_weather_15
+16:00:00 = default_weather_16
+17:00:00 = default_weather_17
+18:00:00 = default_weather_18
+19:00:00 = default_weather_19
+20:00:00 = default_weather_20
+21:00:00 = default_weather_21
+22:00:00 = default_weather_22
+22:01:00 = kich_weather_default_79260
+22:02:00 = kich_weather_default_79320
+22:03:00 = kich_weather_default_79380
+23:00:00 = default_weather_23
 
-01:00:00		=	default_weather_01
-02:00:00		=	default_weather_02
-03:00:00		=	default_weather_03
-04:00:00		=	default_weather_04
-05:00:00		=	default_weather_05
-06:00:00		=	default_weather_06
-07:00:00		=	default_weather_07
-08:00:00		=	default_weather_08
-09:00:00		=	default_weather_09
-10:00:00		=	default_weather_10
-11:00:00		=	default_weather_11
-12:00:00		=	default_weather_12
-13:00:00		=	default_weather_13
-14:00:00		=	default_weather_14
-15:00:00		=	default_weather_15
-16:00:00		=	default_weather_16
-17:00:00		=	default_weather_17
-18:00:00		=	default_weather_18
-19:00:00		=	default_weather_19
-20:00:00		=	default_weather_20
-21:00:00		=	default_weather_21
-22:00:00		=	default_weather_22
-23:00:00		=	default_weather_23
-00:00:00		=	default_weather_00
-
-[default_weather_01]
-flares			=	flares_gradient1
-sky_texture		=	sky\sky_14_cube
-sky_rotation	=	0
-sky_color		=	1.0,	1.0,	1.0
-clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.333, 0.341, 0.431, 0.7, 1.7
-far_plane		=	350
-fog_distance	=	340
-fog_color		=	0.043, 0.043, 0.055
-fog_density		=	0.9
-rain_density	=	0.1
-rain_color		=	0.21, 0.21, 0.27
-thunderbolt		= 	thunderbolt_collection_default
-bolt_period		=	4.5f
-bolt_duration	=	0.35f
-wind_velocity	=	0.0
-wind_direction	=	0.0
-ambient			=	0.0325,   0.035,  	0.0375
-lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.425,	0.45,	0.475, 0.1
-sun_color		=   0.0, 0.0, 0.0
-sun_dir			=	-18.0, 291
-env_ambient		=	ambient_env_rain
-
-[default_weather_02]
-flares			=	flares_gradient1
-sky_texture		=	sky\sky_13_cube_night
-sky_rotation	=	0
-sky_color		=	1.0,	1.0,	1.0
-clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.333, 0.341, 0.431, 0.5, 1.7
-far_plane		=	350
-fog_distance	=	340
-fog_color		=	0.067, 0.067, 0.086
-fog_density		=	0.9
-rain_density	=	0.0
-rain_color		=	0.43, 0.43, 0.43
-thunderbolt		=
-bolt_period		=	3.f
-bolt_duration	=	0.25f
-wind_velocity	=	0.0
-wind_direction	=	0.0
-ambient			=	0.0325,   0.035,  	0.0375
-lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.425,	0.45,	0.475, 0.1
-sun_color		=	0.0,    0.0,  	0.0
-sun_dir			=	-24.0, 291
-env_ambient		=	ambient_env_night
-
-[default_weather_03]
-flares			=	flares_gradient1
-sky_texture		=	sky\sky_5_cube
-sky_rotation	=	0
-sky_color		=	0.25,	0.25,	0.25
-clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.333, 0.341, 0.431, 0.5, 1.7
-far_plane		=	350
-fog_distance	=	340
-fog_color		=   0.067, 0.063, 0.055
-fog_density		=	0.9
-rain_density	=	0.0
-rain_color		=	0.33, 0.33, 0.43
-thunderbolt		=
-bolt_period		=	3.f
-bolt_duration	=	0.25f
-wind_velocity	=	0.0
-wind_direction	=	0.0
-ambient			=	0.0325,   0.035,  	0.0375
-lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.525,	0.55,	0.575, 0.1
-sun_color		=	0.0,    0.0,  	0.0
-sun_dir			=	-3.0, 291
-env_ambient		=	ambient_env_night
-
-[default_weather_04]
-flares			=	flares_sun_rise
-sky_texture		=	sky\sky_9_cube
-sky_rotation	=	0
-sky_color		=	0.8,    0.8,  	0.8
-clouds_texture	=	sky\sky_oblaka
-clouds_color	=   0.282, 0.286, 0.341, 0.5, 1.7
-far_plane		=	350
-fog_distance	=	340
-fog_color		=	0.137, 0.141, 0.153
-fog_density		=	0.9
-rain_density	=	0.0
-rain_color		=	1.0,	1.0,	1.0
-thunderbolt		=
-bolt_period		=	3.f
-bolt_duration	=	0.25f
-wind_velocity	=	0.0
-wind_direction	=	0.0
-ambient			=	0.06, 0.062, 0.065
-lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=   0.60, 0.625, 0.65,	1.0
-sun_color		=	0.0,    0.0,  	0.0
-sun_dir			=	-6.0, 291
-env_ambient		=	ambient_env_tuman
-
-[default_weather_05]
-flares			=   flares_sun_rise
-sky_texture		=	sky\sky_11_cube
-sky_rotation	=	0
-sky_color		=	0.8,    0.8,  	0.8
-clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.353, 0.333, 0.420, 0.5, 1.7
-far_plane		=	350
-fog_distance	=	340
-fog_color		=	0.271, 0.306, 0.361
-fog_density		=	0.9
-rain_density	=	0.0
-rain_color		=	1.0,	1.0,	1.0
-thunderbolt		=
-bolt_period		=	3.f
-bolt_duration	=	0.25f
-wind_velocity	=	0.0
-wind_direction	=	0.0
-ambient			=	0.083, 0.078, 0.100
-lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.75, 0.775, 0.80,	1.0
-sun_color		=	0.700, 0.284, 0.096
-sun_dir			=	-10, 291
-env_ambient		=	ambient_env_tuman
-
-[default_weather_06]
-flares			=  	flares_sun_rise
-sky_texture		=	sky\sky_2_cube
-sky_rotation	=	0
-sky_color		=	1.0,    1.0,  	1.0
-clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.698, 0.447, 0.322, 0.5, 1.7
-far_plane		=	350
-fog_distance	=	340
-fog_color		=	0.322, 0.302, 0.353
-fog_density		=	0.9
-rain_density	=	0.0
-rain_color		=	1.0,	1.0,	1.0
-thunderbolt		=
-bolt_period		=	3.f
-bolt_duration	=	0.25f
-wind_velocity	=	0.0
-wind_direction	=	0.0
-ambient			=	0.11,  0.115, 	0.12
-lmap_color		=	1.0,    1.0,  	1.0
-hemi_color		=   0.80, 0.825, 0.850, 1
-sun_color		=	0.818, 0.476, 0.108
-sun_dir			=	-14.0, 291
-env_ambient		=	ambient_env_morning
-
-[default_weather_07]
-flares			=   flares_sun_rise
-sky_texture		=	sky\sky_3_cube
-sky_rotation	=	0
-sky_color		=	0.8,    0.8,  	0.8
-clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.451, 0.361, 0.290, 0.0, 1.7
-far_plane		=	350
-fog_distance	=	340
-fog_color		=	0.298, 0.290, 0.337
-fog_density		=	0.9
-rain_density	=	0.0
-rain_color		=	1.0,	1.0,	1.0
-thunderbolt		=
-bolt_period		=	3.f
-bolt_duration	=	0.25f
-wind_velocity	=	0.0
-wind_direction	=	0.0
-ambient			=	0.11,  0.11, 	0.11
-lmap_color		=	1.0,    1.0,  	1.0
-hemi_color		=   0.925, 0.95, 0.975, 1
-sun_color		=	0.435, 0.393, 0.289
-sun_dir			=	-18.0, 291
-env_ambient		=	ambient_env_morning
-
-[default_weather_08]
-flares			=	flares_default10
-sky_texture		=	sky\sky_8_cube
-sky_rotation	=	0
-sky_color		=	0.8,    0.8,  	0.8
-clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.333, 0.341, 0.431, 0.0, 1.7
-far_plane		=	350
-fog_distance	=	360
-fog_color		=	0.255, 0.271, 0.337
-fog_density		=	0.9
-rain_density	=	0.0
-rain_color		=	1.0,	1.0,	1.0
-thunderbolt		=
-bolt_period		=	3.f
-bolt_duration	=	0.25f
-wind_velocity	=	0.0
-wind_direction	=	0.0
-ambient			=	0.083, 0.078, 0.100
-lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.775, 0.7, 0.725,	1.0
-sun_color		=	0.435, 0.393, 0.289
-sun_dir			=	-22.0, 291
-env_ambient		=	ambient_env_rain
-
-[default_weather_09]
-flares			=   flares_default10
-sky_texture		=	sky\sky_19_cube
-sky_rotation	=	0
-sky_color		=	1.0,    1.0,  	1.0
-clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.675, 0.675, 0.620, 0.5, 1.7
-far_plane		=	350
-fog_distance	=	340
-fog_color		=	0.478, 0.506, 0.545
-fog_density		=	0.9
-rain_density	=	0.0
-rain_color		=	1.0,	1.0,	1.0
-thunderbolt		=
-bolt_period		=	3.f
-bolt_duration	=	0.25f
-wind_velocity	=	20.0
-wind_direction	=	0.0
-ambient			=	0.10,   0.105,  	0.11
-lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=    0.775, 0.775, 0.720, 1
-sun_color		=	 0.50,    0.47,  	0.415
-sun_dir			=	-24.0, 291
-env_ambient		=	ambient_env_morning
-
-[default_weather_10]
-flares			=   flares_gradient1
-sky_texture		=	sky\sky_21_cube
-sky_rotation	=	0
-sky_color		=	1.0,    1.0,  	1.0
-clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.520, 0.539, 0.578, 0.8, 1.7
-far_plane		=	350
-fog_distance	=	340
-fog_color		=	0.306, 0.302, 0.275
-fog_density		=	0.9
-rain_density	=	0.0
-rain_color		=	1.0,	1.0,	1.0
-thunderbolt		=
-bolt_period		=	3.f
-bolt_duration	=	0.25f
-wind_velocity	=	10.0
-wind_direction	=	0.0
-ambient			=	0.09,   0.095,  	0.1
-lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.60, 0.65, 0.7,	1.0
-sun_color		=	0.172, 0.170, 0.156
-sun_dir			=	-24.0, 291
-env_ambient		=	ambient_env_day
-
-[default_weather_11]
-flares			=	flares_gradient1
-sky_texture		=	sky\sky_11_cube
-sky_rotation	=	0
-sky_color		=	1.0,    1.0,  	1.0
-clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.333, 0.380, 0.451, 0.0, 1.7
-far_plane		=	350
-fog_distance	=	340
-fog_color		=	0.333, 0.380, 0.451
-fog_density		=	0.9
-rain_density	=	0.0
-rain_color		=	1.0,	1.0,	1.0
-thunderbolt		=
-bolt_period		=	3.f
-bolt_duration	=	0.25f
-wind_velocity	=	0.0
-wind_direction	=	0.0
-ambient			=	0.09,   0.095,  	0.10
-lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.763, 0.806, 0.884,	1.0
-sun_color		=	0.506, 0.443, 0.302
-sun_dir			=	-30.0, 291
-env_ambient		=	ambient_env_0
-
-[default_weather_12]
-flares			=	flares_gradient1
-sky_texture		=	sky\sky_9_cube
-sky_rotation	=	0
-sky_color		=	0.80,	0.80,	0.80
-clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.333, 0.341, 0.431, 0.3, 1.7
-far_plane		=	350
-fog_distance	=	340
-fog_color		=	0.137, 0.141, 0.153
-fog_density		=	0.9
-rain_density	=	0.0
-rain_color		=	1.0,	1.0,	1.0
-thunderbolt		= 	
-bolt_period		=	7.f
-bolt_duration	=	0.25f
-wind_velocity	=	0.0
-wind_direction	=	0.0
-ambient			=	0.06,   0.065,  	0.07
-lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.60,	0.65,	0.70, 1
-sun_color		=	0.0,    0.0,  	0.0
-sun_dir			=	-25.0, 291
-env_ambient		=	ambient_env_rain
-
-[default_weather_13]
-flares			=	flares_gradient1
-sky_texture		=	sky\sky_9_cube
-sky_rotation	=	0
-sky_color		=	1.0,    1.0,  	1.0
-clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.333, 0.341, 0.431, 0.7, 1.7
-far_plane		=	350
-fog_distance	=	340
-fog_color		=	0.172, 0.176, 0.196
-fog_density		=	0.9
-rain_density	=	0.0
-rain_color		=	1.0,	1.0,	1.0
-thunderbolt		=
-bolt_period		=	3.f
-bolt_duration	=	0.25f
-wind_velocity	=	0.0
-wind_direction	=	0.0
-ambient			=	0.059,   0.063,  	0.067
-lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.67,   0.69,  	0.70,	1.0
-sun_color		=	0.0,    0.0,  	0.0
-sun_dir			=	-28.0, 291
-env_ambient		=	ambient_env_rain
-
-[default_weather_14]
-flares			=	flares_gradient1
-sky_texture		=	sky\sky_19_cube
-sky_rotation	=	0
-sky_color		=	1.0,    1.0,  	1.0
-clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.478, 0.506, 0.545, 0.35, 1.7
-far_plane		=	350
-fog_distance	=	340
-fog_color		=	0.478, 0.506, 0.545
-fog_density		=	0.9
-rain_density	=	0.0
-rain_color		=	1.0,	1.0,	1.0
-thunderbolt		=
-bolt_period		=	3.f
-bolt_duration	=	0.25f
-wind_velocity	=	0.0
-wind_direction	=	0.0
-ambient			=	0.115,   0.12,  	0.13
-lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=   0.760, 0.795, 0.845,  1
-sun_color		=	0.949, 0.784, 0.521
-sun_dir			=	-28.0, 291
-env_ambient		=	ambient_env_0
-
-[default_weather_15]
-flares			=	flares_gradient1
-sky_texture		=	sky\sky_1_cube
-sky_rotation	=	0
-sky_color		=	1.0,    1.0,  	1.0
-clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.337, 0.357, 0.388, 0.95, 1.7
-far_plane		=	350
-fog_distance	=	340
-fog_color		=	0.337, 0.357, 0.388
-fog_density		=	0.9
-rain_density	=	0.0
-rain_color		=	0.337, 0.357, 0.388
-thunderbolt		=
-bolt_period		=	3.f
-bolt_duration	=	0.25f
-wind_velocity	=	0.0
-wind_direction	=	0.0
-ambient			=	0.0925, 0.0941, 0.0980
-lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=   0.841, 0.853, 0.888,  1
-sun_color		=	0.0,    0.0,  	0.0
-sun_dir			=	-25.0, 291
-env_ambient		=	ambient_env_0
-
-[default_weather_16]
-flares			= 	flares_gradient1
-sky_texture		=	sky\sky_9_cube
-sky_rotation	=	0
-sky_color		=	1.0,    1.0,  	1.0
-clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.333, 0.341, 0.431, 1.0, 1.7
-far_plane		=	250
-fog_distance	=	230
-fog_color		=	0.172, 0.176, 0.196
-fog_density		=	0.9
-rain_density	=	0.85
-rain_color		=	0.62, 0.66, 0.76
-thunderbolt		=	thunderbolt_collection_default
-bolt_period		=	5.f
-bolt_duration	=	0.25f
-wind_velocity	=	20.0
-wind_direction	=	0.0
-ambient			=	0.06, 0.065, 0.07
-lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.6,   0.625,  	0.65,	1.0
-sun_color		=	0.0,    0.0,  	0.0
-sun_dir			=	-25.0, 291
-env_ambient		=	ambient_env_rain
-
-[default_weather_17]
-flares			=	flares_gradient1
-sky_texture		=	sky\sky_9_cube
-sky_rotation	=	0
-sky_color		=	1.0,	1.0,	1.0
-clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.333, 0.341, 0.431, 0.5, 1.7
-far_plane		=	350
-fog_distance	=	340
-fog_color		=	0.172, 0.176, 0.196
-fog_density		=	0.9
-rain_density	=	0.05
-rain_color		=	0.52, 0.56, 0.66
-thunderbolt		= 	thunderbolt_collection_default
-bolt_period		=	7.f
-bolt_duration	=	0.25f
-wind_velocity	=	0.0
-wind_direction	=	0.0
-ambient			=	0.06, 0.065, 0.07
-lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.6,   0.625,  	0.65,	1.0
-sun_color		=	0.0,    0.0,  	0.0
-sun_dir			=	-25.0, 291
-env_ambient		=	ambient_env_rain
-
-[default_weather_18]
-flares			=	flares_gradient1
-sky_texture		=	sky\sky_11_cube
-sky_rotation	=	0
-sky_color		=	1.0,    1.0,  	1.0
-clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.333, 0.341, 0.431, 0.3, 1.7
-far_plane		=	350
-fog_distance	=	340
-fog_color		=	0.337, 0.376, 0.447
-fog_density		=	0.9
-rain_density	=	0.0
-rain_color		=	0.408, 0.400, 0.408
-thunderbolt		=
-bolt_period		=	7.f
-bolt_duration	=	0.25f
-wind_velocity	=	0.0
-wind_direction	=	0.0
-ambient			=	0.08,   0.084,  	0.098
-lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.625,   0.65,  	0.675,	1.0
-sun_color		=	0.0,    0.0,  	0.0
-sun_dir			=	-25.0, 291
-env_ambient		=	ambient_env_rain
-
-[default_weather_19]
-flares			=	flares_sun_rise
-sky_texture		=	sky\sky_5_cube
-sky_rotation	=	0
-sky_color		=	1.0,    1.0,  	1.0
-clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.333, 0.341, 0.431, 0.0, 1.7
-far_plane		=	350
-fog_distance	=	340
-fog_color		=	0.271, 0.251, 0.224
-fog_density		=	0.9
-rain_density	=	0.0
-rain_color		=	1.0,	1.0,	1.0
-thunderbolt		=
-bolt_period		=	3.f
-bolt_duration	=	0.25f
-wind_velocity	=	0.0
-wind_direction	=	0.0
-ambient			=	0.07,   0.075,  	0.08
-lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.625,   0.65,  	0.675,	1.0
-sun_color		=	0.0,    0.0,  	0.0
-sun_dir			=	-27.0, 291
-env_ambient		=	ambient_env_0
-
-[default_weather_20]
-flares			=	flares_sun_rise
-sky_texture		=	sky\sky_18_cube
-sky_rotation	=	0
-sky_color		=	1.0,    1.0,  	1.0
-clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.427, 0.412, 0.431, 0.25, 1.7
-far_plane		=	350
-fog_distance	=	340
-fog_color		=	0.427, 0.412, 0.431
-fog_density		=	0.9
-rain_density	=	0.0
-rain_color		=	1.0,	1.0,	1.0
-thunderbolt		=
-bolt_period		=	3.f
-bolt_duration	=	0.25f
-wind_velocity	=	0.0
-wind_direction	=	0.0
-ambient			=	0.071,   0.07,  	0.079
-lmap_color		=	1.0,    1.0,  	1.0
-hemi_color		=   0.710, 0.706, 0.792, 1.0
-sun_color		=	1.000,  0.6,  0.3
-sun_dir			=	-24.0, 291
-env_ambient		=	ambient_env_evening
-
+; ============================================================
+;  НОЧЬ 21:00 — луна восходит
+; ============================================================
 [default_weather_21]
-flares			=   flares_sun_rise
+flares			= kich_moon_halo
 sky_texture		=	sky\sky_17_cube
 sky_rotation	=	0
 sky_color		=	1.0,    1.0,  	1.0
 clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.333, 0.341, 0.431, 0.5, 1.7
-far_plane		=	350
-fog_distance	=	340
+clouds_color	=	0.333, 0.341, 0.431, 0.4, 1.7
+far_plane		=	400
+fog_distance	=	400
 fog_color		=	0.333, 0.341, 0.431
-fog_density		=	0.9
+fog_density		=	0.8
 rain_density	=	0.0
 rain_color		=	1.0,	1.0,	1.0
 thunderbolt		=
@@ -543,24 +118,27 @@ bolt_period		=	3.f
 bolt_duration	=	0.25f
 wind_velocity	=	10.0
 wind_direction	=	0.0
-ambient			=	0.066,   0.068,  	0.082
+ambient			=	0.070,	0.073,	0.078
 lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=   0.65, 0.67, 0.747, 0.5
-sun_color		=	0.829, 0.408, 0.306
-sun_dir			=	-18.0, 291
+hemi_color		=	0.55,	0.57,	0.60,	0.5
+sun_color		=	0.15, 0.17, 0.22
+sun_dir			= -11.1615, 260.0000
 env_ambient		=	ambient_env_evening
 
+; ============================================================
+;  НОЧЬ 22:00 — темнеет
+; ============================================================
 [default_weather_22]
-flares			=   flares_sun_rise
+flares			= kich_moon_halo
 sky_texture		=	sky\sky_17_cube
 sky_rotation	=	0
-sky_color		=	0.5,	0.5,	0.5
+sky_color		=	0.7,	0.7,	0.7
 clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.165, 0.169, 0.212, 0.5, 1.7
-far_plane		=	350
-fog_distance	=	340
+clouds_color	=	0.165, 0.169, 0.212, 0.4, 1.7
+far_plane		=	380
+fog_distance	=	380
 fog_color		=	0.165, 0.169, 0.212
-fog_density		=	0.9
+fog_density		=	0.85
 rain_density	=	0.0
 rain_color		=	1.0,	1.0,	1.0
 thunderbolt		=
@@ -568,22 +146,25 @@ bolt_period		=	3.f
 bolt_duration	=	0.25f
 wind_velocity	=	0.0
 wind_direction	=	0.0
-ambient			=	0.049, 0.049, 0.053
+ambient			=	0.062,	0.065,	0.070
 lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=   0.55, 0.575, 0.64, 0.4
-sun_color		=	0.0,    0.0,  	0.0
-sun_dir			=	-12.0, 291
+hemi_color		=	0.48,	0.50,	0.52,	0.5
+sun_color		=	0.18, 0.20, 0.25
+sun_dir			= -3.0000, 270.0000
 env_ambient		=	ambient_env_evening
 
+; ============================================================
+;  НОЧЬ 23:00
+; ============================================================
 [default_weather_23]
-flares			=	flares_sun_rise
+flares			= kich_moon_halo
 sky_texture		=	sky\sky_9_cube
 sky_rotation	=	0
 sky_color		=	0.5,	0.5,	0.5
 clouds_texture	=	sky\sky_oblaka
 clouds_color	=	0.333, 0.341, 0.431, 0.0, 1.7
-far_plane		=	350
-fog_distance	=	340
+far_plane		=	360
+fog_distance	=	360
 fog_color		=	0.086,	0.086,	0.094
 fog_density		=	0.9
 rain_density	=	0.0
@@ -593,22 +174,25 @@ bolt_period		=	3.f
 bolt_duration	=	0.25f
 wind_velocity	=	0.0
 wind_direction	=	0.0
-ambient			=	0.0325,   0.035,  	0.0375
+ambient			=	0.056,	0.059,	0.063
 lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.425, 0.45, 0.475,	1.0
-sun_color		=	0.0,    0.0,  	0.0
-sun_dir			=	-6.0, 291
+hemi_color		=	0.40,	0.42,	0.44,	0.5
+sun_color		=	0.22, 0.25, 0.30
+sun_dir			= -18.7130, 119.4085
 env_ambient		=	ambient_env_night
 
+; ============================================================
+;  НОЧЬ 00:00
+; ============================================================
 [default_weather_00]
-flares			=	flares_sun_rise
+flares			= kich_moon_halo
 sky_texture		=	sky\sky_13_cube_night
 sky_rotation	=	0
 sky_color		=	1.0,	1.0,	1.0
 clouds_texture	=	sky\sky_oblaka
 clouds_color	=	0.333, 0.341, 0.431, 0.0, 1.7
-far_plane		=	350
-fog_distance	=	340
+far_plane		=	360
+fog_distance	=	360
 fog_color		=	0.067, 0.067, 0.086
 fog_density		=	0.9
 rain_density	=	0.0
@@ -618,9 +202,693 @@ bolt_period		=	3.f
 bolt_duration	=	0.25f
 wind_velocity	=	0.0
 wind_direction	=	0.0
-ambient			=	0.0325,   0.035,  	0.0375
+ambient			=	0.050,	0.053,	0.058
 lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.425, 0.45, 0.475,	1.0
-sun_color		=	0.0,    0.0,  	0.0
-sun_dir			=	-12.0, 291
+hemi_color		=	0.32,	0.33,	0.35,	0.5
+sun_color		=	0.25, 0.28, 0.35
+sun_dir			= -30.6655, 149.8310
 env_ambient		=	ambient_env_night
+
+; ============================================================
+;  НОЧЬ 01:00
+; ============================================================
+[default_weather_01]
+flares			= kich_moon_halo
+sky_texture		=	sky\sky_14_cube
+sky_rotation	=	0
+sky_color		=	1.0,	1.0,	1.0
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=	0.333, 0.341, 0.431, 0.7, 1.7
+far_plane		=	350
+fog_distance	=	350
+fog_color		=	0.043, 0.043, 0.055
+fog_density		=	0.9
+rain_density	=	0.2
+rain_color		=	0.21, 0.21, 0.27
+thunderbolt		= 	thunderbolt_collection_default
+bolt_period		=	4.5f
+bolt_duration	=	0.35f
+wind_velocity	=	0.0
+wind_direction	=	0.0
+ambient			=	0.042,	0.045,	0.050
+lmap_color		=	1.0,	1.0,	1.0
+hemi_color		=	0.22,	0.23,	0.24,	0.5
+sun_color		=	0.28, 0.32, 0.40
+sun_dir			= -34.9997, 180.2535
+env_ambient		=	ambient_env_night
+
+; ============================================================
+;  НОЧЬ 02:00 — ПИК ТЕМНОТЫ. Луна яркая и контрастная.
+; ============================================================
+[default_weather_02]
+flares			= kich_moon_halo_bright
+sky_texture		=	sky\sky_13_cube_night
+sky_rotation	=	0
+sky_color		=	1.0,	1.0,	1.0
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=	0.333, 0.341, 0.431, 0.0, 1.7
+far_plane		=	360
+fog_distance	=	360
+fog_color		=	0.067, 0.067, 0.086
+fog_density		=	0.95
+rain_density	=	0.0
+rain_color		=	0.43, 0.43, 0.43
+thunderbolt		=
+bolt_period		=	3.f
+bolt_duration	=	0.25f
+wind_velocity	=	0.0
+wind_direction	=	0.0
+ambient			=	0.025,	0.026,	0.030
+lmap_color		=	1.0,	1.0,	1.0
+hemi_color		=	0.08,	0.08,	0.09,	0.5
+sun_color		=	0.40, 0.45, 0.55
+sun_dir			= -30.5221, 210.6761
+env_ambient		=	ambient_env_night
+
+; ============================================================
+;  НОЧЬ 03:00 — светает
+; ============================================================
+[default_weather_03]
+flares			= kich_moon_halo
+sky_texture		=	sky\sky_5_cube
+sky_rotation	=	0
+sky_color		=	0.25,	0.25,	0.25
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=	0.333, 0.341, 0.431, 0.4, 1.7
+far_plane		=	400
+fog_distance	=	400
+fog_color		=   0.10, 0.10, 0.11
+fog_density		=	0.85
+rain_density	=	0.0
+rain_color		=	0.33, 0.33, 0.43
+thunderbolt		=
+bolt_period		=	3.f
+bolt_duration	=	0.25f
+wind_velocity	=	0.0
+wind_direction	=	0.0
+ambient			=	0.045,	0.048,	0.052
+lmap_color		=	1.0,	1.0,	1.0
+hemi_color		=	0.28,	0.30,	0.32,	0.5
+sun_color		=	0.25, 0.30, 0.38
+sun_dir			= -18.4657, 241.0986
+env_ambient		=	ambient_env_night
+
+; ============================================================
+;  УТРО 04–07 (светлее, теплее)
+; ============================================================
+[default_weather_04]
+flares			= kich_sun_halo
+sky_texture		=	sky\sky_9_cube
+sky_rotation	=	0
+sky_color		=	1.0,    1.0,  	1.0
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=   0.282, 0.286, 0.341, 0.4, 1.7
+far_plane		=	450
+fog_distance	=	450
+fog_color		=	0.20, 0.20, 0.22
+fog_density		=	0.7
+rain_density	=	0.0
+rain_color		=	1.0,	1.0,	1.0
+thunderbolt		=
+bolt_period		=	3.f
+bolt_duration	=	0.25f
+wind_velocity	=	0.0
+wind_direction	=	0.0
+ambient			=	0.080, 0.082, 0.085
+lmap_color		=	1.0,	1.0,	1.0
+hemi_color		=   0.75, 0.77, 0.80,	1.0
+sun_color		= 0.85, 0.65, 0.45
+sun_dir			= -3.0000, 90.0000
+env_ambient		=	ambient_env_morning
+
+[default_weather_05]
+flares			= kich_sun_halo
+sky_texture		=	sky\sky_11_cube
+sky_rotation	=	0
+sky_color		=	0.8,    0.8,  	0.8
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=	0.353, 0.333, 0.420, 0.4, 1.7
+far_plane		=	450
+fog_distance	=	450
+fog_color		=	0.35, 0.38, 0.42
+fog_density		=	0.7
+rain_density	=	0.0
+rain_color		=	1.0,	1.0,	1.0
+thunderbolt		=
+bolt_period		=	3.f
+bolt_duration	=	0.25f
+wind_velocity	=	0.0
+wind_direction	=	0.0
+ambient			=	0.100, 0.102, 0.105
+lmap_color		=	1.0,	1.0,	1.0
+hemi_color		=	0.85, 0.87, 0.90,	1.0
+sun_color		=	0.90, 0.72, 0.50
+sun_dir			= -11.1615, 100.0000
+env_ambient		=	ambient_env_morning
+
+[default_weather_06]
+flares			= kich_sun_halo
+sky_texture		=	sky\sky_2_cube
+sky_rotation	=	0
+sky_color		=	1.0,    1.0,  	1.0
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=	0.698, 0.447, 0.322, 0.4, 1.7
+far_plane		=	450
+fog_distance	=	450
+fog_color		=	0.40, 0.38, 0.40
+fog_density		=	0.7
+rain_density	=	0.0
+rain_color		=	1.0,	1.0,	1.0
+thunderbolt		=
+bolt_period		=	3.f
+bolt_duration	=	0.25f
+wind_velocity	=	0.0
+wind_direction	=	0.0
+ambient			=	0.100, 0.102, 0.105
+lmap_color		=	1.0,    1.0,  	1.0
+hemi_color		=   0.88, 0.90, 0.93, 1
+sun_color		=	0.95, 0.80, 0.55
+sun_dir			= -19.0749, 110.0000
+env_ambient		=	ambient_env_morning
+
+[default_weather_07]
+flares			= kich_sun_halo
+sky_texture		=	sky\sky_3_cube
+sky_rotation	=	0
+sky_color		=	0.8,    0.8,  	0.8
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=	0.451, 0.361, 0.290, 0.0, 1.7
+far_plane		=	450
+fog_distance	=	450
+fog_color		=	0.35, 0.35, 0.38
+fog_density		=	0.7
+rain_density	=	0.0
+rain_color		=	1.0,	1.0,	1.0
+thunderbolt		=
+bolt_period		=	3.f
+bolt_duration	=	0.25f
+wind_velocity	=	0.0
+wind_direction	=	0.0
+ambient			=	0.110, 0.112, 0.115
+lmap_color		=	1.0,    1.0,  	1.0
+hemi_color		=   0.93, 0.95, 0.98, 1
+sun_color		=	0.90, 0.80, 0.60
+sun_dir			= -26.5000, 120.0000
+env_ambient		=	ambient_env_morning
+
+; ============================================================
+;  ДЕНЬ 08–11 (ярко, тепло, гало)
+; ============================================================
+[default_weather_08]
+flares			= kich_sun_halo
+sky_texture		=	sky\sky_8_cube
+sky_rotation	=	0
+sky_color		=	0.8,    0.8,  	0.8
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=	0.333, 0.341, 0.431, 0.0, 1.7
+far_plane		=	450
+fog_distance	=	450
+fog_color		=	0.30, 0.33, 0.38
+fog_density		=	0.7
+rain_density	=	0.0
+rain_color		=	1.0,	1.0,	1.0
+thunderbolt		=
+bolt_period		=	3.f
+bolt_duration	=	0.25f
+wind_velocity	=	0.0
+wind_direction	=	0.0
+ambient			=	0.110, 0.108, 0.110
+lmap_color		=	1.0,	1.0,	1.0
+hemi_color		=	0.90, 0.92, 0.95,	1.0
+sun_color		=	0.95, 0.83, 0.60
+sun_dir			= -33.2110, 130.0000
+env_ambient		=	ambient_env_day
+
+[default_weather_09]
+flares			= kich_sun_halo
+sky_texture		=	sky\sky_19_cube
+sky_rotation	=	0
+sky_color		=	1.0,    1.0,  	1.0
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=	0.675, 0.675, 0.620, 0.3, 1.7
+far_plane		=	500
+fog_distance	=	500
+fog_color		=	0.45, 0.48, 0.52
+fog_density		=	0.6
+rain_density	=	0.0
+rain_color		=	1.0,	1.0,	1.0
+thunderbolt		=
+bolt_period		=	3.f
+bolt_duration	=	0.25f
+wind_velocity	=	10.0
+wind_direction	=	0.0
+ambient			=	0.115, 0.112, 0.114
+lmap_color		=	1.0,	1.0,	1.0
+hemi_color		=	0.92, 0.93, 0.95,	1.0
+sun_color		=	 0.95, 0.85, 0.62
+sun_dir			= -39.0041, 140.0000
+env_ambient		=	ambient_env_day
+
+[default_weather_10]
+flares			= kich_sun_halo
+sky_texture		=	sky\sky_19_cube
+sky_rotation	=	0
+sky_color		=	1.0,    1.0,  	1.0
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=	0.520, 0.539, 0.578, 0.3, 1.7
+far_plane		=	500
+fog_distance	=	500
+fog_color		=	0.478, 0.506, 0.545
+fog_density		=	0.6
+rain_density	=	0.0
+rain_color		=	1.0,	1.0,	1.0
+thunderbolt		=
+bolt_period		=	3.f
+bolt_duration	=	0.25f
+wind_velocity	=	10.0
+wind_direction	=	0.0
+ambient			=	0.115, 0.113, 0.115
+lmap_color		=	1.0,	1.0,	1.0
+hemi_color		=	0.90, 0.92, 0.95,	1.0
+sun_color		=	0.98, 0.88, 0.65
+sun_dir			= -43.7032, 150.0000
+env_ambient		=	ambient_env_day
+
+[default_weather_11]
+flares			= kich_sun_halo
+sky_texture		=	sky\sky_11_cube
+sky_rotation	=	0
+sky_color		=	1.0,    1.0,  	1.0
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=	0.333, 0.380, 0.451, 0.0, 1.7
+far_plane		=	500
+fog_distance	=	500
+fog_color		=	0.40, 0.45, 0.50
+fog_density		=	0.6
+rain_density	=	0.0
+rain_color		=	1.0,	1.0,	1.0
+thunderbolt		=
+bolt_period		=	3.f
+bolt_duration	=	0.25f
+wind_velocity	=	0.0
+wind_direction	=	0.0
+ambient			=	0.115, 0.116, 0.118
+lmap_color		=	1.0,	1.0,	1.0
+hemi_color		=	0.92, 0.93, 0.95,	1.0
+sun_color		=	0.98, 0.88, 0.68
+sun_dir			= -47.1656, 160.0000
+env_ambient		=	ambient_env_day
+
+
+; ============================================================
+;  ДЕНЬ 12–13 (дождь/облачно — светлее)
+; ============================================================
+[default_weather_12]
+flares			= kich_sun_halo
+sky_texture		=	sky\sky_9_cube
+sky_rotation	=	0
+sky_color		=	1.0,    1.0,  	1.0
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=	0.333, 0.341, 0.431, 0.7, 1.7
+far_plane		=	450
+fog_distance	=	450
+fog_color		=	0.25, 0.27, 0.30
+fog_density		=	0.7
+rain_density	=	0.4
+rain_color		=	0.62, 0.66, 0.76
+thunderbolt		=	thunderbolt_collection_default
+bolt_period		=	5.f
+bolt_duration	=	0.25f
+wind_velocity	=	15.0
+wind_direction	=	0.0
+ambient			=	0.090, 0.092, 0.095
+lmap_color		=	1.0,	1.0,	1.0
+hemi_color		=	0.75, 0.77, 0.80,	1.0
+sun_color		=	0.85, 0.80, 0.65
+sun_dir			= -49.2860, 170.0000
+env_ambient		=	ambient_env_rain
+
+[default_weather_13]
+flares			= kich_sun_halo
+sky_texture		=	sky\sky_9_cube
+sky_rotation	=	0
+sky_color		=	1.0,    1.0,  	1.0
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=	0.333, 0.341, 0.431, 0.4, 1.7
+far_plane		=	450
+fog_distance	=	450
+fog_color		=	0.30, 0.32, 0.35
+fog_density		=	0.7
+rain_density	=	0.0
+rain_color		=	1.0,	1.0,	1.0
+thunderbolt		=
+bolt_period		=	3.f
+bolt_duration	=	0.25f
+wind_velocity	=	0.0
+wind_direction	=	0.0
+ambient			=	0.100, 0.102, 0.105
+lmap_color		=	1.0,	1.0,	1.0
+hemi_color		=	0.82, 0.84, 0.87,	1.0
+sun_color		=	0.85, 0.80, 0.65
+sun_dir			= -50.0000, 180.0000
+env_ambient		=	ambient_env_day
+
+; ============================================================
+;  ДЕНЬ 14–15 (ясно, ярко)
+; ============================================================
+[default_weather_14]
+flares			= kich_sun_halo
+sky_texture		=	sky\sky_19_cube
+sky_rotation	=	0
+sky_color		=	1.0,    1.0,  	1.0
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=	0.478, 0.506, 0.545, 0.3, 1.7
+far_plane		=	500
+fog_distance	=	500
+fog_color		=	0.50, 0.53, 0.58
+fog_density		=	0.6
+rain_density	=	0.0
+rain_color		=	1.0,	1.0,	1.0
+thunderbolt		=
+bolt_period		=	3.f
+bolt_duration	=	0.25f
+wind_velocity	=	0.0
+wind_direction	=	0.0
+ambient			=	0.115, 0.114, 0.116
+lmap_color		=	1.0,	1.0,	1.0
+hemi_color		=   0.90, 0.92, 0.95,  1
+sun_color		=	0.95, 0.85, 0.62
+sun_dir			= -49.2860, 190.0000
+env_ambient		=	ambient_env_day
+
+[default_weather_15]
+flares			= kich_sun_halo
+sky_texture		=	sky\sky_1_cube
+sky_rotation	=	0
+sky_color		=	1.0,    1.0,  	1.0
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=	0.337, 0.357, 0.388, 0.4, 1.7
+far_plane		=	500
+fog_distance	=	500
+fog_color		=	0.38, 0.40, 0.44
+fog_density		=	0.7
+rain_density	=	0.0
+rain_color		=	0.337, 0.357, 0.388
+thunderbolt		=
+bolt_period		=	3.f
+bolt_duration	=	0.25f
+wind_velocity	=	0.0
+wind_direction	=	0.0
+ambient			=	0.110, 0.111, 0.113
+lmap_color		=	1.0,	1.0,	1.0
+hemi_color		=   0.90, 0.91, 0.93,  1
+sun_color		=	0.95, 0.85, 0.62
+sun_dir			= -47.1656, 200.0000
+env_ambient		=	ambient_env_day
+
+; ============================================================
+;  ДЕНЬ/ВЕЧЕР 16–18
+; ============================================================
+[default_weather_16]
+flares			= kich_sun_halo
+sky_texture		=	sky\sky_9_cube
+sky_rotation	=	0
+sky_color		=	1.0,    1.0,  	1.0
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=	0.333, 0.341, 0.431, 0.7, 1.7
+far_plane		=	450
+fog_distance	=	450
+fog_color		=	0.25, 0.27, 0.30
+fog_density		=	0.7
+rain_density	=	0.4
+rain_color		=	0.62, 0.66, 0.76
+thunderbolt		=	thunderbolt_collection_default
+bolt_period		=	5.f
+bolt_duration	=	0.25f
+wind_velocity	=	15.0
+wind_direction	=	0.0
+ambient			=	0.090, 0.092, 0.095
+lmap_color		=	1.0,	1.0,	1.0
+hemi_color		=	0.75, 0.77, 0.80,	1.0
+sun_color		=	0.0,    0.0,  	0.0
+sun_dir			= -43.7032, 210.0000
+env_ambient		=	ambient_env_rain
+
+[default_weather_17]
+flares			= kich_sun_halo
+sky_texture		=	sky\sky_9_cube
+sky_rotation	=	0
+sky_color		=	1.0,	1.0,	1.0
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=	0.333, 0.341, 0.431, 0.4, 1.7
+far_plane		=	450
+fog_distance	=	450
+fog_color		=	0.30, 0.32, 0.35
+fog_density		=	0.7
+rain_density	=	0.0
+rain_color		=	0.52, 0.56, 0.66
+thunderbolt		=
+bolt_period		=	7.f
+bolt_duration	=	0.25f
+wind_velocity	=	0.0
+wind_direction	=	0.0
+ambient			=	0.100, 0.101, 0.103
+lmap_color		=	1.0,	1.0,	1.0
+hemi_color		=	0.82, 0.84, 0.87,	1.0
+sun_color		=	0.90, 0.75, 0.50
+sun_dir			= -39.0041, 220.0000
+env_ambient		=	ambient_env_day
+
+[default_weather_18]
+flares			= kich_sun_halo
+sky_texture		=	sky\sky_11_cube
+sky_rotation	=	0
+sky_color		=	1.0,    1.0,  	1.0
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=	0.333, 0.341, 0.431, 0.25, 1.7
+far_plane		=	450
+fog_distance	=	450
+fog_color		=	0.35, 0.37, 0.42
+fog_density		=	0.7
+rain_density	=	0.0
+rain_color		=	0.408, 0.400, 0.408
+thunderbolt		=
+bolt_period		=	7.f
+bolt_duration	=	0.25f
+wind_velocity	=	0.0
+wind_direction	=	0.0
+ambient			=	0.100, 0.100, 0.102
+lmap_color		=	1.0,	1.0,	1.0
+hemi_color		=	0.82, 0.84, 0.87,	1.0
+sun_color		=	0.95, 0.78, 0.50
+sun_dir			= -33.2110, 230.0000
+env_ambient		=	ambient_env_evening
+
+; ============================================================
+;  ВЕЧЕР 19–20
+; ============================================================
+[default_weather_19]
+flares			= kich_sun_halo
+sky_texture		=	sky\sky_5_cube
+sky_rotation	=	0
+sky_color		=	1.0,    1.0,  	1.0
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=	0.333, 0.341, 0.431, 0.0, 1.7
+far_plane		=	450
+fog_distance	=	450
+fog_color		=	0.30, 0.28, 0.25
+fog_density		=	0.7
+rain_density	=	0.0
+rain_color		=	1.0,	1.0,	1.0
+thunderbolt		=
+bolt_period		=	3.f
+bolt_duration	=	0.25f
+wind_velocity	=	0.0
+wind_direction	=	0.0
+ambient			=	0.100, 0.100, 0.102
+lmap_color		=	1.0,	1.0,	1.0
+hemi_color		=	0.80, 0.82, 0.85,	1.0
+sun_color		=	0.95, 0.65, 0.35
+sun_dir			= -26.5000, 240.0000
+env_ambient		=	ambient_env_evening
+
+[default_weather_20]
+flares			= kich_sun_halo
+sky_texture		=	sky\sky_18_cube
+sky_rotation	=	0
+sky_color		=	1.0,    1.0,  	1.0
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=	0.427, 0.412, 0.431, 0.2, 1.7
+far_plane		=	450
+fog_distance	=	450
+fog_color		=	0.40, 0.38, 0.40
+fog_density		=	0.7
+rain_density	=	0.0
+rain_color		=	1.0,	1.0,	1.0
+thunderbolt		=
+bolt_period		=	3.f
+bolt_duration	=	0.25f
+wind_velocity	=	0.0
+wind_direction	=	0.0
+ambient			=	0.090, 0.091, 0.093
+lmap_color		=	1.0,    1.0,  	1.0
+hemi_color		=   0.78, 0.80, 0.83, 1.0
+sun_color		=	0.90, 0.55, 0.25
+sun_dir			= -19.0749, 250.0000
+env_ambient		=	ambient_env_evening
+
+; ============================================================
+;  Переходные 22:01–22:03 (луна уже взошла)
+; ============================================================
+[kich_weather_default_79260]
+flares			= kich_moon_halo
+sky_texture		=	sky\sky_17_cube
+sky_rotation	=	0
+sky_color		=	0.7,	0.7,	0.7
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=	0.165, 0.169, 0.212, 0.4, 1.7
+far_plane		=	380
+fog_distance	=	380
+fog_color		=	0.165, 0.169, 0.212
+fog_density		=	0.85
+rain_density	=	0.0
+rain_color		=	1.0,	1.0,	1.0
+thunderbolt		=
+bolt_period		=	3.f
+bolt_duration	=	0.25f
+wind_velocity	=	0.0
+wind_direction	=	0.0
+ambient			=	0.060,	0.063,	0.068
+lmap_color		=	1.0,	1.0,	1.0
+hemi_color		=	0.46,	0.48,	0.50,	0.5
+sun_color		=	0.19, 0.21, 0.26
+sun_dir			= -3.0000, 270.0000
+env_ambient		=	ambient_env_evening
+
+[kich_weather_default_79320]
+flares			= kich_moon_halo
+sky_texture		=	sky\sky_17_cube
+sky_rotation	=	0
+sky_color		=	0.7,	0.7,	0.7
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=	0.165, 0.169, 0.212, 0.4, 1.7
+far_plane		=	380
+fog_distance	=	380
+fog_color		=	0.165, 0.169, 0.212
+fog_density		=	0.85
+rain_density	=	0.0
+rain_color		=	1.0,	1.0,	1.0
+thunderbolt		=
+bolt_period		=	3.f
+bolt_duration	=	0.25f
+wind_velocity	=	0.0
+wind_direction	=	0.0
+ambient			=	0.058,	0.061,	0.066
+lmap_color		=	1.0,	1.0,	1.0
+hemi_color		=	0.44,	0.46,	0.48,	0.5
+sun_color		=	0.20, 0.22, 0.27
+sun_dir			= -3.0000, 90.0000
+env_ambient		=	ambient_env_evening
+
+[kich_weather_default_79380]
+flares			= kich_moon_halo
+sky_texture		=	sky\sky_17_cube
+sky_rotation	=	0
+sky_color		=	0.6,	0.6,	0.6
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=	0.165, 0.169, 0.212, 0.3, 1.7
+far_plane		=	370
+fog_distance	=	370
+fog_color		=	0.165, 0.169, 0.212
+fog_density		=	0.88
+rain_density	=	0.0
+rain_color		=	1.0,	1.0,	1.0
+thunderbolt		=
+bolt_period		=	3.f
+bolt_duration	=	0.25f
+wind_velocity	=	0.0
+wind_direction	=	0.0
+ambient			=	0.058,	0.061,	0.066
+lmap_color		=	1.0,	1.0,	1.0
+hemi_color		=	0.42,	0.44,	0.46,	0.5
+sun_color		=	0.21, 0.24, 0.29
+sun_dir			= -3.2832, 90.5070
+env_ambient		=	ambient_env_night
+
+; ============================================================
+;  Переходные 03:57–03:59 (луна садится, скоро рассвет)
+; ============================================================
+[kich_weather_default_14220]
+flares			= kich_moon_halo
+sky_texture		=	sky\sky_9_cube
+sky_rotation	=	0
+sky_color		=	0.8,    0.8,  	0.8
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=   0.282, 0.286, 0.341, 0.5, 1.7
+far_plane		=	400
+fog_distance	=	400
+fog_color		=	0.137, 0.141, 0.153
+fog_density		=	0.85
+rain_density	=	0.0
+rain_color		=	1.0,	1.0,	1.0
+thunderbolt		=
+bolt_period		=	3.f
+bolt_duration	=	0.25f
+wind_velocity	=	0.0
+wind_direction	=	0.0
+ambient			=	0.060, 0.062, 0.065
+lmap_color		=	1.0,	1.0,	1.0
+hemi_color		=   0.60, 0.625, 0.65,	1.0
+sun_color		=	0.15, 0.18, 0.25
+sun_dir			= -3.0000, 270.0000
+env_ambient		=	ambient_env_tuman
+
+[kich_weather_default_14280]
+flares			= kich_moon_halo
+sky_texture		=	sky\sky_9_cube
+sky_rotation	=	0
+sky_color		=	0.8,    0.8,  	0.8
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=   0.282, 0.286, 0.341, 0.5, 1.7
+far_plane		=	400
+fog_distance	=	400
+fog_color		=	0.137, 0.141, 0.153
+fog_density		=	0.85
+rain_density	=	0.0
+rain_color		=	1.0,	1.0,	1.0
+thunderbolt		=
+bolt_period		=	3.f
+bolt_duration	=	0.25f
+wind_velocity	=	0.0
+wind_direction	=	0.0
+ambient			=	0.060, 0.062, 0.065
+lmap_color		=	1.0,	1.0,	1.0
+hemi_color		=   0.60, 0.625, 0.65,	1.0
+sun_color		=	0.15, 0.18, 0.25
+sun_dir			= -3.0000, 270.0000
+env_ambient		=	ambient_env_tuman
+
+[kich_weather_default_14340]
+flares			= kich_moon_halo
+sky_texture		=	sky\sky_9_cube
+sky_rotation	=	0
+sky_color		=	0.8,    0.8,  	0.8
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=   0.282, 0.286, 0.341, 0.5, 1.7
+far_plane		=	400
+fog_distance	=	400
+fog_color		=	0.137, 0.141, 0.153
+fog_density		=	0.85
+rain_density	=	0.0
+rain_color		=	1.0,	1.0,	1.0
+thunderbolt		=
+bolt_period		=	3.f
+bolt_duration	=	0.25f
+wind_velocity	=	0.0
+wind_direction	=	0.0
+ambient			=	0.060, 0.062, 0.065
+lmap_color		=	1.0,	1.0,	1.0
+hemi_color		=   0.60, 0.625, 0.65,	1.0
+sun_color		=	0.15, 0.18, 0.25
+sun_dir			= -3.0000, 90.0000
+env_ambient		=	ambient_env_tuman

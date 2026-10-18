@@ -174,7 +174,8 @@ void CLight_DB::Update()
 		Fvector OD, OP, AD, AP;
 		OD.set(E.sun_dir).normalize();
 		OP.mad(Device.vCameraPosition, OD, -500.f);
-		AD.set(0, -.75f, 0).add(E.sun_dir);
+		// KICH_CELESTIAL_SYNC: the shadow light must match the visible disc.
+		AD.set(OD);
 
 		// for some reason E.sun_dir can point-up
 		int counter = 0;

@@ -236,8 +236,10 @@ void CLensFlare::OnFrame(int id)
 	switch (m_State)
 	{
 	case lfsNone:
-		m_State = lfsShow;
+		// KICH_FLARE_START_E: resolve the initial descriptor without a time-driven fade.
 		m_Current = desc;
+		m_StateBlend = desc ? 1.f : 0.f;
+		m_State = lfsIdle;
 		break;
 	case lfsIdle:
 		if (desc != m_Current)
@@ -260,7 +262,9 @@ void CLensFlare::OnFrame(int id)
 	}
 	clamp(m_StateBlend, 0.f, 1.f);
 
-	if ((m_Current == 0) || (LightColor.magnitude_rgb() == 0.f))
+	// KICH_CELESTIAL_SYNC: an unlit moon disc may ignore the directional light color.
+	if ((m_Current == 0) || ((LightColor.magnitude_rgb() == 0.f) &&
+		!(m_Current->m_Flags.is(CLensFlareDescriptor::flSource) && m_Current->m_Source.ignore_color)))
 	{
 		bRender = false;
 		return;

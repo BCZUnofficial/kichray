@@ -217,6 +217,9 @@ void CRenderTarget::accum_direct(u32 sub_phase)
 		RCache.set_Stencil(TRUE, D3DCMP_LESSEQUAL, dwLightMarkerID, 0xff, 0x00);
 		RCache.Render(D3DPT_TRIANGLELIST, Offset, 0, 4, 0, 2);
 
+		// Add volumetric shafts while this sun cascade's shadow map is bound.
+		accum_direct_volumetric(sub_phase, Offset, m_shadow, L_dir, L_clr);
+
 		// Fetch4 : disable
 		if (RImplementation.o.HW_smap_FETCH4)
 		{
@@ -538,4 +541,71 @@ void CRenderTarget::accum_direct_lum()
 	// setup stencil
 	RCache.set_Stencil(TRUE, D3DCMP_LESSEQUAL, dwLightMarkerID, 0xff, 0x00);
 	RCache.Render(D3DPT_TRIANGLELIST, Offset, 0, 4, 0, 2);
+}
+
+// EX1.2: volume lighting rendered offscreen, never into the light accumulator.
+void CRenderTarget::accum_direct_volumetric(u32 sub_phase, u32 /*originalOffset*/, const Fmatrix& m_shadow,
+                                            const Fvector& sun_dir, const Fvector& sun_color)
+{
+    if (ps_r2_sun_shafts == 0 || ps_r2_sun_shafts_intensity < 0.0001f)
+        return;
+    if (sub_phase != SE_SUN_NEAR && sub_phase != SE_SUN_FAR)
+        return;
+    if (!RImplementation.o.fp16_blend)
+        return; // Keep compatibility with the existing EX1 engine policy.
+
+    // Rebind texture unit 0 to the *current cascade's* shadow map.
+    LPCSTR smap_name = RImplementation.o.HW_smap ? r2_RT_smap_depth : r2_RT_smap_surf;
+    STextureList* textures = &*s_accum_direct_volumetric->E[0]->passes[0]->T;
+    for (STextureList::iterator it = textures->begin(); it != textures->end(); ++it)
+    {
+        if (it->first == 0)
+            it->second.create(smap_name);
+    }
+
+    // No Z-buffer can be bound to a half-size color RT in D3D9.
+    // The per-pixel position RT is sampled explicitly in HLSL instead.
+    u_setrt(rt_SunShafts, 0, 0, NULL);
+    if (dwShaftsClearMark != Device.dwFrame)
+    {
+        CHK_DX(HW.pDevice->Clear(0L, NULL, D3DCLEAR_TARGET, color_rgba(0, 0, 0, 0), 1.0f, 0L));
+        dwShaftsClearMark = Device.dwFrame;
+    }
+    RCache.set_Stencil(FALSE);
+    RCache.set_CullMode(CULL_NONE);
+    RCache.set_ColorWriteEnable();
+
+    u32 Offset;
+    const u32 C = color_rgba(255, 255, 255, 255);
+    const float w = float(rt_SunShafts->dwWidth);
+    const float h = float(rt_SunShafts->dwHeight);
+    const float u0 = .5f / w, v0 = .5f / h;
+    const float u1 = (w + .5f) / w, v1 = (h + .5f) / h;
+    FVF::TL2uv* pv = (FVF::TL2uv*)RCache.Vertex.Lock(4, g_combine_2UV->vb_stride, Offset);
+    pv->set(EPS, h + EPS, EPS_S, 1.f, C, u0, v1, u0, v1); ++pv;
+    pv->set(EPS, EPS, EPS_S, 1.f, C, u0, v0, u0, v0); ++pv;
+    pv->set(w + EPS, h + EPS, EPS_S, 1.f, C, u1, v1, u1, v1); ++pv;
+    pv->set(w + EPS, EPS, EPS_S, 1.f, C, u1, v0, u1, v0); ++pv;
+    RCache.Vertex.Unlock(4, g_combine_2UV->vb_stride);
+
+    extern float OLES_SUN_LIMIT_27_01_07;
+    const float zNear = (sub_phase == SE_SUN_NEAR) ? 0.f : ps_r2_sun_near;
+    const float zFar = (sub_phase == SE_SUN_NEAR) ? ps_r2_sun_near : OLES_SUN_LIMIT_27_01_07;
+    const float samples = (ps_r2_sun_shafts == 1) ? 4.f : (ps_r2_sun_shafts == 2) ? 8.f : 12.f;
+
+    RCache.set_Element(s_accum_direct_volumetric->E[0]);
+    RCache.set_Geometry(g_combine_2UV);
+    RCache.set_c("m_shadow", m_shadow);
+    RCache.set_c("Ldynamic_dir", sun_dir.x, sun_dir.y, sun_dir.z, 0.f);
+    RCache.set_c("Ldynamic_color", sun_color.x, sun_color.y, sun_color.z, 0.f);
+    RCache.set_c("kich_sun_shafts_params", samples, ps_r2_sun_shafts_intensity, zNear, zFar);
+    // KICH_SHAFTS_SKY_C: explicit camera projection and actual half-RT dimensions.
+    RCache.set_c("kich_shafts_camera", 1.f / Device.mProject._11, 1.f / Device.mProject._22, 1.f / w, 1.f / h);
+    RCache.Render(D3DPT_TRIANGLELIST, Offset, 0, 4, 0, 2);
+
+    // Restore the normal full-resolution lighting target and stencil state.
+    phase_accumulator();
+    RCache.set_CullMode(CULL_NONE);
+    RCache.set_ColorWriteEnable();
+    RCache.set_Stencil(TRUE, D3DCMP_LESSEQUAL, dwLightMarkerID, 0xff, 0x00);
 }

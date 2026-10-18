@@ -13,6 +13,7 @@ class CRenderTarget : public IRender_Target
 	u32 dwWidth;
 	u32 dwHeight;
 	u32 dwAccumulatorClearMark;
+	u32 dwShaftsClearMark;
 
   public:
 	u32 dwLightMarkerID;
@@ -47,7 +48,8 @@ class CRenderTarget : public IRender_Target
 	ref_rt rt_Accumulator;		// 64bit		(r,g,b,specular)
 	ref_rt rt_Accumulator_temp; // only for HW which doesn't feature fp16 blend
 	ref_rt rt_Generic_0;		// 32bit		(r,g,b,a)				// post-process, intermidiate results, etc.
-	ref_rt rt_Generic_1;		// 32bit		(r,g,b,a)				// post-process, intermidiate results, etc.
+	ref_rt rt_Generic_1;
+	ref_rt rt_SunShafts; // EX1.2 separate half-res volume accumulation		// 32bit		(r,g,b,a)				// post-process, intermidiate results, etc.
 	ref_rt rt_Bloom_1;			// 32bit, dim/4	(r,g,b,?)
 	ref_rt rt_Bloom_2;			// 32bit, dim/4	(r,g,b,?)
 	ref_rt rt_LUM_64;			// 64bit, 64x64,	log-average in all components
@@ -80,6 +82,8 @@ class CRenderTarget : public IRender_Target
 	// Accum
 	ref_shader s_accum_mask;
 	ref_shader s_accum_direct;
+	ref_shader s_accum_direct_volumetric;
+	ref_shader s_sun_shafts_combine;
 	ref_shader s_accum_point;
 	ref_shader s_accum_spot;
 	ref_shader s_accum_reflected;
@@ -185,6 +189,8 @@ class CRenderTarget : public IRender_Target
 
 	void draw_volume(light* L);
 	void accum_direct(u32 sub_phase);
+	void accum_direct_volumetric(u32 sub_phase, u32 Offset, const Fmatrix& m_shadow,
+		const Fvector& sun_dir, const Fvector& sun_color);
 	void accum_direct_f(u32 sub_phase);
 	void accum_direct_lum();
 	void accum_direct_blend();
@@ -194,6 +200,7 @@ class CRenderTarget : public IRender_Target
 	void phase_bloom();
 	void phase_luminance();
 	void phase_combine();
+	void phase_combine_sun_shafts();
 	void phase_pp();
 
 	virtual void set_blur(float f)

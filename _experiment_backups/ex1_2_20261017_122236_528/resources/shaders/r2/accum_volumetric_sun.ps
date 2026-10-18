@@ -1,0 +1,70 @@
+// Kichray EX1.2: downsampled, shadow-map-based directional sunlight scattering.
+// PS 3.0 compatible with the stock SoC D3DX HLSL compiler:
+// fixed-count loop, no control-flow break or early conditional return.
+#include "common.h"
+#include "shadow.h"
+
+// x: ray samples (4, 8, 12); y: console intensity 0..2
+// z/w: view-space depth limits of the current sun cascade.
+uniform float4 kich_sun_shafts_params;
+
+float4 main(float2 tc : TEXCOORD0, float2 unusedJitter : TEXCOORD1) : COLOR
+{
+    float3 position = tex2D(s_position, tc).xyz;
+
+    // In SoC the position RT is zero at sky pixels only when cleared each frame.
+    // That clearing is explicitly enabled for EX1.2 in phase_scene_prepare().
+    float sceneDepth = position.z;
+    float sky = 1.0f - step(0.3f, sceneDepth);
+
+    // Reconstruct a camera-space ray even when no geometry is present (sky).
+    // D3D9 view-space convention: +Z points forward.
+    float3 ray = normalize(float3((tc.x * 2.0f - 1.0f) / m_P._11,
+                                   (1.0f - tc.y * 2.0f) / m_P._22,
+                                   1.0f));
+    float startDepth = kich_sun_shafts_params.z;
+    float farDepth = kich_sun_shafts_params.w;
+    float endDepth = min(lerp(max(sceneDepth, 0.0f), farDepth, sky), farDepth);
+    float lengthDepth = max(0.0f, endDepth - startDepth);
+    float valid = step(0.5f, lengthDepth);
+
+    // The phase function is intentionally bounded, not a fullscreen brightening.
+    float3 towardsSun = normalize(-Ldynamic_dir.xyz);
+    float alignment = saturate((dot(ray, towardsSun) + 0.05f) / 1.05f);
+    float phase = alignment * alignment * alignment * alignment;
+
+    // All three quality settings share one PS3 shader variant. The dynamic
+    // branch avoids shadow fetches above the selected sample count.
+    float samples = kich_sun_shafts_params.x;
+    float visibility = 0.0f;
+    if (valid > 0.5f && phase > 0.005f)
+    {
+        float invSamples = 1.0f / max(samples, 1.0f);
+        float3 rayPerZ = ray / max(ray.z, 0.05f);
+        float3 segmentStep = rayPerZ * (lengthDepth * invSamples);
+        float3 samplePoint = rayPerZ * (endDepth - lengthDepth * (0.5f * invSamples));
+        float4 shadowPoint = mul(m_shadow, float4(samplePoint, 1.0f));
+        float4 shadowStep = mul(m_shadow, float4(segmentStep, 0.0f));
+        for (int i = 0; i < 12; ++i)
+        {
+            if (i < samples)
+            {
+                float2 shadowUV = shadowPoint.xy / max(shadowPoint.w, 0.001f);
+                float inMap = step(0.0f, shadowUV.x) * step(shadowUV.x, 1.0f) *
+                              step(0.0f, shadowUV.y) * step(shadowUV.y, 1.0f);
+                visibility += inMap * shadow(shadowPoint);
+            }
+            shadowPoint -= shadowStep;
+        }
+    }
+
+    // A separate LDR volume RT receives the two cascades. Normalize by the
+    // whole visible scattering distance, NOT once per cascade; otherwise the
+    // near and far passes brighten the image twice.
+    float visibleDistance = 160.0f;
+    float scattering = (visibility / max(samples, 1.0f)) *
+                       saturate(lengthDepth / visibleDistance) * phase * valid;
+    float3 contribution = max(Ldynamic_color.rgb, 0.0f) *
+                          (scattering * kich_sun_shafts_params.y * 1.2f);
+    return float4(contribution, 0.0f);
+}

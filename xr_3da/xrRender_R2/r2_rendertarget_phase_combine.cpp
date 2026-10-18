@@ -140,6 +140,9 @@ void CRenderTarget::phase_combine()
 		RCache.Render(D3DPT_TRIANGLELIST, Offset, 0, 4, 0, 2);
 	}
 
+	// EX1.2 volume texture is composited into generic0 before forward objects.
+	phase_combine_sun_shafts();
+
 	// Forward rendering
 	{
 		u_setrt(rt_Generic_0, 0, 0, HW.pBaseZB); // LDR RT
@@ -409,4 +412,37 @@ void CRenderTarget::phase_wallmarks()
 	RCache.set_Stencil(TRUE, D3DCMP_LESSEQUAL, 0x01, 0xff, 0x00);
 	RCache.set_CullMode(CULL_CCW);
 	RCache.set_ColorWriteEnable(D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
+}
+
+// EX1.2: composite the separate sun-shaft RT into the deferred scene.
+// Called AFTER deferred combine, BEFORE clouds, weapons, HUD and bloom.
+void CRenderTarget::phase_combine_sun_shafts()
+{
+    if (ps_r2_sun_shafts <= 0 || ps_r2_sun_shafts_intensity <= 0.0001f)
+        return;
+    if (dwShaftsClearMark != Device.dwFrame)
+        return; // No active sun/shafts this frame; do not use stale RT contents.
+
+    u_setrt(rt_Generic_0, 0, 0, HW.pBaseZB);
+    RCache.set_Stencil(FALSE);
+    RCache.set_CullMode(CULL_NONE);
+    RCache.set_ColorWriteEnable();
+
+    const float w = float(Device.dwWidth), h = float(Device.dwHeight);
+    const float u0 = .5f / w, v0 = .5f / h;
+    const float u1 = (w + .5f) / w, v1 = (h + .5f) / h;
+    const u32 C = color_rgba(255, 255, 255, 255);
+    u32 Offset;
+    FVF::TL* pv = (FVF::TL*)RCache.Vertex.Lock(4, g_combine->vb_stride, Offset);
+    pv->set(EPS, h + EPS, EPS_S, 1.f, C, u0, v1); ++pv;
+    pv->set(EPS, EPS, EPS_S, 1.f, C, u0, v0); ++pv;
+    pv->set(w + EPS, h + EPS, EPS_S, 1.f, C, u1, v1); ++pv;
+    pv->set(w + EPS, EPS, EPS_S, 1.f, C, u1, v0); ++pv;
+    RCache.Vertex.Unlock(4, g_combine->vb_stride);
+
+    RCache.set_Element(s_sun_shafts_combine->E[0]);
+    RCache.set_Geometry(g_combine);
+    RCache.set_c("kich_shafts_texel", 1.f / float(rt_SunShafts->dwWidth),
+                 1.f / float(rt_SunShafts->dwHeight), 0.f, 0.f);
+    RCache.Render(D3DPT_TRIANGLELIST, Offset, 0, 4, 0, 2);
 }
