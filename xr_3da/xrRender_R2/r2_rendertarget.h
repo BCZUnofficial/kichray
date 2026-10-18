@@ -84,6 +84,9 @@ class CRenderTarget : public IRender_Target
 	ref_shader s_accum_direct;
 	ref_shader s_accum_direct_volumetric;
 	ref_shader s_sun_shafts_combine;
+    ref_shader s_kich_ssao;
+    ref_rt rt_KichSSAO;
+    void phase_kich_ssao();
 	ref_shader s_accum_point;
 	ref_shader s_accum_spot;
 	ref_shader s_accum_reflected;

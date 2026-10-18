@@ -1,6 +1,7 @@
 #include "common.h"
 #include "lmodel.h"
 #include "hmodel.h"
+#include "kich_ssao_combine.h"
 
 struct         _input      {
         float4         hpos        : POSITION        ;
@@ -40,6 +41,10 @@ _out         main                ( _input I )
         D.rgb        =        (D.rgb*D.rgb)        ;        // pow(2.2)
 #endif
 
+        float kichAO = 1.0f;
+        if (kich_ao_control.x > 0.5f)
+            kichAO = kich_ssao_resolve(I.tc0.xy, P.xyz, N.xyz);
+
         // static sun
 	half mtl 		= P.w;
 #ifdef        USE_R2_STATIC_SUN
@@ -54,6 +59,8 @@ _out         main                ( _input I )
         hmodel		(hdiffuse, hspecular, mtl, N.w, D.w, P.xyz, N.xyz);
 		//			hdiffuse*=hdiffuse;			//. high contrast hemi
 
+        // Only indirect diffuse is occluded; direct lights, specular and shafts remain separate.
+        hdiffuse *= lerp(1.0f, kichAO, kich_ao_control.y);
         half4         light       = half4         (L.rgb + hdiffuse, L.w)        ;
         half4         C           = D*light       ;                                                        // rgb.gloss * light(diffuse.specular)
         half3         spec        = C.www         + hspecular;        // replicated specular
@@ -104,6 +111,25 @@ _out         main                ( _input I )
 
 //		o.low	= skyblend;
 //		o.hight	= 0;
+
+        // Legacy D3DX9: select debug output before the single function exit.
+        if (kich_ao_control.x > 0.5f && kich_ao_control.z > 0.5f)
+        {
+            float3 diagnostic = float3(kichAO,kichAO,kichAO);
+            if (kich_ao_control.z > 1.5f)
+            {
+                float4 rawAO = tex2D(s_kich_ssao,I.tc0.xy);
+                diagnostic = rawAO.rrr;
+                if (kich_ao_control.z > 2.5f)
+                    diagnostic = normalize(N.xyz)*0.5f+0.5f;
+                if (kich_ao_control.z > 3.5f)
+                    diagnostic = rawAO.gba;
+                if (kich_ao_control.z > 4.5f)
+                    diagnostic = saturate(P.zzz/20.0f);
+            }
+            o.low = float4(diagnostic,0.0f);
+            o.high = 0.0f;
+        }
 
 		return        	o;
 }

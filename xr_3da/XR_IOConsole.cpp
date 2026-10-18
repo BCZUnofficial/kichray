@@ -30,12 +30,18 @@ const char* ioc_prompt = ">>> ";
 void CConsole::AddCommand(IConsole_Command* C)
 {
 	Commands[C->Name()] = C;
+    completion_input[0] = 0;
+    completion_items.clear();
+    completion_selected = -1;
 }
 void CConsole::RemoveCommand(IConsole_Command* C)
 {
 	vecCMD_IT it = Commands.find(C->Name());
 	if (Commands.end() != it)
 		Commands.erase(it);
+    completion_input[0] = 0;
+    completion_items.clear();
+    completion_selected = -1;
 }
 void CConsole::Reset()
 {
@@ -46,6 +52,9 @@ void CConsole::Reset()
 void CConsole::Initialize()
 {
 	scroll_delta = cmd_delta = old_cmd_delta = 0;
+    completion_input[0] = 0;
+    completion_selected = -1;
+    completion_items.clear();
 	editor[0] = 0;
 	bShift = false;
 	RecordCommands = false;
@@ -132,6 +141,44 @@ void out_font(CGameFont* pFont, LPCSTR text, float& pos_y)
 		pFont->OutI(-1.0f, pos_y, "%s", text);
 }
 
+// KICH_CONSOLE_COMPLETION_EX2: name-only completion, no implicit execution.
+void CConsole::UpdateCompletions()
+{
+    if (xr_strcmp(completion_input, editor) == 0)
+        return;
+    strcpy_s(completion_input, editor);
+    completion_items.clear();
+    completion_selected = -1;
+    LPCSTR prefix = editor;
+    if (strncmp(prefix, "ra ", 3) == 0)
+        prefix += 3;
+    const size_t length = strlen(prefix);
+    if (!length || strchr(prefix, ' ') || strchr(prefix, '\t'))
+        return;
+    for (vecCMD_IT it = Commands.lower_bound(prefix); it != Commands.end(); ++it)
+    {
+        if (strncmp(it->first, prefix, length) != 0)
+            break;
+        if (it->second->bEnabled)
+            completion_items.push_back(it->first);
+    }
+}
+
+bool CConsole::AcceptCompletion()
+{
+    if (completion_items.empty())
+        return false;
+    const int index = completion_selected < 0 ? 0 : completion_selected;
+    const int offset = strncmp(editor, "ra ", 3) == 0 ? 3 : 0;
+    LPCSTR name = *completion_items[index];
+    if (strlen(name) + offset + 2 >= sizeof(editor))
+        return false;
+    strcpy_s(editor + offset, sizeof(editor) - offset, name);
+    strcat_s(editor, sizeof(editor), " ");
+    UpdateCompletions();
+    return true;
+}
+
 void CConsole::OnRender()
 {
 	float fMaxY;
@@ -169,6 +216,18 @@ void CConsole::OnRender()
 	else
 		fMaxY = 1.f;
 
+    UpdateCompletions();
+    const int tipRows = _min(6, int(completion_items.size()));
+    const float inputY = fMaxY - LDIST * (tipRows + 1);
+    const int firstTip = completion_selected >= 6 ? completion_selected - 5 : 0;
+    for (int row = 0; row < tipRows; ++row)
+    {
+        const int index = firstTip + row;
+        const bool selected = index == completion_selected;
+        pFont->SetColor(selected ? color_rgba(255, 220, 96, 255) : color_rgba(170, 190, 205, 255));
+        pFont->SetHeightI(0.025f);
+        pFont->OutI(-0.97f, inputY + LDIST * (row + 1), "%s%s", selected ? "> " : "  ", *completion_items[index]);
+    }
 	char buf[MAX_LEN + 5];
 	strcpy_s(buf, ioc_prompt);
 	strcat(buf, editor);
@@ -177,9 +236,9 @@ void CConsole::OnRender()
 
 	pFont->SetColor(color_rgba(128, 128, 255, 255));
 	pFont->SetHeightI(0.025f);
-	pFont->OutI(-1.f, fMaxY - LDIST, "%s", buf);
+	pFont->OutI(-1.f, inputY, "%s", buf);
 
-	float ypos = fMaxY - LDIST - LDIST;
+	float ypos = inputY - LDIST;
 	for (int i = LogFile->size() - 1 - scroll_delta; i >= 0; i--)
 	{
 		LPCSTR ls = *(*LogFile)[i];
@@ -226,6 +285,7 @@ void CConsole::OnRender()
 
 void CConsole::OnPressKey(int dik, BOOL bHold)
 {
+    UpdateCompletions();
 	if (!bHold)
 		fAccel = 1.0f;
 
@@ -255,27 +315,25 @@ void CConsole::OnPressKey(int dik, BOOL bHold)
 		if (scroll_delta < 0)
 			scroll_delta = 0;
 		break;
-	case DIK_TAB: {
-		LPCSTR radmin_cmd_name = "ra ";
-		bool b_ra = (editor == strstr(editor, radmin_cmd_name));
-		int offset = (b_ra) ? xr_strlen(radmin_cmd_name) : 0;
-		vecCMD_IT I = Commands.lower_bound(editor + offset);
-		if (I != Commands.end())
-		{
-			IConsole_Command& O = *(I->second);
-			strcpy_s(editor + offset, sizeof(editor) - offset, O.Name());
-			strcat(editor + offset, " ");
-		}
-	}
-	break;
-	case DIK_UP:
-		cmd_delta--;
-		SelectCommand();
-		break;
-	case DIK_DOWN:
-		cmd_delta++;
-		SelectCommand();
-		break;
+    case DIK_TAB:
+        AcceptCompletion();
+        break;
+    case DIK_UP:
+    case DIK_DOWN:
+        if (!bShift && !completion_items.empty())
+        {
+            const int count = int(completion_items.size());
+            if (completion_selected < 0)
+                completion_selected = dik == DIK_DOWN ? 0 : count - 1;
+            else
+                completion_selected = (completion_selected + (dik == DIK_DOWN ? 1 : count - 1)) % count;
+        }
+        else
+        {
+            cmd_delta += dik == DIK_DOWN ? 1 : -1;
+            SelectCommand();
+        }
+        break;
 	case DIK_BACK:
 		if (xr_strlen(editor) > 0)
 			editor[xr_strlen(editor) - 1] = 0;
@@ -486,6 +544,10 @@ void CConsole::OnPressKey(int dik, BOOL bHold)
 			strcat(editor, "/");
 		break;
 	case DIK_RETURN:
+        if (bHold)
+            break; // accepting a suggestion must not execute it on key repeat
+        if (completion_selected >= 0 && AcceptCompletion())
+            break;
 		ExecuteCommand();
 		break;
 	case DIK_INSERT:
@@ -520,6 +582,7 @@ void CConsole::OnPressKey(int dik, BOOL bHold)
 	u32 clip = MAX_LEN - 8;
 	if (xr_strlen(editor) >= clip)
 		editor[clip - 1] = 0;
+	UpdateCompletions();
 	bRepeat = false;
 	rep_time = 0;
 }

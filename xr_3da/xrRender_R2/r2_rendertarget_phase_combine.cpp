@@ -22,6 +22,9 @@ void CRenderTarget::phase_combine()
 		t_LUM_dest->surface_set(rt_LUM_pool[gpu_id * 2 + 1]->pSurface);
 	}
 
+    if (!_menu_pp && ps_r2_ssao > 0)
+        phase_kich_ssao();
+
 	// low/hi RTs
 	u_setrt(rt_Generic_0, rt_Generic_1, 0, HW.pBaseZB);
 	RCache.set_CullMode(CULL_NONE);
@@ -130,6 +133,10 @@ void CRenderTarget::phase_combine()
 		RCache.set_Geometry(g_combine_VP);
 
 		RCache.set_c("m_v2w", m_v2w);
+        RCache.set_c("kich_ao_control", (!_menu_pp && ps_r2_ssao > 0) ? 1.f : 0.f,
+                     ps_r2_ssao_strength, float(ps_r2_ssao_debug), 0.f);
+        RCache.set_c("kich_ao_texel", 1.f / float(rt_KichSSAO->dwWidth),
+                     1.f / float(rt_KichSSAO->dwHeight), 0.f, 0.f);
 		RCache.set_c("L_ambient", ambclr);
 
 		RCache.set_c("Ldynamic_color", sunclr);
@@ -445,4 +452,35 @@ void CRenderTarget::phase_combine_sun_shafts()
     RCache.set_c("kich_shafts_texel", 1.f / float(rt_SunShafts->dwWidth),
                  1.f / float(rt_SunShafts->dwHeight), 0.f, 0.f);
     RCache.Render(D3DPT_TRIANGLELIST, Offset, 0, 4, 0, 2);
+}
+
+// KICH_SSAO_EX2: independent half-resolution AO, before deferred combine.
+void CRenderTarget::phase_kich_ssao()
+{
+    RCache.set_RT(NULL, 2);
+    RCache.set_RT(NULL, 1);
+    RCache.set_ZB(NULL);
+    u_setrt(rt_KichSSAO, 0, 0, NULL);
+    RCache.set_Stencil(FALSE);
+    RCache.set_CullMode(CULL_NONE);
+    RCache.set_ColorWriteEnable();
+    u32 offset;
+    const float w = float(rt_KichSSAO->dwWidth), h = float(rt_KichSSAO->dwHeight);
+    const float u0 = .5f/w, v0 = .5f/h, u1 = (w+.5f)/w, v1 = (h+.5f)/h;
+    const u32 c = color_rgba(255,255,255,255);
+    FVF::TL2uv* pv = (FVF::TL2uv*)RCache.Vertex.Lock(4, g_combine_2UV->vb_stride, offset);
+    pv->set(EPS, h+EPS, EPS_S, 1.f, c, u0,v1,u0,v1); ++pv;
+    pv->set(EPS, EPS, EPS_S, 1.f, c, u0,v0,u0,v0); ++pv;
+    pv->set(w+EPS,h+EPS,EPS_S,1.f,c,u1,v1,u1,v1); ++pv;
+    pv->set(w+EPS,EPS,EPS_S,1.f,c,u1,v0,u1,v0);
+    RCache.Vertex.Unlock(4,g_combine_2UV->vb_stride);
+    RCache.set_Element(s_kich_ssao->E[0]);
+    RCache.set_Geometry(g_combine_2UV);
+    Fmatrix viewToWorld;
+    viewToWorld.invert(Device.mView);
+    RCache.set_c("kich_ao_view_to_world", viewToWorld);
+    RCache.set_c("kich_ao_params", ps_r2_ssao_radius, float(ps_r2_ssao),
+                 .5f * Device.mProject._11, .5f * Device.mProject._22);
+    RCache.Render(D3DPT_TRIANGLELIST,offset,0,4,0,2);
+    // phase_combine immediately restores full-size targets and rendering states.
 }

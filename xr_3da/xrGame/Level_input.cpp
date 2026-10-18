@@ -2,6 +2,7 @@
 #include <dinput.h>
 #include "HUDmanager.h"
 #include "../xr_ioconsole.h"
+#include "../xr_ioc_cmd.h"
 #include "entity_alive.h"
 #include "game_sv_single.h"
 #include "alife_simulator.h"
@@ -35,6 +36,147 @@ extern void restore_actor();
 
 bool g_bDisableAllInput = false;
 extern float g_fTimeFactor;
+
+// KichRay: fast-forward only the in-game clock/environment.
+// This does NOT change Device.time_factor(), so physics, actor movement and FPS
+// keep running at normal real-time speed.
+static const float KICH_SKIPTIME_FACTOR = 1000.f;
+static bool g_kich_skiptime_console = false;
+static bool g_kich_skiptime_key = false;
+static bool g_kich_skiptime_active = false;
+static bool g_kich_skiptime_command_registered = false;
+static game_sv_Single* g_kich_skiptime_owner = 0;
+static float g_kich_skiptime_restore_game = 1.f;
+static float g_kich_skiptime_restore_environment = 1.f;
+
+static game_sv_Single* kich_skiptime_single_game()
+{
+	// IMPORTANT: GameID() calls Game().Type(), and Game() dereferences
+	// Level().game. During CLevel::IR_OnActivate() the level object may already
+	// exist while the client game state is still null. Never call GameID() here.
+	if (!g_pGameLevel)
+		return 0;
+
+	CLevel& level = Level();
+	if (!level.Server || !level.Server->game)
+		return 0;
+
+	game_sv_Single* game_single = smart_cast<game_sv_Single*>(level.Server->game);
+	if (!game_single || game_single->Type() != GAME_SINGLE)
+		return 0;
+
+	return game_single;
+}
+
+static void kich_skiptime_apply()
+{
+	game_sv_Single* game_single = kich_skiptime_single_game();
+	const bool enable = g_kich_skiptime_console || g_kich_skiptime_key;
+
+	if (!game_single)
+	{
+		g_kich_skiptime_owner = 0;
+		g_kich_skiptime_active = false;
+		return;
+	}
+
+	// A level transition creates a new server game object. Establish a fresh
+	// restore baseline instead of reusing factors captured on the old level.
+	if (g_kich_skiptime_owner != game_single)
+	{
+		g_kich_skiptime_owner = game_single;
+		g_kich_skiptime_active = false;
+	}
+
+	if (enable)
+	{
+		if (!g_kich_skiptime_active)
+		{
+			g_kich_skiptime_restore_game = game_single->GetGameTimeFactor();
+			g_kich_skiptime_restore_environment =
+				game_single->game_GameState::GetGameTimeFactor();
+			g_kich_skiptime_active = true;
+		}
+
+		// Single-player ALife uses game_sv_Single::SetGameTimeFactor().
+		game_single->SetGameTimeFactor(KICH_SKIPTIME_FACTOR);
+
+		// In SoC single-player, game_sv_Single::GetEnvironmentGameTime() and
+		// GetEnvironmentGameTimeFactor() intentionally read the inherited BASE
+		// game clock (not the separate environment fields). Update that base clock
+		// explicitly so sky, sun and weather advance together with ALife time.
+		game_single->game_GameState::SetGameTimeFactor(KICH_SKIPTIME_FACTOR);
+		return;
+	}
+
+	if (!g_kich_skiptime_active)
+		return;
+
+	game_single->SetGameTimeFactor(g_kich_skiptime_restore_game);
+	game_single->game_GameState::SetGameTimeFactor(g_kich_skiptime_restore_environment);
+	g_kich_skiptime_active = false;
+}
+
+// Used by CALifeTimeManager::save(): saving during fast-forward keeps the
+// already reached game time, but writes the normal pre-skip factor to the save.
+bool kich_skiptime_save_factor(float& factor)
+{
+	// Do not reuse a factor captured from an already destroyed server game
+	// object during a level transition/load.
+	game_sv_Single* game_single = kich_skiptime_single_game();
+	if (!g_kich_skiptime_active || !game_single || g_kich_skiptime_owner != game_single)
+		return false;
+
+	factor = g_kich_skiptime_restore_game;
+	return true;
+}
+
+class CCC_KichSkipTime : public IConsole_Command
+{
+  public:
+	CCC_KichSkipTime(LPCSTR N) : IConsole_Command(N){};
+
+	virtual void Execute(LPCSTR args)
+	{
+		if (EQ(args, "1") || EQ(args, "on"))
+			g_kich_skiptime_console = true;
+		else if (EQ(args, "0") || EQ(args, "off"))
+			g_kich_skiptime_console = false;
+		else
+		{
+			InvalidSyntax();
+			return;
+		}
+
+		kich_skiptime_apply();
+		Msg("* g_skiptime: %s", g_kich_skiptime_console ? "on" : "off");
+	}
+
+	virtual void Status(TStatus& S)
+	{
+		strcpy_s(S, g_kich_skiptime_console ? "1" : "0");
+	}
+
+	virtual void Info(TInfo& I)
+	{
+		strcpy_s(I, "'1/0' or 'on/off'");
+	}
+
+	virtual void Save(IWriter*)
+	{
+		// Runtime experiment: do not write g_skiptime to user.ltx.
+	}
+};
+
+static void kich_skiptime_register_command()
+{
+	if (g_kich_skiptime_command_registered || !Console)
+		return;
+
+	static CCC_KichSkipTime skiptime_command("g_skiptime");
+	Console->AddCommand(&skiptime_command);
+	g_kich_skiptime_command_registered = true;
+}
 
 #define CURRENT_ENTITY() (game ? ((GameID() == GAME_SINGLE) ? CurrentEntity() : CurrentControlEntity()) : NULL)
 
@@ -121,11 +263,24 @@ class vtune_
 	}
 } vtune;
 
-// Îáðàáîòêà íàæàòèÿ êëàâèø
+// ÃŽÃ¡Ã°Ã Ã¡Ã®Ã²ÃªÃ  Ã­Ã Ã¦Ã Ã²Ã¨Ã¿ ÃªÃ«Ã Ã¢Ã¨Ã¸
 extern bool g_block_pause;
 
 void CLevel::IR_OnKeyboardPress(int key)
 {
+	kich_skiptime_register_command();
+	kich_skiptime_apply();
+
+	// NUMPAD7 is a dedicated hold-to-fast-forward key. It is deliberately
+	// handled before action bindings so a mod/user bind cannot leave the mode
+	// stuck when the key is released.
+	if (key == DIK_NUMPAD7 && IsGameTypeSingle() && !g_bDisableAllInput && !Device.Paused())
+	{
+		g_kich_skiptime_key = true;
+		kich_skiptime_apply();
+		return;
+	}
+
 	bool b_ui_exist = (pHUD && pHUD->GetUI());
 
 	//.	if (DIK_F10 == key)		vtune.enable();
@@ -414,6 +569,13 @@ void CLevel::IR_OnKeyboardPress(int key)
 
 void CLevel::IR_OnKeyboardRelease(int key)
 {
+	if (key == DIK_NUMPAD7)
+	{
+		g_kich_skiptime_key = false;
+		kich_skiptime_apply();
+		return;
+	}
+
 	bool b_ui_exist = (pHUD && pHUD->GetUI());
 
 	if (g_bDisableAllInput)
@@ -462,6 +624,18 @@ void CLevel::IR_OnMouseStop(int /**axis/**/, int /**value/**/)
 
 void CLevel::IR_OnActivate()
 {
+	kich_skiptime_register_command();
+
+	// IR_OnActivate is also called while a level is still loading. At that point
+	// CLevel may exist before Level().game/server game are fully initialized.
+	// Only restore a physical-key fast-forward that was actually active; never
+	// touch game time unconditionally from this startup callback.
+	if (g_kich_skiptime_key)
+	{
+		g_kich_skiptime_key = false;
+		kich_skiptime_apply();
+	}
+
 	if (!pInput)
 		return;
 	int i;

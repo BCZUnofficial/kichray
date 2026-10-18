@@ -21,6 +21,7 @@ void CBlender_combine::Compile(CBlender_Compile& C)
 		C.r_Pass("combine_1", "combine_1", FALSE, FALSE, FALSE, TRUE, D3DBLEND_INVSRCALPHA,
 				 D3DBLEND_SRCALPHA); //. MRT-blend?
 		C.r_Sampler_rtf("s_accumulator", r2_RT_accum);
+        C.r_Sampler_rtf("s_kich_ssao", "$user$kich_ssao");
 		C.r_Sampler_rtf("s_tonemap", r2_RT_luminance_cur);
 		C.r_Sampler_clw("s_material", r2_material);
 		C.r_Sampler_clf("env_s0", r2_T_envs0);

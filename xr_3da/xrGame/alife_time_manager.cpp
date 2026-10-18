@@ -10,6 +10,10 @@
 #include "alife_time_manager.h"
 #include "date_time.h"
 
+// Implemented in Level_input.cpp. When temporary fast-forward is active,
+// save the normal pre-skip factor instead of persisting 1000x into the save.
+extern bool kich_skiptime_save_factor(float& factor);
+
 CALifeTimeManager::CALifeTimeManager(LPCSTR section)
 {
 	init(section);
@@ -37,7 +41,11 @@ void CALifeTimeManager::save(IWriter& memory_stream)
 	m_start_time = Device.dwTimeGlobal;
 	memory_stream.open_chunk(GAME_TIME_CHUNK_DATA);
 	memory_stream.w(&m_game_time, sizeof(m_game_time));
-	memory_stream.w_float(m_time_factor);
+
+	float saved_time_factor = m_time_factor;
+	kich_skiptime_save_factor(saved_time_factor);
+	memory_stream.w_float(saved_time_factor);
+
 	memory_stream.w_float(m_normal_time_factor);
 	memory_stream.close_chunk();
 };

@@ -137,4 +137,10 @@ extern void xrRender_initconsole();
 extern BOOL xrRender_test_hw();
 extern void xrRender_apply_tf();
 
+// KICH_SSAO_EX2
+extern int ps_r2_ssao;
+extern int ps_r2_ssao_debug;
+extern float ps_r2_ssao_radius;
+extern float ps_r2_ssao_strength;
+
 #endif

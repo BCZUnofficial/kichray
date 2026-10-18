@@ -94,6 +94,14 @@ class ENGINE_API CConsole : public IInputReceiver, public pureRender, public pur
 
 	virtual void Initialize();
 	virtual void Destroy();
+
+  private:
+    xr_vector<shared_str> completion_items;
+    string1024 completion_input;
+    int completion_selected;
+    void UpdateCompletions();
+    bool AcceptCompletion();
+
 };
 
 ENGINE_API extern CConsole* Console;

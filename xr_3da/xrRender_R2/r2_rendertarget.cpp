@@ -256,6 +256,7 @@ CRenderTarget::CRenderTarget()
 		rt_Generic_1.create(r2_RT_generic1, w, h, D3DFMT_A8R8G8B8);
 		// Half linear resolution = one quarter of full-resolution pixels.
 		rt_SunShafts.create("$user$kich_sun_shafts", _max(1u, w / 2), _max(1u, h / 2), D3DFMT_A8R8G8B8);
+        rt_KichSSAO.create("$user$kich_ssao", _max(1u, w / 2), _max(1u, h / 2), D3DFMT_A8R8G8B8);
 	}
 
 	// OCCLUSION
@@ -291,6 +292,7 @@ CRenderTarget::CRenderTarget()
 	// Sun shafts shader is available but remains disabled by default.
 	s_accum_direct_volumetric.create("accum_volumetric_sun");
 	s_sun_shafts_combine.create("kich_sun_shafts_combine");
+    s_kich_ssao.create("kich_ssao_calc");
 
 	// POINT
 	{

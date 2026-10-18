@@ -1,0 +1,150 @@
+diff --git a/xr_3da/xrGame/console_commands.cpp b/xr_3da/xrGame/console_commands.cpp
+--- a/xr_3da/xrGame/console_commands.cpp
++++ b/xr_3da/xrGame/console_commands.cpp
+@@ -85,6 +85,9 @@
+ //-----------------------------------------------------------
+ 
+ BOOL g_bCheckTime = FALSE;
++// Persistent console toggle; NumPad 7 provides a separate temporary override.
++// Evaluated by CLevel::OnFrame only in single-player mode.
++int g_skiptime = 0;
+ int net_cl_inputupdaterate = 50;
+ Flags32 g_mt_config = {mtLevelPath | mtDetailPath | mtObjectHandler | mtSoundPlayer | mtAiVision | mtBullets |
+ 					   mtLUA_GC | mtLevelSounds | mtALife};
+@@ -1531,6 +1534,7 @@ void CCC_RegisterCommands()
+ 	CMD1(CCC_GameDifficulty, "g_game_difficulty");
+ 
+ 	CMD3(CCC_Mask, "g_backrun", &psActorFlags, AF_RUN_BACKWARD);
++	CMD4(CCC_Integer, "g_skiptime", &g_skiptime, 0, 1);
+ 
+ 	// alife
+ #ifdef DEBUG
+diff --git a/xr_3da/xrGame/Level.cpp b/xr_3da/xrGame/Level.cpp
+--- a/xr_3da/xrGame/Level.cpp
++++ b/xr_3da/xrGame/Level.cpp
+@@ -43,6 +43,8 @@
+ #include "..\XR_IOConsole.h"
+ 
+ #include <functional>
++#include <dinput.h>
++#include "../xr_input.h"
+ 
+ #ifdef DEBUG
+ #include "level_debug.h"
+@@ -54,6 +56,26 @@
+ CPHWorld* ph_world = 0;
+ float g_cl_lvInterp = 0;
+ u32 lvInterpSteps = 0;
++
++extern int g_skiptime;
++extern bool g_bDisableAllInput;
++
++// Only the in-game calendar/environment are accelerated. Engine frame/physics time stays real-time.
++// This matches the factor used by the existing developer NumPad Multiply shortcut.
++static const float kSkipTimeFactor = 1000.f;
++static bool s_skipTimeActive = false;
++static float s_skipTimeOldGameFactor = 1.f;
++static float s_skipTimeOldEnvironmentFactor = 1.f;
++
++// Preserve the unaccelerated ALife factor in savegames while skipping time.
++// Keep the elapsed game-time itself: only the temporary multiplier is omitted.
++bool skiptime_get_save_factor(float& factor)
++{
++	if (!s_skipTimeActive)
++		return false;
++	factor = s_skipTimeOldGameFactor;
++	return true;
++}
+ //////////////////////////////////////////////////////////////////////
+ // Construction/Destruction
+ //////////////////////////////////////////////////////////////////////
+@@ -196,5 +218,16 @@ CLevel::~CLevel()
+ {
+ 	//	g_pGameLevel		= NULL;
+ 	Msg("- Destroying level");
++
++	// Avoid retaining the accelerated factor when a level is unloaded during a key hold.
++	if (s_skipTimeActive)
++	{
++		if (game && Server && Server->game && GameID() == GAME_SINGLE)
++		{
++			Server->game->SetGameTimeFactor(s_skipTimeOldGameFactor);
++			Server->game->SetEnvironmentGameTimeFactor(s_skipTimeOldEnvironmentFactor);
++		}
++		s_skipTimeActive = false;
++	}
+ 
+ 	Engine.Event.Handler_Detach(eEntitySpawn, this);
+@@ -485,6 +518,34 @@ void CLevel::OnFrame()
+ 	}
+ 
+ 	ProcessGameEvents();
++
++	// Physical NumPad 7 is sampled each frame, so releasing it while an in-game
++	// dialog/console is open cannot leave the time accelerator latched on.
++	// The separate console switch g_skiptime=1 keeps the accelerator enabled.
++	const bool skipReady = game && Server && Server->game && GameID() == GAME_SINGLE && OnServer() && !g_dedicated_server;
++	if (skipReady)
++	{
++		const bool menuOpen = MainMenu() && MainMenu()->IsActive();
++		const bool dialogOpen = pHUD && pHUD->GetUI() && pHUD->GetUI()->MainInputReceiver();
++		const bool held = !g_bDisableAllInput && pInput && !menuOpen && !dialogOpen &&
++			Console && !Console->bVisible && pInput->iGetAsyncKeyState(DIK_NUMPAD7);
++		const bool requested = !Device.Paused() && !menuOpen && !dialogOpen && (g_skiptime != 0 || held);
++
++		if (requested && !s_skipTimeActive)
++		{
++			s_skipTimeOldGameFactor = Server->game->GetGameTimeFactor();
++			s_skipTimeOldEnvironmentFactor = Server->game->GetEnvironmentGameTimeFactor();
++			Server->game->SetGameTimeFactor(kSkipTimeFactor);
++			Server->game->SetEnvironmentGameTimeFactor(kSkipTimeFactor);
++			s_skipTimeActive = true;
++		}
++		else if (!requested && s_skipTimeActive)
++		{
++			Server->game->SetGameTimeFactor(s_skipTimeOldGameFactor);
++			Server->game->SetEnvironmentGameTimeFactor(s_skipTimeOldEnvironmentFactor);
++			s_skipTimeActive = false;
++		}
++	}
+ 
+ 	if (m_bNeed_CrPr)
+ 		make_NetCorrectionPrediction();
+diff --git a/xr_3da/xrGame/game_sv_single.cpp b/xr_3da/xrGame/game_sv_single.cpp
+--- a/xr_3da/xrGame/game_sv_single.cpp
++++ b/xr_3da/xrGame/game_sv_single.cpp
+@@ -205,7 +205,9 @@ float game_sv_Single::GetEnvironmentGameTimeFactor()
+ 
+ void game_sv_Single::SetEnvironmentGameTimeFactor(const float fTimeFactor)
+ {
+-	//	return(inherited::SetGameTimeFactor(fTimeFactor));
++	// In SP the environment has an independent timeline. Make its multiplier
++	// controllable alongside ALife time so the sky follows the fast-forward.
++	inherited::SetEnvironmentGameTimeFactor(fTimeFactor);
+ }
+ 
+ bool game_sv_Single::change_level(NET_Packet& net_packet, ClientID sender)
+diff --git a/xr_3da/xrGame/alife_time_manager.cpp b/xr_3da/xrGame/alife_time_manager.cpp
+--- a/xr_3da/xrGame/alife_time_manager.cpp
++++ b/xr_3da/xrGame/alife_time_manager.cpp
+@@ -9,6 +9,9 @@
+ #include "stdafx.h"
+ #include "alife_time_manager.h"
+ #include "date_time.h"
++
++// Implemented in Level.cpp; returns the normal rate during temporary time skipping.
++extern bool skiptime_get_save_factor(float& factor);
+ 
+ CALifeTimeManager::CALifeTimeManager(LPCSTR section)
+ {
+@@ -37,7 +40,9 @@
+ 	m_start_time = Device.dwTimeGlobal;
+ 	memory_stream.open_chunk(GAME_TIME_CHUNK_DATA);
+ 	memory_stream.w(&m_game_time, sizeof(m_game_time));
+-	memory_stream.w_float(m_time_factor);
++	float saved_time_factor = m_time_factor;
++	skiptime_get_save_factor(saved_time_factor);
++	memory_stream.w_float(saved_time_factor);
+ 	memory_stream.w_float(m_normal_time_factor);
+ 	memory_stream.close_chunk();
+ };
