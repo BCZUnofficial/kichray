@@ -30,6 +30,7 @@ class CArtefact : public CHudItemObject, public CPHUpdateObject
 
 	virtual bool CanTake() const;
 
+	// virtual void					renderable_Render				();
 	virtual BOOL renderable_ShadowGenerate()
 	{
 		return FALSE;
@@ -40,6 +41,7 @@ class CArtefact : public CHudItemObject, public CPHUpdateObject
 	}
 	virtual void create_physic_shell();
 
+	// for smart_cast
 	virtual CArtefact* cast_artefact()
 	{
 		return this;
@@ -53,32 +55,12 @@ class CArtefact : public CHudItemObject, public CPHUpdateObject
 
   protected:
 	SArtefactActivation* m_activationObj;
-
 	//////////////////////////////////////////////////////////////////////////
-	// R2 self-glow (world only)
+	//	Lights
 	//////////////////////////////////////////////////////////////////////////
-	struct SR2GlowVisual
-	{
-		IRender_Visual* visual;
-		ref_shader original_shader;
-		ref_shader glow_shader;
-
-		SR2GlowVisual() : visual(NULL) {}
-	};
-
-	xr_vector<SR2GlowVisual> m_r2GlowVisuals;
-	bool m_r2GlowApplied;
-
-	ref_shader BuildR2GlowShader(const ref_shader& original_shader);
-	void CollectR2GlowShaders(IRender_Visual* visual);
-	void InitR2Glow();
-	void SetR2Glow(bool enable);
-	void ClearR2Glow();
-
-	//////////////////////////////////////////////////////////////////////////
-	// Lights
-	//////////////////////////////////////////////////////////////////////////
+	//флаг, что подсветка может быть включена
 	bool m_bLightsEnabled;
+	//подсветка во время полета и работы двигателя
 	ref_light m_pTrailLight;
 	Fcolor m_TrailLightColor;
 	float m_fTrailLightRange;
@@ -93,7 +75,7 @@ class CArtefact : public CHudItemObject, public CPHUpdateObject
 	bool CanBeActivated()
 	{
 		return m_bCanSpawnZone;
-	};
+	}; // does artefact can spawn anomaly zone
 
 	virtual void PhDataUpdate(dReal step);
 	virtual void PhTune(dReal step){};
@@ -147,12 +129,14 @@ class CArtefact : public CHudItemObject, public CPHUpdateObject
 		if (o_fastmode)
 			return;
 		o_fastmode = TRUE;
+		// processing_activate		();
 	}
 	IC void o_switch_2_slow()
 	{
 		if (!o_fastmode)
 			return;
 		o_fastmode = FALSE;
+		// processing_deactivate		();
 	}
 
 	DECLARE_SCRIPT_REGISTER_FUNCTION
