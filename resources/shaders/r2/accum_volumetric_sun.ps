@@ -1,5 +1,6 @@
 // Test E: zero-cleared sky is not geometry closer than 30 cm.
 // EX1 Sky/Attenuation Test C. Requires kich_shafts_camera from the matching R2 patch.
+// KICH_SHAFTS_OCCLUSION_V5: per-sample shadowing, no global source gate.
 #include "common.h"
 #include "shadow.h"
 uniform float4 kich_sun_shafts_params;
@@ -58,6 +59,7 @@ float4 main(float2 tc : TEXCOORD0, float2 unusedJitter : TEXCOORD1) : COLOR
             }
         }
     }
+
     // Bounded single-scattering approximation; not full atmospheric transport.
     return float4(max(Ldynamic_color.rgb,0.0f)*visibility*phase*
                   kich_sun_shafts_params.y*0.45f, 0.0f);

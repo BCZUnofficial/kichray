@@ -1,0 +1,41 @@
+--- a/xr_3da/xr_efflensflare.h
++++ b/xr_3da/xr_efflensflare.h
+@@
+ 	int AppendDef(CInifile* pIni, LPCSTR sect);
++
++	// Direct line-of-sight visibility to the current sun/moon source.
++	// OnFrame() already evaluates terrain/buildings/dynamic geometry and
++	// transparent materials with ObjectSpace.RayQuery and smooths the result.
++	float GetSourceVisibility() const
++	{
++		return fBlend;
++	}
+ 
+ 	void Invalidate()
+ 	{
+ 		m_State = lfsNone;
+--- a/xr_3da/xrRender_R2/r2_rendertarget_accum_direct.cpp
++++ b/xr_3da/xrRender_R2/r2_rendertarget_accum_direct.cpp
+@@
+ #include "stdafx.h"
+ #include "..\igame_persistent.h"
+ #include "..\environment.h"
++#include "..\xr_efflensflare.h"
+@@
+     RCache.set_Element(s_accum_direct_volumetric->E[0]);
+     RCache.set_Geometry(g_combine_2UV);
+     RCache.set_c("m_shadow", m_shadow);
++    // KICH_SHAFTS_OCCLUSION_V3: reuse the lens-flare CPU visibility ray.
++    float sourceVisibility = 1.f;
++    if (g_pGamePersistent)
++    {
++        CEnvironment& env = g_pGamePersistent->Environment();
++        if (env.eff_LensFlare)
++            sourceVisibility = env.eff_LensFlare->GetSourceVisibility();
++    }
++    clamp(sourceVisibility, 0.f, 1.f);
+     RCache.set_c("Ldynamic_dir", sun_dir.x, sun_dir.y, sun_dir.z, 0.f);
+     RCache.set_c("Ldynamic_color", sun_color.x, sun_color.y, sun_color.z, 0.f);
+-    RCache.set_c("kich_sun_shafts_params", samples, ps_r2_sun_shafts_intensity, zNear, zFar);
++    RCache.set_c("kich_sun_shafts_params", samples,
++                 ps_r2_sun_shafts_intensity * sourceVisibility, zNear, zFar);

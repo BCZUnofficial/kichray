@@ -113,6 +113,14 @@ class ENGINE_API CLensFlare
 
 	int AppendDef(CInifile* pIni, LPCSTR sect);
 
+	// Direct line-of-sight visibility to the current sun/moon source.
+	// OnFrame() already evaluates terrain/buildings/dynamic geometry and
+	// transparent materials with ObjectSpace.RayQuery and smooths the result.
+	float GetSourceVisibility() const
+	{
+		return fBlend;
+	}
+
 	void Invalidate()
 	{
 		m_State = lfsNone;

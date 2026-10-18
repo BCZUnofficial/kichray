@@ -46,7 +46,9 @@ float4 	main		( float2 tc : TEXCOORD0, float4 tcJ : TEXCOORD1 ) : COLOR
 
 #ifdef 	SUN_FARPLANE
 	float f		= saturate	(_P.z/SUN_FARPLANE);
-	s			= lerp		(s, 0.333h, f*f);
+	// KICH_SUN_OCCLUSION_V6: fade the light, never fill a shadow with light.
+    // Preserve the previous fade for fully lit samples; s==0 stays zero.
+    s *= lerp(1.0h, 0.333h, f*f);
 #endif
 
 	return 		blend		(Ldynamic_color * light * s, tc);

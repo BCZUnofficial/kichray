@@ -107,11 +107,21 @@ void CRenderTarget::accum_direct(u32 sub_phase)
 		xf_invview.invert(Device.mView);
 
 		// shadow xform
-		Fmatrix m_shadow;
+		Fmatrix m_shadow, m_shadow_volume;
 		{
 			Fmatrix xf_project;
 			xf_project.mul(m_TexelAdjust, fuckingsun->X.D.combine);
 			m_shadow.mul(xf_project, xf_invview);
+
+            // KICH_SHAFTS_SHADOW_V6: volume points are not surface receivers.
+            // Use the actual light projection without surface depth scale,
+            // depth bias, or the additional far-cascade receiver translation.
+            Fmatrix volume_texel = m_TexelAdjust;
+            volume_texel._33 = 1.f;
+            volume_texel._43 = 0.f;
+            Fmatrix volume_project;
+            volume_project.mul(volume_texel, fuckingsun->X.D.combine);
+            m_shadow_volume.mul(volume_project, xf_invview);
 
 			// tsm-bias
 			if ((SE_SUN_FAR == sub_phase) && (RImplementation.o.HW_smap))
@@ -218,7 +228,7 @@ void CRenderTarget::accum_direct(u32 sub_phase)
 		RCache.Render(D3DPT_TRIANGLELIST, Offset, 0, 4, 0, 2);
 
 		// Add volumetric shafts while this sun cascade's shadow map is bound.
-		accum_direct_volumetric(sub_phase, Offset, m_shadow, L_dir, L_clr);
+		accum_direct_volumetric(sub_phase, Offset, m_shadow_volume, L_dir, L_clr);
 
 		// Fetch4 : disable
 		if (RImplementation.o.HW_smap_FETCH4)
@@ -590,15 +600,21 @@ void CRenderTarget::accum_direct_volumetric(u32 sub_phase, u32 /*originalOffset*
 
     extern float OLES_SUN_LIMIT_27_01_07;
     const float zNear = (sub_phase == SE_SUN_NEAR) ? 0.f : ps_r2_sun_near;
-    const float zFar = (sub_phase == SE_SUN_NEAR) ? ps_r2_sun_near : OLES_SUN_LIMIT_27_01_07;
+    // Match the far receiver frustum used by render_sun().
+    const float shaftFar = _min(OLES_SUN_LIMIT_27_01_07,
+        g_pGamePersistent->Environment().CurrentEnv.far_plane);
+    const float zFar = (sub_phase == SE_SUN_NEAR) ? ps_r2_sun_near : shaftFar;
     const float samples = (ps_r2_sun_shafts == 1) ? 4.f : (ps_r2_sun_shafts == 2) ? 8.f : 12.f;
 
     RCache.set_Element(s_accum_direct_volumetric->E[0]);
     RCache.set_Geometry(g_combine_2UV);
     RCache.set_c("m_shadow", m_shadow);
+    // KICH_SHAFTS_OCCLUSION_V5: visibility is evaluated at each volume sample.
+    // Camera-to-disc visibility must not switch the entire volume off.
     RCache.set_c("Ldynamic_dir", sun_dir.x, sun_dir.y, sun_dir.z, 0.f);
     RCache.set_c("Ldynamic_color", sun_color.x, sun_color.y, sun_color.z, 0.f);
-    RCache.set_c("kich_sun_shafts_params", samples, ps_r2_sun_shafts_intensity, zNear, zFar);
+    RCache.set_c("kich_sun_shafts_params", samples,
+                 ps_r2_sun_shafts_intensity, zNear, zFar);
     // KICH_SHAFTS_SKY_C: explicit camera projection and actual half-RT dimensions.
     RCache.set_c("kich_shafts_camera", 1.f / Device.mProject._11, 1.f / Device.mProject._22, 1.f / w, 1.f / h);
     RCache.Render(D3DPT_TRIANGLELIST, Offset, 0, 4, 0, 2);

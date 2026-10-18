@@ -944,9 +944,11 @@ void CRender::render_sun()
 	{
 		bool bNormal = mapNormal[0].size() || mapMatrix[0].size();
 		bool bSpecial = mapNormal[1].size() || mapMatrix[1].size() || mapSorted.size();
+        // KICH_SUN_FRESH_SMAP_V6: accumulation also runs for empty cascades.
+        // Bind/clear before the condition so it cannot sample an old cascade.
+        Target->phase_smap_direct(fuckingsun, SE_SUN_FAR);
 		if (bNormal || bSpecial)
 		{
-			Target->phase_smap_direct(fuckingsun, SE_SUN_FAR);
 			RCache.set_xform_world(Fidentity);
 			RCache.set_xform_view(Fidentity);
 			RCache.set_xform_project(fuckingsun->X.D.combine);
@@ -1168,9 +1170,11 @@ void CRender::render_sun_near()
 	{
 		bool bNormal = mapNormal[0].size() || mapMatrix[0].size();
 		bool bSpecial = mapNormal[1].size() || mapMatrix[1].size() || mapSorted.size();
+        // KICH_SUN_FRESH_SMAP_V6: accumulation also runs for empty cascades.
+        // Bind/clear before the condition so it cannot sample an old cascade.
+        Target->phase_smap_direct(fuckingsun, SE_SUN_NEAR);
 		if (bNormal || bSpecial)
 		{
-			Target->phase_smap_direct(fuckingsun, SE_SUN_NEAR);
 			RCache.set_xform_world(Fidentity);
 			RCache.set_xform_view(Fidentity);
 			RCache.set_xform_project(fuckingsun->X.D.combine);

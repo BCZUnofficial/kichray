@@ -1,9 +1,15 @@
 ; ============================================================
 ;  weather_default.ltx  —  L01_escape (Кордон) и общая погода
-;  День 04:00–20:00 — светлее и теплее (kich_sun_halo).
-;  Ночь 21:00–03:00 — луна с гало, холодный направленный
-;  свет (тени), плавная кривая яркости. Пик темноты 02:00 —
-;  луна ярче и контрастнее (kich_moon_halo_bright).
+;  День 10:00–20:00 — светлее и теплее (kich_sun_halo).
+;  Дождь днём (12:00, 16:00) — густая дымка (0.90).
+;  Утро 05:00–07:15 — густая дымка (0.95), мягкий рассвет.
+;  Закат 19:00–20:45 — плавный оранжевый → розовый → синий,
+;  плотная дымка. Солнце уходит под горизонт к 20:45.
+;  Ночь: солнце скрывается у горизонта, затем невидимо переключается
+;  на луну; луна восходит с противоположного горизонта и идёт плавной дугой.
+;  Ночь — на 25% темнее базовой; в зените луны — на 50% темнее.
+;  Свет луны — холодный (голубоватый). Диск одного размера.
+;  Ночной дождь усилен до rain_density = 0.50; дневной дождь затемняет свет на 50%.
 ; ============================================================
 
 ; --- Солнце с гало и бликами (для дня) ---
@@ -28,14 +34,10 @@ blend_time               = 1
 blend_rise_time          = 1
 blend_down_time          = 1
 
-; --- Луна с гало, холодный свет (тени), обычная яркость ---
+; --- Луна БЕЗ гало, один размер везде. Свет холодный ---
 [kich_moon_halo]
 flares                   = off
-gradient                 = on
-gradient_opacity         = 0.8
-gradient_radius          = 0.10
-gradient_texture         = fx\fx_gradient_02.tga
-gradient_shader          = effects\flare
+gradient                 = off
 source                   = on
 source_radius            = 0.04
 source_texture           = fx\fx_moon.tga
@@ -45,22 +47,6 @@ blend_time               = 1
 blend_rise_time          = 1
 blend_down_time          = 1
 
-; --- Луна с усиленным гало (для пика темноты 02:00) ---
-[kich_moon_halo_bright]
-flares                   = off
-gradient                 = on
-gradient_opacity         = 1.0
-gradient_radius          = 0.15
-gradient_texture         = fx\fx_gradient_02.tga
-gradient_shader          = effects\flare
-source                   = on
-source_radius            = 0.06
-source_texture           = fx\fx_moon.tga
-source_shader            = effects\moon
-source_ignore_color      = false
-blend_time               = 1
-blend_rise_time          = 1
-blend_down_time          = 1
 
 ; ============================================================
 ;  Расписание
@@ -70,13 +56,19 @@ blend_down_time          = 1
 01:00:00 = default_weather_01
 02:00:00 = default_weather_02
 03:00:00 = default_weather_03
+03:30:00 = kich_weather_default_moon_0330
+03:45:00 = kich_weather_default_moon_0345
+03:55:00 = kich_weather_default_moon_0355
+03:56:50 = kich_weather_default_moon_035650
 03:57:00 = kich_weather_default_14220
 03:58:00 = kich_weather_default_14280
 03:59:00 = kich_weather_default_14340
 04:00:00 = default_weather_04
 05:00:00 = default_weather_05
+05:30:00 = default_weather_0530
 06:00:00 = default_weather_06
 07:00:00 = default_weather_07
+07:15:00 = default_weather_0715
 08:00:00 = default_weather_08
 09:00:00 = default_weather_09
 10:00:00 = default_weather_10
@@ -89,28 +81,38 @@ blend_down_time          = 1
 17:00:00 = default_weather_17
 18:00:00 = default_weather_18
 19:00:00 = default_weather_19
+19:30:00 = default_weather_1930
 20:00:00 = default_weather_20
+20:15:00 = default_weather_2015
+20:30:00 = default_weather_2030
+20:45:00 = default_weather_2045
+20:50:00 = kich_weather_default_75000
+20:55:00 = kich_weather_default_75300
+20:59:00 = kich_weather_default_75540
+20:59:40 = kich_weather_default_75580
+20:59:50 = kich_weather_default_75590
+20:59:55 = kich_weather_default_75595
+20:59:58 = kich_weather_default_75598
 21:00:00 = default_weather_21
 22:00:00 = default_weather_22
-22:01:00 = kich_weather_default_79260
-22:02:00 = kich_weather_default_79320
-22:03:00 = kich_weather_default_79380
 23:00:00 = default_weather_23
 
 ; ============================================================
-;  НОЧЬ 21:00 — луна восходит
+;  НОЧЬ 21:00 — ЛУНА ВОСХОДИТ С ПРОТИВОПОЛОЖНОГО ГОРИЗОНТА.
+;  Густая дымка (0.90), очень темно.
 ; ============================================================
+
 [default_weather_21]
 flares			= kich_moon_halo
 sky_texture		=	sky\sky_17_cube
 sky_rotation	=	0
-sky_color		=	1.0,    1.0,  	1.0
+sky_color		=	0.1725, 0.195, 0.24
 clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.333, 0.341, 0.431, 0.4, 1.7
+clouds_color	=	0.1125, 0.12, 0.1575, 0.4, 1.7
 far_plane		=	400
-fog_distance	=	400
-fog_color		=	0.333, 0.341, 0.431
-fog_density		=	0.8
+fog_distance	=	300
+fog_color		=	0.15, 0.165, 0.21
+fog_density		=	0.90
 rain_density	=	0.0
 rain_color		=	1.0,	1.0,	1.0
 thunderbolt		=
@@ -118,26 +120,27 @@ bolt_period		=	3.f
 bolt_duration	=	0.25f
 wind_velocity	=	10.0
 wind_direction	=	0.0
-ambient			=	0.070,	0.073,	0.078
+ambient			=	0.015, 0.0165, 0.021
 lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.55,	0.57,	0.60,	0.5
-sun_color		=	0.15, 0.17, 0.22
-sun_dir			= -11.1615, 260.0000
+hemi_color		=	0.06, 0.0675, 0.09, 0.5
+sun_color		=	0.36, 0.36, 0.36
+sun_dir			= -0.1000, 58.5635
 env_ambient		=	ambient_env_evening
 
 ; ============================================================
-;  НОЧЬ 22:00 — темнеет
+;  НОЧЬ 22:00 — темнеет, луна плавно поднимается
 ; ============================================================
+
 [default_weather_22]
 flares			= kich_moon_halo
 sky_texture		=	sky\sky_17_cube
 sky_rotation	=	0
-sky_color		=	0.7,	0.7,	0.7
+sky_color		=	0.15, 0.165, 0.2025
 clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.165, 0.169, 0.212, 0.4, 1.7
+clouds_color	=	0.1237, 0.1268, 0.159, 0.4, 1.7
 far_plane		=	380
 fog_distance	=	380
-fog_color		=	0.165, 0.169, 0.212
+fog_color		=	0.1237, 0.1268, 0.159
 fog_density		=	0.85
 rain_density	=	0.0
 rain_color		=	1.0,	1.0,	1.0
@@ -146,26 +149,27 @@ bolt_period		=	3.f
 bolt_duration	=	0.25f
 wind_velocity	=	0.0
 wind_direction	=	0.0
-ambient			=	0.062,	0.065,	0.070
+ambient			=	0.0075, 0.009, 0.012
 lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.48,	0.50,	0.52,	0.5
-sun_color		=	0.18, 0.20, 0.25
-sun_dir			= -3.0000, 270.0000
-env_ambient		=	ambient_env_evening
+hemi_color		=	0.03, 0.0338, 0.045, 0.5
+sun_color		=	0.36, 0.36, 0.36
+sun_dir			= -5.9069, 88.1633
+env_ambient		=	ambient_env_night
 
 ; ============================================================
-;  НОЧЬ 23:00
+;  НОЧЬ 23:00 — луна продолжает плавно подниматься по дуге.
 ; ============================================================
+
 [default_weather_23]
 flares			= kich_moon_halo
 sky_texture		=	sky\sky_9_cube
 sky_rotation	=	0
-sky_color		=	0.5,	0.5,	0.5
+sky_color		=	0.135, 0.1425, 0.165
 clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.333, 0.341, 0.431, 0.0, 1.7
+clouds_color	=	0.2498, 0.2558, 0.3232, 0.0, 1.7
 far_plane		=	360
 fog_distance	=	360
-fog_color		=	0.086,	0.086,	0.094
+fog_color		=	0.0645, 0.0645, 0.0705
 fog_density		=	0.9
 rain_density	=	0.0
 rain_color		=	1.0,	1.0,	1.0
@@ -174,26 +178,28 @@ bolt_period		=	3.f
 bolt_duration	=	0.25f
 wind_velocity	=	0.0
 wind_direction	=	0.0
-ambient			=	0.056,	0.059,	0.063
+ambient			=	0.003, 0.0037, 0.006
 lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.40,	0.42,	0.44,	0.5
-sun_color		=	0.22, 0.25, 0.30
-sun_dir			= -18.7130, 119.4085
+hemi_color		=	0.0112, 0.0135, 0.0188, 0.5
+sun_color		=	0.36, 0.36, 0.36
+sun_dir			= -11.7137, 118.0835
 env_ambient		=	ambient_env_night
 
 ; ============================================================
-;  НОЧЬ 00:00
+;  НОЧЬ 00:00 — луна высоко над горизонтом. Светлее, но вдвое темнее
+;  прежнего зенита. Свет холодный.
 ; ============================================================
+
 [default_weather_00]
 flares			= kich_moon_halo
 sky_texture		=	sky\sky_13_cube_night
 sky_rotation	=	0
-sky_color		=	1.0,	1.0,	1.0
+sky_color		=	0.75, 0.75, 0.75
 clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.333, 0.341, 0.431, 0.0, 1.7
+clouds_color	=	0.2498, 0.2558, 0.3232, 0.0, 1.7
 far_plane		=	360
 fog_distance	=	360
-fog_color		=	0.067, 0.067, 0.086
+fog_color		=	0.0503, 0.0503, 0.0645
 fog_density		=	0.9
 rain_density	=	0.0
 rain_color		=	0.35,	0.37,	0.45
@@ -202,54 +208,57 @@ bolt_period		=	3.f
 bolt_duration	=	0.25f
 wind_velocity	=	0.0
 wind_direction	=	0.0
-ambient			=	0.050,	0.053,	0.058
+ambient			=	0.0112, 0.0128, 0.0165
 lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.32,	0.33,	0.35,	0.5
-sun_color		=	0.25, 0.28, 0.35
-sun_dir			= -30.6655, 149.8310
+hemi_color		=	0.045, 0.0488, 0.06, 0.5
+sun_color		=	0.375, 0.375, 0.375
+sun_dir			= -17.5206, 148.6568
 env_ambient		=	ambient_env_night
 
 ; ============================================================
-;  НОЧЬ 01:00
+;  НОЧЬ 01:00 — вершина лунной дуги + усиленный ДОЖДЬ + ГУСТАЯ ДЫМКА.
+;  Освещение на 50% темнее базового.
 ; ============================================================
+
 [default_weather_01]
 flares			= kich_moon_halo
 sky_texture		=	sky\sky_14_cube
 sky_rotation	=	0
-sky_color		=	1.0,	1.0,	1.0
+sky_color		=	0.375, 0.375, 0.375
 clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.333, 0.341, 0.431, 0.7, 1.7
-far_plane		=	350
-fog_distance	=	350
-fog_color		=	0.043, 0.043, 0.055
-fog_density		=	0.9
-rain_density	=	0.2
+clouds_color	=	0.1665, 0.1705, 0.2155, 0.9, 1.7
+far_plane		=	300
+fog_distance	=	250
+fog_color		=	0.04, 0.045, 0.06
+fog_density		=	0.95
+rain_density	=	0.50
 rain_color		=	0.21, 0.21, 0.27
 thunderbolt		= 	thunderbolt_collection_default
 bolt_period		=	4.5f
 bolt_duration	=	0.35f
 wind_velocity	=	0.0
 wind_direction	=	0.0
-ambient			=	0.042,	0.045,	0.050
+ambient			=	0.01, 0.011, 0.014
 lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.22,	0.23,	0.24,	0.5
-sun_color		=	0.28, 0.32, 0.40
-sun_dir			= -34.9997, 180.2535
+hemi_color		=	0.0375, 0.04, 0.05, 0.5
+sun_color		=	0.25, 0.25, 0.25
+sun_dir			= -23.3274, 180.2535
 env_ambient		=	ambient_env_night
 
 ; ============================================================
-;  НОЧЬ 02:00 — ПИК ТЕМНОТЫ. Луна яркая и контрастная.
+;  НОЧЬ 02:00 — луна плавно опускается по дуге, тускнеет
 ; ============================================================
+
 [default_weather_02]
-flares			= kich_moon_halo_bright
+flares			= kich_moon_halo
 sky_texture		=	sky\sky_13_cube_night
 sky_rotation	=	0
-sky_color		=	1.0,	1.0,	1.0
+sky_color		=	0.75, 0.75, 0.75
 clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.333, 0.341, 0.431, 0.0, 1.7
+clouds_color	=	0.2498, 0.2558, 0.3232, 0.0, 1.7
 far_plane		=	360
 fog_distance	=	360
-fog_color		=	0.067, 0.067, 0.086
+fog_color		=	0.0503, 0.0503, 0.0645
 fog_density		=	0.95
 rain_density	=	0.0
 rain_color		=	0.43, 0.43, 0.43
@@ -258,26 +267,27 @@ bolt_period		=	3.f
 bolt_duration	=	0.25f
 wind_velocity	=	0.0
 wind_direction	=	0.0
-ambient			=	0.025,	0.026,	0.030
+ambient			=	0.0112, 0.0128, 0.0165
 lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.08,	0.08,	0.09,	0.5
-sun_color		=	0.40, 0.45, 0.55
-sun_dir			= -30.5221, 210.6761
+hemi_color		=	0.045, 0.0488, 0.06, 0.5
+sun_color		=	0.36, 0.36, 0.36
+sun_dir			= -15.4208, 211.6593
 env_ambient		=	ambient_env_night
 
 ; ============================================================
-;  НОЧЬ 03:00 — светает
+;  НОЧЬ 03:00 — светает, луна продолжает дугу к горизонту
 ; ============================================================
+
 [default_weather_03]
 flares			= kich_moon_halo
 sky_texture		=	sky\sky_5_cube
 sky_rotation	=	0
-sky_color		=	0.25,	0.25,	0.25
+sky_color		=	0.1875, 0.1875, 0.1875
 clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.333, 0.341, 0.431, 0.4, 1.7
+clouds_color	=	0.2498, 0.2558, 0.3232, 0.4, 1.7
 far_plane		=	400
 fog_distance	=	400
-fog_color		=   0.10, 0.10, 0.11
+fog_color		=   0.075, 0.075, 0.0825
 fog_density		=	0.85
 rain_density	=	0.0
 rain_color		=	0.33, 0.33, 0.43
@@ -286,27 +296,28 @@ bolt_period		=	3.f
 bolt_duration	=	0.25f
 wind_velocity	=	0.0
 wind_direction	=	0.0
-ambient			=	0.045,	0.048,	0.052
+ambient			=	0.0225, 0.0248, 0.03
 lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.28,	0.30,	0.32,	0.5
-sun_color		=	0.25, 0.30, 0.38
-sun_dir			= -18.4657, 241.0986
+hemi_color		=	0.1125, 0.12, 0.1425, 0.5
+sun_color		=	0.3375, 0.3375, 0.3375
+sun_dir			= -7.5143, 241.8555
 env_ambient		=	ambient_env_night
 
 ; ============================================================
-;  УТРО 04–07 (светлее, теплее)
+;  УТРО 04:00 — предрассветные сумерки
 ; ============================================================
+
 [default_weather_04]
 flares			= kich_sun_halo
 sky_texture		=	sky\sky_9_cube
 sky_rotation	=	0
-sky_color		=	1.0,    1.0,  	1.0
+sky_color		=	0.550, 0.450, 0.425
 clouds_texture	=	sky\sky_oblaka
-clouds_color	=   0.282, 0.286, 0.341, 0.4, 1.7
-far_plane		=	450
-fog_distance	=	450
-fog_color		=	0.20, 0.20, 0.22
-fog_density		=	0.7
+clouds_color	=   0.392, 0.331, 0.365, 0.450, 1.7
+far_plane		=	420
+fog_distance	=	400
+fog_color		=	0.225, 0.160, 0.155
+fog_density		=	0.70
 rain_density	=	0.0
 rain_color		=	1.0,	1.0,	1.0
 thunderbolt		=
@@ -314,24 +325,28 @@ bolt_period		=	3.f
 bolt_duration	=	0.25f
 wind_velocity	=	0.0
 wind_direction	=	0.0
-ambient			=	0.080, 0.082, 0.085
+ambient			=	0.049, 0.046, 0.051
 lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=   0.75, 0.77, 0.80,	1.0
-sun_color		= 0.85, 0.65, 0.45
-sun_dir			= -3.0000, 90.0000
+hemi_color		=   0.400, 0.420, 0.465, 0.750
+sun_color		=	0.18, 0.15, 0.13
+sun_dir			= -0.7500, 90.0000
 env_ambient		=	ambient_env_morning
 
+; ============================================================
+;  УТРО 05:00 — МЯГКИЙ РАССВЕТ. Густая дымка (0.95),
+;  розово-оранжевое солнце, синеватые тени.
+; ============================================================
 [default_weather_05]
 flares			= kich_sun_halo
 sky_texture		=	sky\sky_11_cube
 sky_rotation	=	0
-sky_color		=	0.8,    0.8,  	0.8
+sky_color		=	0.85,   0.65,  	0.60
 clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.353, 0.333, 0.420, 0.4, 1.7
-far_plane		=	450
-fog_distance	=	450
-fog_color		=	0.35, 0.38, 0.42
-fog_density		=	0.7
+clouds_color	=	0.45, 0.32, 0.30, 0.5, 1.7
+far_plane		=	420
+fog_distance	=	300
+fog_color		=	0.35, 0.22, 0.20
+fog_density		=	0.95
 rain_density	=	0.0
 rain_color		=	1.0,	1.0,	1.0
 thunderbolt		=
@@ -339,13 +354,44 @@ bolt_period		=	3.f
 bolt_duration	=	0.25f
 wind_velocity	=	0.0
 wind_direction	=	0.0
-ambient			=	0.100, 0.102, 0.105
+ambient			=	0.068, 0.060, 0.062
 lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.85, 0.87, 0.90,	1.0
-sun_color		=	0.90, 0.72, 0.50
+hemi_color		=	0.65, 0.68, 0.74,	1.0
+sun_color		=	0.95, 0.45, 0.30
 sun_dir			= -11.1615, 100.0000
 env_ambient		=	ambient_env_morning
 
+; ============================================================
+;  УТРО 05:30 — РАССВЕТ, теплее
+; ============================================================
+[default_weather_0530]
+flares			= kich_sun_halo
+sky_texture		=	sky\sky_11_cube
+sky_rotation	=	0
+sky_color		=	0.90,   0.72,  	0.62
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=	0.52, 0.38, 0.32, 0.4, 1.7
+far_plane		=	420
+fog_distance	=	320
+fog_color		=	0.38, 0.25, 0.22
+fog_density		=	0.92
+rain_density	=	0.0
+rain_color		=	1.0,	1.0,	1.0
+thunderbolt		=
+bolt_period		=	3.f
+bolt_duration	=	0.25f
+wind_velocity	=	0.0
+wind_direction	=	0.0
+ambient			=	0.072, 0.066, 0.068
+lmap_color		=	1.0,	1.0,	1.0
+hemi_color		=	0.70, 0.71, 0.76,	1.0
+sun_color		=	0.98, 0.55, 0.35
+sun_dir			= -15.0000, 105.0000
+env_ambient		=	ambient_env_morning
+
+; ============================================================
+;  УТРО 06:00 — ВОСХОД. Тёплое мягкое оранжевое солнце.
+; ============================================================
 [default_weather_06]
 flares			= kich_sun_halo
 sky_texture		=	sky\sky_2_cube
@@ -353,10 +399,10 @@ sky_rotation	=	0
 sky_color		=	1.0,    1.0,  	1.0
 clouds_texture	=	sky\sky_oblaka
 clouds_color	=	0.698, 0.447, 0.322, 0.4, 1.7
-far_plane		=	450
-fog_distance	=	450
-fog_color		=	0.40, 0.38, 0.40
-fog_density		=	0.7
+far_plane		=	430
+fog_distance	=	360
+fog_color		=	0.36, 0.30, 0.28
+fog_density		=	0.85
 rain_density	=	0.0
 rain_color		=	1.0,	1.0,	1.0
 thunderbolt		=
@@ -364,24 +410,27 @@ bolt_period		=	3.f
 bolt_duration	=	0.25f
 wind_velocity	=	0.0
 wind_direction	=	0.0
-ambient			=	0.100, 0.102, 0.105
+ambient			=	0.078, 0.075, 0.075
 lmap_color		=	1.0,    1.0,  	1.0
-hemi_color		=   0.88, 0.90, 0.93, 1
-sun_color		=	0.95, 0.80, 0.55
+hemi_color		=   0.76, 0.76, 0.80, 1
+sun_color		=	0.98, 0.65, 0.40
 sun_dir			= -19.0749, 110.0000
 env_ambient		=	ambient_env_morning
 
+; ============================================================
+;  УТРО 07:00 — ЗОЛОТОЙ ЧАС. Густая дымка (0.95).
+; ============================================================
 [default_weather_07]
 flares			= kich_sun_halo
 sky_texture		=	sky\sky_3_cube
 sky_rotation	=	0
-sky_color		=	0.8,    0.8,  	0.8
+sky_color		=	0.9,    0.9,  	0.9
 clouds_texture	=	sky\sky_oblaka
 clouds_color	=	0.451, 0.361, 0.290, 0.0, 1.7
 far_plane		=	450
-fog_distance	=	450
-fog_color		=	0.35, 0.35, 0.38
-fog_density		=	0.7
+fog_distance	=	300
+fog_color		=	0.40, 0.33, 0.29
+fog_density		=	0.95
 rain_density	=	0.0
 rain_color		=	1.0,	1.0,	1.0
 thunderbolt		=
@@ -389,27 +438,55 @@ bolt_period		=	3.f
 bolt_duration	=	0.25f
 wind_velocity	=	0.0
 wind_direction	=	0.0
-ambient			=	0.110, 0.112, 0.115
+ambient			=	0.090, 0.086, 0.086
 lmap_color		=	1.0,    1.0,  	1.0
-hemi_color		=   0.93, 0.95, 0.98, 1
-sun_color		=	0.90, 0.80, 0.60
+hemi_color		=   0.82, 0.82, 0.86, 1
+sun_color		=	0.98, 0.75, 0.45
 sun_dir			= -26.5000, 120.0000
 env_ambient		=	ambient_env_morning
 
 ; ============================================================
-;  ДЕНЬ 08–11 (ярко, тепло, гало)
+;  УТРО 07:15 — последний момент густой дымки (0.90)
+; ============================================================
+[default_weather_0715]
+flares			= kich_sun_halo
+sky_texture		=	sky\sky_3_cube
+sky_rotation	=	0
+sky_color		=	0.92,   0.92,  	0.92
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=	0.451, 0.361, 0.290, 0.0, 1.7
+far_plane		=	460
+fog_distance	=	320
+fog_color		=	0.38, 0.33, 0.30
+fog_density		=	0.90
+rain_density	=	0.0
+rain_color		=	1.0,	1.0,	1.0
+thunderbolt		=
+bolt_period		=	3.f
+bolt_duration	=	0.25f
+wind_velocity	=	0.0
+wind_direction	=	0.0
+ambient			=	0.096, 0.092, 0.092
+lmap_color		=	1.0,    1.0,  	1.0
+hemi_color		=   0.84, 0.84, 0.88, 1
+sun_color		=	0.98, 0.78, 0.48
+sun_dir			= -28.0000, 125.0000
+env_ambient		=	ambient_env_morning
+
+; ============================================================
+;  УТРО 08:00 — дымка резко сгорает (0.60)
 ; ============================================================
 [default_weather_08]
 flares			= kich_sun_halo
 sky_texture		=	sky\sky_8_cube
 sky_rotation	=	0
-sky_color		=	0.8,    0.8,  	0.8
+sky_color		=	0.95,   0.95,  	0.95
 clouds_texture	=	sky\sky_oblaka
 clouds_color	=	0.333, 0.341, 0.431, 0.0, 1.7
-far_plane		=	450
-fog_distance	=	450
-fog_color		=	0.30, 0.33, 0.38
-fog_density		=	0.7
+far_plane		=	470
+fog_distance	=	430
+fog_color		=	0.36, 0.36, 0.38
+fog_density		=	0.60
 rain_density	=	0.0
 rain_color		=	1.0,	1.0,	1.0
 thunderbolt		=
@@ -417,13 +494,16 @@ bolt_period		=	3.f
 bolt_duration	=	0.25f
 wind_velocity	=	0.0
 wind_direction	=	0.0
-ambient			=	0.110, 0.108, 0.110
+ambient			=	0.106, 0.103, 0.102
 lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.90, 0.92, 0.95,	1.0
-sun_color		=	0.95, 0.83, 0.60
+hemi_color		=	0.88, 0.88, 0.89,	1.0
+sun_color		=	0.96, 0.82, 0.58
 sun_dir			= -33.2110, 130.0000
-env_ambient		=	ambient_env_day
+env_ambient		=	ambient_env_morning
 
+; ============================================================
+;  УТРО 09:00 — почти день, остатки дымки (0.50)
+; ============================================================
 [default_weather_09]
 flares			= kich_sun_halo
 sky_texture		=	sky\sky_19_cube
@@ -431,10 +511,10 @@ sky_rotation	=	0
 sky_color		=	1.0,    1.0,  	1.0
 clouds_texture	=	sky\sky_oblaka
 clouds_color	=	0.675, 0.675, 0.620, 0.3, 1.7
-far_plane		=	500
-fog_distance	=	500
-fog_color		=	0.45, 0.48, 0.52
-fog_density		=	0.6
+far_plane		=	490
+fog_distance	=	470
+fog_color		=	0.44, 0.46, 0.50
+fog_density		=	0.50
 rain_density	=	0.0
 rain_color		=	1.0,	1.0,	1.0
 thunderbolt		=
@@ -442,13 +522,16 @@ bolt_period		=	3.f
 bolt_duration	=	0.25f
 wind_velocity	=	10.0
 wind_direction	=	0.0
-ambient			=	0.115, 0.112, 0.114
+ambient			=	0.115, 0.112, 0.108
 lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.92, 0.93, 0.95,	1.0
-sun_color		=	 0.95, 0.85, 0.62
+hemi_color		=	0.92, 0.91, 0.89,	1.0
+sun_color		=	 0.96, 0.84, 0.60
 sun_dir			= -39.0041, 140.0000
 env_ambient		=	ambient_env_day
 
+; ============================================================
+;  ДЕНЬ 10:00 — яркий жаркий полдень, лёгкий тёплый оттенок
+; ============================================================
 [default_weather_10]
 flares			= kich_sun_halo
 sky_texture		=	sky\sky_19_cube
@@ -467,13 +550,16 @@ bolt_period		=	3.f
 bolt_duration	=	0.25f
 wind_velocity	=	10.0
 wind_direction	=	0.0
-ambient			=	0.115, 0.113, 0.115
+ambient			=	0.118, 0.115, 0.110
 lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.90, 0.92, 0.95,	1.0
-sun_color		=	0.98, 0.88, 0.65
+hemi_color		=	0.92, 0.91, 0.89,	1.0
+sun_color		=	0.98, 0.88, 0.62
 sun_dir			= -43.7032, 150.0000
 env_ambient		=	ambient_env_day
 
+; ============================================================
+;  ДЕНЬ 11:00
+; ============================================================
 [default_weather_11]
 flares			= kich_sun_halo
 sky_texture		=	sky\sky_11_cube
@@ -492,28 +578,27 @@ bolt_period		=	3.f
 bolt_duration	=	0.25f
 wind_velocity	=	0.0
 wind_direction	=	0.0
-ambient			=	0.115, 0.116, 0.118
+ambient			=	0.118, 0.116, 0.112
 lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.92, 0.93, 0.95,	1.0
-sun_color		=	0.98, 0.88, 0.68
+hemi_color		=	0.93, 0.92, 0.90,	1.0
+sun_color		=	0.98, 0.88, 0.65
 sun_dir			= -47.1656, 160.0000
 env_ambient		=	ambient_env_day
 
-
 ; ============================================================
-;  ДЕНЬ 12–13 (дождь/облачно — светлее)
+;  ДЕНЬ 12:00 — ДОЖДЬ + ГУСТАЯ ДЫМКА (0.90), свет -50%
 ; ============================================================
 [default_weather_12]
 flares			= kich_sun_halo
 sky_texture		=	sky\sky_9_cube
 sky_rotation	=	0
-sky_color		=	1.0,    1.0,  	1.0
+sky_color		=	0.425, 0.425, 0.425
 clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.333, 0.341, 0.431, 0.7, 1.7
-far_plane		=	450
-fog_distance	=	450
-fog_color		=	0.25, 0.27, 0.30
-fog_density		=	0.7
+clouds_color	=	0.1665, 0.1705, 0.2155, 0.9, 1.7
+far_plane		=	350
+fog_distance	=	250
+fog_color		=	0.1, 0.11, 0.13
+fog_density		=	0.90
 rain_density	=	0.4
 rain_color		=	0.62, 0.66, 0.76
 thunderbolt		=	thunderbolt_collection_default
@@ -521,13 +606,16 @@ bolt_period		=	5.f
 bolt_duration	=	0.25f
 wind_velocity	=	15.0
 wind_direction	=	0.0
-ambient			=	0.090, 0.092, 0.095
+ambient			=	0.0375, 0.039, 0.0425
 lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.75, 0.77, 0.80,	1.0
-sun_color		=	0.85, 0.80, 0.65
+hemi_color		=	0.34, 0.35, 0.37, 1
+sun_color		=	0.0, 0.0, 0.0
 sun_dir			= -49.2860, 170.0000
 env_ambient		=	ambient_env_rain
 
+; ============================================================
+;  ДЕНЬ 13:00 — облачно, светлее
+; ============================================================
 [default_weather_13]
 flares			= kich_sun_halo
 sky_texture		=	sky\sky_9_cube
@@ -546,15 +634,15 @@ bolt_period		=	3.f
 bolt_duration	=	0.25f
 wind_velocity	=	0.0
 wind_direction	=	0.0
-ambient			=	0.100, 0.102, 0.105
+ambient			=	0.103, 0.101, 0.098
 lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.82, 0.84, 0.87,	1.0
+hemi_color		=	0.84, 0.83, 0.81,	1.0
 sun_color		=	0.85, 0.80, 0.65
 sun_dir			= -50.0000, 180.0000
 env_ambient		=	ambient_env_day
 
 ; ============================================================
-;  ДЕНЬ 14–15 (ясно, ярко)
+;  ДЕНЬ 14–15 (ясно, ярко, лёгкий тёплый оттенок)
 ; ============================================================
 [default_weather_14]
 flares			= kich_sun_halo
@@ -574,11 +662,11 @@ bolt_period		=	3.f
 bolt_duration	=	0.25f
 wind_velocity	=	0.0
 wind_direction	=	0.0
-ambient			=	0.115, 0.114, 0.116
+ambient			=	0.118, 0.115, 0.110
 lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=   0.90, 0.92, 0.95,  1
-sun_color		=	0.95, 0.85, 0.62
-sun_dir			= -49.2860, 190.0000
+hemi_color		=   0.92, 0.91, 0.89,  1
+sun_color		=	0.96, 0.86, 0.60
+sun_dir			= -48.0913, 190.0000
 env_ambient		=	ambient_env_day
 
 [default_weather_15]
@@ -599,27 +687,27 @@ bolt_period		=	3.f
 bolt_duration	=	0.25f
 wind_velocity	=	0.0
 wind_direction	=	0.0
-ambient			=	0.110, 0.111, 0.113
+ambient			=	0.113, 0.111, 0.108
 lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=   0.90, 0.91, 0.93,  1
-sun_color		=	0.95, 0.85, 0.62
-sun_dir			= -47.1656, 200.0000
+hemi_color		=   0.92, 0.91, 0.89,  1
+sun_color		=	0.96, 0.86, 0.60
+sun_dir			= -44.7582, 200.0000
 env_ambient		=	ambient_env_day
 
 ; ============================================================
-;  ДЕНЬ/ВЕЧЕР 16–18
+;  ДЕНЬ 16:00 — ДОЖДЬ + ГУСТАЯ ДЫМКА (0.90), свет -50%
 ; ============================================================
 [default_weather_16]
 flares			= kich_sun_halo
 sky_texture		=	sky\sky_9_cube
 sky_rotation	=	0
-sky_color		=	1.0,    1.0,  	1.0
+sky_color		=	0.425, 0.425, 0.425
 clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.333, 0.341, 0.431, 0.7, 1.7
-far_plane		=	450
-fog_distance	=	450
-fog_color		=	0.25, 0.27, 0.30
-fog_density		=	0.7
+clouds_color	=	0.1665, 0.1705, 0.2155, 0.9, 1.7
+far_plane		=	350
+fog_distance	=	250
+fog_color		=	0.1, 0.11, 0.13
+fog_density		=	0.90
 rain_density	=	0.4
 rain_color		=	0.62, 0.66, 0.76
 thunderbolt		=	thunderbolt_collection_default
@@ -627,13 +715,16 @@ bolt_period		=	5.f
 bolt_duration	=	0.25f
 wind_velocity	=	15.0
 wind_direction	=	0.0
-ambient			=	0.090, 0.092, 0.095
+ambient			=	0.0375, 0.039, 0.0425
 lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.75, 0.77, 0.80,	1.0
-sun_color		=	0.0,    0.0,  	0.0
-sun_dir			= -43.7032, 210.0000
+hemi_color		=	0.34, 0.35, 0.37, 1
+sun_color		=	0.0, 0.0, 0.0
+sun_dir			= -39.9009, 210.0000
 env_ambient		=	ambient_env_rain
 
+; ============================================================
+;  ВЕЧЕР 17:00 — облачно, светлее
+; ============================================================
 [default_weather_17]
 flares			= kich_sun_halo
 sky_texture		=	sky\sky_9_cube
@@ -652,11 +743,11 @@ bolt_period		=	7.f
 bolt_duration	=	0.25f
 wind_velocity	=	0.0
 wind_direction	=	0.0
-ambient			=	0.100, 0.101, 0.103
+ambient			=	0.103, 0.101, 0.098
 lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.82, 0.84, 0.87,	1.0
+hemi_color		=	0.84, 0.83, 0.81,	1.0
 sun_color		=	0.90, 0.75, 0.50
-sun_dir			= -39.0041, 220.0000
+sun_dir			= -33.6848, 220.0000
 env_ambient		=	ambient_env_day
 
 [default_weather_18]
@@ -677,27 +768,27 @@ bolt_period		=	7.f
 bolt_duration	=	0.25f
 wind_velocity	=	0.0
 wind_direction	=	0.0
-ambient			=	0.100, 0.100, 0.102
+ambient			=	0.103, 0.100, 0.098
 lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.82, 0.84, 0.87,	1.0
+hemi_color		=	0.84, 0.83, 0.81,	1.0
 sun_color		=	0.95, 0.78, 0.50
-sun_dir			= -33.2110, 230.0000
+sun_dir			= -26.3216, 230.0000
 env_ambient		=	ambient_env_evening
 
 ; ============================================================
-;  ВЕЧЕР 19–20
+;  ВЕЧЕР 19:00 — ОРАНЖЕВЫЙ ЗАКАТ + ПЛОТНАЯ ДЫМКА (0.85)
 ; ============================================================
 [default_weather_19]
 flares			= kich_sun_halo
 sky_texture		=	sky\sky_5_cube
 sky_rotation	=	0
-sky_color		=	1.0,    1.0,  	1.0
+sky_color		=	0.95,   0.85,  	0.72
 clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.333, 0.341, 0.431, 0.0, 1.7
+clouds_color	=	0.48, 0.35, 0.28, 0.0, 1.7
 far_plane		=	450
-fog_distance	=	450
-fog_color		=	0.30, 0.28, 0.25
-fog_density		=	0.7
+fog_distance	=	350
+fog_color		=	0.38, 0.28, 0.22
+fog_density		=	0.85
 rain_density	=	0.0
 rain_color		=	1.0,	1.0,	1.0
 thunderbolt		=
@@ -705,101 +796,26 @@ bolt_period		=	3.f
 bolt_duration	=	0.25f
 wind_velocity	=	0.0
 wind_direction	=	0.0
-ambient			=	0.100, 0.100, 0.102
+ambient			=	0.100, 0.090, 0.090
 lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.80, 0.82, 0.85,	1.0
-sun_color		=	0.95, 0.65, 0.35
-sun_dir			= -26.5000, 240.0000
+hemi_color		=	0.82, 0.80, 0.82,	1.0
+sun_color		=	1.00, 0.60, 0.30
+sun_dir			= -18.0621, 240.0000
 env_ambient		=	ambient_env_evening
 
-[default_weather_20]
+; ============================================================
+;  ВЕЧЕР 19:30 — ОРАНЖЕВО-РОЗОВЫЙ ЗАКАТ (0.88)
+; ============================================================
+[default_weather_1930]
 flares			= kich_sun_halo
-sky_texture		=	sky\sky_18_cube
+sky_texture		=	sky\sky_5_cube
 sky_rotation	=	0
-sky_color		=	1.0,    1.0,  	1.0
+sky_color		=	0.88,   0.72,  	0.62
 clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.427, 0.412, 0.431, 0.2, 1.7
+clouds_color	=	0.50, 0.35, 0.30, 0.1, 1.7
 far_plane		=	450
-fog_distance	=	450
-fog_color		=	0.40, 0.38, 0.40
-fog_density		=	0.7
-rain_density	=	0.0
-rain_color		=	1.0,	1.0,	1.0
-thunderbolt		=
-bolt_period		=	3.f
-bolt_duration	=	0.25f
-wind_velocity	=	0.0
-wind_direction	=	0.0
-ambient			=	0.090, 0.091, 0.093
-lmap_color		=	1.0,    1.0,  	1.0
-hemi_color		=   0.78, 0.80, 0.83, 1.0
-sun_color		=	0.90, 0.55, 0.25
-sun_dir			= -19.0749, 250.0000
-env_ambient		=	ambient_env_evening
-
-; ============================================================
-;  Переходные 22:01–22:03 (луна уже взошла)
-; ============================================================
-[kich_weather_default_79260]
-flares			= kich_moon_halo
-sky_texture		=	sky\sky_17_cube
-sky_rotation	=	0
-sky_color		=	0.7,	0.7,	0.7
-clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.165, 0.169, 0.212, 0.4, 1.7
-far_plane		=	380
-fog_distance	=	380
-fog_color		=	0.165, 0.169, 0.212
-fog_density		=	0.85
-rain_density	=	0.0
-rain_color		=	1.0,	1.0,	1.0
-thunderbolt		=
-bolt_period		=	3.f
-bolt_duration	=	0.25f
-wind_velocity	=	0.0
-wind_direction	=	0.0
-ambient			=	0.060,	0.063,	0.068
-lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.46,	0.48,	0.50,	0.5
-sun_color		=	0.19, 0.21, 0.26
-sun_dir			= -3.0000, 270.0000
-env_ambient		=	ambient_env_evening
-
-[kich_weather_default_79320]
-flares			= kich_moon_halo
-sky_texture		=	sky\sky_17_cube
-sky_rotation	=	0
-sky_color		=	0.7,	0.7,	0.7
-clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.165, 0.169, 0.212, 0.4, 1.7
-far_plane		=	380
-fog_distance	=	380
-fog_color		=	0.165, 0.169, 0.212
-fog_density		=	0.85
-rain_density	=	0.0
-rain_color		=	1.0,	1.0,	1.0
-thunderbolt		=
-bolt_period		=	3.f
-bolt_duration	=	0.25f
-wind_velocity	=	0.0
-wind_direction	=	0.0
-ambient			=	0.058,	0.061,	0.066
-lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.44,	0.46,	0.48,	0.5
-sun_color		=	0.20, 0.22, 0.27
-sun_dir			= -3.0000, 90.0000
-env_ambient		=	ambient_env_evening
-
-[kich_weather_default_79380]
-flares			= kich_moon_halo
-sky_texture		=	sky\sky_17_cube
-sky_rotation	=	0
-sky_color		=	0.6,	0.6,	0.6
-clouds_texture	=	sky\sky_oblaka
-clouds_color	=	0.165, 0.169, 0.212, 0.3, 1.7
-far_plane		=	370
-fog_distance	=	370
-fog_color		=	0.165, 0.169, 0.212
+fog_distance	=	330
+fog_color		=	0.38, 0.25, 0.22
 fog_density		=	0.88
 rain_density	=	0.0
 rain_color		=	1.0,	1.0,	1.0
@@ -808,26 +824,465 @@ bolt_period		=	3.f
 bolt_duration	=	0.25f
 wind_velocity	=	0.0
 wind_direction	=	0.0
-ambient			=	0.058,	0.061,	0.066
+ambient			=	0.090, 0.075, 0.078
 lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=	0.42,	0.44,	0.46,	0.5
-sun_color		=	0.21, 0.24, 0.29
-sun_dir			= -3.2832, 90.5070
+hemi_color		=	0.74, 0.70, 0.75,	1.0
+sun_color		=	0.98, 0.50, 0.25
+sun_dir			= -13.6831, 245.0000
+env_ambient		=	ambient_env_evening
+
+; ============================================================
+;  ВЕЧЕР 20:00 — РОЗОВО-ОРАНЖЕВЫЙ, солнце 15°
+; ============================================================
+[default_weather_20]
+flares			= kich_sun_halo
+sky_texture		=	sky\sky_18_cube
+sky_rotation	=	0
+sky_color		=	0.80,   0.62,  	0.55
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=	0.48, 0.32, 0.30, 0.2, 1.7
+far_plane		=	450
+fog_distance	=	320
+fog_color		=	0.35, 0.25, 0.22
+fog_density		=	0.90
+rain_density	=	0.0
+rain_color		=	1.0,	1.0,	1.0
+thunderbolt		=
+bolt_period		=	3.f
+bolt_duration	=	0.25f
+wind_velocity	=	0.0
+wind_direction	=	0.0
+ambient			=	0.080, 0.070, 0.075
+lmap_color		=	1.0,    1.0,  	1.0
+hemi_color		=   0.62, 0.60, 0.65, 1.0
+sun_color		=	0.95, 0.45, 0.25
+sun_dir			= -9.1875, 250.0000
+env_ambient		=	ambient_env_evening
+
+; ============================================================
+;  ВЕЧЕР 20:15 — ПЕРЕХОД ОРАНЖЕВЫЙ → СИНИЙ, солнце 8°
+; ============================================================
+[default_weather_2015]
+flares			= kich_sun_halo
+sky_texture		=	sky\sky_18_cube
+sky_rotation	=	0
+sky_color		=	0.62,   0.55,  	0.58
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=	0.40, 0.30, 0.32, 0.3, 1.7
+far_plane		=	450
+fog_distance	=	310
+fog_color		=	0.28, 0.24, 0.26
+fog_density		=	0.91
+rain_density	=	0.0
+rain_color		=	1.0,	1.0,	1.0
+thunderbolt		=
+bolt_period		=	3.f
+bolt_duration	=	0.25f
+wind_velocity	=	0.0
+wind_direction	=	0.0
+ambient			=	0.068, 0.063, 0.072
+lmap_color		=	1.0,    1.0,  	1.0
+hemi_color		=   0.52, 0.52, 0.58, 1.0
+sun_color		=	0.85, 0.40, 0.22
+sun_dir			= -6.9078, 252.5000
+env_ambient		=	ambient_env_evening
+
+; ============================================================
+;  ВЕЧЕР 20:30 — СИНЕ-СЕРЫЙ, солнце ещё видно в 3° над горизонтом
+; ============================================================
+[default_weather_2030]
+flares			= kich_sun_halo
+sky_texture		=	sky\sky_18_cube
+sky_rotation	=	0
+sky_color		=	0.45,   0.50,  	0.58
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=	0.30, 0.28, 0.34, 0.4, 1.7
+far_plane		=	420
+fog_distance	=	300
+fog_color		=	0.22, 0.24, 0.30
+fog_density		=	0.92
+rain_density	=	0.0
+rain_color		=	1.0,	1.0,	1.0
+thunderbolt		=
+bolt_period		=	3.f
+bolt_duration	=	0.25f
+wind_velocity	=	0.0
+wind_direction	=	0.0
+ambient			=	0.055, 0.057, 0.065
+lmap_color		=	1.0,    1.0,  	1.0
+hemi_color		=   0.38, 0.42, 0.50, 1.0
+sun_color		=	0.30, 0.22, 0.18
+sun_dir			= -4.6134, 255.0000
+env_ambient		=	ambient_env_evening
+
+; ============================================================
+;  ВЕЧЕР 20:45 — СОЛНЦЕ КАСАЕТСЯ ГОРИЗОНТА И ДИСК ГАСНЕТ.
+;  Дальше направление переводится к точке восхода луны только при sun_color = 0.
+; ============================================================
+[default_weather_2045]
+flares			= kich_sun_halo
+sky_texture		=	sky\sky_18_cube
+sky_rotation	=	0
+sky_color		=	0.32,   0.38,  	0.48
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=	0.22, 0.22, 0.28, 0.5, 1.7
+far_plane		=	400
+fog_distance	=	280
+fog_color		=	0.16, 0.18, 0.24
+fog_density		=	0.93
+rain_density	=	0.0
+rain_color		=	1.0,	1.0,	1.0
+thunderbolt		=
+bolt_period		=	3.f
+bolt_duration	=	0.25f
+wind_velocity	=	0.0
+wind_direction	=	0.0
+ambient			=	0.042, 0.045, 0.052
+lmap_color		=	1.0,    1.0,  	1.0
+hemi_color		=   0.25, 0.28, 0.35, 1.0
+sun_color		=	0.18, 0.12, 0.08
+sun_dir			= -2.3092, 257.5000
+env_ambient		=	ambient_env_evening
+
+; ============================================================
+;  СКРЫТЫЙ ПЕРЕХОД СОЛНЦЕ -> ЛУНА
+;  Диск уже скрыт. Пока sun_color = 0, направление можно безопасно
+;  перевести на восточный горизонт без видимого перелёта по небу.
+; ============================================================
+
+[kich_weather_default_75000]
+flares            = kich_sun_halo
+sky_texture       = sky\sky_18_cube
+sky_rotation      = 0
+sky_color         = 0.2658, 0.3117, 0.3942
+clouds_texture    = sky\sky_oblaka
+clouds_color      = 0.1833, 0.1833, 0.2383, 0.48, 1.7
+far_plane         = 395
+fog_distance      = 285
+fog_color         = 0.1375, 0.1558, 0.2108
+fog_density       = 0.93
+rain_density      = 0.0
+rain_color        = 1.0, 1.0, 1.0
+thunderbolt       =
+bolt_period       = 3.f
+bolt_duration     = 0.25f
+wind_velocity     = 0.0
+wind_direction    = 0.0
+ambient           = 0.0339, 0.0367, 0.0431
+lmap_color        = 1.0, 1.0, 1.0
+hemi_color        = 0.1925, 0.22, 0.2842, 1
+sun_color         = 0.11, 0.0733, 0.0458
+sun_dir           = -1.5398, 258.3333
+env_ambient       = ambient_env_evening
+
+[kich_weather_default_75300]
+flares            = kich_sun_halo
+sky_texture       = sky\sky_18_cube
+sky_rotation      = 0
+sky_color         = 0.2167, 0.25, 0.3167
+clouds_texture    = sky\sky_oblaka
+clouds_color      = 0.15, 0.1583, 0.2, 0.45, 1.7
+far_plane         = 395
+fog_distance      = 290
+fog_color         = 0.1333, 0.15, 0.2
+fog_density       = 0.92
+rain_density      = 0.0
+rain_color        = 1.0, 1.0, 1.0
+thunderbolt       =
+bolt_period       = 3.f
+bolt_duration     = 0.25f
+wind_velocity     = 0.0
+wind_direction    = 0.0
+ambient           = 0.0258, 0.0283, 0.0342
+lmap_color        = 1.0, 1.0, 1.0
+hemi_color        = 0.1333, 0.1583, 0.2167, 0.8
+sun_color         = 0.05, 0.0333, 0.0208
+sun_dir           = -0.7700, 259.1667
+env_ambient       = ambient_env_evening
+
+; В 20:59 текстура уже лунная, но sun_color=0: смена происходит невидимо.
+
+[kich_weather_default_75540]
+flares            = kich_sun_halo
+sky_texture       = sky\sky_18_cube
+sky_rotation      = 0
+sky_color         = 0.184, 0.2147, 0.2683
+clouds_texture    = sky\sky_oblaka
+clouds_color      = 0.1227, 0.1303, 0.1687, 0.42, 1.7
+far_plane         = 400
+fog_distance      = 300
+fog_color         = 0.1457, 0.161, 0.207
+fog_density       = 0.90
+rain_density      = 0.0
+rain_color        = 1.0, 1.0, 1.0
+thunderbolt       =
+bolt_period       = 3.f
+bolt_duration     = 0.25f
+wind_velocity     = 0.0
+wind_direction    = 0.0
+ambient           = 0.0192, 0.0215, 0.0261
+lmap_color        = 1.0, 1.0, 1.0
+hemi_color        = 0.0843, 0.0997, 0.138, 0.5
+sun_color         = 0.0192, 0.0123, 0.0077
+sun_dir           = -0.1540, 259.8333
+env_ambient       = ambient_env_evening
+
+; ============================================================
+;  Переходные 03:57–03:59: луна уже дошла до линии горизонта; направление переводится
+;  к восходу солнца при нулевом sun_color, затем заранее включается
+;  солнечная текстура и остаётся невидимой до 04:00.
+; ============================================================
+
+
+[kich_weather_default_75580]
+flares            = kich_sun_halo
+sky_texture       = sky\sky_18_cube
+sky_rotation      = 0
+sky_color         = 0.1813, 0.2116, 0.2644
+clouds_texture    = sky\sky_oblaka
+clouds_color      = 0.1209, 0.1284, 0.1662, 0.42, 1.7
+far_plane         = 400
+fog_distance      = 300
+fog_color         = 0.1436, 0.1587, 0.204
+fog_density       = 0.90
+rain_density      = 0.0
+rain_color        = 1.0, 1.0, 1.0
+thunderbolt       =
+bolt_period       = 3.f
+bolt_duration     = 0.25f
+wind_velocity     = 0.0
+wind_direction    = 0.0
+ambient           = 0.0189, 0.0212, 0.0257
+lmap_color        = 1.0, 1.0, 1.0
+hemi_color        = 0.0831, 0.0982, 0.136, 0.5
+sun_color         = 0.0076, 0.0045, 0.003
+sun_dir           = -0.0513, 259.9444
+env_ambient       = ambient_env_evening
+
+; ============================================================
+;  Переходные 03:57–03:59: луна уже дошла до линии горизонта; направление переводится
+;  к восходу солнца при нулевом sun_color, затем заранее включается
+;  солнечная текстура и остаётся невидимой до 04:00.
+; ============================================================
+
+[kich_weather_default_75590]
+flares            = kich_no_disc
+sky_texture       = sky\sky_17_cube
+sky_rotation      = 0
+sky_color         = 0.1769, 0.2032, 0.2522
+clouds_texture    = sky\sky_oblaka
+clouds_color      = 0.1204, 0.128, 0.1656, 0.42, 1.7
+far_plane         = 400
+fog_distance      = 300
+fog_color         = 0.143, 0.1581, 0.2032
+fog_density       = 0.90
+rain_density      = 0.0
+rain_color        = 1.0, 1.0, 1.0
+thunderbolt       =
+bolt_period       = 3.f
+bolt_duration     = 0.25f
+wind_velocity     = 0.0
+wind_direction    = 0.0
+ambient           = 0.0188, 0.0211, 0.0256
+lmap_color        = 1.0, 1.0, 1.0
+hemi_color        = 0.0828, 0.0979, 0.1355, 0.5
+sun_color         = 0.0, 0.0, 0.0
+sun_dir           = -0.0257, 259.9722
+env_ambient       = ambient_env_evening
+
+; ============================================================
+;  Переходные 03:57–03:59: луна уже дошла до линии горизонта; направление переводится
+;  к восходу солнца при нулевом sun_color, затем заранее включается
+;  солнечная текстура и остаётся невидимой до 04:00.
+; ============================================================
+
+[kich_weather_default_75595]
+flares            = kich_no_disc
+sky_texture       = sky\sky_17_cube
+sky_rotation      = 0
+sky_color         = 0.1743, 0.1991, 0.2457
+clouds_texture    = sky\sky_oblaka
+clouds_color      = 0.1202, 0.1277, 0.1653, 0.42, 1.7
+far_plane         = 400
+fog_distance      = 300
+fog_color         = 0.1428, 0.1578, 0.2029
+fog_density       = 0.90
+rain_density      = 0.0
+rain_color        = 1.0, 1.0, 1.0
+thunderbolt       =
+bolt_period       = 3.f
+bolt_duration     = 0.25f
+wind_velocity     = 0.0
+wind_direction    = 0.0
+ambient           = 0.0188, 0.021, 0.0255
+lmap_color        = 1.0, 1.0, 1.0
+hemi_color        = 0.0827, 0.0977, 0.1352, 0.5
+sun_color         = 0.0, 0.0, 0.0
+sun_dir           = -0.0100, 330.0000
+env_ambient       = ambient_env_evening
+
+; ============================================================
+;  Переходные 03:57–03:59: луна уже дошла до линии горизонта; направление переводится
+;  к восходу солнца при нулевом sun_color, затем заранее включается
+;  солнечная текстура и остаётся невидимой до 04:00.
+; ============================================================
+
+[kich_weather_default_75598]
+flares            = kich_moon_halo
+sky_texture       = sky\sky_17_cube
+sky_rotation      = 0
+sky_color         = 0.1734, 0.1966, 0.2424
+clouds_texture    = sky\sky_oblaka
+clouds_color      = 0.1201, 0.1276, 0.1651, 0.42, 1.7
+far_plane         = 400
+fog_distance      = 300
+fog_color         = 0.1426, 0.1576, 0.2026
+fog_density       = 0.90
+rain_density      = 0.0
+rain_color        = 1.0, 1.0, 1.0
+thunderbolt       =
+bolt_period       = 3.f
+bolt_duration     = 0.25f
+wind_velocity     = 0.0
+wind_direction    = 0.0
+ambient           = 0.0188, 0.021, 0.0255
+lmap_color        = 1.0, 1.0, 1.0
+hemi_color        = 0.0826, 0.0976, 0.1351, 0.5
+sun_color         = 0.0, 0.0, 0.0
+sun_dir           = -0.0100, 58.5000
+env_ambient       = ambient_env_evening
+
+; ============================================================
+;  Переходные 03:57–03:59: луна уже дошла до линии горизонта; направление переводится
+;  к восходу солнца при нулевом sun_color, затем заранее включается
+;  солнечная текстура и остаётся невидимой до 04:00.
+; ============================================================
+[kich_weather_default_moon_0330]
+flares			= kich_moon_halo
+sky_texture		=	sky\sky_5_cube
+sky_rotation	=	0
+sky_color		=	0.400, 0.350, 0.338
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=	0.362, 0.336, 0.398, 0.425, 1.7
+far_plane		=	400
+fog_distance	=	400
+fog_color		=   0.163, 0.130, 0.133
+fog_density		=	0.85
+rain_density	=	0.0
+rain_color		=	0.33, 0.33, 0.43
+thunderbolt		=
+bolt_period		=	3.f
+bolt_duration	=	0.25f
+wind_velocity	=	0.0
+wind_direction	=	0.0
+ambient			=	0.040, 0.040, 0.045
+lmap_color		=	1.0,	1.0,	1.0
+hemi_color		=	0.275, 0.290, 0.328, 0.625
+sun_color		=	0.38, 0.38, 0.38
+sun_dir			= -3.5610, 256.7047
 env_ambient		=	ambient_env_night
 
 ; ============================================================
-;  Переходные 03:57–03:59 (луна садится, скоро рассвет)
+;  УТРО 04:00 — предрассветные сумерки
 ; ============================================================
-[kich_weather_default_14220]
+
+[kich_weather_default_moon_0345]
 flares			= kich_moon_halo
 sky_texture		=	sky\sky_9_cube
 sky_rotation	=	0
-sky_color		=	0.8,    0.8,  	0.8
+sky_color		=	0.475, 0.400, 0.381
 clouds_texture	=	sky\sky_oblaka
-clouds_color	=   0.282, 0.286, 0.341, 0.5, 1.7
+clouds_color	=	0.377, 0.333, 0.382, 0.438, 1.7
 far_plane		=	400
 fog_distance	=	400
-fog_color		=	0.137, 0.141, 0.153
+fog_color		=   0.194, 0.145, 0.144
+fog_density		=	0.85
+rain_density	=	0.0
+rain_color		=	0.33, 0.33, 0.43
+thunderbolt		=
+bolt_period		=	3.f
+bolt_duration	=	0.25f
+wind_velocity	=	0.0
+wind_direction	=	0.0
+ambient			=	0.044, 0.043, 0.048
+lmap_color		=	1.0,	1.0,	1.0
+hemi_color		=	0.338, 0.355, 0.396, 0.688
+sun_color		=	0.32, 0.32, 0.32
+sun_dir			= -1.5844, 264.1007
+env_ambient		=	ambient_env_night
+
+; ============================================================
+;  УТРО 04:00 — предрассветные сумерки
+; ============================================================
+
+[kich_weather_default_moon_0355]
+flares			= kich_moon_halo
+sky_texture		=	sky\sky_9_cube
+sky_rotation	=	0
+sky_color		=	0.525, 0.433, 0.410
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=	0.387, 0.331, 0.371, 0.446, 1.7
+far_plane		=	400
+fog_distance	=	400
+fog_color		=   0.215, 0.155, 0.151
+fog_density		=	0.85
+rain_density	=	0.0
+rain_color		=	0.33, 0.33, 0.43
+thunderbolt		=
+bolt_period		=	3.f
+bolt_duration	=	0.25f
+wind_velocity	=	0.0
+wind_direction	=	0.0
+ambient			=	0.047, 0.045, 0.050
+lmap_color		=	1.0,	1.0,	1.0
+hemi_color		=	0.379, 0.398, 0.442, 0.729
+sun_color		=	0.24, 0.24, 0.24
+sun_dir			= -0.2666, 269.0270
+env_ambient		=	ambient_env_night
+
+; ============================================================
+;  УТРО 04:00 — предрассветные сумерки
+; ============================================================
+
+[kich_weather_default_moon_035650]
+flares			= kich_moon_halo
+sky_texture		=	sky\sky_9_cube
+sky_rotation	=	0
+sky_color		=	0.534, 0.439, 0.416
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=	0.388, 0.331, 0.369, 0.447, 1.7
+far_plane		=	400
+fog_distance	=	400
+fog_color		=   0.218, 0.157, 0.153
+fog_density		=	0.85
+rain_density	=	0.0
+rain_color		=	0.33, 0.33, 0.43
+thunderbolt		=
+bolt_period		=	3.f
+bolt_duration	=	0.25f
+wind_velocity	=	0.0
+wind_direction	=	0.0
+ambient			=	0.048, 0.046, 0.050
+lmap_color		=	1.0,	1.0,	1.0
+hemi_color		=	0.387, 0.406, 0.450, 0.737
+sun_color		=	0.18, 0.18, 0.18
+sun_dir			= -0.0250, 269.9300
+env_ambient		=	ambient_env_night
+
+; ============================================================
+;  УТРО 04:00 — предрассветные сумерки
+; ============================================================
+
+[kich_weather_default_14220]
+flares			= kich_no_disc
+sky_texture		=	sky\sky_9_cube
+sky_rotation	=	0
+sky_color		=	0.535, 0.440, 0.416
+clouds_texture	=	sky\sky_oblaka
+clouds_color	=   0.389, 0.331, 0.369, 0.448, 1.7
+far_plane		=	400
+fog_distance	=	400
+fog_color		=	0.219, 0.157, 0.153
 fog_density		=	0.85
 rain_density	=	0.0
 rain_color		=	1.0,	1.0,	1.0
@@ -836,23 +1291,23 @@ bolt_period		=	3.f
 bolt_duration	=	0.25f
 wind_velocity	=	0.0
 wind_direction	=	0.0
-ambient			=	0.060, 0.062, 0.065
+ambient			=	0.048, 0.046, 0.050
 lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=   0.60, 0.625, 0.65,	1.0
-sun_color		=	0.15, 0.18, 0.25
-sun_dir			= -3.0000, 270.0000
+hemi_color		=   0.387, 0.407, 0.451, 0.738
+sun_color		=	0.0, 0.0, 0.0
+sun_dir			= -0.0100, 269.9900
 env_ambient		=	ambient_env_tuman
 
 [kich_weather_default_14280]
-flares			= kich_moon_halo
+flares			= kich_no_disc
 sky_texture		=	sky\sky_9_cube
 sky_rotation	=	0
-sky_color		=	0.8,    0.8,  	0.8
+sky_color		=	0.540, 0.443, 0.419
 clouds_texture	=	sky\sky_oblaka
-clouds_color	=   0.282, 0.286, 0.341, 0.5, 1.7
+clouds_color	=   0.390, 0.331, 0.368, 0.448, 1.7
 far_plane		=	400
 fog_distance	=	400
-fog_color		=	0.137, 0.141, 0.153
+fog_color		=	0.221, 0.158, 0.153
 fog_density		=	0.85
 rain_density	=	0.0
 rain_color		=	1.0,	1.0,	1.0
@@ -861,23 +1316,23 @@ bolt_period		=	3.f
 bolt_duration	=	0.25f
 wind_velocity	=	0.0
 wind_direction	=	0.0
-ambient			=	0.060, 0.062, 0.065
+ambient			=	0.048, 0.046, 0.051
 lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=   0.60, 0.625, 0.65,	1.0
-sun_color		=	0.15, 0.18, 0.25
-sun_dir			= -3.0000, 270.0000
+hemi_color		=   0.392, 0.411, 0.456, 0.742
+sun_color		=	0.0, 0.0, 0.0
+sun_dir			= -0.0100, 330.0000
 env_ambient		=	ambient_env_tuman
 
 [kich_weather_default_14340]
-flares			= kich_moon_halo
+flares			= kich_sun_halo
 sky_texture		=	sky\sky_9_cube
 sky_rotation	=	0
-sky_color		=	0.8,    0.8,  	0.8
+sky_color		=	0.545, 0.447, 0.422
 clouds_texture	=	sky\sky_oblaka
-clouds_color	=   0.282, 0.286, 0.341, 0.5, 1.7
+clouds_color	=   0.391, 0.331, 0.367, 0.449, 1.7
 far_plane		=	400
 fog_distance	=	400
-fog_color		=	0.137, 0.141, 0.153
+fog_color		=	0.223, 0.159, 0.154
 fog_density		=	0.85
 rain_density	=	0.0
 rain_color		=	1.0,	1.0,	1.0
@@ -886,9 +1341,10 @@ bolt_period		=	3.f
 bolt_duration	=	0.25f
 wind_velocity	=	0.0
 wind_direction	=	0.0
-ambient			=	0.060, 0.062, 0.065
+ambient			=	0.049, 0.046, 0.051
 lmap_color		=	1.0,	1.0,	1.0
-hemi_color		=   0.60, 0.625, 0.65,	1.0
-sun_color		=	0.15, 0.18, 0.25
-sun_dir			= -3.0000, 90.0000
+hemi_color		=   0.396, 0.416, 0.460, 0.746
+sun_color		=	0.0, 0.0, 0.0
+sun_dir			= -0.0100, 89.8000
 env_ambient		=	ambient_env_tuman
+

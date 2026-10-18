@@ -72,6 +72,8 @@ float ps_r2_ls_dsm_kernel = .7f;			 // r2-only
 float ps_r2_ls_psm_kernel = .7f;			 // r2-only
 float ps_r2_ls_ssm_kernel = .7f;			 // r2-only
 float ps_r2_soft_particles_distance = 0.5f; // metres in view space
+// KICH_SUN_CULL_DIAG_V7: 0 legacy, 1 two-sided, 2 front faces.
+int ps_r2_sun_shadow_cull = 0;
 int ps_r2_sun_shafts = 0; // 0 disabled, 1=12, 2=20, 3=40 shadow samples
 float ps_r2_sun_shafts_intensity = 0.6f;
 // KICH_SSAO_EX2: off by default; quality 1/2 = 6/12 taps.
@@ -350,6 +352,7 @@ void xrRender_initconsole()
 	CMD3(CCC_Mask, "r2_soft_particles", &ps_r2_ls_flags, R2FLAG_SOFT_PARTICLES);
 	CMD3(CCC_Mask, "r2_sun_stable", &ps_r2_ls_flags, R2FLAG_SUN_STABLE);
 	CMD4(CCC_Integer, "r2_sun_shafts", &ps_r2_sun_shafts, 0, 3);
+    CMD4(CCC_Integer, "r2_sun_shadow_cull", &ps_r2_sun_shadow_cull, 0, 2);
     CMD4(CCC_Integer, "r2_ssao", &ps_r2_ssao, 0, 2);
     CMD4(CCC_Integer, "r2_ssao_debug", &ps_r2_ssao_debug, 0, 5);
     CMD4(CCC_Float, "r2_ssao_radius", &ps_r2_ssao_radius, 0.1f, 2.f);

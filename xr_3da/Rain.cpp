@@ -12,6 +12,8 @@
 #include "igame_level.h"
 #include "xr_area.h"
 #include "xr_object.h"
+#include "xr_ioconsole.h"
+#include "xr_ioc_cmd.h"
 #endif
 
 static const int max_desired_items = 2500;
@@ -31,6 +33,32 @@ const int max_particles = 1000;
 const int particles_cache = 400;
 const float particles_time = .3f;
 
+#ifndef _EDITOR
+// KICH_RAINSTAT_DIAG_V1: runtime-only rain diagnostics. The command is intentionally
+// not persisted to user.ltx, because it is registered after early config loading.
+static int ps_d_rainstat = 0;
+static bool rainstat_command_registered = false;
+static u32 rainstat_last_frame = 0;
+static u32 rainstat_last_render = 0;
+
+class CCC_RainStat : public CCC_Integer
+{
+  public:
+	CCC_RainStat(LPCSTR N, int* V) : CCC_Integer(N, V, 0, 1) {}
+	virtual void Save(IWriter* F) {}
+};
+
+static void rainstat_register_command()
+{
+	if (rainstat_command_registered || !Console)
+		return;
+
+	static CCC_RainStat cmd_rainstat("d_rainstat", &ps_d_rainstat);
+	Console->AddCommand(&cmd_rainstat);
+	rainstat_command_registered = true;
+}
+#endif
+
 //////////////////////////////////////////////////////////////////////
 // Construction/Destruction
 //////////////////////////////////////////////////////////////////////
@@ -38,6 +66,10 @@ const float particles_time = .3f;
 CEffect_Rain::CEffect_Rain()
 {
 	state = stIdle;
+
+#ifndef _EDITOR
+	rainstat_register_command();
+#endif
 
 	snd_Ambient.create("ambient\\rain", st_Effect, sg_Undefined);
 
@@ -125,6 +157,7 @@ void CEffect_Rain::OnFrame()
 #ifndef _EDITOR
 	if (!g_pGameLevel)
 		return;
+	rainstat_register_command();
 #endif
 	// Parse states
 	float factor = g_pGamePersistent->Environment().CurrentEnv.rain_density;
@@ -133,6 +166,17 @@ void CEffect_Rain::OnFrame()
 	CObject* E = g_pGameLevel->CurrentViewEntity();
 	if (E && E->renderable_ROS())
 		hemi_factor = 1.f - 2.0f * (0.3f - _min(_min(1.f, E->renderable_ROS()->get_luminocity_hemi()), 0.3f));
+
+	if (ps_d_rainstat)
+	{
+		const u32 now = Device.dwTimeContinual;
+		if (now - rainstat_last_frame >= 1000)
+		{
+			rainstat_last_frame = now;
+			Msg("* [RAINSTAT][FRAME] factor=%.4f state=%d hemi=%.3f sound=%s", factor, int(state), hemi_factor,
+				snd_Ambient._feedback() ? "on" : "off");
+		}
+	}
 #endif
 
 	switch (state)
@@ -170,10 +214,24 @@ void CEffect_Rain::Render()
 #ifndef _EDITOR
 	if (!g_pGameLevel)
 		return;
+	rainstat_register_command();
+	const u32 rainstat_now = Device.dwTimeContinual;
+	const bool rainstat_due = ps_d_rainstat && (rainstat_now - rainstat_last_render >= 1000);
+#else
+	const bool rainstat_due = false;
 #endif
 	float factor = g_pGamePersistent->Environment().CurrentEnv.rain_density;
 	if (factor < EPS_L)
+	{
+#ifndef _EDITOR
+		if (rainstat_due)
+		{
+			rainstat_last_render = rainstat_now;
+			Msg("* [RAINSTAT][RENDER] factor=%.4f skipped=zero_density", factor);
+		}
+#endif
 		return;
+	}
 
 	u32 desired_items = iFloor(0.5f * (1.f + factor) * float(max_desired_items));
 	// visual
@@ -216,7 +274,7 @@ void CEffect_Rain::Render()
 		if (one.dwTime_Life < Device.dwTimeGlobal)
 			Born(one, source_radius);
 
-		// последн€€ дельта ??
+		// poslednyaya delta ??
 		//.		float xdt		= float(one.dwTime_Hit-Device.dwTimeGlobal)/1000.f;
 		//.		float dt		= Device.fTimeDelta;//xdt<Device.fTimeDelta?xdt:Device.fTimeDelta;
 		float dt = Device.fTimeDelta;
@@ -256,14 +314,14 @@ void CEffect_Rain::Render()
 						{
 							RenewItem(one, height - _sqrt(dist_sqr),
 									  TRUE); // fly to point
-											 //							Log("2",height-dist);
+										 //							Log("2",height-dist);
 						}
 					}
 					else
 					{
 						RenewItem(one, max_distance - _sqrt(dist_sqr),
 								  FALSE); // fly ...
-										  //						Log("3",1.5f*b_height-dist);
+									 //						Log("3",1.5f*b_height-dist);
 					}
 				}
 				else
@@ -318,6 +376,19 @@ void CEffect_Rain::Render()
 	u32 vCount = (u32)(verts - start);
 	RCache.Vertex.Unlock(vCount, hGeom_Rain->vb_stride);
 
+#ifndef _EDITOR
+	if (rainstat_due)
+	{
+		rainstat_last_render = rainstat_now;
+		Msg("* [RAINSTAT][RENDER] factor=%.4f desired=%u items=%u visible=%u vCount=%u draw=%s color=(%.3f,%.3f,%.3f) alpha=%.3f",
+			factor, desired_items, (u32)items.size(), vCount / 4, vCount, vCount ? "yes" : "no", f_rain_color.x,
+			f_rain_color.y, f_rain_color.z, factor_visual);
+		if (items.size() > desired_items)
+			Msg("! [RAINSTAT][WARN] items=%u > desired=%u; original Rain.cpp locks only desired*4 vertices",
+				(u32)items.size(), desired_items);
+	}
+#endif
+
 	// Render if needed
 	if (vCount)
 	{
@@ -325,6 +396,27 @@ void CEffect_Rain::Render()
 		RCache.set_xform_world(Fidentity);
 		RCache.set_Shader(SH_Rain);
 		RCache.set_Geometry(hGeom_Rain);
+
+#ifndef _EDITOR
+		if (rainstat_due)
+		{
+			DWORD zEnable = 0, zWrite = 0, alphaBlend = 0, srcBlend = 0, dstBlend = 0;
+			DWORD alphaTest = 0, alphaRef = 0, alphaFunc = 0, cullMode = 0, colorWrite = 0;
+			HW.pDevice->GetRenderState(D3DRS_ZENABLE, &zEnable);
+			HW.pDevice->GetRenderState(D3DRS_ZWRITEENABLE, &zWrite);
+			HW.pDevice->GetRenderState(D3DRS_ALPHABLENDENABLE, &alphaBlend);
+			HW.pDevice->GetRenderState(D3DRS_SRCBLEND, &srcBlend);
+			HW.pDevice->GetRenderState(D3DRS_DESTBLEND, &dstBlend);
+			HW.pDevice->GetRenderState(D3DRS_ALPHATESTENABLE, &alphaTest);
+			HW.pDevice->GetRenderState(D3DRS_ALPHAREF, &alphaRef);
+			HW.pDevice->GetRenderState(D3DRS_ALPHAFUNC, &alphaFunc);
+			HW.pDevice->GetRenderState(D3DRS_CULLMODE, &cullMode);
+			HW.pDevice->GetRenderState(D3DRS_COLORWRITEENABLE, &colorWrite);
+			Msg("* [RAINSTAT][STATE] z=%lu zwrite=%lu blend=%lu src=%lu dst=%lu atest=%lu aref=%lu afunc=%lu cull=%lu colorwrite=0x%08lX",
+				zEnable, zWrite, alphaBlend, srcBlend, dstBlend, alphaTest, alphaRef, alphaFunc, cullMode, colorWrite);
+		}
+#endif
+
 		RCache.Render(D3DPT_TRIANGLELIST, vOffset, 0, vCount, 0, vCount / 2);
 		HW.pDevice->SetRenderState(D3DRS_CULLMODE, D3DCULL_CCW);
 	}
@@ -385,7 +477,7 @@ void CEffect_Rain::Render()
 					RCache.Render(D3DPT_TRIANGLELIST, v_offset, 0, vCount_Lock, i_offset, dwNumPrimitives);
 
 					v_ptr = (IRender_DetailModel::fvfVertexOut*)RCache.Vertex.Lock(vCount_Lock, hGeom_Drops->vb_stride,
-																				   v_offset);
+																	   v_offset);
 					i_ptr = _IS.Lock(iCount_Lock, i_offset);
 
 					pcount = 0;
