@@ -1,0 +1,14 @@
+#include "kich_wet_surfaces_common.h"
+
+float4 main(float2 tc : TEXCOORD0) : COLOR
+{
+    half wet = max(kich_wet_amount(tc),kich_wall_amount(tc)*0.75h);
+    half puddle = kich_puddle_amount(tc);
+
+    half wet_factor = 1.0h - wet_params.y * wet;
+    half puddle_factor = 1.0h - wet_puddle.w * puddle * (0.75h + 0.25h * puddle);
+    half factor = wet_factor * puddle_factor;
+
+    // Multiplicative blend: RGB darkens; A=1 preserves current gloss.
+    return float4(factor, factor, factor, 1.0h);
+}

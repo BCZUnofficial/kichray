@@ -1,7 +1,18 @@
 #include "stdafx.h"
 
+extern void kich_wet_surfaces_render();
+extern void kich_wet_objects_finish();
+
 void CRenderTarget::phase_accumulator()
 {
+	// KICH_WET_V1: run once per frame, after the G-buffer/wallmarks exist
+	// and immediately before the first lighting accumulation pass.
+	if (dwAccumulatorClearMark != Device.dwFrame)
+	{
+		kich_wet_surfaces_render();
+		kich_wet_objects_finish(); // restore stencil before light markers
+	}
+
 	// Targets
 	if (dwAccumulatorClearMark == Device.dwFrame)
 	{

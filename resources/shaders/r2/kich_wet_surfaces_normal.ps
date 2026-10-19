@@ -1,0 +1,285 @@
+#include "kich_wet_surfaces_common.h"
+
+float2 kich_hash2(float2 p)
+{
+    float2 h;
+    h.x = frac(sin(dot(p, float2(127.1f, 311.7f))) * 43758.5453f);
+    h.y = frac(sin(dot(p, float2(269.5f, 183.3f))) * 43758.5453f);
+    return h;
+}
+
+float kich_hash1(float2 p)
+{
+    return frac(sin(dot(p, float2(91.7f, 219.3f))) * 15731.743f);
+}
+
+float2 kich_ripple_layer(float2 worldXZ, float time_phase, float scale, float seed)
+{
+    float2 uv = worldXZ * scale;
+    float2 cell = floor(uv);
+    float2 local = frac(uv);
+
+    // V2.5: spawn sequence changes every cycle.
+    // The same world cell no longer reuses one permanent impact point.
+    float base_jitter = kich_hash1(cell + float2(seed * 7.1f, seed * 13.7f));
+    float phase = time_phase + base_jitter * 0.87f + seed * 0.113f;
+    float cycle = floor(phase);
+    float age = frac(phase);
+
+    float2 cycle_key = cell + float2(cycle * 17.31f + seed * 3.7f,
+                                     cycle * 29.17f - seed * 5.1f);
+    float2 rnd = kich_hash2(cycle_key);
+    float life_rnd = kich_hash1(cycle_key + float2(19.7f, -11.3f));
+
+    // Keep the entire ring inside its cell instead of clipping a radius
+    // of up to 0.9 cells at a random cell boundary.
+    float2 center = 0.35f + rnd * 0.30f;
+    float edge = min(min(center.x, center.y), min(1.0f-center.x, 1.0f-center.y));
+    float radius = age * max(edge - 0.085f, 0.05f);
+
+    float2 delta = local - center;
+    float dist2 = dot(delta, delta);
+    float inv_dist = rsqrt(max(dist2, 0.0001f));
+    float dist = dist2 * inv_dist;
+    float2 dir = delta * inv_dist;
+
+    float sharpness = max(wet_timing.y, 0.50f);
+    float half_width = 0.032f / sharpness;
+    float aa = max(fwidth(dist) * 1.35f, 0.0025f);
+
+    float sd0 = dist - radius;
+    float band0 = 1.0f - smoothstep(half_width, half_width + aa, abs(sd0));
+    float side0 = step(0.0f, sd0) * 2.0f - 1.0f;
+
+    float radius1 = max(radius - 0.088f, 0.0f);
+    float sd1 = dist - radius1;
+    float band1 = 1.0f - smoothstep(half_width * 0.78f,
+                                    half_width * 0.78f + aa, abs(sd1));
+    float side1 = step(0.0f, sd1) * 2.0f - 1.0f;
+
+    // Zero at both cycle endpoints; no hard restart with residual amplitude.
+    float life = smoothstep(0.0f, 0.08f, age) *
+                 (1.0f - smoothstep(0.48f, 1.0f, age));
+    float footprint = max(length(ddx(uv)), length(ddy(uv)));
+    float detail = 1.0f - smoothstep(0.08f, 0.30f, footprint);
+    float cell_edge = min(min(local.x, local.y), min(1.0f-local.x, 1.0f-local.y));
+    float cell_fade = smoothstep(0.0f, 0.04f, cell_edge);
+
+    // Random cycle amplitude + occasional almost-missed drop.
+    float activity = smoothstep(0.12f, 0.38f, life_rnd);
+    float amplitude = (0.72f + life_rnd * 0.45f) * activity;
+
+    float wave = (band0 * side0 + band1 * side1 * 0.42f) * life * amplitude;
+    return dir * (wave * detail * cell_fade);
+}
+
+float2 kich_bubble_layer(float2 worldXZ, float time_phase, float scale, float seed)
+{
+    float2 uv = worldXZ * scale;
+    float2 cell = floor(uv);
+    float2 local = frac(uv);
+
+    float base_jitter = kich_hash1(cell + float2(seed * 2.9f, seed * 8.3f));
+    float phase = time_phase + base_jitter * 0.91f + seed * 0.37f;
+    float cycle = floor(phase);
+    float age = frac(phase);
+
+    float2 key = cell + float2(cycle * 23.41f + seed * 4.3f,
+                               cycle * 11.79f - seed * 7.1f);
+    float2 rnd = kich_hash2(key);
+
+    float2 center = 0.22f + rnd * 0.56f;
+    float2 delta = local - center;
+    float dist2 = dot(delta, delta);
+    float inv_dist = rsqrt(max(dist2, 0.0001f));
+    float dist = dist2 * inv_dist;
+    float2 dir = delta * inv_dist;
+
+    // Tiny short-lived local dimple: it pulses but does NOT expand.
+    float size = 0.105f + rnd.y * 0.035f;
+    float aa = max(fwidth(dist) * 1.2f, 0.003f);
+    float core = 1.0f - smoothstep(size, size + aa, dist);
+
+    float pulse = sin(age * 3.14159265f);
+    pulse = pulse * pulse;
+
+    float footprint = max(length(ddx(uv)), length(ddy(uv)));
+    float detail = 1.0f - smoothstep(0.06f, 0.24f, footprint);
+    float cell_edge = min(min(local.x, local.y), min(1.0f-local.x, 1.0f-local.y));
+    return dir * (core * pulse * detail * smoothstep(0.0f, 0.04f, cell_edge));
+}
+
+float4 main(float2 tc : TEXCOORD0) : COLOR
+{
+    float4 P = tex2D(s_position, tc);
+    float4 N4 = tex2D(s_normal, tc);
+    float3 N = normalize(N4.xyz);
+
+    half wet = kich_wet_amount_from(P, N, tc);
+
+    float3 up_view = normalize(wet_up_view.xyz);
+    float3 axisX = normalize(wet_world_x_view.xyz);
+    float3 axisZ = normalize(wet_world_z_view.xyz);
+
+    float wx = dot(P.xyz, axisX) + wet_camera_world.x;
+    float wz = dot(P.xyz, axisZ) + wet_camera_world.z;
+    float2 worldXZ = float2(wx, wz);
+
+    float t = wet_motion.x;
+
+    // Macro geometric normal used for mode classification.
+    float3 geomN = kich_geom_normal(P, N);
+
+    float geom_up = saturate(dot(geomN, up_view));
+
+    // Hard conceptual split with a soft transition:
+    // nearly flat -> full ripple rings only;
+    // sloped -> coherent runoff + tiny non-propagating bubbles.
+    float flat_mode = smoothstep(0.90f, 0.96f, geom_up);
+    float slope_mode = (1.0f - flat_mode) * smoothstep(0.16f, 0.58f, geom_up);
+
+    // ---------------------------------------------------------------
+    // 1) Base wet micro-normal.
+    // ---------------------------------------------------------------
+    float base_t = t * wet_timing.x;
+    float f = wet_motion.y;
+
+    float sx =
+          sin(wx * (0.93f * f) + wz * (0.31f * f) + base_t * 1.11f)
+        + 0.50f * sin(wx * (1.73f * f) - wz * (0.69f * f) - base_t * 0.73f)
+        + 0.25f * cos(wx * (2.41f * f) + wz * (1.27f * f) + base_t * 0.47f);
+
+    float sz =
+          cos(wz * (1.07f * f) - wx * (0.27f * f) + base_t * 0.91f)
+        + 0.50f * cos(wz * (1.89f * f) + wx * (0.73f * f) - base_t * 0.62f)
+        + 0.25f * sin(wz * (2.57f * f) - wx * (1.19f * f) + base_t * 0.39f);
+
+    float3 base_perturb =
+        (axisX * sx + axisZ * sz) * (wet_motion.z * 0.32f);
+
+    // ---------------------------------------------------------------
+    // 2) FLAT MODE: full random expanding rings only.
+    // ---------------------------------------------------------------
+    float ripple_time = t * wet_water.y * 1.75f;
+
+    float2 rippleA = kich_ripple_layer(worldXZ,
+                                       ripple_time, 1.55f, 0.17f);
+    float2 rippleB = kich_ripple_layer(worldXZ + float2(7.13f, -3.71f),
+                                       ripple_time * 0.91f + 0.37f, 2.05f, 2.91f);
+    float2 rippleC = kich_ripple_layer(worldXZ + float2(-4.31f, 8.67f),
+                                       ripple_time * 1.13f + 0.19f, 1.16f, 5.27f);
+
+    float2 ripple_vec =
+        rippleA +
+        rippleB * 0.72f +
+        rippleC * 0.58f;
+
+    float3 ripple_perturb =
+        (axisX * ripple_vec.x + axisZ * ripple_vec.y) *
+        (wet_water.x * flat_mode * 1.55f);
+
+    // ---------------------------------------------------------------
+    // 3) SLOPE MODE: visible coherent runoff.
+    // ---------------------------------------------------------------
+    float3 gravity_view = -up_view;
+    float3 downhill_raw = gravity_view - geomN * dot(gravity_view, geomN);
+    float downhill_len2 = dot(downhill_raw, downhill_raw);
+    float3 downhill = downhill_raw * rsqrt(max(downhill_len2, 0.0001f));
+
+    float dx = dot(downhill, axisX);
+    float dz = dot(downhill, axisZ);
+    float2 downXZ_raw = float2(dx, dz);
+    float downXZ_len2 = dot(downXZ_raw, downXZ_raw);
+    float2 downXZ = downXZ_raw * rsqrt(max(downXZ_len2, 0.0001f));
+    float2 crossXZ = float2(-downXZ.y, downXZ.x);
+
+    float along = dot(worldXZ, downXZ);
+    float across = dot(worldXZ, crossXZ);
+
+    float flow_time = t * wet_water.w;
+
+    // Continuous streaks: motion travels down the roof while channels
+    // never disappear into isolated dots.
+    float bend =
+          sin(along * 0.64f - flow_time * 0.92f) * 0.46f
+        + sin(along * 0.23f - flow_time * 0.31f) * 0.18f;
+
+    float lane_phase = across * 4.75f + bend;
+    float lane_distance = abs(sin(lane_phase));
+
+    // Re-map old sharpness values so 0.5 is already clear/visible.
+    float sharp01 = saturate((wet_timing.z - 0.50f) / 2.50f);
+    float lane_width = lerp(0.34f, 0.10f, sharp01);
+    float lane_aa = max(fwidth(lane_distance) * 1.15f, 0.006f);
+
+    float channel =
+        1.0f - smoothstep(lane_width, lane_width + lane_aa, lane_distance);
+
+    float lane_slope = cos(lane_phase) * channel;
+
+    // A broad non-zero longitudinal component makes the stream read as
+    // flowing water without fragmenting into beads.
+    float long_wave = sin(along * 3.15f - flow_time * 4.8f);
+    float long_mod = 0.72f + 0.28f * sin(along * 0.72f - flow_time * 1.35f);
+
+    float3 cross_view = normalize(
+        axisX * crossXZ.x + axisZ * crossXZ.y + up_view * 0.0001f);
+
+    float3 flow_perturb =
+        (cross_view * (lane_slope * 1.05f) +
+         downhill * (long_wave * 0.34f * long_mod + 0.10f)) *
+        (wet_water.z * slope_mode * 2.15f);
+
+    // ---------------------------------------------------------------
+    // 4) SLOPE MODE: tiny local bubbling, no expanding circles.
+    // ---------------------------------------------------------------
+    float bubble_time = t * wet_extra.y * 1.35f;
+
+    float2 bubbleA = kich_bubble_layer(worldXZ,
+                                       bubble_time, 4.6f, 1.13f);
+    float2 bubbleB = kich_bubble_layer(worldXZ + float2(2.7f, -6.1f),
+                                       bubble_time * 1.21f + 0.23f, 6.2f, 3.71f);
+
+    float2 bubble_vec = bubbleA + bubbleB * 0.65f;
+
+    // Local tangent-plane dimple. It appears/disappears in place,
+    // so there is no "wave travelling uphill".
+    float3 bubble_perturb =
+        (axisX * bubble_vec.x + axisZ * bubble_vec.y) *
+        (wet_extra.x * slope_mode);
+
+    float footprint_world = max(length(ddx(worldXZ)), length(ddy(worldXZ)));
+    float micro_detail = 1.0f - smoothstep(0.6f, 2.5f, footprint_world * f);
+    float flow_detail = 1.0f - smoothstep(0.08f, 0.35f, footprint_world);
+    float3 perturb =
+        (base_perturb * micro_detail + ripple_perturb +
+         flow_perturb * flow_detail + bubble_perturb) * wet;
+
+    float3 wetN = normalize(N + perturb);
+
+    // ---------------------------------------------------------------
+    // 5) V3 PUDDLES:
+    // accumulated water survives after rain, expands while filling and
+    // contracts while drying. A puddle surface tends toward world-up,
+    // producing a broad water-like highlight.
+    // ---------------------------------------------------------------
+    half puddle = kich_puddle_amount_from(P, N, worldXZ);
+
+    // V3.2: reduce mirror-like noon blowout and soften the shoreline.
+    float puddle_core = smoothstep(0.18f, 0.88f, puddle);
+
+    // V3.4: specular-normal detail dies before the puddle mask itself.
+    // This prevents far directional-light stair/banding from being amplified
+    // by an artificially flattened water normal.
+    float puddle_view_fade =
+        1.0f - smoothstep(12.0f, 20.0f, length(P.xyz));
+
+    float puddle_flatten =
+        saturate(wet_puddle2.x * puddle_core * 0.58f * puddle_view_fade);
+
+    float3 puddleN = normalize(lerp(wetN, up_view, puddle_flatten));
+
+    // During active rain the existing drop rings already disturb puddles.
+    // After rain stops they settle into a calmer, flatter surface.
+    return float4(puddleN, N4.a);
+}

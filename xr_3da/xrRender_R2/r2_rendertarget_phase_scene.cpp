@@ -1,8 +1,12 @@
 #include "stdafx.h"
 
+extern bool kich_wet_geometry_pass;
+extern void kich_wet_objects_tick();
+
 // startup
 void CRenderTarget::phase_scene_prepare()
 {
+	kich_wet_objects_tick();
 	// The original position target is not cleared at sky pixels. Clear it only
 	// when soft particles sample it, otherwise stale geometry can fade smoke.
 	if (ps_r2_ls_flags.test(R2FLAG_SOFT_PARTICLES) || ps_r2_sun_shafts > 0 || ps_r2_ssao > 0)
@@ -18,6 +22,7 @@ void CRenderTarget::phase_scene_prepare()
 // begin
 void CRenderTarget::phase_scene_begin()
 {
+	kich_wet_geometry_pass = true;
 	// Targets, use accumulator for temporary storage
 	if (RImplementation.o.albedo_wo)
 		u_setrt(rt_Position, rt_Normal, rt_Accumulator, HW.pBaseZB);
@@ -51,6 +56,7 @@ void CRenderTarget::disable_aniso()
 // end
 void CRenderTarget::phase_scene_end()
 {
+	kich_wet_geometry_pass = false;
 	if (!RImplementation.o.albedo_wo)
 		return;
 

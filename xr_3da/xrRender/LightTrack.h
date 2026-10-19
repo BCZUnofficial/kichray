@@ -33,6 +33,11 @@ class CROS_impl : public IRender_ObjectSpecific
 	u32 MODE;
 	u32 dwFrame;
 	u32 dwFrameSmooth;
+	float kich_wet_level;
+	u32 kich_wet_frame;
+	u32 kich_wet_time;
+	u32 kich_wet_probe;
+	bool kich_wet_exposed;
 
 	//
 	xr_vector<Item> track;	 // everything what touches

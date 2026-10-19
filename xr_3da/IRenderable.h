@@ -28,4 +28,5 @@ class ENGINE_API IRenderable
 	{
 		return FALSE;
 	};
+	virtual BOOL renderable_WetDrips() const { return FALSE; }
 };

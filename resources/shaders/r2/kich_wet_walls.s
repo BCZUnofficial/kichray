@@ -1,0 +1,10 @@
+function normal(shader, t_base, t_second, t_detail)
+    shader:begin("null", "kich_wet_walls")
+        :fog(false)
+        :zb(false, false)
+        :blend(false, blend.one, blend.zero)
+        :sorting(2, false)
+    shader:sampler("s_position"):texture("$user$position"):clamp():f_none()
+    shader:sampler("s_normal"):texture("$user$normal"):clamp():f_none()
+    shader:sampler("s_rain_smap"):texture("$user$kich_rain_smap_depth"):clamp():f_linear()
+end

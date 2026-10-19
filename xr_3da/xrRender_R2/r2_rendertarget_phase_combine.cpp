@@ -2,6 +2,8 @@
 #include "..\igame_persistent.h"
 #include "..\environment.h"
 
+void kich_wet_lens_render(bool active);
+
 #define STENCIL_CULL 0
 
 float hclip(float v, float dim)
@@ -161,6 +163,9 @@ void CRenderTarget::phase_combine()
 		if (g_pGamePersistent)
 			g_pGamePersistent->OnRenderPPUI_main(); // PP-UI
 	}
+
+	// Lens refraction of generic0 before bloom/distortion.
+	kich_wet_lens_render(!_menu_pp);
 
 	// Perform blooming filter and distortion if needed
 	RCache.set_Stencil(FALSE);

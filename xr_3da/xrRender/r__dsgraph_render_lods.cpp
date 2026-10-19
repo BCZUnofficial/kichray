@@ -18,6 +18,9 @@ ICF bool pred_dot(const std::pair<float, u32>& _1, const std::pair<float, u32>& 
 }
 void R_dsgraph_structure::r_dsgraph_render_lods(bool _setup_zb, bool _clear)
 {
+#if RENDER == R_R2
+	RImplementation.apply_object(0); // LODs belong to the static environment
+#endif
 	if (_setup_zb)
 		mapLOD.getLR(lstLODs); // front-to-back
 	else

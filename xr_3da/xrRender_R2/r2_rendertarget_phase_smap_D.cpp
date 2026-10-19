@@ -65,3 +65,7 @@ void CRenderTarget::phase_smap_direct_tsh(light* L, u32 sub_phase)
 	RCache.set_ColorWriteEnable();
 	CHK_DX(HW.pDevice->Clear(0L, NULL, D3DCLEAR_TARGET, _clr, 1.0f, 0L));
 }
+
+// Kept out of the vcproj intentionally: it is compiled as part of this
+// translation unit, so the old VS project file does not need to be edited.
+#include "r2_wet_surfaces.cpp"

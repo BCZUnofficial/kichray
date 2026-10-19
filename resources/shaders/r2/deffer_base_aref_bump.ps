@@ -1,5 +1,6 @@
 #include "common.h"
 #include "sload.h"
+#include "kich_object_wet.h"
 
 f_deffer 	main	( p_bumped I )
 {
@@ -31,5 +32,8 @@ f_deffer 	main	( p_bumped I )
   	O.position	= half4 	(I.position.xyz + Ne*S.height*def_virtualh, ms);
   	O.C			= half4		(S.base.x,S.base.y,S.base.z,				S.gloss);		// OUT: rgb.gloss
 
-	return 	O	;
+	O.C = kich_object_material(O.C);
+  kich_object_drips(O, I.position.xyz);
+  return O;
 }
+

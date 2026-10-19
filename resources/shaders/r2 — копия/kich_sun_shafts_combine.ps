@@ -1,0 +1,42 @@
+// Test E: zero-cleared sky is not geometry closer than 30 cm.
+// EX1 Test D: compare integrated path lengths, not sky/surface labels.
+// Requires the Test C marcher (180 m radial integration limit).
+#include "common.h"
+uniform sampler2D s_kich_shafts;
+uniform float4 kich_shafts_texel;
+
+float shaft_distance(float3 position)
+{
+    // Must match sceneDistance and the radial cap in accum_volumetric_sun.ps.
+    float geometry = step(0.00001f, position.z);
+    return lerp(180.0f, min(length(position), 180.0f), geometry);
+}
+
+float4 gather_shaft(float2 uv, float referenceDistance, float spatialWeight)
+{
+    float distance = shaft_distance(tex2D(s_position, uv).xyz);
+    float tolerance = max(0.02f, referenceDistance*0.02f);
+    float difference = abs(distance-referenceDistance);
+    // A nearby surface must still reject a long background integration path.
+    float accepted = step(difference, tolerance);
+    float weight = spatialWeight*accepted/(1.0f+difference/tolerance);
+    return float4(tex2D(s_kich_shafts,uv).rgb*weight,weight);
+}
+
+float4 main(float2 tc : TEXCOORD0) : COLOR
+{
+    float distance = shaft_distance(tex2D(s_position,tc).xyz);
+    float2 texel = kich_shafts_texel.xy;
+    float2 center = (floor(tc/texel)+0.5f)*texel;
+    float2 lo=texel*0.5f, hi=1.0f-lo;
+    float4 sum = gather_shaft(clamp(center,lo,hi),distance,4.0f);
+    sum += gather_shaft(clamp(center+float2(-texel.x,0),lo,hi),distance,2.0f);
+    sum += gather_shaft(clamp(center+float2( texel.x,0),lo,hi),distance,2.0f);
+    sum += gather_shaft(clamp(center+float2(0,-texel.y),lo,hi),distance,2.0f);
+    sum += gather_shaft(clamp(center+float2(0, texel.y),lo,hi),distance,2.0f);
+    sum += gather_shaft(clamp(center+float2(-texel.x,-texel.y),lo,hi),distance,1.0f);
+    sum += gather_shaft(clamp(center+float2( texel.x,-texel.y),lo,hi),distance,1.0f);
+    sum += gather_shaft(clamp(center+float2(-texel.x, texel.y),lo,hi),distance,1.0f);
+    sum += gather_shaft(clamp(center+float2( texel.x, texel.y),lo,hi),distance,1.0f);
+    return float4(sum.rgb/max(sum.a,0.0001f),0.0f);
+}

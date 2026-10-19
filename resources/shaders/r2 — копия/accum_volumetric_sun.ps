@@ -1,0 +1,66 @@
+// Test E: zero-cleared sky is not geometry closer than 30 cm.
+// EX1 Sky/Attenuation Test C. Requires kich_shafts_camera from the matching R2 patch.
+// KICH_SHAFTS_OCCLUSION_V5: per-sample shadowing, no global source gate.
+#include "common.h"
+#include "shadow.h"
+uniform float4 kich_sun_shafts_params;
+// xy: inverse camera projection scale; zw: inverse shaft RT size.
+uniform float4 kich_shafts_camera;
+
+float4 main(float2 tc : TEXCOORD0, float2 unusedJitter : TEXCOORD1) : COLOR
+{
+    float3 position = tex2D(s_position, tc).xyz;
+    float geometry = step(0.00001f, position.z);
+    float3 skyRay = float3((2.0f*tc.x-1.0f)*kich_shafts_camera.x,
+                          (1.0f-2.0f*tc.y)*kich_shafts_camera.y, 1.0f);
+    // Preserve the previously working G-buffer direction on geometry.
+    float3 ray = normalize(lerp(skyRay, position, geometry));
+    float cosZ = max(ray.z, 0.01f);
+    float sceneDistance = lerp(180.0f, length(position), geometry);
+    float startDistance = max(0.05f, kich_sun_shafts_params.z / cosZ);
+    float endDistance = min(min(sceneDistance, 180.0f), kich_sun_shafts_params.w / cosZ);
+    float distanceSpan = max(0.0f, endDistance-startDistance);
+    float alignment = saturate((dot(ray, normalize(-Ldynamic_dir.xyz))+0.05f)/1.05f);
+    float phase = alignment*alignment*alignment*alignment;
+    float samples = clamp(kich_sun_shafts_params.x, 1.0f, 12.0f);
+    // EX1 sends 4/8/12 for modes 1/2/3. Upgrade only the highest mode.
+    samples = (samples > 11.5f) ? 16.0f : samples;
+    float stride = distanceSpan / samples;
+    // Analytic extinction weights per bin; both cascades share distance from camera.
+    float transmission = exp(-0.006f*startDistance);
+    float stepTransmission = exp(-0.006f*stride);
+    float visibility = 0.0f;
+    float2 pixel = floor(tc / max(kich_shafts_camera.zw, 0.000001f));
+    float jitter = frac(52.9829189f * frac(dot(pixel, float2(0.06711056f,0.00583715f))));
+    float4 shadowBase = mul(m_shadow, float4(ray*startDistance,1.0f));
+    float4 shadowStep = mul(m_shadow, float4(ray*stride,0.0f));
+    if (distanceSpan > 0.001f && phase > 0.0001f)
+    {
+        for (int i=0; i<16; ++i)
+        {
+            if (i < samples)
+            {
+                // Different sub-bin offset per step, stable in time (no temporal flicker).
+                float offset = frac(jitter + float(i)*0.61803398875f);
+                float4 q = shadowBase + shadowStep*offset;
+                if (q.w > 0.001f)
+                {
+                    float3 projected = q.xyz/q.w;
+                    float edge = 2.0f/float(SMAP_size);
+                    if (projected.x >= edge && projected.x <= 1.0f-edge &&
+                        projected.y >= edge && projected.y <= 1.0f-edge &&
+                        projected.z >= 0.0f && projected.z <= 1.0f)
+                    {
+                        visibility += shadow(q)*transmission*(1.0f-stepTransmission);
+                    }
+                }
+                transmission *= stepTransmission;
+                shadowBase += shadowStep;
+            }
+        }
+    }
+
+    // Bounded single-scattering approximation; not full atmospheric transport.
+    return float4(max(Ldynamic_color.rgb,0.0f)*visibility*phase*
+                  kich_sun_shafts_params.y*0.45f, 0.0f);
+}

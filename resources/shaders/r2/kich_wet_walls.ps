@@ -1,0 +1,88 @@
+#include "kich_wet_surfaces_common.h"
+// Arithmetic hash avoids coherent sine bands in regularly spaced wall cells.
+float wall_hash(float2 p)
+{
+    float3 h=frac(float3(p.x,p.y,p.x)*0.1031f);
+    h+=dot(h,h.yzx+33.33f);
+    return frac((h.x+h.y)*h.z);
+}
+float3 wall_bead(float2 p)
+{
+    float pixel_world=max(length(ddx(p)),length(ddy(p)));
+    float2 spacing=float2(0.042666667f,1.f);
+    // Stagger horizontal lanes independently in every world-height band.
+    float row=floor(p.y);
+    p.x+=wall_hash(float2(row,17.3f))*spacing.x;
+    float2 cell=floor(p/spacing);
+    float phase=wall_hash(cell+float2(7.13f,23.71f));
+    // V3.17: every wall drop uses the established long-lived tail variant.
+    const float tailed=1.f;
+    float period_variation=lerp(0.80f,1.f,wall_hash(cell+float2(19.3f,43.7f)));
+    float lifetime=clamp(wet_wall.z,1.5f,4.f)*period_variation*lerp(1.f,1.6f,tailed);
+    float clock=wet_motion.x/lifetime+phase;
+    float cycle=floor(clock);
+    float age=frac(clock);
+    float2 key=cell+float2(cycle*17.31f,cycle*29.17f);
+    float size_rnd=wall_hash(key+float2(3.7f,11.1f));
+    float speed_rnd=wall_hash(key+float2(41.3f,7.9f));
+    float horizontal=wall_hash(key+float2(9.1f,71.3f));
+    float birth=wall_hash(key+float2(61.7f,13.3f))*0.12f;
+    float end=lerp(0.87f,0.95f,wall_hash(key+float2(21.7f,81.3f)));
+    float elapsed=max(age-birth,0.f)*lifetime;
+    float width=lerp(wet_wall_limits.x,wet_wall_limits.y,size_rnd);
+    float speed=lerp(wet_wall_limits.z,wet_wall_limits.w,speed_rnd)*lerp(1.f,0.4f,tailed);
+    float base_radius=width*0.5f;
+    float filtered_radius=min(0.015f,max(base_radius,pixel_world*0.60f));
+    float2 radius=float2(filtered_radius,filtered_radius*1.5f);
+    float coverage_gain=lerp(0.70f,1.f,saturate(base_radius/filtered_radius));
+    // Random starting heights without crossing the cell at any legal speed.
+    float start_min=0.05f+speed*lifetime*0.95f;
+    float start_max=lerp(0.95f,0.85f,tailed);
+    float start_y=lerp(start_min,start_max,wall_hash(key+float2(51.9f,37.3f)));
+    float2 center=float2(0.0185f+horizontal*0.005666667f,start_y-speed*elapsed);
+    float2 delta=p-cell*spacing-center;
+    float2 q=delta/radius;
+    float r2=dot(q,q);
+    float fade_start=lerp(0.66f,0.46f,tailed);
+    float life=smoothstep(birth,birth+0.08f,age)*(1.f-smoothstep(fade_start,end,age));
+    float footprint=pixel_world/filtered_radius;
+    float aa=clamp(footprint*0.5f,0.08f,0.65f)/1.5f;
+    float lod=(1.f-smoothstep(1.5f,4.f,footprint))*coverage_gain;
+    float bead=(1.f-smoothstep(1.f-aa,1.f+aa,r2))*life*lod;
+    float dome=bead*rsqrt(max(0.20f,1.f-saturate(r2)*0.8f));
+    // Tail stays behind the falling head, stretches gradually, then fades.
+    float tail_length=lerp(0.008f,0.09f,smoothstep(birth,0.60f,age));
+    float along=saturate(delta.y/tail_length);
+    float tail_width=radius.x*lerp(0.65f,0.12f,along);
+    float cross=delta.x/max(tail_width,0.0003f);
+    float tail=(1.f-smoothstep(0.35f,1.25f,cross*cross))*
+        smoothstep(0.f,radius.y*0.5f,delta.y)*(1.f-smoothstep(0.40f,1.f,along));
+    tail*=tailed*life*lod;
+    float2 slope=q*dome+float2(cross*tail*0.55f,tail*0.16f);
+    return float3(slope,max(bead,tail));
+}
+float4 main(float2 tc:TEXCOORD0):COLOR
+{
+    float4 P=tex2D(s_position,tc);
+    float4 N4=tex2D(s_normal,tc);
+    float3 N=normalize(N4.xyz);
+    float wet=kich_wall_amount_from(P,N);
+    float3 up=normalize(wet_up_view.xyz);
+    float3 axisX=normalize(wet_world_x_view.xyz);
+    float3 axisZ=normalize(wet_world_z_view.xyz);
+    float x=dot(P.xyz,axisX)+wet_camera_world.x;
+    float y=dot(P.xyz,up)+wet_camera_world.y;
+    float z=dot(P.xyz,axisZ)+wet_camera_world.z;
+    float3 bx=wall_bead(float2(x,y));
+    float3 bz=wall_bead(float2(z+0.071f,y+0.137f));
+    float nx=dot(N,axisX),nz=dot(N,axisZ);
+    float2 weight=float2(nz*nz,nx*nx);
+    weight*=weight;
+    weight/=max(weight.x+weight.y,0.0001f);
+    float3 gradient=weight.x*(axisX*bx.x+up*bx.y)+weight.y*(axisZ*bz.x+up*bz.y);
+    gradient-=N*dot(N,gradient);
+    float detail=1.f-smoothstep(14.f,26.f,length(P.xyz));
+    float3 result=normalize(N+gradient*(wet*wet_wall.y*3.45f*detail));
+    // Preserve bits outside the mask; flat ground/puddles remain unchanged.
+    return float4(lerp(N4.xyz,result,step(0.00001f,wet)*step(0.00001f,detail)),N4.a);
+}

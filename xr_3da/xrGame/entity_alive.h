@@ -22,6 +22,10 @@ class CEntityAlive : public CEntity
 	{
 		return this;
 	}
+	virtual BOOL renderable_WetDrips() const
+	{
+		return human_being() && g_Alive();
+	}
 
   public:
 	bool m_bMobility;

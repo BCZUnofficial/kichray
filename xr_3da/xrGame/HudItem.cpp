@@ -92,8 +92,11 @@ void CHudItem::renderable_Render()
 		// HUD render
 		if (m_bRenderHud)
 		{
+			// Keep item identity for renderer-owned wetness, including HUD models.
+			::Render->set_Object(&object());
 			::Render->set_Transform(&m_pHUD->Transform());
 			::Render->add_Visual(m_pHUD->Visual());
+			::Render->set_Object(0);
 		}
 	}
 	else

@@ -1,0 +1,72 @@
+#include "common.h"
+sampler2D s_lens_scene;
+uniform float4 kich_lens_params; // density, strength, time, aspect
+uniform float4 kich_lens_pixel; // inverse resolution, blur, reserved
+uniform float4 kich_lens_birth0, kich_lens_birth1, kich_lens_birth2, kich_lens_birth3;
+float lens_birth_density(float age)
+{
+    float birth_time=kich_lens_params.z-age/0.32f;
+    float index=floor(kich_lens_params.z*4.f)-floor(birth_time*4.f);
+    float4 cohort=kich_lens_birth0;
+    if (index>=12.f) cohort=kich_lens_birth3;
+    else if (index>=8.f) cohort=kich_lens_birth2;
+    else if (index>=4.f) cohort=kich_lens_birth1;
+    float slot=index-floor(index*0.25f)*4.f;
+    float4 selector=1.f-saturate(abs(float4(0.f,1.f,2.f,3.f)-slot));
+    return dot(cohort,selector);
+}
+// V3.12: rounded aperture bokeh. xy: slope, z: coverage, w: reflection.
+float4 lens_beads(float2 uv,float scale,float offset)
+{
+    float2 p=float2(uv.x*kich_lens_params.w,uv.y)*scale;
+    float2 cell=floor(p);
+    float seed=frac(sin(dot(cell,float2(127.1f,311.7f))+offset)*43758.5453f);
+    float phase=frac(sin(dot(cell,float2(41.7f,73.3f))+offset+9.f)*15731.7f);
+    float age=frac(kich_lens_params.z*0.32f+phase);
+    float life=smoothstep(0.f,0.12f,age)*(1.f-smoothstep(0.60f,0.90f,age));
+    float present=smoothstep(seed*0.94f,seed*0.94f+0.06f,lens_birth_density(age));
+    float2 center=float2(0.27f+0.46f*frac(seed*7.3f),0.30f+age*0.30f);
+    float variation=frac(phase*11.7f);
+    float size=0.65f+0.60f*variation;
+    // Aspect compensation is already applied to p: circular on screen.
+    float2 q=(frac(p)-center)/(0.17f*size);
+    float2 aq=abs(q);
+    float circle=length(q);
+    float octagon=max(max(aq.x,aq.y),(aq.x+aq.y)*0.70710678f)/0.92387953f;
+    float radius=lerp(circle,octagon,0.60f);
+    float softness=0.10f+0.15f*frac(phase*19.31f);
+    float disc=1.f-smoothstep(0.83f-softness,1.f+softness,radius);
+    float coverage=disc*life*present;
+    float rim=smoothstep(0.48f,0.78f,radius)*(1.f-smoothstep(0.83f,1.f+softness,radius));
+    float crescent=0.20f+0.80f*saturate(0.5f-q.y*0.65f+q.x*0.30f);
+    float brightness=0.25f+0.75f*frac(phase*31.73f);
+    // Some filled discs, others mostly crescent/rim; never a uniform wall.
+    float fill=0.10f+0.65f*smoothstep(0.35f,0.90f,variation);
+    float reflection=(disc*fill+rim*crescent*(1.f-fill))*brightness*life*present;
+    return float4(q*coverage,coverage,reflection);
+}
+float4 main(float2 tc:TEXCOORD0):COLOR
+{
+    float4 a=lens_beads(tc,8.f,0.f);
+    float4 b=lens_beads(tc+float2(0.173f,0.237f),14.f,13.7f);
+    float coverage=saturate(a.z+b.z);
+    float strength=kich_lens_params.y;
+    float2 bend=(a.xy+b.xy*0.65f)*0.009f*strength;
+    bend.x/=kich_lens_params.w;
+    float2 border=kich_lens_pixel.xy*0.5f;
+    float2 uv=clamp(tc+bend,border,1.f-border);
+    float2 spread=float2(1.f/kich_lens_params.w,1.f)*0.004f*kich_lens_pixel.z;
+    float4 sharp=tex2D(s_lens_scene,tc);
+    float3 soft=tex2D(s_lens_scene,uv).rgb*0.4f;
+    soft+=tex2D(s_lens_scene,clamp(uv+float2(spread.x,0),border,1.f-border)).rgb*0.15f;
+    soft+=tex2D(s_lens_scene,clamp(uv-float2(spread.x,0),border,1.f-border)).rgb*0.15f;
+    soft+=tex2D(s_lens_scene,clamp(uv+float2(0,spread.y),border,1.f-border)).rgb*0.15f;
+    soft+=tex2D(s_lens_scene,clamp(uv-float2(0,spread.y),border,1.f-border)).rgb*0.15f;
+    float3 color=lerp(sharp.rgb,soft,saturate(coverage*strength));
+    float light=dot(soft,float3(0.299f,0.587f,0.114f));
+    float reflection=saturate(a.w+b.w*0.7f);
+    // Scene-dependent highlight: visible on flat sky, zero on black.
+    color+=reflection*min(strength,1.5f)*min(light*0.65f,0.18f);
+    color*=1.f-coverage*0.035f*min(strength,1.5f);
+    return float4(color,sharp.a);
+}

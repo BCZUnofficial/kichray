@@ -19,6 +19,11 @@
 //////////////////////////////////////////////////////////////////////
 CROS_impl::CROS_impl()
 {
+	kich_wet_level = 0.f;
+	kich_wet_frame = u32(-1);
+	kich_wet_time = Device.dwTimeGlobal;
+	kich_wet_probe = u32(-1);
+	kich_wet_exposed = false;
 	approximate.set(0, 0, 0);
 	dwFrame = u32(-1);
 	shadow_recv_frame = u32(-1);

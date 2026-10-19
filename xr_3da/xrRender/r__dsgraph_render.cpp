@@ -25,6 +25,9 @@ IC bool cmp_normal_items(const _NormalItem& N1, const _NormalItem& N2)
 
 void __fastcall mapNormal_Render(mapNormalItems& N)
 {
+#if RENDER == R_R2
+	RImplementation.apply_object(0); // reset dynamic material and stencil
+#endif
 	// *** DIRECT ***
 	std::sort(N.begin(), N.end(), cmp_normal_items);
 	_NormalItem *I = &*N.begin(), *E = &*N.end();

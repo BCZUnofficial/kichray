@@ -1,4 +1,5 @@
 #include "common.h"
+#include "kich_object_wet.h"
 
 struct 	v2p
 {
@@ -15,7 +16,10 @@ half4 	main_ps_2_0	( v2p I )	: COLOR
 
 	half3	light	= I.c0;
 	half3	final 	= light*t_base*2;
+	// Forward alpha-blended models have no deferred specular channel.
+	final *= 1.0h - saturate(kich_object_wet.x) * kich_object_wet.z;
 
 	// out
 	return  half4	(final.r,final.g,final.b,t_base.a);
 }
+

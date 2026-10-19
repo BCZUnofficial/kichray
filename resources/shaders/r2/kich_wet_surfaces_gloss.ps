@@ -1,0 +1,26 @@
+#include "kich_wet_surfaces_common.h"
+
+float4 main(float2 tc : TEXCOORD0) : COLOR
+{
+    half wet = max(kich_wet_amount(tc),kich_wall_amount(tc)*0.50h);
+    half puddle = kich_puddle_amount(tc);
+
+    // V3.2: puddle gloss is no longer a full linear additive spike.
+    // This reduces daytime overexposure while keeping a readable wet highlight.
+    float4 P = tex2D(s_position, tc);
+    float eye_distance = length(P.xyz);
+
+    // V3.4: specular contribution is deliberately shorter-ranged than
+    // the puddle mask. Distant water becomes a dark/wet patch instead of
+    // a high-frequency mirror that exposes screen-space stair steps.
+    half puddle_spec_fade =
+        1.0h - smoothstep(11.0h, 19.0h, eye_distance);
+
+    half puddle_gloss =
+        wet_puddle.z * puddle * (0.36h + 0.26h * puddle) * puddle_spec_fade;
+
+    half gloss = wet_params.z * wet + puddle_gloss;
+
+    // Additive blend: RGB unchanged, albedo alpha/gloss gets wet+puddle boost.
+    return float4(0.0h, 0.0h, 0.0h, gloss);
+}

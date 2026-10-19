@@ -176,6 +176,8 @@ class CRender : public R_dsgraph_structure
 
 	ICF void apply_object(IRenderable* O)
 	{
+		extern void kich_wet_object_apply(IRenderable* O);
+		kich_wet_object_apply(O);
 		if (0 == O)
 			return;
 		if (0 == O->renderable_ROS())
