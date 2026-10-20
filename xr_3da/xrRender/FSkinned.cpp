@@ -12,6 +12,7 @@
 #include "../fmesh.h"
 #include "../xrCPU_Pipe.h"
 #include "FSkinned.h"
+#include "../KichR4Capture.h"
 
 #include "../EnnumerateVertices.h"
 //////////////////////////////////////////////////////////////////////
@@ -191,10 +192,18 @@ void CSkeletonX_PM::Render(float LOD)
 	}
 	VERIFY(lod_id >= 0 && lod_id < int(nSWI.count));
 	FSlideWindow& SW = nSWI.sw[lod_id];
+#ifndef _EDITOR
+	if (RImplementation.phase == CRender::PHASE_NORMAL && KichR4_CaptureActive())
+		KichR4_CaptureModel(this, Parent, SW.num_verts, SW.offset, SW.num_tris);
+#endif
 	_Render(rm_geom, SW.num_verts, SW.offset, SW.num_tris);
 }
 void CSkeletonX_ST::Render(float LOD)
 {
+#ifndef _EDITOR
+	if (RImplementation.phase == CRender::PHASE_NORMAL && KichR4_CaptureActive())
+		KichR4_CaptureModel(this, Parent, vCount, 0, dwPrimitives);
+#endif
 	_Render(rm_geom, vCount, 0, dwPrimitives);
 }
 

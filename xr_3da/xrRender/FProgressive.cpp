@@ -7,6 +7,7 @@
 
 #include "../fmesh.h"
 #include "FProgressive.h"
+#include "../KichR4Capture.h"
 
 //////////////////////////////////////////////////////////////////////
 // Construction/Destruction
@@ -91,6 +92,8 @@ void FProgressive::Render(float LOD)
 		}
 		VERIFY(lod_id >= 0 && lod_id < int(nSWI.count));
 		FSlideWindow& SW = nSWI.sw[lod_id];
+		if (RImplementation.phase == CRender::PHASE_NORMAL && KichR4_CaptureActive())
+			KichR4_CaptureModel(this, NULL, SW.num_verts, iBase + SW.offset, SW.num_tris);
 		RCache.set_Geometry(rm_geom);
 		RCache.Render(D3DPT_TRIANGLELIST, vBase, 0, SW.num_verts, iBase + SW.offset, SW.num_tris);
 		RCache.stat.r.s_static.add(SW.num_verts);
@@ -105,6 +108,10 @@ void FProgressive::Render(float LOD)
 	}
 	VERIFY(lod_id >= 0 && lod_id < int(nSWI.count));
 	FSlideWindow& SW = nSWI.sw[lod_id];
+#ifndef _EDITOR
+	if (RImplementation.phase == CRender::PHASE_NORMAL && KichR4_CaptureActive())
+		KichR4_CaptureModel(this, NULL, SW.num_verts, iBase + SW.offset, SW.num_tris);
+#endif
 	RCache.set_Geometry(rm_geom);
 	RCache.Render(D3DPT_TRIANGLELIST, vBase, 0, SW.num_verts, iBase + SW.offset, SW.num_tris);
 	RCache.stat.r.s_static.add(SW.num_verts);

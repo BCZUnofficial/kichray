@@ -51,7 +51,7 @@ public:
     void OnDeviceCreate(const char*); void OnDeviceDestroy(BOOL);
     void reset_begin(); void reset_end(); void DestroyNecessaryTextures();
 };
-struct B2CompileDevice { CResourceManager* Resources; };
+struct B2CompileDevice { CResourceManager* Resources; u32 dwWidth,dwHeight,dwFrame; };
 extern B2CompileDevice Device;
 template<class T> T* xr_new() { return new T; }
 template<class T> void xr_delete(T*& p) { delete p; p=NULL; }

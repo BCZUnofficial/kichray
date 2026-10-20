@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "KichRenderDevice.h"
 #include "KichR4Game.h"
+#include "KichR4Capture.h"
 #include "ResourceManager.h"
 #include <string.h>
 
@@ -168,6 +169,9 @@ class CKichRenderDeviceDX9 : public IKichRenderDevice
     virtual void BeginFrame()
     {
         CHK_DX(HW.pDevice->BeginScene());
+#ifndef _EDITOR
+        KichR4_CaptureBeginFrame(Device.dwWidth, Device.dwHeight, Device.dwFrame);
+#endif
         RCache.OnFrameBegin();
         RCache.set_CullMode(CULL_CW);
         RCache.set_CullMode(CULL_CCW);

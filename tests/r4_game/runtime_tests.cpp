@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 namespace {
-bool missing_dll=false,bad_api=false,throw_api=false,fail_cleanup=false;
+bool missing_dll=false,bad_api=false,throw_api=false,fail_cleanup=false,missing_stream=false;
 int loads=0,unloads=0,api_getters=0;
 std::vector<std::string> logs;
 void Log(const char* text){logs.push_back(text);}
@@ -26,6 +26,11 @@ int32_t GameGeometryAPI(uint32_t,KichR4GeometryAPI* out,uint32_t){
 int32_t GameLevelAPI(uint32_t,KichR4LevelAPI* out,uint32_t){
     KichR4LevelSession level;KichR4FrameSession frame={};Configure(level,frame);*out=level.api;return 0;
 }
+int32_t RuntimeStreamPipeline(KichR4Handle,const KichR4PipelineDesc*,KichR4Handle*){throw std::runtime_error("unexpected stream pipeline in static-only runtime fixture");}
+int32_t RuntimeStreamDraw(KichR4Handle,const KichR4StreamDrawDesc*){throw std::runtime_error("unexpected stream draw in static-only runtime fixture");}
+int32_t GameStreamAPI(uint32_t,KichR4StreamAPI* out,uint32_t){
+    const KichR4StreamAPI api={sizeof(api),KICH_R4_STREAM_ABI,sizeof(void*),0,RuntimeStreamPipeline,RuntimeStreamDraw};*out=api;return 0;
+}
 KichR4GameFrame RuntimeInput() {
     fixture::Level source;kich_r4_level::Scene scene;
     kich_r4_level::Parse(kich_r4_level::Span(source.level.data(),static_cast<uint32_t>(source.level.size())),
@@ -36,12 +41,14 @@ KichR4GameFrame RuntimeInput() {
 }
 void ResetRuntime(Fixture& fixture) {
     f=&fixture;Require(!state.scene && !state.module,"previous runtime released before reset");state=State();
-    logs.clear();missing_dll=bad_api=throw_api=fail_cleanup=false;loads=unloads=api_getters=0;fesetround(FE_TONEAREST);
+    logs.clear();missing_dll=bad_api=throw_api=fail_cleanup=missing_stream=false;loads=unloads=api_getters=0;fesetround(FE_TONEAREST);
 }
 bool Init(const char* flags="-kich_r4_game") {
     const KichR4LevelFiles fs={Open,Close};return KichR4_GameInitialize(flags,Log,&fs);
 }
 void PresentFrame(const KichR4GameFrame& input,bool expected) {
+    if(KichR4_CaptureState()){KichR4_CaptureBeginFrame(input.width,input.height,input.engine_frame);
+        KichR4_CaptureState()->frame.renderer_seen=KichR4_CaptureState()->frame.ui_seen=true;}
     KichR4_GamePrepare(input);Require(KichR4_GamePresentPrepared()==expected,"one presenter chosen for this game frame");
     Require(!KichR4_GamePresentPrepared(),"prepared frame consumed once");
 }
@@ -71,8 +78,8 @@ void Lifecycle() {
     Require(fegetround()==FE_TONEAREST,"cleanup restores game FPU");KichR4_GameShutdown();
 }
 void Failures() {
-    for(unsigned which=0;which<3;++which) {
-        Fixture fixture;ResetRuntime(fixture);missing_dll=which==0;bad_api=which==1;throw_api=which==2;
+    for(unsigned which=0;which<4;++which) {
+        Fixture fixture;ResetRuntime(fixture);missing_dll=which==0;bad_api=which==1;throw_api=which==2;missing_stream=which==3;
         Require(Init() && state.disabled && !state.module && !f->live,"DLL/ABI exceptions leave playable legacy mode");
         KichR4_GameLevelStart("l01_escape");PresentFrame(RuntimeInput(),false);KichR4_GameShutdown();
     }
@@ -99,6 +106,17 @@ void Failures() {
         input.toggle_down=true;PresentFrame(input,true);KichR4_GameShutdown();
     }
 }
+void CaptureGating() {
+    Fixture fixture;ResetRuntime(fixture);Init();KichR4_GameLevelStart("l01_escape");KichR4_GameSetModal(false);
+    const KichR4GameFrame input=RuntimeInput();
+    for(unsigned which=0;which<5;++which){KichR4_CaptureBeginFrame(input.width,input.height,input.engine_frame);
+        kich_r4_capture::Batch& batch=KichR4_CaptureState()->frame;batch.renderer_seen=batch.ui_seen=true;
+        switch(which){case 0:batch.renderer_seen=false;break;case 1:batch.ui_seen=false;break;case 2:++batch.engine_frame;break;
+            case 3:batch.ui_scope=1;break;case 4:batch.Fail("unsupported UI input");break;}
+        KichR4_GamePrepare(input);Require(!KichR4_GamePresentPrepared() && !state.scene && !state.disabled,"incomplete capture keeps the entire legacy frame without creating a partial native scene");}
+    Require(Logged("renderer capture handshake") && Logged("HUD capture handshake") && Logged("unsupported UI input"),"missing matched binaries and unsupported capture have actionable diagnostics");
+    PresentFrame(input,true);Require(state.scene && !state.disabled,"complete capture resumes native rendering after temporary fallback");KichR4_GameShutdown();
+}
 }
 DWORD GetModuleFileNameW(HMODULE,wchar_t* path,DWORD capacity){const wchar_t text[]=L"C:\\game\\bin\\XR_3DA.exe";Require(capacity>=sizeof(text)/sizeof(text[0]),"path capacity");memcpy(path,text,sizeof(text));return sizeof(text)/sizeof(text[0])-1;}
 HMODULE LoadLibraryW(const wchar_t* path){++loads;Require(!wcscmp(path,L"C:\\game\\bin\\xrRender_R4.dll"),"R4 loaded only from executable directory");return missing_dll?NULL:reinterpret_cast<HMODULE>(1);}
@@ -110,10 +128,11 @@ FARPROC GetProcAddress(HMODULE,const char* name){
     if(!strcmp(name,KICH_R4_EXPORT_RESOURCES))return reinterpret_cast<FARPROC>(GameResourceAPI);
     if(!strcmp(name,KICH_R4_EXPORT_GEOMETRY))return reinterpret_cast<FARPROC>(GameGeometryAPI);
     if(!strcmp(name,KICH_R4_EXPORT_LEVEL))return reinterpret_cast<FARPROC>(GameLevelAPI);
+    if(!strcmp(name,KICH_R4_EXPORT_STREAM))return missing_stream?NULL:reinterpret_cast<FARPROC>(GameStreamAPI);
     return NULL;
 }
 BOOL IsWindow(HWND window){return window!=NULL;}
 int GetWindowTextW(HWND,wchar_t* out,int capacity){const wchar_t title[]=L"STALKER";Require(capacity>=8,"title capacity");memcpy(out,title,sizeof(title));return 7;}
 BOOL SetWindowTextW(HWND,const wchar_t*){return 1;}
-int main(){try{(void)&Scenario;Lifecycle();Failures();printf("B4.3a production DLL loader / game runtime: %d checks passed\n",checks);return 0;}
+int main(){try{(void)&Scenario;Lifecycle();Failures();CaptureGating();printf("B4.3b production DLL loader / game runtime: %d checks passed\n",checks);return 0;}
 catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

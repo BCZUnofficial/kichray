@@ -10,16 +10,18 @@ DXGI_FORMAT Format(uint32_t f){switch(f){case KICH_R4_FLOAT2:return DXGI_FORMAT_
 case KICH_R4_FLOAT3:return DXGI_FORMAT_R32G32B32_FLOAT;case KICH_R4_FLOAT4:return DXGI_FORMAT_R32G32B32A32_FLOAT;
 case KICH_R4_UNORM8X4:return DXGI_FORMAT_R8G8B8A8_UNORM;default:return DXGI_FORMAT_UNKNOWN;}}
 }
-PipelineDX11::PipelineDX11():layout_(NULL),vs_(NULL),ps_(NULL),sampler_(NULL),stride(0),constant_bytes(0),textured(false)
-{for(unsigned i=0;i<3;++i)raster_[i]=NULL;for(unsigned i=0;i<2;++i)depth_[i]=NULL;}
+PipelineDX11::PipelineDX11():layout_(NULL),vs_(NULL),ps_(NULL),stride(0),constant_bytes(0),textured(false),stream(false)
+{for(unsigned i=0;i<6;++i)raster_[i]=NULL;for(unsigned i=0;i<3;++i)depth_[i]=NULL;
+ for(unsigned i=0;i<2;++i){sampler_[i]=NULL;}for(unsigned i=0;i<100;++i){blends_[i]=NULL;}}
 PipelineDX11::~PipelineDX11(){
-    for(unsigned i=0;i<2;++i){ReleasePipeline(depth_[i]);}
-    for(unsigned i=0;i<3;++i){ReleasePipeline(raster_[i]);}
+    for(unsigned i=0;i<3;++i){ReleasePipeline(depth_[i]);}
+    for(unsigned i=0;i<6;++i){ReleasePipeline(raster_[i]);}
     ReleasePipeline(layout_);ReleasePipeline(vs_);ReleasePipeline(ps_);
-    ReleasePipeline(sampler_);
+    for(unsigned i=0;i<2;++i)ReleasePipeline(sampler_[i]);
+    for(unsigned i=0;i<100;++i)ReleasePipeline(blends_[i]);
 }
 HRESULT PipelineDX11::Create(ID3D11Device* hw,const KichR4PipelineDesc& d,
-    ID3D11VertexShader* vs,ID3D11PixelShader* ps,ID3DBlob* code,bool with_texture)
+    ID3D11VertexShader* vs,ID3D11PixelShader* ps,ID3DBlob* code,bool with_texture,bool with_stream)
 {
     D3D11_INPUT_ELEMENT_DESC elements[8]={};
     for(uint32_t i=0;i<d.element_count;++i){const KichR4VertexElement& e=d.elements[i];
@@ -29,24 +31,44 @@ HRESULT PipelineDX11::Create(ID3D11Device* hw,const KichR4PipelineDesc& d,
     HRESULT hr=hw->CreateInputLayout(elements,d.element_count,code->GetBufferPointer(),code->GetBufferSize(),&layout_);
     if(FAILED(hr))return hr;
     const D3D11_CULL_MODE modes[]={D3D11_CULL_BACK,D3D11_CULL_FRONT,D3D11_CULL_NONE};
-    for(unsigned i=0;i<3;++i){D3D11_RASTERIZER_DESC r={};r.FillMode=D3D11_FILL_SOLID;
-        r.CullMode=modes[i];r.FrontCounterClockwise=FALSE;r.DepthClipEnable=TRUE;
+    for(unsigned i=0;i<(with_stream?6u:3u);++i){D3D11_RASTERIZER_DESC r={};r.FillMode=D3D11_FILL_SOLID;
+        r.CullMode=modes[i%3];r.FrontCounterClockwise=FALSE;r.DepthClipEnable=TRUE;r.ScissorEnable=i>=3;
         hr=hw->CreateRasterizerState(&r,&raster_[i]);if(FAILED(hr))return hr;}
-    for(unsigned i=0;i<2;++i){D3D11_DEPTH_STENCIL_DESC z={};z.DepthEnable=i?TRUE:FALSE;
-        z.DepthWriteMask=i?D3D11_DEPTH_WRITE_MASK_ALL:D3D11_DEPTH_WRITE_MASK_ZERO;z.DepthFunc=D3D11_COMPARISON_LESS_EQUAL;
+    for(unsigned i=0;i<(with_stream?3u:2u);++i){D3D11_DEPTH_STENCIL_DESC z={};z.DepthEnable=i?TRUE:FALSE;
+        z.DepthWriteMask=i==1?D3D11_DEPTH_WRITE_MASK_ALL:D3D11_DEPTH_WRITE_MASK_ZERO;z.DepthFunc=D3D11_COMPARISON_LESS_EQUAL;
         z.StencilReadMask=D3D11_DEFAULT_STENCIL_READ_MASK;z.StencilWriteMask=D3D11_DEFAULT_STENCIL_WRITE_MASK;
         z.FrontFace.StencilFailOp=z.FrontFace.StencilDepthFailOp=z.FrontFace.StencilPassOp=D3D11_STENCIL_OP_KEEP;
         z.FrontFace.StencilFunc=D3D11_COMPARISON_ALWAYS;z.BackFace=z.FrontFace;
         hr=hw->CreateDepthStencilState(&z,&depth_[i]);if(FAILED(hr))return hr;}
-    if(with_texture){D3D11_SAMPLER_DESC sampler={};sampler.Filter=D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-        sampler.AddressU=sampler.AddressV=sampler.AddressW=D3D11_TEXTURE_ADDRESS_WRAP;
+    if(with_texture)for(unsigned i=0;i<(with_stream?2u:1u);++i){D3D11_SAMPLER_DESC sampler={};sampler.Filter=D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+        sampler.AddressU=sampler.AddressV=sampler.AddressW=i?D3D11_TEXTURE_ADDRESS_CLAMP:D3D11_TEXTURE_ADDRESS_WRAP;
         sampler.MaxAnisotropy=1;sampler.ComparisonFunc=D3D11_COMPARISON_NEVER;sampler.MaxLOD=D3D11_FLOAT32_MAX;
-        hr=hw->CreateSamplerState(&sampler,&sampler_);if(FAILED(hr))return hr;}
-    vs_=vs;ps_=ps;vs_->AddRef();ps_->AddRef();stride=d.vertex_stride;textured=with_texture;return S_OK;
+        hr=hw->CreateSamplerState(&sampler,&sampler_[i]);if(FAILED(hr))return hr;}
+    vs_=vs;ps_=ps;vs_->AddRef();ps_->AddRef();stride=d.vertex_stride;textured=with_texture;stream=with_stream;return S_OK;
 }
-void PipelineDX11::Draw(ID3D11DeviceContext* ctx,const KichR4DrawIndexedDesc& d,
-    ID3D11Buffer* vb,ID3D11Buffer* ib,ID3D11Buffer* cb,uint32_t index_stride,ID3D11ShaderResourceView* texture)
+HRESULT PipelineDX11::Blend(ID3D11DeviceContext* ctx,const KichR4StreamDrawDesc& d,ID3D11BlendState** out)
 {
+    *out=NULL;if(!d.blend_enable)return S_OK;
+    const unsigned at=(d.source_blend-1)*10+d.dest_blend-1;
+    if(!blends_[at]) {
+        const D3D11_BLEND factors[]={D3D11_BLEND_ZERO,D3D11_BLEND_ONE,D3D11_BLEND_SRC_COLOR,D3D11_BLEND_INV_SRC_COLOR,
+            D3D11_BLEND_SRC_ALPHA,D3D11_BLEND_INV_SRC_ALPHA,D3D11_BLEND_DEST_ALPHA,D3D11_BLEND_INV_DEST_ALPHA,
+            D3D11_BLEND_DEST_COLOR,D3D11_BLEND_INV_DEST_COLOR};
+        D3D11_BLEND_DESC b={};D3D11_RENDER_TARGET_BLEND_DESC& r=b.RenderTarget[0];r.BlendEnable=TRUE;
+        r.SrcBlend=factors[d.source_blend-1];r.DestBlend=factors[d.dest_blend-1];r.BlendOp=D3D11_BLEND_OP_ADD;
+        const unsigned sa=d.source_blend==3?5:d.source_blend==4?6:d.source_blend==9?7:d.source_blend==10?8:d.source_blend;
+        const unsigned da=d.dest_blend==3?5:d.dest_blend==4?6:d.dest_blend==9?7:d.dest_blend==10?8:d.dest_blend;
+        r.SrcBlendAlpha=factors[sa-1];r.DestBlendAlpha=factors[da-1];r.BlendOpAlpha=D3D11_BLEND_OP_ADD;
+        r.RenderTargetWriteMask=D3D11_COLOR_WRITE_ENABLE_ALL;
+        ID3D11Device* hw=NULL;ctx->GetDevice(&hw);if(!hw)return E_FAIL;
+        const HRESULT hr=hw->CreateBlendState(&b,&blends_[at]);hw->Release();if(FAILED(hr))return hr;
+    }*out=blends_[at];return S_OK;
+}
+HRESULT PipelineDX11::Draw(ID3D11DeviceContext* ctx,const KichR4DrawIndexedDesc& d,
+    ID3D11Buffer* vb,ID3D11Buffer* ib,ID3D11Buffer* cb,uint32_t index_stride,ID3D11ShaderResourceView* texture,const KichR4StreamDrawDesc* extra)
+{
+    ID3D11BlendState* blend=NULL;
+    if(extra){const HRESULT hr=Blend(ctx,*extra,&blend);if(FAILED(hr))return hr;}
     const UINT offset=0;ctx->IASetInputLayout(layout_);
     ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     ctx->IASetVertexBuffers(0,1,&vb,&stride,&offset);
@@ -54,9 +76,13 @@ void PipelineDX11::Draw(ID3D11DeviceContext* ctx,const KichR4DrawIndexedDesc& d,
     ctx->VSSetShader(vs_,NULL,0);ctx->PSSetShader(ps_,NULL,0);
     ctx->GSSetShader(NULL,NULL,0);ctx->HSSetShader(NULL,NULL,0);ctx->DSSetShader(NULL,NULL,0);
     ctx->VSSetConstantBuffers(0,1,&cb);ctx->PSSetConstantBuffers(0,1,&cb);
-    ctx->PSSetShaderResources(0,1,&texture);ctx->PSSetSamplers(0,1,&sampler_);
-    ctx->RSSetState(raster_[d.cull_mode]);ctx->OMSetDepthStencilState(depth_[d.depth_mode],0);
-    ctx->OMSetBlendState(NULL,NULL,0xffffffffu);
+    ctx->PSSetShaderResources(0,1,&texture);ctx->PSSetSamplers(0,1,&sampler_[extra?extra->clamp_texture:0]);
+    ctx->RSSetState(raster_[d.cull_mode+(extra && extra->scissor_enable?3:0)]);
+    ctx->OMSetDepthStencilState(depth_[extra && d.depth_mode && !extra->depth_write?2:d.depth_mode],0);
+    if(extra){D3D11_VIEWPORT view={};UINT n=1;ctx->RSGetViewports(&n,&view);view.MinDepth=extra->min_depth;view.MaxDepth=extra->max_depth;
+        ctx->RSSetViewports(1,&view);if(extra->scissor_enable){const D3D11_RECT rect={extra->scissor[0],extra->scissor[1],extra->scissor[2],extra->scissor[3]};ctx->RSSetScissorRects(1,&rect);}}
+    ctx->OMSetBlendState(blend,NULL,0xffffffffu);
     ctx->DrawIndexed(d.index_count,d.start_index,0);
+    return S_OK;
 }
 }

@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #pragma hdrstop
+#include "KichR4Capture.h"
 
 ENGINE_API CBackend RCache;
 
@@ -30,6 +31,9 @@ void CBackend::CreateQuadIB()
 			Cnt += 4;
 		}
 	}
+#ifndef _EDITOR
+	KichR4_CaptureBuffer(QuadIB, Indices, dwIdxCount * 2);
+#endif
 	R_CHK(QuadIB->Unlock());
 }
 
@@ -53,5 +57,8 @@ void CBackend::OnDeviceDestroy()
 	Vertex.Destroy();
 
 	// Quad
+#ifndef _EDITOR
+	KichR4_CaptureForgetBuffer(QuadIB);
+#endif
 	_RELEASE(QuadIB);
 }

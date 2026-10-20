@@ -6,6 +6,7 @@
 #include "sh_matrix.h"
 #include "sh_constant.h"
 #include "sh_rt.h"
+#include "KichR4Capture.h"
 
 IC void R_xforms::set_c_w(R_constant* C)
 {
@@ -233,6 +234,10 @@ ICF void CBackend::set_Indices(IDirect3DIndexBuffer9* _ib)
 
 ICF void CBackend::Render(D3DPRIMITIVETYPE T, u32 baseV, u32 startV, u32 countV, u32 startI, u32 PC)
 {
+#ifndef _EDITOR
+	if (KichR4_CaptureActive())
+		KichR4_CaptureUIDraw(decl, vb, ib, vb_stride, T, baseV, startV, countV, startI, PC, true);
+#endif
 	stat.calls++;
 	stat.verts += countV;
 	stat.polys += PC;
@@ -243,6 +248,10 @@ ICF void CBackend::Render(D3DPRIMITIVETYPE T, u32 baseV, u32 startV, u32 countV,
 
 ICF void CBackend::Render(D3DPRIMITIVETYPE T, u32 startV, u32 PC)
 {
+#ifndef _EDITOR
+	if (KichR4_CaptureActive())
+		KichR4_CaptureUIDraw(decl, vb, NULL, vb_stride, T, 0, startV, 0, 0, PC, false);
+#endif
 	stat.calls++;
 	stat.verts += 3 * PC;
 	stat.polys += PC;

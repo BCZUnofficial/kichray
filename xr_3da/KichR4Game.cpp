@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <wchar.h>
 #include "KichR4GameSession.h"
+#include "KichR4Capture.h"
 
 namespace {
 struct State {
@@ -25,6 +26,8 @@ struct State {
     HWND window;
     wchar_t title[256];
     uint32_t generations,cleanups;
+    uint32_t capture_fallbacks;
+    char capture_reason[192];
 };
 State state={};
 struct FpuEnvironment {
@@ -40,9 +43,9 @@ void Write(const char* format,...) {
 void Mode(bool dx11) {
     if(dx11==state.dx11)return;
     state.dx11=dx11;
-    Write("[R4 bridge B4.3a] output=%s; same game HWND; F8 toggles world output",dx11?"DX11 static world":"DX9 legacy / UI");
+    Write("[R4 bridge B4.3b] output=%s; same game HWND; F8 toggles output",dx11?"DX11 world + models + hands + HUD":"DX9 legacy / menus");
     if(state.window && IsWindow(state.window)) {
-        if(dx11)SetWindowTextW(state.window,L"Kich-Ray DX11 B4.3a | GAME CAMERA | static world | F8 legacy | Esc menu");
+        if(dx11)SetWindowTextW(state.window,L"Kich-Ray DX11 B4.3b | models + hands + HUD | F8 legacy | Esc menu");
         else if(state.title_saved)SetWindowTextW(state.window,state.title);
     }
 }
@@ -55,11 +58,14 @@ bool ReadAPIs() {
     const KichR4GetResourceAPIFn resources=reinterpret_cast<KichR4GetResourceAPIFn>(GetProcAddress(state.module,KICH_R4_EXPORT_RESOURCES));
     const KichR4GetGeometryAPIFn geometry=reinterpret_cast<KichR4GetGeometryAPIFn>(GetProcAddress(state.module,KICH_R4_EXPORT_GEOMETRY));
     const KichR4GetLevelAPIFn level=reinterpret_cast<KichR4GetLevelAPIFn>(GetProcAddress(state.module,KICH_R4_EXPORT_LEVEL));
-    return version && frame && resources && geometry && level && version()==KICH_R4_BRIDGE_ABI_VERSION &&
+    const KichR4GetStreamAPIFn stream=reinterpret_cast<KichR4GetStreamAPIFn>(GetProcAddress(state.module,KICH_R4_EXPORT_STREAM));
+    return version && frame && resources && geometry && level && stream && version()==KICH_R4_BRIDGE_ABI_VERSION &&
         frame(KICH_R4_FRAME_ABI,&state.api.frame,sizeof(state.api.frame))==0 &&
         resources(KICH_R4_RESOURCE_ABI,&state.api.resources,sizeof(state.api.resources))==0 &&
         geometry(KICH_R4_GEOMETRY_ABI,&state.api.geometry,sizeof(state.api.geometry))==0 &&
-        level(KICH_R4_LEVEL_ABI,&state.api.level,sizeof(state.api.level))==0 && state.api.Valid();
+        level(KICH_R4_LEVEL_ABI,&state.api.level,sizeof(state.api.level))==0 &&
+        stream(KICH_R4_STREAM_ABI,&state.api.stream,sizeof(state.api.stream))==0 &&
+        state.api.Valid() && KichR4StreamSession::ValidAPI(state.api.stream);
 }
 bool Load() {
     wchar_t path[MAX_PATH];const DWORD length=GetModuleFileNameW(NULL,path,MAX_PATH);
@@ -104,6 +110,8 @@ bool StopScene(const char* reason) {
     Write("[R4 bridge B4.3a] end: reason=%s level=%s; DX11_frames=%u legacy_frames=%llu; submitted_draws=%llu submitted_triangles=%llu; DDS=%u fallback=%u",
         reason,scene.name,scene.frame.rendered,static_cast<unsigned long long>(scene.legacy_frames),
         static_cast<unsigned long long>(scene.level.submitted_draws),static_cast<unsigned long long>(scene.level.submitted_triangles),scene.level.textures_loaded,scene.level.texture_fallbacks);
+    if(had_device)Write("[R4 bridge B4.3b] stream submitted: upload_frames=%u models=%llu hands_weapon=%llu HUD=%llu",
+        scene.stream.frames,static_cast<unsigned long long>(scene.stream.layer_draws[0]),static_cast<unsigned long long>(scene.stream.layer_draws[1]),static_cast<unsigned long long>(scene.stream.layer_draws[2]));
     if(had_device)Write("[R4 bridge B4.3a] cleanup=%s: views=%u/%u flags=0x%X pipelines=%u/%u depth=%u/%u resources=%u/%u live=%u payload=%llu; HRESULT=0x%08X",
         balanced?"PASS":"FAIL",report.frame.views_created,report.frame.views_released,report.frame.flags,
         report.geometry.pipelines_created,report.geometry.pipelines_released,report.geometry.depth_created,report.geometry.depth_released,
@@ -116,7 +124,7 @@ bool StopScene(const char* reason) {
     delete state.scene;state.scene=NULL;return true;
 }
 int32_t RenderCpp(kich_r4_game::Session* scene,const KichR4GameFrame* input) {
-    try{return scene->Render(*input);}
+    try{return scene->Render(*input,KichR4_CapturedFrame());}
     catch(const std::bad_alloc&){return scene->frame.Record("B4.3a allocation",KICH_R4_E_MEMORY);}
     catch(...){return scene->frame.Record("B4.3a render exception",KICH_R4_E_STATE);}
 }
@@ -141,11 +149,13 @@ bool KichR4_GameInitialize(const char* params,KichR4LogFn log,const KichR4LevelF
     if(state.requested)return true;
     if(!kich_r4_game::Requested(params))return false;
     FpuEnvironment preserve;state.requested=true;state.preferred_dx11=true;state.log=log;
+    KichR4_CaptureEnable(true);
     if(files)state.files=*files;
     if(!state.files.open || !state.files.close || !GuardLoad()) {
-        state.disabled=true;UnloadIfIdle();Write("[R4 bridge B4.3a] DISABLED: bridge/files/ABI unavailable; continuing legacy game");return true;
+        state.disabled=true;KichR4_CaptureEnable(false);UnloadIfIdle();Write("[R4 bridge B4.3b] DISABLED: bridge/files/ABI unavailable; continuing legacy game");return true;
     }
-    Write("[R4 bridge B4.3a] armed: game HWND + engine camera; independent DX11 static world; legacy menus/UI; F8 compare");
+    Write("[R4 bridge B4.3b] armed: game HWND / camera; native DX11 static world + posed models + hands/weapons + HUD; F8 compare");
+    Write("[R4 bridge B4.3b] CPU geometry/pose/UI capture only; no DX9 frame copy or GPU readback; matching EXE, R1/R2, xrGame and R4 required");
     Write("[R4 bridge B4.3a] windowed presentation forced for this process; rs_fullscreen configuration is preserved; standalone viewer flags ignored");
     return true;
 #endif
@@ -175,6 +185,16 @@ void KichR4_GamePrepare(const KichR4GameFrame& input) {
         Write("[R4 bridge B4.3a] waiting for xrGame UI handshake; keep the matching rebuilt xrGame.dll with this EXE");state.ui_wait_logged=true;
     }
     state.input=input;state.input.allowed=state.input.allowed && !state.modal && state.ui_seen;state.pending=true;
+    if(state.input.allowed) {
+        const kich_r4_capture::Batch* batch=KichR4_CapturedFrame();
+        const bool ready=batch && batch->Ready() && batch->engine_frame==input.engine_frame && batch->width==input.width && batch->height==input.height;
+        if(!ready){state.input.allowed=false;++state.capture_fallbacks;
+            const char* why=!batch?"CPU capture unavailable":!batch->error.empty()?batch->error.c_str():
+                !batch->renderer_seen?"renderer capture handshake missing; rebuild R1/R2":!batch->ui_seen?"HUD capture handshake missing; rebuild xrGame":"incomplete or mismatched CPU frame";
+            if(strcmp(state.capture_reason,why) || state.capture_fallbacks%300==0){Write("[R4 bridge B4.3b] legacy frame fallback: %s; engine_frame=%u count=%u",why,input.engine_frame,state.capture_fallbacks);
+                strncpy(state.capture_reason,why,sizeof(state.capture_reason)-1);state.capture_reason[sizeof(state.capture_reason)-1]=0;}}
+        else state.capture_reason[0]=0;
+    }
 }
 bool KichR4_GamePresentPrepared() {
     if(!state.requested || !state.pending)return false;
@@ -198,10 +218,16 @@ bool KichR4_GamePresentPrepared() {
     if(result<0) {
         Write("[R4 bridge B4.3a] DISABLED: step=%s HRESULT=0x%08X; detail=%s; shader=%s; continuing legacy game",
             state.scene->frame.step?state.scene->frame.step:"unknown",static_cast<uint32_t>(result),state.scene->level.detail.c_str(),state.scene->level.bridge.shader_error);
-        state.disabled=true;StopScene("R4 failure");return false;
+        state.disabled=true;StopScene("R4 failure");KichR4_CaptureEnable(false);return false;
     }
     if(!previous && state.scene->frame.rendered)Write("[R4 bridge B4.3a] first GAME CAMERA DX11 frame presented: level=%s HWND=%p viewport=%ux%u; camera=(%.3f,%.3f,%.3f); engine_frame=%u; scene_generation=%u",
         state.level,state.input.window,state.input.width,state.input.height,state.input.position[0],state.input.position[1],state.input.position[2],state.input.engine_frame,state.generations);
+    if(state.scene->frame.rendered!=previous && (!previous || state.scene->frame.rendered%300==0)) {
+        const kich_r4_capture::Batch* batch=KichR4_CapturedFrame();
+        if(batch)Write("[R4 bridge B4.3b] native layers: engine_frame=%u models=%u hands_weapon=%u HUD=%u vertices=%u triangles=%u upload_frames=%u; registry=%u MiB",
+            state.input.engine_frame,batch->models,batch->hands,batch->ui,static_cast<uint32_t>(batch->vertices.size()),static_cast<uint32_t>(batch->indices.size()/3),state.scene->stream.frames,
+            static_cast<uint32_t>(KichR4_CaptureState()->ModelBytes()/(1024u*1024u)));
+    }
     if(state.scene->frame.rendered!=previous && state.scene->frame.rendered%300==0)Write("[R4 bridge B4.3a] game frame: engine_frame=%u DX11_frames=%u camera=(%.3f,%.3f,%.3f) visible=%u culled=%u",
         state.input.engine_frame,state.scene->frame.rendered,state.input.position[0],state.input.position[1],state.input.position[2],state.scene->level.visible,state.scene->level.culled);
     Mode(result==1);return result==1;
@@ -210,5 +236,6 @@ void KichR4_GameShutdown() {
     if(!state.requested)return;
     if(state.disabled && !state.scene && !state.module)return;
     FpuEnvironment preserve;StopScene("shutdown");state.level[0]=0;state.disabled=true;UnloadIfIdle();
+    KichR4_CaptureEnable(false);
     Write("[R4 bridge B4.3a] shutdown: scene_generations=%u cleanups=%u DLL=%s",state.generations,state.cleanups,state.module?"retained":"released");
 }

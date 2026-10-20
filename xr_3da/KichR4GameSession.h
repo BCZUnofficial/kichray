@@ -2,6 +2,7 @@
 #define KICH_R4_GAME_SESSION_H
 #include "KichR4Game.h"
 #include "KichR4LevelSession.h"
+#include "KichR4StreamSession.h"
 
 namespace kich_r4_game {
 inline bool Requested(const char* params) {
@@ -34,6 +35,7 @@ struct APIs {
     KichR4ResourceAPI resources;
     KichR4GeometryAPI geometry;
     KichR4LevelAPI level;
+    KichR4StreamAPI stream;
     bool Valid()const {return KichR4FrameSession::ValidAPI(frame) &&
         KichR4GeometrySession::ValidResources(resources) && KichR4GeometrySession::ValidAPI(geometry) &&
         KichR4LevelSession::ValidAPI(level);}
@@ -45,6 +47,7 @@ struct APIs {
 struct Session {
     KichR4FrameSession frame;
     KichR4LevelSession level;
+    KichR4StreamSession stream;
     char name[64];
     void* window;
     uint32_t width,height;
@@ -54,11 +57,12 @@ struct Session {
         window(NULL),width(0),height(0),loaded(false),enabled(true),key_down(false),legacy_frames(0) {
         memset(&frame,0,sizeof(frame));memset(name,0,sizeof(name));
         frame.api=a.frame;level.bridge.resources=a.resources;level.bridge.api=a.geometry;
+        stream.api=a.stream;
         level.api=a.level;level.files=fs;level.log=log;
         if(LevelName(level_name))memcpy(name,level_name,strlen(level_name)+1);
         else frame.Record("B4.3a level name",KICH_R4_E_ARGUMENT);
     }
-    int32_t Render(const KichR4GameFrame& input) {
+    int32_t Render(const KichR4GameFrame& input,const kich_r4_capture::Batch* captured=NULL) {
         const bool rising=input.toggle_down && !key_down;
         key_down=input.toggle_down;
         if(input.active && input.allowed && rising)enabled=!enabled;
@@ -87,6 +91,7 @@ struct Session {
         int32_t hr=frame.BeginClear(color);
         if(hr==KICH_R4_FRAME_SUSPENDED || hr==KICH_R4_FRAME_OCCLUDED)return 1;
         if(hr==0)hr=level.DrawWithMatrix(frame,width,height,vp);
+        if(hr==0 && captured)hr=stream.Draw(frame,level,*captured);
         if(hr==0)hr=frame.Present();
         return hr==0 || hr==KICH_R4_FRAME_OCCLUDED?1:hr;
     }

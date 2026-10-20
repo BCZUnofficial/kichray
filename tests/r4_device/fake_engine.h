@@ -11,6 +11,8 @@
 #include <stdexcept>
 #include "../../xr_3da/KichRenderDevice.h"
 #include "../../xr_3da/KichR4Game.h"
+#include "../../xr_3da/KichR4Capture.h"
+inline void KichR4_CaptureBeginFrame(uint32_t,uint32_t,uint32_t){}
 #ifndef KICH_R4_TEST_GAME_HOOKS
 inline void KichR4_GameBeforeReset(){}
 inline void KichR4_GameShutdown(){}

@@ -10,6 +10,7 @@
 #endif
 #include "fbasicvisual.h"
 #include "fmesh.h"
+#include "KichR4Capture.h"
 
 //////////////////////////////////////////////////////////////////////
 // Construction/Destruction
@@ -30,6 +31,9 @@ IRender_Visual::IRender_Visual()
 
 IRender_Visual::~IRender_Visual()
 {
+#ifndef _EDITOR
+	KichR4_CaptureForget(this);
+#endif
 }
 
 void IRender_Visual::Release()
@@ -40,6 +44,10 @@ CStatTimer tscreate;
 
 void IRender_Visual::Load(const char* N, IReader* data, u32)
 {
+#ifndef _EDITOR
+	if (data)
+		KichR4_CaptureLoad(this, static_cast<const unsigned char*>(data->pointer()) - data->tell(), data->length());
+#endif
 #ifdef DEBUG
 	dbg_name = N;
 #endif
@@ -80,6 +88,9 @@ void IRender_Visual::Load(const char* N, IReader* data, u32)
 #define PCOPY(a) a = pFrom->a
 void IRender_Visual::Copy(IRender_Visual* pFrom)
 {
+#ifndef _EDITOR
+	KichR4_CaptureCopy(this, pFrom);
+#endif
 	PCOPY(Type);
 	PCOPY(shader);
 	PCOPY(vis);

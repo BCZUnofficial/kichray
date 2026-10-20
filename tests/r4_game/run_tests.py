@@ -5,6 +5,8 @@ import os
 import subprocess
 import tempfile
 import importlib.util
+import sys
+sys.dont_write_bytecode = True
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
@@ -13,9 +15,10 @@ def main():
     with tempfile.TemporaryDirectory(prefix="kich-b43-game-") as folder:
         for source in ("session_tests", "runtime_tests"):
             output = Path(folder)/source
+            extra = [str(ROOT/"xr_3da/KichR4Capture.cpp")] if source == "runtime_tests" else []
             subprocess.run([os.environ.get("CXX", "g++"), "-std=c++11", "-O2",
                             "-Wall", "-Wextra", "-Werror", "-Wno-cast-function-type",
-                            "-I"+str(HERE/"fake_win32"), str(HERE/(source+".cpp")),
+                            "-I"+str(HERE/"fake_win32"), str(HERE/(source+".cpp")), *extra,
                             "-o", str(output)], check=True)
             subprocess.run([str(output)], check=True)
         production = (ROOT/"xr_3da/KichR4GameEngine.cpp").read_text()

@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "HUDManager.h"
+#include "../KichR4Capture.h"
 #include "hudtarget.h"
 
 #include "actor.h"
@@ -220,6 +221,11 @@ void CHUDManager::RenderUI()
 {
 	if (!b_online)
 		return;
+
+	struct CaptureHUDScope {
+		CaptureHUDScope() { KichR4_CaptureHUD(true); }
+		~CaptureHUDScope() { KichR4_CaptureHUD(false); }
+	} capture_hud_scope;
 
 	BOOL bAlready = FALSE;
 	if (true || psHUD_Flags.is(HUD_DRAW | HUD_DRAW_RT))

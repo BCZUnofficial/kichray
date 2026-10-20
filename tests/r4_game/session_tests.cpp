@@ -4,7 +4,7 @@
 namespace {
 kich_r4_game::APIs GameAPIs() {
     KichR4LevelSession level;KichR4FrameSession frame={};Configure(level,frame);
-    const kich_r4_game::APIs a={frame.api,level.bridge.resources,level.bridge.api,level.api};
+    const kich_r4_game::APIs a={frame.api,level.bridge.resources,level.bridge.api,level.api,{}};
     Require(a.Valid(),"complete validated game API tables");return a;
 }
 KichR4GameFrame Input() {

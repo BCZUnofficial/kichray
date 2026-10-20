@@ -3,6 +3,7 @@
 
 #include "ResourceManager.h"
 #include "R_DStreams.h"
+#include "KichR4Capture.h"
 
 //////////////////////////////////////////////////////////////////////
 // Construction/Destruction
@@ -27,6 +28,9 @@ void _VertexStream::Create()
 
 void _VertexStream::Destroy()
 {
+#ifndef _EDITOR
+	KichR4_CaptureForgetBuffer(pVB);
+#endif
 	_RELEASE(pVB);
 	_clear();
 }
@@ -67,6 +71,9 @@ void* _VertexStream::Lock(u32 vl_Count, u32 Stride, u32& vOffset)
 		pVB->Lock(mPosition, bytes_need, (void**)&pData, LOCKFLAGS_APPEND);
 	}
 	VERIFY(pData);
+#ifndef _EDITOR
+	KichR4_CaptureLock(pVB, pData, mPosition, bytes_need, mDiscardID);
+#endif
 
 	return LPVOID(pData);
 }
@@ -77,6 +84,9 @@ void _VertexStream::Unlock(u32 Count, u32 Stride)
 	PGO(Msg("PGO:VB_UNLOCK:%d", Count));
 	VERIFY(1 == dbg_lock);
 	dbg_lock--;
+#endif
+#ifndef _EDITOR
+	KichR4_CaptureUnlock(pVB, Count * Stride);
 #endif
 	mPosition += Count * Stride;
 
@@ -113,6 +123,9 @@ void _IndexStream::Create()
 
 void _IndexStream::Destroy()
 {
+#ifndef _EDITOR
+	KichR4_CaptureForgetBuffer(pIB);
+#endif
 	_RELEASE(pIB);
 	_clear();
 }
@@ -138,6 +151,9 @@ u16* _IndexStream::Lock(u32 Count, u32& vOffset)
 	}
 	pIB->Lock(mPosition * 2, Count * 2, (void**)&pLockedData, dwFlags);
 	VERIFY(pLockedData);
+#ifndef _EDITOR
+	KichR4_CaptureLock(pIB, pLockedData, mPosition * 2, Count * 2, mDiscardID);
+#endif
 
 	vOffset = mPosition;
 
@@ -147,6 +163,9 @@ u16* _IndexStream::Lock(u32 Count, u32& vOffset)
 void _IndexStream::Unlock(u32 RealCount)
 {
 	PGO(Msg("PGO:IB_UNLOCK:%d", RealCount));
+#ifndef _EDITOR
+	KichR4_CaptureUnlock(pIB, RealCount * 2);
+#endif
 	mPosition += RealCount;
 	VERIFY(pIB);
 	pIB->Unlock();

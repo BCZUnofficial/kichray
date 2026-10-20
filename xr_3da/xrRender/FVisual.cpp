@@ -11,6 +11,7 @@
 
 #include "../fmesh.h"
 #include "fvisual.h"
+#include "../KichR4Capture.h"
 
 //////////////////////////////////////////////////////////////////////
 // Construction/Destruction
@@ -183,6 +184,10 @@ void Fvisual::Load(const char* N, IReader* data, u32 dwFlags)
 
 void Fvisual::Render(float)
 {
+#ifndef _EDITOR
+	if (RImplementation.phase == CRender::PHASE_NORMAL && KichR4_CaptureActive())
+		KichR4_CaptureModel(this, NULL, vCount, iBase, dwPrimitives);
+#endif
 #if RENDER == R_R2
 	if (m_fast && RImplementation.phase == CRender::PHASE_SMAP)
 	{
