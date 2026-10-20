@@ -488,6 +488,9 @@
     <ClInclude Include="KichR4Probe.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="KichR4Resources.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="KichR4ResourceProbe.h"><Filter>Interfaces\Render</Filter></ClInclude>
+    <ClInclude Include="KichR4Frame.h"><Filter>Interfaces\Render</Filter></ClInclude>
+    <ClInclude Include="KichR4FrameProbe.h"><Filter>Interfaces\Render</Filter></ClInclude>
+    <ClInclude Include="KichR4FrameSession.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="EngineAPI.h">
       <Filter>Engine\Core</Filter>
     </ClInclude>
@@ -865,6 +868,7 @@
     </ClCompile>
     <ClCompile Include="KichR4Probe.cpp"><Filter>General</Filter></ClCompile>
     <ClCompile Include="KichR4ResourceProbe.cpp"><Filter>General</Filter></ClCompile>
+    <ClCompile Include="KichR4FrameProbe.cpp"><Filter>General</Filter></ClCompile>
     <ClCompile Include="EngineAPI.cpp">
       <Filter>Engine\Core</Filter>
     </ClCompile>

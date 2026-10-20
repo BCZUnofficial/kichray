@@ -47,6 +47,7 @@
       <BufferSecurityCheck>true</BufferSecurityCheck>
     </ClCompile>
     <Link>
+      <AdditionalDependencies>user32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <ModuleDefinitionFile>$(ProjectDir)xrRender_R4.def</ModuleDefinitionFile>
       <TargetMachine>MachineX86</TargetMachine>
       <SubSystem>Windows</SubSystem>
@@ -57,9 +58,13 @@
   <ItemGroup>
     <ClInclude Include="..\KichR4Bridge.h" />
     <ClInclude Include="..\KichR4Resources.h" />
+    <ClInclude Include="..\KichR4Frame.h" />
+    <ClInclude Include="R4FrameController.h" />
+    <ClInclude Include="R4FrameDX11.h" />
     <ClInclude Include="R4ResourceRules.h" />
     <ClCompile Include="xrRender_R4.cpp" />
     <ClCompile Include="R4Resources.cpp" />
+    <ClCompile Include="R4FrameDX11.cpp" />
     <None Include="xrRender_R4.def" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

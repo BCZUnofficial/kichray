@@ -38,7 +38,7 @@ extern u32 renderer_value; // con cmd
 void CEngineAPI::Initialize(void)
 {
 #ifndef DEDICATED_SERVER
-	// B0 only: temporary DX11 diagnostics finish before a legacy renderer is loaded.
+	// Opt-in B0/B2 diagnostics and B3 frame test finish before legacy renderer loading.
 	KichR4_RunHardwareProbeIfRequested(Core.Params, KichR4_WriteProbeLog);
 #endif
 	//////////////////////////////////////////////////////////////////////////

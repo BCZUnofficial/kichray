@@ -9,6 +9,7 @@
 #include <vector>
 #include <new>
 #include "R4ResourceRules.h"
+#include "R4FrameDX11.h"
 
 #if !defined(_M_IX86) && !defined(__i386__)
 #error The R4 resource bridge is Win32/x86 only.
@@ -84,8 +85,10 @@ struct Device {
     DWORD thread;
     ObjectStore<Resource> resources;
     KichR4ResourceStats stats;
+    FrameDriverDX11 frame_driver;
+    FrameController frame;
     Device() : runtime(NULL), compiler(NULL), hw(NULL), context(NULL), compile(NULL),
-        reflect(NULL), thread(GetCurrentThreadId()), resources(ids) {
+        reflect(NULL), thread(GetCurrentThreadId()), resources(ids),frame_driver(hw,context),frame(frame_driver) {
         memset(&stats,0,sizeof(stats)); stats.struct_size=sizeof(stats);
     }
     void ClearResources() {
@@ -95,6 +98,10 @@ struct Device {
         stats.live_resources=0; stats.payload_bytes=0;
     }
     ~Device() {
+        frame.Close();
+        /* Also close a partially created native target if an exception occurred
+         * before FrameController could publish successful attachment. */
+        frame_driver.Close();
         ClearResources();
         Release(context); Release(hw);
         if (compiler) FreeLibrary(compiler);
@@ -395,6 +402,64 @@ int32_t KICH_R4_CALL GetStats(KichR4Handle device, KichR4ResourceStats* out, uin
         *out=d->stats; return KICH_R4_OK;
     });
 }
+
+int32_t KICH_R4_CALL CreateFrameTarget(KichR4Handle device,const KichR4FrameTargetDesc* desc)
+{
+    if(!desc)return KICH_R4_E_ARGUMENT;
+    return Protect([&]() -> int32_t {
+        int32_t hr;Device* d=FindDevice(device,hr);return d?d->frame.Create(*desc):hr;
+    });
+}
+int32_t KICH_R4_CALL DestroyFrameTarget(KichR4Handle device)
+{
+    return Protect([&]() -> int32_t {
+        int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;
+        d->frame.Close();return KICH_R4_OK;
+    });
+}
+int32_t KICH_R4_CALL ResizeFrame(KichR4Handle device,uint32_t w,uint32_t h)
+{
+    return Protect([&]() -> int32_t {
+        int32_t hr;Device* d=FindDevice(device,hr);return d?d->frame.Resize(w,h):hr;
+    });
+}
+int32_t KICH_R4_CALL BeginFrame(KichR4Handle device)
+{
+    return Protect([&]() -> int32_t {
+        int32_t hr;Device* d=FindDevice(device,hr);return d?d->frame.Begin():hr;
+    });
+}
+int32_t KICH_R4_CALL ClearFrame(KichR4Handle device,const KichR4FrameColor* color)
+{
+    if(!color)return KICH_R4_E_ARGUMENT;
+    return Protect([&]() -> int32_t {
+        int32_t hr;Device* d=FindDevice(device,hr);return d?d->frame.Clear(*color):hr;
+    });
+}
+int32_t KICH_R4_CALL PresentFrame(KichR4Handle device,uint32_t interval)
+{
+    return Protect([&]() -> int32_t {
+        int32_t hr;Device* d=FindDevice(device,hr);return d?d->frame.Present(interval):hr;
+    });
+}
+int32_t KICH_R4_CALL GetFrameStats(KichR4Handle device,KichR4FrameStats* out,uint32_t bytes)
+{
+    if(!OutputOK(out,bytes))return KICH_R4_E_ARGUMENT;
+    return Protect([&]() -> int32_t {
+        int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;
+        *out=d->frame.Stats();return KICH_R4_OK;
+    });
+}
+int32_t KICH_R4_CALL DestroyFrameDevice(KichR4Handle device,KichR4FrameStats* out,uint32_t bytes)
+{
+    if((out && !OutputOK(out,bytes)) || (!out && bytes))return KICH_R4_E_ARGUMENT;
+    return Protect([&]() -> int32_t {
+        int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;
+        d->frame.Close();if(out)*out=d->frame.Stats();
+        for(size_t i=0;i<4;++i)if(slots[i].device==d){slots[i].device=NULL;slots[i].id=0;break;}
+        delete d;return KICH_R4_OK;
+    });
+}
 }
 
 extern "C" int32_t KICH_R4_CALL KichR4_GetResourceAPI(uint32_t abi, KichR4ResourceAPI* out, uint32_t bytes)
@@ -405,4 +470,13 @@ extern "C" int32_t KICH_R4_CALL KichR4_GetResourceAPI(uint32_t abi, KichR4Resour
         CompileShader, GetInfo, GetBinding, GetVariable, ReleaseResource, GetStats};
     *out=api;
     return KICH_R4_OK;
+}
+
+extern "C" int32_t KICH_R4_CALL KichR4_GetFrameAPI(uint32_t abi,KichR4FrameAPI* out,uint32_t bytes)
+{
+    if(abi!=KICH_R4_FRAME_ABI || !OutputOK(out,bytes))return KICH_R4_E_ARGUMENT;
+    const KichR4FrameAPI api={sizeof(api),KICH_R4_FRAME_ABI,sizeof(void*),0,
+        CreateDevice,DestroyFrameDevice,CreateFrameTarget,DestroyFrameTarget,
+        ResizeFrame,BeginFrame,ClearFrame,PresentFrame,GetFrameStats};
+    *out=api;return KICH_R4_OK;
 }

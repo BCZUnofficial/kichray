@@ -540,6 +540,9 @@
     <ClInclude Include="KichR4Bridge.h" />
     <ClInclude Include="KichR4Probe.h" />
     <ClInclude Include="KichR4Resources.h" />
+    <ClInclude Include="KichR4Frame.h" />
+    <ClInclude Include="KichR4FrameProbe.h" />
+    <ClInclude Include="KichR4FrameSession.h" />
     <ClInclude Include="KichR4ResourceProbe.h" />
     <ClInclude Include="KichRenderDevice.h" />
     <ClInclude Include="EnnumerateVertices.h" />
@@ -690,6 +693,9 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="KichR4ResourceProbe.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="KichR4FrameProbe.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="Envelope.cpp" />

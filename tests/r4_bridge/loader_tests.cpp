@@ -18,6 +18,7 @@
 #include "../../xr_3da/KichR4Bridge.h"
 #include "../../xr_3da/KichR4Probe.h"
 #include "../../xr_3da/KichR4Resources.h"
+#include "../../xr_3da/KichR4FrameProbe.h"
 
 static_assert(sizeof(KichR4ProbeInfo) == 164, "ABI size");
 static_assert(offsetof(KichR4ProbeInfo, adapter_name) == 36, "ABI offset");
@@ -40,6 +41,8 @@ struct Fixture
     int probe_calls;
     int info_calls;
     int resource_api_calls;
+    int frame_calls;
+    bool frame_cleanup_failed;
     std::wstring loaded_path;
     std::vector<std::string> logs;
 };
@@ -110,7 +113,9 @@ void TestInactive()
     const char* cases[] = {NULL, "", "game.exe", "game.exe -kich_r4_probe_extra",
         "game.exe prefix-kich_r4_probe", "\"C:\\folder -kich_r4_probe\\game.exe\"",
         "game.exe \"unterminated -kich_r4_probe", "game.exe -kich_r4_resources_extra",
-        "game.exe prefix-kich_r4_resources", "\"C:\\folder -kich_r4_resources\\game.exe\""};
+        "game.exe prefix-kich_r4_resources", "\"C:\\folder -kich_r4_resources\\game.exe\"",
+        "game.exe -kich_r4_frame_extra", "game.exe prefix-kich_r4_frame",
+        "\"C:\\folder -kich_r4_frame\\game.exe\"", "game.exe \"unterminated -kich_r4_frame"};
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
     {
         Reset();
@@ -242,6 +247,40 @@ void TestResourceSwitch()
     Run("game.exe -kich_r4_resources");const int restored=fegetround();fesetround(original);
     Require(restored==FE_DOWNWARD && f.resource_api_calls==1, "FPU is restored after B2 too");
 }
+void TestFrameSwitch()
+{
+    Reset();Run("game.exe -kich_r4_probe -kich_r4_resources");
+    Require(!f.frame_calls,"B0/B2 do not open a B3 window");
+    const char* args[]={"-kich_r4_frame","game.exe -kich_r4_frame -r2",
+        "game.exe \"-kich_r4_frame\" -kich_r4_probe"};
+    for(size_t i=0;i<sizeof(args)/sizeof(args[0]);++i) {
+        Reset();Run(args[i]);
+        Require(f.probe_calls==1 && f.frame_calls==1 && !f.resource_api_calls && f.unloads==1,
+            "B3 implies hardware handshake, one test, then unload");
+    }
+    Reset();Run("-kich_r4_frame -kich_r4_resources");
+    Require(f.frame_calls==1 && f.resource_api_calls==1 && f.unloads==1,"B2 and B3 flags compose");
+    Reset();++f.version;Run("-kich_r4_frame");Require(!f.frame_calls,"ABI mismatch never opens frame window");
+    Reset();f.available=false;Run("-kich_r4_frame");Require(!f.frame_calls,"missing DLL does not open window");
+    Reset();f.supported=0;f.info.status=KICH_R4_PROBE_DEVICE_FAILED;Run("-kich_r4_frame");
+    Require(!f.frame_calls && f.unloads==1,"unsupported hardware keeps legacy selection");
+    Reset();f.change_fpu=true;const int original=fegetround();fesetround(FE_DOWNWARD);
+    Run("-kich_r4_frame");const int restored=fegetround();fesetround(original);
+    Require(f.frame_calls==1 && restored==FE_DOWNWARD,"FPU preserved around entire frame runner");
+    Reset();f.frame_cleanup_failed=true;Run("-kich_r4_frame");
+    Require(f.frame_calls==1 && !f.unloads && HasLog("DLL retained") && HasLog("continuing normal"),
+        "a live target cannot lose its DLL implementation during fallback");
+}
+}
+
+/* GUI entry point replaced here; production frame/controller/session have
+ * separate tests and the real Win32 runner is cross-compiled with the SDK. */
+bool KichR4_CheckFrameBridge(void*,KichR4LogFn log)
+{
+    ++f.frame_calls;
+    if(f.change_fpu)fesetround(FE_UPWARD);
+    log("[R4 bridge B3] test runner seam");
+    return !f.frame_cleanup_failed;
 }
 
 DWORD GetModuleFileNameW(HMODULE, wchar_t* path, DWORD capacity)
@@ -285,6 +324,7 @@ int main()
         TestMalformedReports();
         TestFpuPreserved();
         TestResourceSwitch();
+        TestFrameSwitch();
         printf("B0 loader: %d checks passed\n", checks);
         return 0;
     }
