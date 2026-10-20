@@ -43,6 +43,9 @@ struct Fixture
     int resource_api_calls;
     int frame_calls;
     int geometry_calls;
+    int level_calls;
+    std::string level_name;
+    const KichR4LevelFiles* level_files;
     bool frame_cleanup_failed;
     std::wstring loaded_path;
     std::vector<std::string> logs;
@@ -118,7 +121,8 @@ void TestInactive()
         "game.exe -kich_r4_frame_extra", "game.exe prefix-kich_r4_frame",
         "\"C:\\folder -kich_r4_frame\\game.exe\"", "game.exe \"unterminated -kich_r4_frame",
         "-kich_r4_geometry_extra", "prefix-kich_r4_geometry", "\"C:\\folder -kich_r4_geometry\\game.exe\"",
-        "game.exe \"unterminated -kich_r4_geometry"};
+        "game.exe \"unterminated -kich_r4_geometry", "-kich_r4_level_extra", "prefix-kich_r4_level",
+        "\"C:\\folder -kich_r4_level\\game.exe\"", "\"unterminated -kich_r4_level"};
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
     {
         Reset();
@@ -296,14 +300,34 @@ void TestGeometrySwitch()
     Reset();f.frame_cleanup_failed=true;Run("-kich_r4_geometry");
     Require(f.geometry_calls==1 && !f.unloads && HasLog("B4.1] cleanup incomplete"),"retain module after geometry cleanup failure");
 }
+void TestLevelSwitch()
+{
+    const char* args[]={"-kich_r4_level","game.exe -kich_r4_level -r2","game.exe \"-kich_r4_level\" l01_escape",
+        "-kich_r4_level l01_escape -kich_r4_geometry -kich_r4_frame"};
+    for(size_t i=0;i<sizeof(args)/sizeof(args[0]);++i){Reset();Run(args[i]);
+        Require(f.probe_calls==1 && f.frame_calls==1 && f.level_calls==1 && f.level_name=="l01_escape" && f.unloads==1,
+            "B4.2 selects Cordon and opens one viewer");}
+    Reset();Run("-kich_r4_level l02_garbage");Require(f.level_name=="l02_garbage","explicit safe level name");
+    const char* bad[]={"-kich_r4_level ../escape","-kich_r4_level C:\\escape","-kich_r4_level \"\"","-kich_r4_level \"unterminated"};
+    for(size_t i=0;i<sizeof(bad)/sizeof(bad[0]);++i){Reset();Run(bad[i]);Require(!f.loads && HasLog("invalid level name"),"bad level name rejected before DLL load");}
+    Reset();++f.version;Run("-kich_r4_level");Require(!f.level_calls && f.unloads==1,"ABI mismatch skips level viewer");
+    Reset();f.available=false;Run("-kich_r4_level");Require(!f.level_calls,"missing DLL skips level viewer");
+    Reset();f.supported=0;f.info.status=KICH_R4_PROBE_DEVICE_FAILED;Run("-kich_r4_level");Require(!f.level_calls && f.unloads==1,"no level on unsupported hardware");
+    Reset();f.change_fpu=true;const int original=fegetround();fesetround(FE_DOWNWARD);Run("-kich_r4_level");
+    const int restored=fegetround();fesetround(original);Require(restored==FE_DOWNWARD && f.level_calls==1,"FPU restored after level viewer");
+    Reset();f.frame_cleanup_failed=true;Run("-kich_r4_level");Require(!f.unloads && HasLog("B4.2] cleanup incomplete"),"retain DLL on level cleanup failure");
+    Reset();const KichR4LevelFiles files={};KichR4_RunHardwareProbeIfRequested("-kich_r4_level",Log,&files);
+    Require(f.level_files==&files,"engine filesystem seam passed to viewer unchanged");
+}
 }
 
 /* GUI entry point replaced here; production frame/controller/session have
  * separate tests and the real Win32 runner is cross-compiled with the SDK. */
-bool KichR4_CheckFrameBridge(void*,KichR4LogFn log,bool geometry)
+bool KichR4_CheckFrameBridge(void*,KichR4LogFn log,bool geometry,const char* level,const KichR4LevelFiles* files)
 {
     ++f.frame_calls;
     if(geometry)++f.geometry_calls;
+    if(level){++f.level_calls;f.level_name=level;f.level_files=files;}
     if(f.change_fpu)fesetround(FE_UPWARD);
     log("[R4 bridge B3] test runner seam");
     return !f.frame_cleanup_failed;
@@ -352,6 +376,7 @@ int main()
         TestResourceSwitch();
         TestFrameSwitch();
         TestGeometrySwitch();
+        TestLevelSwitch();
         printf("B0 loader: %d checks passed\n", checks);
         return 0;
     }

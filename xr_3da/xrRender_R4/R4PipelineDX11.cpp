@@ -10,15 +10,16 @@ DXGI_FORMAT Format(uint32_t f){switch(f){case KICH_R4_FLOAT2:return DXGI_FORMAT_
 case KICH_R4_FLOAT3:return DXGI_FORMAT_R32G32B32_FLOAT;case KICH_R4_FLOAT4:return DXGI_FORMAT_R32G32B32A32_FLOAT;
 case KICH_R4_UNORM8X4:return DXGI_FORMAT_R8G8B8A8_UNORM;default:return DXGI_FORMAT_UNKNOWN;}}
 }
-PipelineDX11::PipelineDX11():layout_(NULL),vs_(NULL),ps_(NULL),stride(0),constant_bytes(0)
+PipelineDX11::PipelineDX11():layout_(NULL),vs_(NULL),ps_(NULL),sampler_(NULL),stride(0),constant_bytes(0),textured(false)
 {for(unsigned i=0;i<3;++i)raster_[i]=NULL;for(unsigned i=0;i<2;++i)depth_[i]=NULL;}
 PipelineDX11::~PipelineDX11(){
     for(unsigned i=0;i<2;++i){ReleasePipeline(depth_[i]);}
     for(unsigned i=0;i<3;++i){ReleasePipeline(raster_[i]);}
     ReleasePipeline(layout_);ReleasePipeline(vs_);ReleasePipeline(ps_);
+    ReleasePipeline(sampler_);
 }
 HRESULT PipelineDX11::Create(ID3D11Device* hw,const KichR4PipelineDesc& d,
-    ID3D11VertexShader* vs,ID3D11PixelShader* ps,ID3DBlob* code)
+    ID3D11VertexShader* vs,ID3D11PixelShader* ps,ID3DBlob* code,bool with_texture)
 {
     D3D11_INPUT_ELEMENT_DESC elements[8]={};
     for(uint32_t i=0;i<d.element_count;++i){const KichR4VertexElement& e=d.elements[i];
@@ -37,10 +38,14 @@ HRESULT PipelineDX11::Create(ID3D11Device* hw,const KichR4PipelineDesc& d,
         z.FrontFace.StencilFailOp=z.FrontFace.StencilDepthFailOp=z.FrontFace.StencilPassOp=D3D11_STENCIL_OP_KEEP;
         z.FrontFace.StencilFunc=D3D11_COMPARISON_ALWAYS;z.BackFace=z.FrontFace;
         hr=hw->CreateDepthStencilState(&z,&depth_[i]);if(FAILED(hr))return hr;}
-    vs_=vs;ps_=ps;vs_->AddRef();ps_->AddRef();stride=d.vertex_stride;return S_OK;
+    if(with_texture){D3D11_SAMPLER_DESC sampler={};sampler.Filter=D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+        sampler.AddressU=sampler.AddressV=sampler.AddressW=D3D11_TEXTURE_ADDRESS_WRAP;
+        sampler.MaxAnisotropy=1;sampler.ComparisonFunc=D3D11_COMPARISON_NEVER;sampler.MaxLOD=D3D11_FLOAT32_MAX;
+        hr=hw->CreateSamplerState(&sampler,&sampler_);if(FAILED(hr))return hr;}
+    vs_=vs;ps_=ps;vs_->AddRef();ps_->AddRef();stride=d.vertex_stride;textured=with_texture;return S_OK;
 }
 void PipelineDX11::Draw(ID3D11DeviceContext* ctx,const KichR4DrawIndexedDesc& d,
-    ID3D11Buffer* vb,ID3D11Buffer* ib,ID3D11Buffer* cb,uint32_t index_stride)
+    ID3D11Buffer* vb,ID3D11Buffer* ib,ID3D11Buffer* cb,uint32_t index_stride,ID3D11ShaderResourceView* texture)
 {
     const UINT offset=0;ctx->IASetInputLayout(layout_);
     ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -49,6 +54,7 @@ void PipelineDX11::Draw(ID3D11DeviceContext* ctx,const KichR4DrawIndexedDesc& d,
     ctx->VSSetShader(vs_,NULL,0);ctx->PSSetShader(ps_,NULL,0);
     ctx->GSSetShader(NULL,NULL,0);ctx->HSSetShader(NULL,NULL,0);ctx->DSSetShader(NULL,NULL,0);
     ctx->VSSetConstantBuffers(0,1,&cb);ctx->PSSetConstantBuffers(0,1,&cb);
+    ctx->PSSetShaderResources(0,1,&texture);ctx->PSSetSamplers(0,1,&sampler_);
     ctx->RSSetState(raster_[d.cull_mode]);ctx->OMSetDepthStencilState(depth_[d.depth_mode],0);
     ctx->OMSetBlendState(NULL,NULL,0xffffffffu);
     ctx->DrawIndexed(d.index_count,d.start_index,0);

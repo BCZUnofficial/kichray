@@ -6,3 +6,4 @@ EXPORTS
     KichR4_GetResourceAPI
     KichR4_GetFrameAPI
     KichR4_GetGeometryAPI
+    KichR4_GetLevelAPI

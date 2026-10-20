@@ -7,11 +7,13 @@
 #include "KichR4FrameProbe.h"
 #include "KichR4FrameSession.h"
 #include "KichR4GeometrySession.h"
+#include "KichR4LevelSession.h"
 
 namespace {
 const wchar_t class_name[]=L"KichRayDX11_B3_Frame_v1";
 const wchar_t window_title[]=L"Kich-Ray DX11 B3 | Resize / Alt+Tab | F11 fullscreen | Space color | Esc -> game";
 const wchar_t geometry_title[]=L"Kich-Ray DX11 B4.1 | 1 triangle / 2 cubes | D depth / C cull / P pause | Arrows camera / +/- zoom | F11 | Esc game";
+const wchar_t level_title[]=L"Kich-Ray DX11 B4.2 | Loading level... | Esc cancels";
 struct WindowState {
     HWND window;
     HINSTANCE instance;
@@ -26,10 +28,13 @@ struct WindowState {
     KichR4GeometrySession geometry;
     kich_r4_scene::Controls controls;
     uint32_t controls_revision;
+    const char* level_name;
+    KichR4LevelSession* level;
 };
-const char* Stage(const WindowState& s){return s.geometry_mode?"B4.1":"B3";}
+const char* Stage(const WindowState& s){return s.level_name?"B4.2":s.geometry_mode?"B4.1":"B3";}
 bool SceneKey(WindowState& s,WPARAM key,bool repeat)
 {
+    if(s.level){if(!repeat)s.level->Key(static_cast<unsigned>(key));return key=='T' || key=='C' || key=='Z' || key==VK_HOME;}
     if(!s.geometry_mode)return false;
     kich_r4_scene::Action action=kich_r4_scene::Triangle;
     switch(key){
@@ -130,34 +135,49 @@ bool MakeWindow(WindowState& s,KichR4LogFn log)
     if(!AdjustWindowRectEx(&r,WS_OVERLAPPEDWINDOW,FALSE,0))return false;
     const int w=r.right-r.left,h=r.bottom-r.top;
     const int x=(GetSystemMetrics(SM_CXSCREEN)-w)/2,y=(GetSystemMetrics(SM_CYSCREEN)-h)/2;
-    s.window=CreateWindowExW(0,class_name,s.geometry_mode?geometry_title:window_title,WS_OVERLAPPEDWINDOW,x,y,w,h,NULL,NULL,s.instance,&s);
+    s.window=CreateWindowExW(0,class_name,s.level?level_title:s.geometry_mode?geometry_title:window_title,WS_OVERLAPPEDWINDOW,x,y,w,h,NULL,NULL,s.instance,&s);
     if(!s.window){Write(log,"[R4 bridge %s] window create failed: Win32=%lu",Stage(s),GetLastError());return false;}
     Size(s);
     return true;
+}
+bool Pump(void* context)
+{
+    WindowState& s=*static_cast<WindowState*>(context);MSG message;
+    while(PeekMessageW(&message,s.window,0,0,PM_REMOVE)) {
+        if(message.message==WM_QUIT){s.quit=true;s.quit_code=static_cast<int>(message.wParam);s.close=true;break;}
+        TranslateMessage(&message);DispatchMessageW(&message);
+    }
+    return !s.close;
+}
+uint32_t LevelKeys()
+{
+    const int keys[]={'W','S','A','D','E','Q',VK_LEFT,VK_RIGHT,VK_UP,VK_DOWN,VK_SHIFT,VK_CONTROL};
+    uint32_t result=0;for(unsigned i=0;i<sizeof(keys)/sizeof(keys[0]);++i)if(GetAsyncKeyState(keys[i])&0x8000)result|=1u<<i;
+    return result;
 }
 void RunWindow(WindowState& s,KichR4LogFn log)
 {
     if(!MakeWindow(s,log)){s.session.Record("create window",KICH_R4_E_STATE);return;}
     if(s.session.Start(s.window,s.width,s.height)<0)return;
     if(s.geometry_mode && s.geometry.Start(s.session)<0)return;
+    if(s.level){ShowWindow(s.window,SW_SHOWNORMAL);UpdateWindow(s.window);SetForegroundWindow(s.window);
+        s.level->log=log;s.level->keep_going=Pump;s.level->progress_context=&s;
+        if(s.level->Start(s.session,s.level_name)!=KICH_R4_OK)return;}
     Write(log,"[R4 bridge %s] create: %ux%u; hardware FL11_0; RGBA8; vsync=1; windowed",Stage(s),s.width,s.height);
     Write(log,"[R4 bridge %s] controls: resize / minimize / Alt+Tab; F11 or Alt+Enter = borderless; Space = color; Esc or close = continue game",Stage(s));
     if(s.geometry_mode)log("[R4 bridge B4.1] geometry ready: VS/PS SM5, vertex/index/constant buffers, input layout; keys 1 triangle / 2 cubes / D depth / C cull / P pause / arrows camera / +/- zoom / Home reset camera");
+    if(s.level)log("[R4 bridge B4.2] controls: WASD fly / Q down / E up / arrows look / Shift fast / Ctrl slow / Home overview / T textures / C cull / Z depth; F11 twice tests both window modes");
     ShowWindow(s.window,SW_SHOWNORMAL);UpdateWindow(s.window);SetForegroundWindow(s.window);
     const DWORD start=GetTickCount();
     DWORD previous_tick=start;
     bool first=true,paused=false,hidden=false;
     uint32_t last_width=s.width,last_height=s.height,last_modes=0,last_activations=s.activations;
     uint32_t last_controls=UINT32_MAX;
+    DWORD last_level_log=0;
     while(!s.close) {
-        MSG message;
         /* Process only the test window: the game loop/renderer are not ready.
          * WM_QUIT is returned regardless of HWND filter; preserve it on exit. */
-        while(PeekMessageW(&message,s.window,0,0,PM_REMOVE)) {
-            if(message.message==WM_QUIT){s.quit=true;s.quit_code=static_cast<int>(message.wParam);s.close=true;break;}
-            TranslateMessage(&message);DispatchMessageW(&message);
-        }
-        if(s.close)break;
+        if(!Pump(&s))break;
         if(s.toggle) {
             s.toggle=false;
             if(!Toggle(s)){s.session.Record("change window mode",WindowError());break;}
@@ -182,6 +202,18 @@ void RunWindow(WindowState& s,KichR4LogFn log)
          * avoids a busy wait on QS_ALLINPUT while that queue stays nonempty. */
         const DWORD now=GetTickCount(),elapsed=now-previous_tick;previous_tick=now;
         if(pause){Sleep(50);continue;}
+        if(s.level){
+            if(s.level->camera.Advance(LevelKeys(),static_cast<float>(elapsed)*.001f))++s.level->camera_steps;
+            if(last_controls!=s.level->revision || now-last_level_log>=2000){const char* culls[]={"back","front","none"};
+                Write(log,"[R4 bridge B4.2] camera=(%.1f,%.1f,%.1f) yaw=%.2f pitch=%.2f; textures=%s depth=%s cull=%s; visible=%u culled=%u",
+                    s.level->camera.position.x,s.level->camera.position.y,s.level->camera.position.z,s.level->camera.yaw,s.level->camera.pitch,
+                    s.level->textured?"on":"off",s.level->depth?"on":"off",culls[s.level->cull],s.level->visible,s.level->culled);
+                wchar_t title[256];const wchar_t* wide_culls[]={L"back",L"front",L"none"};
+                swprintf(title,sizeof(title)/sizeof(title[0]),L"Kich-Ray DX11 B4.2 | textures %ls | depth %ls | cull %ls | meshes %u | WASD + arrows, Shift, Home, T/C/Z, F11, Esc",
+                    s.level->textured?L"on":L"off",s.level->depth?L"on":L"off",wide_culls[s.level->cull],s.level->visible);
+                SetWindowTextW(s.window,title);last_controls=s.level->revision;last_level_log=now;
+            }
+        }
         if(s.geometry_mode){
             if(!s.controls.paused)s.controls.angle=fmodf(s.controls.angle+static_cast<float>(elapsed>100?100:elapsed)*.0008f,6.2831853f);
             if(last_controls!=s.controls_revision){const char* culls[]={"back","front","none"};
@@ -203,15 +235,15 @@ void RunWindow(WindowState& s,KichR4LogFn log)
         if(s.palette==1){color.rgba[0]=0.25f+phase*0.15f;color.rgba[1]=0.06f;color.rgba[2]=0.12f;}
         else if(s.palette==2){color.rgba[0]=0.06f;color.rgba[1]=0.25f+phase*0.15f;color.rgba[2]=0.10f;}
         int32_t hr;
-        if(s.geometry_mode){hr=s.session.BeginClear(color);
-            if(hr==KICH_R4_OK)hr=s.geometry.Draw(s.session,s.controls,s.width,s.height);
+        if(s.geometry_mode || s.level){hr=s.session.BeginClear(color);
+            if(hr==KICH_R4_OK)hr=s.level?s.level->Draw(s.session,s.width,s.height):s.geometry.Draw(s.session,s.controls,s.width,s.height);
             if(hr==KICH_R4_OK)hr=s.session.Present();
         }else hr=s.session.Draw(color);
         if(hr<0)break;
         const bool occluded=hr==KICH_R4_FRAME_OCCLUDED;
         if(occluded!=hidden){Write(log,"[R4 bridge %s] target %s",Stage(s),occluded?"occluded; waiting":"visible");hidden=occluded;}
         if(hr>0){Sleep(100);continue;}
-        if(first){Write(log,"[R4 bridge %s] first DX11 %sframe presented",Stage(s),s.geometry_mode?"geometry ":"");first=false;}
+        if(first){Write(log,"[R4 bridge %s] first DX11 %sframe presented",Stage(s),s.level?"level ":s.geometry_mode?"geometry ":"");first=false;}
     }
 }
 void GuardRun(WindowState& s,KichR4LogFn log)
@@ -225,8 +257,8 @@ void GuardRun(WindowState& s,KichR4LogFn log)
 }
 int32_t Stop(WindowState& s,KichR4FrameStats* stats,KichR4GeometryReport* geometry_report)
 {
-    if(!s.geometry_mode)return s.session.Stop(stats);
-    const int32_t hr=s.geometry.Stop(s.session,geometry_report);
+    if(!s.geometry_mode && !s.level)return s.session.Stop(stats);
+    const int32_t hr=s.level?s.level->bridge.Stop(s.session,geometry_report):s.geometry.Stop(s.session,geometry_report);
     if(hr==0 && stats && geometry_report)*stats=geometry_report->frame;
     return hr;
 }
@@ -275,18 +307,40 @@ bool FetchGeometry(void* module,WindowState& s,KichR4LogFn log)
         Write(log,"[R4 bridge B4.1] geometry ABI/table rejected: HRESULT=0x%08X; test skipped",static_cast<uint32_t>(hr));return false;}
     return true;
 }
+bool FetchLevel(KichR4GetLevelAPIFn get,KichR4LevelAPI& api,KichR4LogFn log)
+{
+    int32_t hr=KICH_R4_E_STATE;
+#if defined(_MSC_VER)
+    __try {hr=get(KICH_R4_LEVEL_ABI,&api,sizeof(api));}
+    __except(EXCEPTION_EXECUTE_HANDLER){hr=static_cast<int32_t>(GetExceptionCode());}
+#else
+    hr=get(KICH_R4_LEVEL_ABI,&api,sizeof(api));
+#endif
+    if(hr!=0 || !KichR4LevelSession::ValidAPI(api)){Write(log,"[R4 bridge B4.2] level ABI/table rejected: HRESULT=0x%08X",static_cast<uint32_t>(hr));return false;}
+    return true;
+}
+bool PrepareLevel(void* module,WindowState& s,const KichR4LevelFiles* files,KichR4LogFn log)
+{
+    if(!files || !files->open || !files->close){log("[R4 bridge B4.2] engine filesystem adapter missing; test skipped");return false;}
+    const KichR4GetLevelAPIFn get=reinterpret_cast<KichR4GetLevelAPIFn>(GetProcAddress(static_cast<HMODULE>(module),KICH_R4_EXPORT_LEVEL));
+    if(!get){log("[R4 bridge B4.2] level export missing; update xrRender_R4.dll; test skipped");return false;}
+    try{s.level=new KichR4LevelSession();}catch(...){log("[R4 bridge B4.2] cannot allocate viewer state; test skipped");return false;}
+    if(!FetchLevel(get,s.level->api,log)){delete s.level;s.level=NULL;return false;}
+    s.level->bridge=s.geometry;s.level->files=*files;return true;
+}
 }
 
-bool KichR4_CheckFrameBridge(void* module,KichR4LogFn log,bool geometry)
+bool KichR4_CheckFrameBridge(void* module,KichR4LogFn log,bool geometry,const char* level,const KichR4LevelFiles* files)
 {
-    Write(log,"[R4 bridge %s] begin: autonomous DX11 %stest before R1/R2",geometry?"B4.1":"B3",geometry?"geometry ":"frame ");
+    Write(log,"[R4 bridge %s] begin: autonomous DX11 %stest before R1/R2",level?"B4.2":geometry?"B4.1":"B3",level?"level ":geometry?"geometry ":"frame ");
     const KichR4GetFrameAPIFn get=reinterpret_cast<KichR4GetFrameAPIFn>(
         GetProcAddress(static_cast<HMODULE>(module),KICH_R4_EXPORT_FRAME));
-    if(!get){Write(log,"[R4 bridge %s] frame export missing; update xrRender_R4.dll; test skipped",geometry?"B4.1":"B3");return true;}
+    if(!get){Write(log,"[R4 bridge %s] frame export missing; update xrRender_R4.dll; test skipped",level?"B4.2":geometry?"B4.1":"B3");return true;}
     WindowState state={};
-    state.geometry_mode=geometry;state.controls=kich_r4_scene::Defaults();
+    state.level_name=level;state.geometry_mode=geometry && !level;state.controls=kich_r4_scene::Defaults();
     if(!Fetch(get,state.session.api,log,Stage(state)))return true;
-    if(geometry && !FetchGeometry(module,state,log))return true;
+    if((geometry || level) && !FetchGeometry(module,state,log))return true;
+    if(level && !PrepareLevel(module,state,files,log))return true;
     GuardRun(state,log);
     KichR4FrameStats final_stats={};
     KichR4GeometryReport geometry_report={};
@@ -302,13 +356,17 @@ bool KichR4_CheckFrameBridge(void* module,KichR4LogFn log,bool geometry)
             final_stats.views_created,final_stats.views_released,final_stats.flags,state.activations,state.mode_changes);
         if(final_stats.struct_size!=sizeof(final_stats) || final_stats.flags || final_stats.views_created!=final_stats.views_released)
             state.session.Record("final ownership report",KICH_R4_E_STATE);
-        if(geometry){const KichR4GeometryStats& g=geometry_report.geometry;const KichR4ResourceStats& r=geometry_report.resources;
-            Write(log,"[R4 bridge B4.1] geometry: draws=%u triangles=%u updates=%u; pipelines=%u/%u depth=%u/%u resources=%u/%u live=%u; triangle_frames=%u cube_frames=%u",
+        if(geometry || level){const KichR4GeometryStats& g=geometry_report.geometry;const KichR4ResourceStats& r=geometry_report.resources;
+            if(!level)Write(log,"[R4 bridge B4.1] geometry: draws=%u triangles=%u updates=%u; pipelines=%u/%u depth=%u/%u resources=%u/%u live=%u; triangle_frames=%u cube_frames=%u",
                 g.draw_calls,g.triangles,g.buffer_updates,g.pipelines_created,g.pipelines_released,g.depth_created,g.depth_released,
                 r.created,r.released,r.live_resources,state.geometry.triangle_frames,state.geometry.cube_frames);
+            else Write(log,"[R4 bridge B4.2] geometry: draws=%u triangles=%u updates=%u; pipelines=%u/%u depth=%u/%u resources=%u/%u live=%u; level_frames=%u DDS=%u fallback=%u camera_steps=%u; submitted_draws=%llu submitted_triangles=%llu",
+                g.draw_calls,g.triangles,g.buffer_updates,g.pipelines_created,g.pipelines_released,g.depth_created,g.depth_released,
+                r.created,r.released,r.live_resources,state.level->frames,state.level->textures_loaded,state.level->texture_fallbacks,state.level->camera_steps,
+                static_cast<unsigned long long>(state.level->submitted_draws),static_cast<unsigned long long>(state.level->submitted_triangles));
             if(geometry_report.struct_size!=sizeof(geometry_report) || g.struct_size!=sizeof(g) || r.struct_size!=sizeof(r) ||
                 r.live_resources || r.payload_bytes || r.created!=r.released || g.pipelines_created!=g.pipelines_released ||
-                g.depth_created!=g.depth_released)state.session.Record("B4.1 final resource ownership report",KICH_R4_E_STATE);
+                g.depth_created!=g.depth_released)state.session.Record("final resource ownership report",KICH_R4_E_STATE);
         }
     }
     if(state.session.failure) {
@@ -316,11 +374,20 @@ bool KichR4_CheckFrameBridge(void* module,KichR4LogFn log,bool geometry)
             Stage(state),state.session.step,static_cast<uint32_t>(state.session.failure),static_cast<uint32_t>(final_stats.device_removed_reason));
         state.geometry.shader_error[sizeof(state.geometry.shader_error)-1]=0;
         if(state.geometry.shader_error[0])log(state.geometry.shader_error);
+        if(state.level){if(!state.level->detail.empty())Write(log,"[R4 bridge B4.2] detail: %s",state.level->detail.c_str());
+            state.level->bridge.shader_error[sizeof(state.level->bridge.shader_error)-1]=0;
+            if(state.level->bridge.shader_error[0])log(state.level->bridge.shader_error);}
     } else if(final_stats.presents && state.session.rendered && stopped==KICH_R4_OK){
-        if(!geometry)log("[R4 bridge B3] PASS: DX11 clear/Present completed; target/device released; continuing R1/R2");
+        if(level){
+            if(state.level->frames && state.level->textures_loaded && geometry_report.geometry.draw_calls)
+                log("[R4 bridge B4.2] PASS: level geometry and DDS textures drawn; resources/depth/target/device released; continuing R1/R2");
+            else log("[R4 bridge B4.2] INCOMPLETE: no visible geometry or no source DDS texture loaded; continuing R1/R2");
+        }else if(!geometry)log("[R4 bridge B3] PASS: DX11 clear/Present completed; target/device released; continuing R1/R2");
         else if(state.geometry.triangle_frames && state.geometry.cube_frames && geometry_report.geometry.draw_calls)
             log("[R4 bridge B4.1] PASS: triangle and cubes drawn; geometry/depth/target/device released; continuing R1/R2");
         else log("[R4 bridge B4.1] INCOMPLETE: exercise both 1 (triangle) and 2 (cubes); continuing R1/R2");
     }else Write(log,"[R4 bridge %s] INCOMPLETE: no successful DX11 Present; continuing R1/R2",Stage(state));
-    return state.session.device==0;
+    const bool can_unload=state.session.device==0;
+    delete state.level;
+    return can_unload;
 }

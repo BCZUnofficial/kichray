@@ -60,6 +60,8 @@
     <ClInclude Include="..\KichR4Resources.h" />
     <ClInclude Include="..\KichR4Frame.h" />
     <ClInclude Include="..\KichR4Geometry.h" />
+    <ClInclude Include="..\KichR4Level.h" />
+    <ClInclude Include="..\KichR4Dds.h" />
     <ClInclude Include="R4GeometryRules.h" />
     <ClInclude Include="R4PipelineDX11.h" />
     <ClInclude Include="R4FrameController.h" />

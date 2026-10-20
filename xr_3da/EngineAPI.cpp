@@ -8,6 +8,7 @@
 #include "KichR4Probe.h"
 
 #ifndef DEDICATED_SERVER
+#include "KichR4LevelFS.inl"
 static void KichR4_WriteProbeLog(const char* message)
 {
 	Msg("%s", message);
@@ -38,8 +39,8 @@ extern u32 renderer_value; // con cmd
 void CEngineAPI::Initialize(void)
 {
 #ifndef DEDICATED_SERVER
-	// Opt-in B0/B2 diagnostics and B3 frame test finish before legacy renderer loading.
-	KichR4_RunHardwareProbeIfRequested(Core.Params, KichR4_WriteProbeLog);
+	// Opt-in bridge diagnostics/viewers finish before legacy renderer loading.
+	KichR4_RunHardwareProbeIfRequested(Core.Params, KichR4_WriteProbeLog, &kich_r4_level_files);
 #endif
 	//////////////////////////////////////////////////////////////////////////
 	// render

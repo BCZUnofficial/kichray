@@ -494,6 +494,14 @@
     <ClInclude Include="KichR4Geometry.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="KichR4GeometrySession.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="KichR4TestScene.h"><Filter>Interfaces\Render</Filter></ClInclude>
+    <ClInclude Include="KichR4Level.h"><Filter>Interfaces\Render</Filter></ClInclude>
+    <ClInclude Include="KichR4LevelFiles.h"><Filter>Interfaces\Render</Filter></ClInclude>
+    <ClInclude Include="KichR4LevelFS.inl"><Filter>Interfaces\Render</Filter></ClInclude>
+    <ClInclude Include="KichR4LevelOption.h"><Filter>Interfaces\Render</Filter></ClInclude>
+    <ClInclude Include="KichR4LevelData.h"><Filter>Interfaces\Render</Filter></ClInclude>
+    <ClInclude Include="KichR4LevelCamera.h"><Filter>Interfaces\Render</Filter></ClInclude>
+    <ClInclude Include="KichR4LevelSession.h"><Filter>Interfaces\Render</Filter></ClInclude>
+    <ClInclude Include="KichR4Dds.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="EngineAPI.h">
       <Filter>Engine\Core</Filter>
     </ClInclude>

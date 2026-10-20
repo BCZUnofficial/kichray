@@ -546,6 +546,14 @@
     <ClInclude Include="KichR4Geometry.h" />
     <ClInclude Include="KichR4GeometrySession.h" />
     <ClInclude Include="KichR4TestScene.h" />
+    <ClInclude Include="KichR4Level.h" />
+    <ClInclude Include="KichR4LevelFiles.h" />
+    <ClInclude Include="KichR4LevelFS.inl" />
+    <ClInclude Include="KichR4LevelOption.h" />
+    <ClInclude Include="KichR4LevelData.h" />
+    <ClInclude Include="KichR4LevelCamera.h" />
+    <ClInclude Include="KichR4LevelSession.h" />
+    <ClInclude Include="KichR4Dds.h" />
     <ClInclude Include="KichR4ResourceProbe.h" />
     <ClInclude Include="KichRenderDevice.h" />
     <ClInclude Include="EnnumerateVertices.h" />
@@ -699,6 +707,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="KichR4FrameProbe.cpp">
+      <ExceptionHandling>Async</ExceptionHandling>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="Envelope.cpp" />

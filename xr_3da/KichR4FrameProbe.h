@@ -3,5 +3,5 @@
 #include "KichR4Probe.h"
 /* false means cleanup did not finish: retain the loaded module so no live
  * graphics object loses its DLL implementation before process shutdown. */
-bool KichR4_CheckFrameBridge(void* module,KichR4LogFn log,bool geometry=false);
+bool KichR4_CheckFrameBridge(void* module,KichR4LogFn log,bool geometry=false,const char* level=0,const KichR4LevelFiles* files=0);
 #endif
