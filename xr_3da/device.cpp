@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "frustum.h"
+#include "KichRenderDevice.h"
 
 #pragma warning(disable : 4995)
 // mmsystem.h
@@ -9,8 +10,6 @@
 #define MMNOMIXER
 #define MMNOJOY
 #include <mmsystem.h>
-// d3dx9.h
-#include <DXSDK/d3dx9.h>
 #pragma warning(default : 4995)
 
 #include "x_ray.h"
@@ -25,30 +24,17 @@ ref_light precache_light = 0;
 BOOL CRenderDevice::Begin()
 {
 #ifndef DEDICATED_SERVER
-	HW.Validate();
-	HRESULT _hr = HW.pDevice->TestCooperativeLevel();
-	if (FAILED(_hr))
+	IKichRenderDevice& backend = KichRenderDevice();
+	const KichRenderDeviceState state = backend.GetDeviceState();
+	if (state == KichDeviceLost)
 	{
-		// If the device was lost, do not render until we get it back
-		if (D3DERR_DEVICELOST == _hr)
-		{
-			Sleep(33);
-			return FALSE;
-		}
-
-		// Check if the device is ready to be reset
-		if (D3DERR_DEVICENOTRESET == _hr)
-		{
-			Reset();
-		}
+		Sleep(33);
+		return FALSE;
 	}
-
-	CHK_DX(HW.pDevice->BeginScene());
-	RCache.OnFrameBegin();
-	RCache.set_CullMode(CULL_CW);
-	RCache.set_CullMode(CULL_CCW);
-	if (HW.Caps.SceneMode)
-		overdrawBegin();
+	if (state == KichDeviceNeedsReset)
+		Reset();
+	// Other failures retain the legacy BeginScene/CHK_DX path.
+	backend.BeginFrame();
 	FPU::m24r();
 	g_bRendering = TRUE;
 #endif
@@ -57,10 +43,7 @@ BOOL CRenderDevice::Begin()
 
 void CRenderDevice::Clear()
 {
-	CHK_DX(HW.pDevice->Clear(0, 0,
-							 D3DCLEAR_ZBUFFER | (psDeviceFlags.test(rsClearBB) ? D3DCLEAR_TARGET : 0) |
-								 (HW.Caps.bStencil ? D3DCLEAR_STENCIL : 0),
-							 D3DCOLOR_XRGB(0, 0, 0), 1, 0));
+	KichRenderDevice().Clear(psDeviceFlags.test(rsClearBB));
 }
 
 extern void CheckPrivilegySlowdown();
@@ -70,10 +53,8 @@ void CRenderDevice::End(void)
 {
 #ifndef DEDICATED_SERVER
 
-	VERIFY(HW.pDevice);
-
-	if (HW.Caps.SceneMode)
-		overdrawEnd();
+	IKichRenderDevice& backend = KichRenderDevice();
+	backend.PrepareFrameEnd(dwWidth, dwHeight);
 
 	//
 	if (dwPrecacheFrame)
@@ -91,7 +72,7 @@ void CRenderDevice::End(void)
 				precache_light.destroy();
 			::Sound->set_master_volume(1.f);
 			pApp->destroy_loading_shaders();
-			Resources->DestroyNecessaryTextures();
+			KichRenderDevice().DestroyNecessaryTextures();
 			Memory.mem_compact();
 			Msg("* MEMORY USAGE: %d K", Memory.mem_usage() / 1024);
 			CheckPrivilegySlowdown();
@@ -99,15 +80,7 @@ void CRenderDevice::End(void)
 	}
 
 	g_bRendering = FALSE;
-	// end scene
-	RCache.OnFrameEnd();
-	Memory.dbg_check();
-	CHK_DX(HW.pDevice->EndScene());
-
-	HRESULT _hr = HW.pDevice->Present(NULL, NULL, NULL, NULL);
-	if (D3DERR_DEVICELOST == _hr)
-		return; // we will handle this later
-				// R_ASSERT2		(SUCCEEDED(_hr),	"Presentation failed. Driver upgrade needed?");
+	backend.EndFrame();
 #endif
 }
 
@@ -145,7 +118,7 @@ void mt_Thread(void* ptr)
 #include "igame_level.h"
 void CRenderDevice::PreCache(u32 amount)
 {
-	if (HW.Caps.bForceGPU_REF)
+	if (KichRenderDevice().IsReferenceDevice())
 		amount = 0;
 #ifdef DEDICATED_SERVER
 	amount = 0;
@@ -200,7 +173,7 @@ void CRenderDevice::Run()
 
 	seqAppStart.Process(rp_AppStart);
 
-	CHK_DX(HW.pDevice->Clear(0, 0, D3DCLEAR_TARGET, D3DCOLOR_XRGB(0, 0, 0), 1, 0));
+	KichRenderDevice().ClearTarget();
 
 	while (WM_QUIT != msg.message)
 	{
@@ -247,9 +220,7 @@ void CRenderDevice::Run()
 
 				// Matrices
 				mFullTransform.mul(mProject, mView);
-				RCache.set_xform_view(mView);
-				RCache.set_xform_project(mProject);
-				D3DXMatrixInverse((D3DXMATRIX*)&mInvFullTransform, 0, (D3DXMATRIX*)&mFullTransform);
+				KichRenderDevice().SetCameraMatrices(mView, mProject, mFullTransform, mInvFullTransform);
 
 				// *** Resume threads
 				// Capture end point - thread must run only ONE cycle
@@ -259,8 +230,7 @@ void CRenderDevice::Run()
 				Sleep(0);
 
 #ifndef DEDICATED_SERVER
-				Statistic->RenderTOTAL_Real.FrameStart();
-				Statistic->RenderTOTAL_Real.Begin();
+				KichRenderDevice().BeginFrameTiming(Statistic->RenderTOTAL_Real);
 				if (b_is_Active)
 				{
 					if (Begin())
@@ -272,9 +242,7 @@ void CRenderDevice::Run()
 						End();
 					}
 				}
-				Statistic->RenderTOTAL_Real.End();
-				Statistic->RenderTOTAL_Real.FrameEnd();
-				Statistic->RenderTOTAL.accum = Statistic->RenderTOTAL_Real.accum;
+				KichRenderDevice().EndFrameTiming(Statistic->RenderTOTAL_Real, Statistic->RenderTOTAL);
 #endif
 				// *** Suspend threads
 				// Capture startup point

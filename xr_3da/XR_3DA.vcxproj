@@ -537,6 +537,11 @@
     <ClInclude Include="EffectorPP.h" />
     <ClInclude Include="Engine.h" />
     <ClInclude Include="EngineAPI.h" />
+    <ClInclude Include="KichR4Bridge.h" />
+    <ClInclude Include="KichR4Probe.h" />
+    <ClInclude Include="KichR4Resources.h" />
+    <ClInclude Include="KichR4ResourceProbe.h" />
+    <ClInclude Include="KichRenderDevice.h" />
     <ClInclude Include="EnnumerateVertices.h" />
     <ClInclude Include="envelope.h" />
     <ClInclude Include="Environment.h" />
@@ -645,6 +650,7 @@
     <ClCompile Include="D3DUtils.cpp" />
     <ClCompile Include="defines.cpp" />
     <ClCompile Include="device.cpp" />
+    <ClCompile Include="KichRenderDevice_DX9.cpp" />
     <ClCompile Include="Device_create.cpp" />
     <ClCompile Include="Device_destroy.cpp" />
     <ClCompile Include="Device_Initialize.cpp" />
@@ -680,6 +686,12 @@
     <ClCompile Include="EffectorPP.cpp" />
     <ClCompile Include="Engine.cpp" />
     <ClCompile Include="EngineAPI.cpp" />
+    <ClCompile Include="KichR4Probe.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="KichR4ResourceProbe.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="Envelope.cpp" />
     <ClCompile Include="Environment.cpp" />
     <ClCompile Include="Environment_misc.cpp" />

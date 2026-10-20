@@ -5,6 +5,14 @@
 #include "stdafx.h"
 #include "EngineAPI.h"
 #include "xrXRC.h"
+#include "KichR4Probe.h"
+
+#ifndef DEDICATED_SERVER
+static void KichR4_WriteProbeLog(const char* message)
+{
+	Msg("%s", message);
+}
+#endif
 
 //////////////////////////////////////////////////////////////////////
 // Construction/Destruction
@@ -29,6 +37,10 @@ extern u32 renderer_value; // con cmd
 
 void CEngineAPI::Initialize(void)
 {
+#ifndef DEDICATED_SERVER
+	// B0 only: temporary DX11 diagnostics finish before a legacy renderer is loaded.
+	KichR4_RunHardwareProbeIfRequested(Core.Params, KichR4_WriteProbeLog);
+#endif
 	//////////////////////////////////////////////////////////////////////////
 	// render
 	LPCSTR r1_name = "xrRender_R1.dll";

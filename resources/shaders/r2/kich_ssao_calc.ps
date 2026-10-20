@@ -1,10 +1,10 @@
-// EX2 Test B: broad surface normal and virtual-height bias. Adapted from the supplied Clear Sky r2/ssao.ps:
-// reflected Poisson taps and weighted occlusion/normalization formula.
+// EX2 full-resolution AO: deterministic dense disk, broad surface normal.
+// Adapted from the supplied Clear Sky r2/ssao.ps:
+// Surface reconstruction retained; AO uses a fixed-count obscurance average.
 // Changes: actual projection, world radius, finite math, sky/border guards,
-// normal bias, half-resolution output, 6/12 runtime quality.
+// normal bias, full-resolution output, 16/32 runtime quality.
 #include "common.h"
 uniform float4 kich_ao_params; // radius, quality, projection scale x/y
-uniform float3x4 kich_ao_view_to_world;
 
 // Test B: estimate the broad surface plane instead of using the bump normal.
 // Prefer the shorter valid one-sided difference to avoid crossing silhouettes.
@@ -53,44 +53,40 @@ float2 kich_ao_tap(float2 tc, float2 tap, float2 scale, float2 mirror,
     // and half-float position quantization. Retain the angular bias as well.
     float bias = max(0.04f,min(P.z*0.001f,0.10f));
     float influence = saturate(((dot(delta,N)-bias)/distance-0.05f)/0.95f);
-    float range = saturate(distance/radius);
+    // Smooth finite support: a sample outside the world radius contributes
+    // zero occlusion, without changing the normalization of other samples.
+    float range = saturate(1.0f-distance/radius);
+    range = range*range*(3.0f-2.0f*range);
     float valid = step(0.00001f,Q.z)*step(0.0011f,distance);
     valid *= step(0.0f,uv.x)*step(uv.x,1.0f)*step(0.0f,uv.y)*step(uv.y,1.0f);
-    float w = valid*(influence+0.01f)/(range+0.1f);
-    return float2(w*lerp(1.0f,range,influence),w);
+    return float2(valid*influence*range,0.0f);
+
 }
 
-float4 main(float2 tc : TEXCOORD0, float2 unused : TEXCOORD1, float2 pixel : VPOS) : COLOR
+float4 main(float2 tc : TEXCOORD0, float2 unused : TEXCOORD1) : COLOR
 {
     float3 P = tex2D(s_position, tc).xyz;
     float3 N = kich_ao_surface_normal(tc,P);
     float radius = max(kich_ao_params.x, 0.1f);
     float2 scale = kich_ao_params.zw * radius / max(P.z, 0.1f);
-    // Test D: decorrelate directions per half-resolution pixel.
-    // No frame index: stationary-camera noise stays stationary.
-    float noise = frac(52.9829189f * frac(dot(floor(pixel),float2(0.06711056f,0.00583715f))));
-    float angle = noise * 6.28318530718f;
-    float2 mirror = float2(cos(angle),sin(angle));
-    float2 total = float2(0.1f,0.1f);
+    // Identical deterministic disk at every pixel: no tiled or stochastic
+    // rotation, no frame seed, and no screen-space noise texture.
+    // Uniform-dependent count keeps the legacy SM3 loop compact.
+    int count = kich_ao_params.y > 1.5f ? 32 : 16;
+    float2 total = float2(0.0f,0.0f);
     if (P.z > 0.00001f)
     {
-        total += kich_ao_tap(tc,float2(-0.326212,-0.405810)*0.68,scale,mirror,P,N,radius);
-        total += kich_ao_tap(tc,float2(-0.695914,0.457137)*0.75,scale,mirror,P,N,radius);
-        total += kich_ao_tap(tc,float2(0.962340,-0.194983)*0.63,scale,mirror,P,N,radius);
-        total += kich_ao_tap(tc,float2(0.519456,0.767022)*0.73,scale,mirror,P,N,radius);
-        total += kich_ao_tap(tc,float2(0.507431,0.064425)*0.65,scale,mirror,P,N,radius);
-        total += kich_ao_tap(tc,float2(-0.321940,-0.932615)*0.70,scale,mirror,P,N,radius);
-        if (kich_ao_params.y > 1.5f)
+        for (int i=0; i<count; i++)
         {
-            total += kich_ao_tap(tc,float2(-0.840144,-0.073580)*0.92,scale,mirror,P,N,radius);
-            total += kich_ao_tap(tc,float2(-0.203345,0.620716)*0.95,scale,mirror,P,N,radius);
-            total += kich_ao_tap(tc,float2(0.473434,-0.480026)*0.93,scale,mirror,P,N,radius);
-            total += kich_ao_tap(tc,float2(0.185461,-0.893124)*0.98,scale,mirror,P,N,radius);
-            total += kich_ao_tap(tc,float2(0.896420,0.412458)*0.90,scale,mirror,P,N,radius);
-            total += kich_ao_tap(tc,float2(-0.791559,-0.597710),scale,mirror,P,N,radius);
+            float sampleIndex = float(i)+0.5f;
+            float sampleRadius = sqrt(sampleIndex/float(count));
+            float angle = sampleIndex*2.39996323f;
+            float2 tap = float2(cos(angle),sin(angle))*sampleRadius;
+            total += kich_ao_tap(tc,tap,scale,float2(1.0f,0.0f),P,N,radius);
         }
     }
-    float ao = (saturate(total.x/total.y)+0.2f)/1.2f;
+    // Fixed normalization, independent of sample occlusion and validity.
+    float ao = 1.0f-saturate(2.0f*total.x/float(count));
     // Avoid close-camera/HUD AO; fade very distant contributions.
     float fade = smoothstep(0.4f,0.9f,length(P)) * (1.0f-smoothstep(60.0f,100.0f,P.z));
     ao = lerp(1.0f,ao,fade*step(0.00001f,P.z));

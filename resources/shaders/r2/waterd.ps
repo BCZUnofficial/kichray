@@ -1,34 +1,35 @@
+// KICH_WATER_V3: distortion pass; Clear Sky soft-water shoreline behaviour.
 #include "common.h"
 #include "shared\waterconfig.h"
+#include "kich_water_depth.h"
 
-struct   v2p
+struct v2p
 {
-        half2        tbase:                TEXCOORD0;  // base
-        half2        tdist0:                TEXCOORD1;  // d0
-        half2        tdist1:                TEXCOORD2;  // d1
+    half2 tbase  : TEXCOORD0;
+    half2 tdist0 : TEXCOORD1;
+    half2 tdist1 : TEXCOORD2;
+#ifdef NEED_SOFT_WATER
+    float4 water_clip : TEXCOORD3;
+#endif
 };
 
-uniform sampler2D        s_distort;
-#define POWER        .5h
-//////////////////////////////////////////////////////////////////////////////////////////
-// Pixel
-half4        main        ( v2p I )        : COLOR
+uniform sampler2D s_distort;
+
+half4 main(v2p I) : COLOR
 {
-        half4        t_base                = tex2D        (s_base,          I.tbase  );
+    half scum = saturate(tex2D(s_base, I.tbase).a);
+    half2 d0 = tex2D(s_distort, I.tdist0).xy;
+    half2 d1 = tex2D(s_distort, I.tdist1).xy;
+    half2 displacement = ((d0 + d1) * 0.5h - 0.5h) * (1.0h - scum) * 0.30h;
 
-        half2        t_d0                = tex2D (s_distort,           I.tdist0 );
-        half2        t_d1                = tex2D (s_distort,           I.tdist1 );
-        half2        distort                = (t_d0+t_d1)*0.5;                      // average
-        half2        zero                = half2        (0.5,0.5);
-        half2        faded                = lerp  (distort,zero,        t_base.a );
+#ifdef NEED_SOFT_WATER
+    float gap = kich_water_gap(I.water_clip);
+    displacement *= (half)kich_water_distort_shore(gap);
 
-        half2        faded_bx2        = (faded*2-1)*W_DISTORT_POWER;
-        half         faded_dot        = dot        (half3(faded_bx2,0),.75        );        //0.75
-        half         alpha                = .5f        ;                //abs          (faded_dot);
-
-
-                faded                = faded*POWER - .5*POWER + 0.5        ;
-
-        // out
-        return  half4  (faded, .08h, alpha)        ;
+    // Clear Sky soft water explicitly zeroes the third distortion channel.
+    // Neutral XY displacement at the bank makes a constant 0.5 alpha harmless.
+    return half4(0.5h + displacement, 0.0h, 0.5h);
+#else
+    return half4(0.5h + displacement, 0.08h, 0.5h);
+#endif
 }

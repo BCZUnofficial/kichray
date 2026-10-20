@@ -1,8 +1,8 @@
 #include "stdafx.h"
 
-#include "ResourceManager.h"
 #include "render.h"
 #include "IGame_Persistent.h"
+#include "KichRenderDevice.h"
 
 void CRenderDevice::_Destroy(BOOL bKeepTextures)
 {
@@ -14,8 +14,8 @@ void CRenderDevice::_Destroy(BOOL bKeepTextures)
 	b_is_Ready = FALSE;
 	Statistic->OnDeviceDestroy();
 	::Render->destroy();
-	Resources->OnDeviceDestroy(bKeepTextures);
-	RCache.OnDeviceDestroy();
+	KichRenderDevice().OnResourcesDestroy(bKeepTextures != FALSE);
+	KichRenderDevice().OnDeviceDestroy();
 
 	Memory.mem_compact();
 }
@@ -28,14 +28,14 @@ void CRenderDevice::Destroy(void)
 	Log("Destroying Direct3D...");
 
 	ShowCursor(TRUE);
-	HW.Validate();
+	KichRenderDevice().ValidateHW();
 
 	_Destroy(FALSE);
 
-	xr_delete(Resources);
+	KichRenderDevice().ReleaseResources();
 
 	// real destroy
-	HW.DestroyDevice();
+	KichRenderDevice().DestroyHW();
 
 	seqRender.R.clear();
 	seqAppActivate.R.clear();
@@ -55,9 +55,7 @@ void CRenderDevice::Destroy(void)
 extern BOOL bNeed_re_create_env;
 void CRenderDevice::Reset(bool precache)
 {
-#ifdef DEBUG
-	_SHOW_REF("*ref -CRenderDevice::ResetTotal: DeviceREF:", HW.pDevice);
-#endif // DEBUG
+	KichRenderDevice().TraceResetReferences(true);
 	bool b_16_before = (float)dwWidth / (float)dwHeight > (1024.0f / 768.0f + 0.01f);
 
 	ShowCursor(TRUE);
@@ -67,14 +65,15 @@ void CRenderDevice::Reset(bool precache)
 		//.		g_pGamePersistent->Environment().OnDeviceDestroy();
 	}
 
-	Resources->reset_begin();
+	KichRenderDevice().BeginResourcesReset();
 	Memory.mem_compact();
-	HW.Reset(m_hWnd);
-	dwWidth = HW.DevPP.BackBufferWidth;
-	dwHeight = HW.DevPP.BackBufferHeight;
+	KichRenderDeviceSize size;
+	KichRenderDevice().ResetHW(m_hWnd, size);
+	dwWidth = size.width;
+	dwHeight = size.height;
 	fWidth_2 = float(dwWidth / 2);
 	fHeight_2 = float(dwHeight / 2);
-	Resources->reset_end();
+	KichRenderDevice().EndResourcesReset();
 
 	if (g_pGamePersistent)
 	{
@@ -97,7 +96,5 @@ void CRenderDevice::Reset(bool precache)
 	if (b_16_after != b_16_before && g_pGameLevel && g_pGameLevel->pHUD)
 		g_pGameLevel->pHUD->OnScreenRatioChanged();
 
-#ifdef DEBUG
-	_SHOW_REF("*ref +CRenderDevice::ResetTotal: DeviceREF:", HW.pDevice);
-#endif // DEBUG
+	KichRenderDevice().TraceResetReferences(false);
 }

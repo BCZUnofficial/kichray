@@ -1,74 +1,106 @@
+// KICH_WATER_V3: V2 rain/swamp + Clear Sky style soft-water response.
 #include "common.h"
+#include "kich_water_depth.h"
+#include "kich_water_rain.h"
 
-struct   vf
+struct vf
 {
-        float4         hpos        :         POSITION        ;
-           float2  tbase        :        TEXCOORD0        ;  // base
-           float2         tnorm0        :        TEXCOORD1        ;  // nm0
-           float2         tnorm1        :        TEXCOORD2        ;  // nm1
-        half3         M1                :        TEXCOORD3        ;
-        half3         M2                :        TEXCOORD4        ;
-        half3         M3                :        TEXCOORD5        ;
-        half3        v2point        :        TEXCOORD6        ;
-           half4        c0                :          COLOR0                ;
-        float          fog        :         FOG                ;
+#ifdef NEED_SOFT_WATER
+    float4 water_clip : TEXCOORD7;
+#endif
+    float4 hpos        : POSITION;
+    float2 tbase       : TEXCOORD0;
+    float2 tnorm0      : TEXCOORD1;
+    float2 tnorm1      : TEXCOORD2;
+    half3  M1          : TEXCOORD3;
+    half3  M2          : TEXCOORD4;
+    half3  M3          : TEXCOORD5;
+    float3 v2point     : TEXCOORD6;
+    half4  c0          : COLOR0;
+    float  fog         : FOG;
 };
 
-uniform        sampler2D                s_nmap;
-uniform        samplerCUBE                s_env0;
-uniform        samplerCUBE                s_env1;
+uniform sampler2D   s_nmap;
+uniform samplerCUBE s_env0;
+uniform samplerCUBE s_env1;
 
-////////////////////////////////////////////////////////////////////////////////
-// Pixel
-/*
-half4   main         ( v2p I )  : COLOR
+half4 main(vf I) : COLOR
 {
+    half4 base = tex2D(s_base, I.tbase);
+    half3 n0 = tex2D(s_nmap, I.tnorm0).xyz;
+    half3 n1 = tex2D(s_nmap, I.tnorm1).xyz;
+    half3 normalTS = n0 + n1 - 1.0h;
 
-        half4        t_base                = tex2D   (s_base,I.tbase);
-        half3        t_env                = texCUBE  (s_env, I.tenv);
+    float3 world = I.v2point + eye_position.xyz;
+    float patch = 0.65f * kich_water_noise(world.xz * 0.45f) +
+                  0.35f * kich_water_noise(world.xz * 1.8f + 13.7f);
 
-        half3        refl                = lerp    (t_env,t_base,I.c0.a);
-        half3        color                = lerp    (refl, t_base,t_base.a);
-        half3        final                = color*I.c0*2  ;
+    half scum = saturate(base.a);
+    half film = smoothstep(0.35f, 0.75f, patch) * scum * KICH_WATER_SWAMP;
 
-        half        alpha_shift        = saturate(.5-I.c0.a);
-        half        alpha_add        = alpha_shift*alpha_shift;
-        half        alpha                = t_base.a;
-        // out
-  return  half4   (final,   t_base.a );  //t_base.a + (1-I.c0.a));  //half4  (final, t_base.a );
-}
-*/
+    float cameraDistance = length(I.v2point);
+    float normalStrength = lerp(KICH_WATER_NORMAL_STRENGTH, 0.28f,
+                                smoothstep(20.0f, 100.0f, cameraDistance));
+    normalTS = lerp(half3(0, 0, 1), normalTS, normalStrength);
 
-half4   main_ps_2_0  ( vf I )          : COLOR
-{
-        half4        base                 = tex2D           (s_base,I.tbase);
-        half3        n0                        = tex2D           (s_nmap,I.tnorm0);
-        half3        n1                        = tex2D           (s_nmap,I.tnorm1);
-        half3        Navg                = n0 + n1 - 1        ;
+    half3 N = normalize(mul(half3x3(I.M1, I.M2, I.M3), normalTS));
 
-        half3         Nw                     = mul                (half3x3(I.M1, I.M2, I.M3), Navg);
-                        Nw                        = normalize        (Nw);
-        half3         v2point           = normalize        (I.v2point);
-        half3        vreflect        	= reflect        (v2point, Nw)        ;
-                        vreflect.y      = vreflect.y*2-1;                                // fake remapping
-        half3        env0               = texCUBE          (s_env0, vreflect);
-        half3        env1               = texCUBE          (s_env1, vreflect);
-        half3         env               = lerp                (env0,env1,L_ambient.w);
+    // Keep V2 weather-driven rain rings.
+    float rain = saturate(kich_water_weather.x);
+    float2 ripple = kich_water_rain(world.xz, timers.x, rain) * (1.0f - film * 0.6f);
+    ripple *= smoothstep(0.65f, 0.95f, abs(N.y));
+    N = normalize(N + float3(ripple.x, 0.0f, ripple.y));
 
-        half          fresnel                = saturate        (dot(vreflect,v2point));
-        half         amount             = 0.15h+0.25h*pow        (fresnel,9);                        // 1=full env, 0=no env
+    half3 incident = normalize(I.v2point);
+    half grazing = 1.0h - saturate(abs(dot(N, -incident)));
+    half g2 = grazing * grazing;
+    half fresnel = 0.02h + 0.98h * g2 * g2 * grazing;
 
-        half3        c_reflection       = env*amount        ;
-        half3        final              = lerp(c_reflection,base.rgb,base.a)        ;
-					 final*=I.c0*2		;
+    half3 reflected = reflect(incident, N);
+    reflected.y = reflected.y * 2.0h - 1.0h;
 
-        // tonemap
-#ifdef        USE_VTF
-//                final                *= I.c0.w        ;
+    half3 environment = lerp(texCUBE(s_env0, reflected).rgb,
+                             texCUBE(s_env1, reflected).rgb, L_ambient.w);
+    half3 lighting = max(I.c0.rgb, 0.0h);
+
+    half reflectionAmount = lerp(0.08h, 0.65h, fresnel) *
+                            (1.0h - 0.65h * scum) *
+                            (1.0h - film * 0.5h);
+
+#ifdef NEED_SOFT_WATER
+    float gap = kich_water_gap(I.water_clip);
 #else
-//                 final                 *= tex2D        (s_tonemap,I.tbase).x        ;        // any TC - OK
+    // Non-soft fallback behaves like deep water and does not require scene depth.
+    float gap = 20.0f;
 #endif
 
-        // out
-        return  half4   (final, 1 )                ;
+    half murk = 1.0h - exp(-gap * KICH_WATER_MURK);
+    half3 swampBase = lerp(base.rgb, base.rgb * half3(0.72h, 0.78h, 0.55h), film);
+    swampBase *= lerp(half3(1, 1, 1), half3(0.66h, 0.72h, 0.52h),
+                      murk * KICH_WATER_SWAMP);
+
+    half3 color = lerp(swampBase * lighting * 1.30h,
+                       environment * lighting * 1.30h,
+                       reflectionAmount);
+
+#ifdef NEED_SOFT_WATER
+    // Clear Sky idea adapted to V2:
+    // 1) grazing angles are naturally more opaque;
+    // 2) the bank transition is depth driven, not a fixed alpha;
+    // 3) exponential depth opacity fills deep water smoothly;
+    // 4) water fades into the far fog through vertex fog alpha.
+    half shore = kich_water_shore(gap);
+    half angleAlpha = lerp(0.75h, 1.0h, fresnel);
+    half alpha = min(angleAlpha, shore);
+    alpha = max(alpha, (half)kich_water_depth_opacity(gap));
+
+    // Rяска/scum can make water denser, but never resurrect alpha at zero depth.
+    half materialBoost = saturate(scum * 0.30h + film * 0.45h);
+    alpha += (1.0h - alpha) * materialBoost * shore;
+
+    alpha *= I.c0.a * I.c0.a;
+    return half4(color, saturate(alpha));
+#else
+    return half4(color, 1.0h);
+#endif
 }

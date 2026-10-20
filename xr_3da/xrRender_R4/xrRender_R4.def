@@ -1,0 +1,6 @@
+LIBRARY xrRender_R4
+EXPORTS
+    KichR4_GetBridgeVersion
+    KichR4_ProbeHardware
+    KichR4_GetProbeInfo
+    KichR4_GetResourceAPI

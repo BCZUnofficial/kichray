@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "resource.h"
+#include "KichRenderDevice.h"
 
 extern LRESULT CALLBACK WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
@@ -49,16 +50,6 @@ void CRenderDevice::Initialize()
 
 	// Command line
 	char* lpCmdLine = Core.Params;
-	if (strstr(lpCmdLine, "-gpu_sw") != NULL)
-		HW.Caps.bForceGPU_SW = TRUE;
-	else
-		HW.Caps.bForceGPU_SW = FALSE;
-	if (strstr(lpCmdLine, "-gpu_nopure") != NULL)
-		HW.Caps.bForceGPU_NonPure = TRUE;
-	else
-		HW.Caps.bForceGPU_NonPure = FALSE;
-	if (strstr(lpCmdLine, "-gpu_ref") != NULL)
-		HW.Caps.bForceGPU_REF = TRUE;
-	else
-		HW.Caps.bForceGPU_REF = FALSE;
+	KichRenderDevice().SetupGPU(strstr(lpCmdLine, "-gpu_sw") != NULL,
+		strstr(lpCmdLine, "-gpu_nopure") != NULL, strstr(lpCmdLine, "-gpu_ref") != NULL);
 }

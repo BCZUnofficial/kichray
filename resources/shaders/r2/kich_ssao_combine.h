@@ -1,36 +1,37 @@
 #ifndef KICH_SSAO_COMBINE_EX2
 #define KICH_SSAO_COMBINE_EX2
 uniform sampler2D s_kich_ssao;
-uniform float4 kich_ao_control; // enabled, strength, debug, reserved
+uniform float4 kich_ao_control;
 uniform float4 kich_ao_texel;
 
-float2 kich_ao_gather(float2 uv, float3 P, float3 N, float spatial)
+float2 kich_ao_filter_tap(float2 uv, float depth, float tolerance, float spatial)
 {
-    float3 Q = tex2D(s_position,uv).xyz;
-    float3 M = tex2D(s_normal,uv).xyz;
-    M *= rsqrt(max(dot(M,M),0.000001f));
-    float tolerance = max(0.02f,P.z*0.02f);
-    float difference = abs(Q.z-P.z);
-    float normalWeight = saturate((dot(N,M)-0.7f)/0.3f);
-    float w = spatial*step(0.00001f,Q.z)*step(difference,tolerance)*normalWeight;
-    w /= 1.0f+difference/tolerance;
-    return float2(tex2D(s_kich_ssao,uv).r*w,w);
+    float2 lo = kich_ao_texel.xy*0.5f;
+    uv = clamp(uv,lo,1.0f-lo);
+    float z = tex2Dlod(s_position,float4(uv,0,0)).z;
+    float w = saturate(1.0f-abs(z-depth)/tolerance);
+    w = spatial*w*w*step(0.00001f,z);
+    float ao = tex2Dlod(s_kich_ssao,float4(uv,0,0)).r;
+    return float2(ao*w,w);
 }
 
-float kich_ssao_resolve(float2 tc, float3 P, float3 N)
+float kich_ssao_resolve(float2 tc, float3 P, float3 unusedNormal)
 {
-    N *= rsqrt(max(dot(N,N),0.000001f));
-    float2 texel = kich_ao_texel.xy;
-    float2 grid = tc/texel-0.5f;
-    float2 fraction = frac(grid);
-    float2 base = (floor(grid)+0.5f)*texel;
-    float2 lo=texel*0.5f, hi=1.0f-lo;
-    float2 sum = kich_ao_gather(clamp(base,lo,hi),P,N,(1.0f-fraction.x)*(1.0f-fraction.y));
-    sum += kich_ao_gather(clamp(base+float2(texel.x,0),lo,hi),P,N,fraction.x*(1.0f-fraction.y));
-    sum += kich_ao_gather(clamp(base+float2(0,texel.y),lo,hi),P,N,(1.0f-fraction.x)*fraction.y);
-    sum += kich_ao_gather(clamp(base+texel,lo,hi),P,N,fraction.x*fraction.y);
-    // No compatible low-resolution sample: neutral AO, never a black hole.
-    float valid = step(0.00001f,sum.y)*step(0.00001f,P.z);
-    return lerp(1.0f,saturate(sum.x/max(sum.y,0.00001f)),valid);
+    // Full-resolution buffers share pixel centers. A positive center weight
+    // preserves valid AO even if all neighbors are rejected at a silhouette.
+    float center = tex2Dlod(s_kich_ssao,float4(tc,0,0)).r;
+    float2 sum = float2(center*4.0f,4.0f);
+    float2 d = kich_ao_texel.xy;
+    float tolerance = max(0.04f,abs(P.z)*0.02f);
+    // Explicit 3x3 Gaussian weights, depth-aware. No loops or attributes.
+    sum += kich_ao_filter_tap(tc+float2(-d.x,-d.y),P.z,tolerance,1.0f);
+    sum += kich_ao_filter_tap(tc+float2( 0.0f,-d.y),P.z,tolerance,2.0f);
+    sum += kich_ao_filter_tap(tc+float2( d.x,-d.y),P.z,tolerance,1.0f);
+    sum += kich_ao_filter_tap(tc+float2(-d.x, 0.0f),P.z,tolerance,2.0f);
+    sum += kich_ao_filter_tap(tc+float2( d.x, 0.0f),P.z,tolerance,2.0f);
+    sum += kich_ao_filter_tap(tc+float2(-d.x, d.y),P.z,tolerance,1.0f);
+    sum += kich_ao_filter_tap(tc+float2( 0.0f, d.y),P.z,tolerance,2.0f);
+    sum += kich_ao_filter_tap(tc+float2( d.x, d.y),P.z,tolerance,1.0f);
+    return lerp(1.0f,saturate(sum.x/sum.y),step(0.00001f,P.z));
 }
 #endif

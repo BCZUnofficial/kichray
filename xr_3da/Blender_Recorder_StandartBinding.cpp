@@ -223,6 +223,21 @@ class cl_hemi_color : public R_constant_setup
 };
 static cl_hemi_color binder_hemi_color;
 
+// KICH_WATER_V2: actual weather input for forward water shaders.
+// Defaults to zero before the persistent game environment is available.
+class cl_kich_water_weather : public R_constant_setup
+{
+    virtual void setup(R_constant* C)
+    {
+        float rain = 0.f;
+        if (g_pGamePersistent)
+            rain = g_pGamePersistent->Environment().CurrentEnv.rain_density;
+        clamp(rain, 0.f, 1.f);
+        RCache.set_c(C, rain, float(Device.dwWidth), float(Device.dwHeight), 0.f);
+    }
+};
+static cl_kich_water_weather binder_kich_water_weather;
+
 // Standart constant-binding
 void CBlender_Compile::SetMapping()
 {
@@ -241,6 +256,7 @@ void CBlender_Compile::SetMapping()
 
 	// time
 	r_Constant("timers", &binder_times);
+	r_Constant("kich_water_weather", &binder_kich_water_weather);
 
 	// eye-params
 	r_Constant("eye_position", &binder_eye_P);

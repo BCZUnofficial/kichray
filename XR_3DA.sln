@@ -76,6 +76,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "xrCoreStatic", "xrCore\xrCo
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "LWO", "LWO\LWO.vcxproj", "{A6EBBBBB-5FEF-4C20-8460-DFAB11734DED}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "xrRender_R4", "xr_3da\xrRender_R4\xrRender_R4.vcxproj", "{EC34C86B-295D-48A4-A099-628CA0DC49AC}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug_Dedicated|Win32 = Debug_Dedicated|Win32
@@ -89,6 +91,21 @@ Global
 		Release|Win32 = Release|Win32
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{EC34C86B-295D-48A4-A099-628CA0DC49AC}.Debug_Dedicated|Win32.ActiveCfg = Debug|Win32
+		{EC34C86B-295D-48A4-A099-628CA0DC49AC}.Debug_Priquel|Win32.ActiveCfg = Debug|Win32
+		{EC34C86B-295D-48A4-A099-628CA0DC49AC}.Debug_Priquel|Win32.Build.0 = Debug|Win32
+		{EC34C86B-295D-48A4-A099-628CA0DC49AC}.Debug|Win32.ActiveCfg = Debug|Win32
+		{EC34C86B-295D-48A4-A099-628CA0DC49AC}.Debug|Win32.Build.0 = Debug|Win32
+		{EC34C86B-295D-48A4-A099-628CA0DC49AC}.Mixed_Dedicated|Win32.ActiveCfg = Mixed|Win32
+		{EC34C86B-295D-48A4-A099-628CA0DC49AC}.Mixed_Priquel|Win32.ActiveCfg = Mixed|Win32
+		{EC34C86B-295D-48A4-A099-628CA0DC49AC}.Mixed_Priquel|Win32.Build.0 = Mixed|Win32
+		{EC34C86B-295D-48A4-A099-628CA0DC49AC}.Mixed|Win32.ActiveCfg = Mixed|Win32
+		{EC34C86B-295D-48A4-A099-628CA0DC49AC}.Mixed|Win32.Build.0 = Mixed|Win32
+		{EC34C86B-295D-48A4-A099-628CA0DC49AC}.Release_Dedicated|Win32.ActiveCfg = Release|Win32
+		{EC34C86B-295D-48A4-A099-628CA0DC49AC}.Release_Priquel|Win32.ActiveCfg = Release|Win32
+		{EC34C86B-295D-48A4-A099-628CA0DC49AC}.Release_Priquel|Win32.Build.0 = Release|Win32
+		{EC34C86B-295D-48A4-A099-628CA0DC49AC}.Release|Win32.ActiveCfg = Release|Win32
+		{EC34C86B-295D-48A4-A099-628CA0DC49AC}.Release|Win32.Build.0 = Release|Win32
 		{2578C6D8-660D-48AE-9322-7422F8664F06}.Debug_Dedicated|Win32.ActiveCfg = Debug_Dedicated|Win32
 		{2578C6D8-660D-48AE-9322-7422F8664F06}.Debug_Dedicated|Win32.Build.0 = Debug_Dedicated|Win32
 		{2578C6D8-660D-48AE-9322-7422F8664F06}.Debug_Priquel|Win32.ActiveCfg = Debug|Win32

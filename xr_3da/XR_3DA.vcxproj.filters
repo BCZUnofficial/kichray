@@ -483,6 +483,11 @@
     <ClInclude Include="Engine.h">
       <Filter>Engine\Core</Filter>
     </ClInclude>
+    <ClInclude Include="KichRenderDevice.h"><Filter>Interfaces\Render</Filter></ClInclude>
+    <ClInclude Include="KichR4Bridge.h"><Filter>Interfaces\Render</Filter></ClInclude>
+    <ClInclude Include="KichR4Probe.h"><Filter>Interfaces\Render</Filter></ClInclude>
+    <ClInclude Include="KichR4Resources.h"><Filter>Interfaces\Render</Filter></ClInclude>
+    <ClInclude Include="KichR4ResourceProbe.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="EngineAPI.h">
       <Filter>Engine\Core</Filter>
     </ClInclude>
@@ -686,6 +691,7 @@
     <ClCompile Include="MbHelpers.cpp">
       <Filter>Render\Font output</Filter>
     </ClCompile>
+    <ClCompile Include="KichRenderDevice_DX9.cpp"><Filter>General</Filter></ClCompile>
     <ClCompile Include="device.cpp">
       <Filter>Render\Execution &amp; 3D</Filter>
     </ClCompile>
@@ -857,6 +863,8 @@
     <ClCompile Include="Engine.cpp">
       <Filter>Engine\Core</Filter>
     </ClCompile>
+    <ClCompile Include="KichR4Probe.cpp"><Filter>General</Filter></ClCompile>
+    <ClCompile Include="KichR4ResourceProbe.cpp"><Filter>General</Filter></ClCompile>
     <ClCompile Include="EngineAPI.cpp">
       <Filter>Engine\Core</Filter>
     </ClCompile>
