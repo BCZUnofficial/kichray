@@ -501,6 +501,8 @@
     <ClInclude Include="KichR4LevelData.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="KichR4LevelCamera.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="KichR4LevelSession.h"><Filter>Interfaces\Render</Filter></ClInclude>
+    <ClInclude Include="KichR4Game.h"><Filter>Interfaces\Render</Filter></ClInclude>
+    <ClInclude Include="KichR4GameSession.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="KichR4Dds.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="EngineAPI.h">
       <Filter>Engine\Core</Filter>
@@ -706,6 +708,8 @@
       <Filter>Render\Font output</Filter>
     </ClCompile>
     <ClCompile Include="KichRenderDevice_DX9.cpp"><Filter>General</Filter></ClCompile>
+    <ClCompile Include="KichR4Game.cpp"><Filter>General</Filter></ClCompile>
+    <ClCompile Include="KichR4GameEngine.cpp"><Filter>General</Filter></ClCompile>
     <ClCompile Include="device.cpp">
       <Filter>Render\Execution &amp; 3D</Filter>
     </ClCompile>

@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "UI.h"
+#include "../KichR4Game.h"
 #include "../xr_IOConsole.h"
 #include "Entity.h"
 #include "HUDManager.h"
@@ -27,6 +28,7 @@ CUI::CUI(CHUDManager* p)
 
 CUI::~CUI()
 {
+	KichR4_GameSetModal(false);
 	xr_delete(m_pMessagesWnd);
 	xr_delete(pUIGame);
 	xr_delete(UIMainIngameWnd);
@@ -80,6 +82,8 @@ void CUI::UIOnFrame()
 #include "huditem.h"
 bool CUI::Render()
 {
+	// Keep existing inventory/PDA/dialog output visible during R4 world tests.
+	KichR4_GameSetModal(MainInputReceiver() != NULL);
 	if (GameIndicatorsShown())
 	{
 		if (pUIGame)

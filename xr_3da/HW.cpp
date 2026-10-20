@@ -8,6 +8,7 @@
 #include <DXSDK/d3dx9.h>
 #pragma warning(default : 4995)
 #include "HW.h"
+#include "KichR4Game.h"
 #include "xr_IOconsole.h"
 
 #ifndef _EDITOR
@@ -36,7 +37,7 @@ void CHW::Reset(HWND hwnd)
 
 #ifndef _EDITOR
 #ifndef DEDICATED_SERVER
-	BOOL bWindowed = !psDeviceFlags.is(rsFullscreen);
+	BOOL bWindowed = KichR4_GameWindowed() || !psDeviceFlags.is(rsFullscreen);
 #else
 	BOOL bWindowed = TRUE;
 #endif
@@ -186,8 +187,10 @@ void CHW::CreateDevice(HWND m_hWnd)
 	// General - select adapter and device
 #ifdef DEDICATED_SERVER
 	BOOL bWindowed = TRUE;
-#else
+#elif defined(_EDITOR)
 	BOOL bWindowed = !psDeviceFlags.is(rsFullscreen);
+#else
+	BOOL bWindowed = KichR4_GameWindowed() || !psDeviceFlags.is(rsFullscreen);
 #endif
 
 	DevAdapter = D3DADAPTER_DEFAULT;
@@ -441,8 +444,10 @@ BOOL CHW::support(D3DFORMAT fmt, DWORD type, DWORD usage)
 void CHW::updateWindowProps(HWND m_hWnd)
 {
 	//	BOOL	bWindowed				= strstr(Core.Params,"-dedicated") ? TRUE : !psDeviceFlags.is	(rsFullscreen);
-#ifndef DEDICATED_SERVER
+#if defined(_EDITOR)
 	BOOL bWindowed = !psDeviceFlags.is(rsFullscreen);
+#elif !defined(DEDICATED_SERVER)
+	BOOL bWindowed = KichR4_GameWindowed() || !psDeviceFlags.is(rsFullscreen);
 #else
 	BOOL bWindowed = TRUE;
 #endif

@@ -10,6 +10,13 @@
 #include <vector>
 #include <stdexcept>
 #include "../../xr_3da/KichRenderDevice.h"
+#include "../../xr_3da/KichR4Game.h"
+#ifndef KICH_R4_TEST_GAME_HOOKS
+inline void KichR4_GameBeforeReset(){}
+inline void KichR4_GameShutdown(){}
+inline void KichR4_GamePrepareEngineFrame(){}
+inline bool KichR4_GamePresentPrepared(){return false;}
+#endif
 
 typedef uint32_t u32;
 typedef uint64_t u64;

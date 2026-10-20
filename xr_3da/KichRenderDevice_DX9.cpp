@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "KichRenderDevice.h"
+#include "KichR4Game.h"
 #include "ResourceManager.h"
 #include <string.h>
 
@@ -51,6 +52,9 @@ class CKichRenderDeviceDX9 : public IKichRenderDevice
 
     virtual void ResetHW(void* window, KichRenderDeviceSize& size)
     {
+#ifndef _EDITOR
+        KichR4_GameBeforeReset();
+#endif
         HW.Reset(static_cast<HWND>(window));
         ReadSize(size);
         ++resets;
@@ -61,6 +65,9 @@ class CKichRenderDeviceDX9 : public IKichRenderDevice
 
     virtual void DestroyHW()
     {
+#ifndef _EDITOR
+        KichR4_GameShutdown();
+#endif
         Msg("[R4 bridge B1] destroy: frames=%u clears=%u resets=%u", frames, clears, resets);
         HW.DestroyDevice();
     }
@@ -192,6 +199,12 @@ class CKichRenderDeviceDX9 : public IKichRenderDevice
         RCache.OnFrameEnd();
         Memory.dbg_check();
         CHK_DX(HW.pDevice->EndScene());
+        // One presenter per frame. R4 draws its own world after EndScene;
+        // menus, diagnostics and an R4 failure use the already-rendered DX9 frame.
+#ifndef _EDITOR
+        if (KichR4_GamePresentPrepared())
+            return;
+#endif
         const HRESULT hr = HW.pDevice->Present(NULL, NULL, NULL, NULL);
         ++frames;
         if (hr == D3DERR_DEVICELOST)

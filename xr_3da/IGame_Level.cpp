@@ -9,6 +9,7 @@
 #include "gamefont.h"
 #include "xrLevel.h"
 #include "CameraManager.h"
+#include "KichR4Game.h"
 
 ENGINE_API IGame_Level* g_pGameLevel = NULL;
 
@@ -27,6 +28,7 @@ IGame_Level::IGame_Level()
 
 IGame_Level::~IGame_Level()
 {
+	KichR4_GameLevelStop();
 	if (strstr(Core.Params, "-nes_texture_storing"))
 		Device.Resources->StoreNecessaryTextures();
 
@@ -46,6 +48,7 @@ IGame_Level::~IGame_Level()
 
 void IGame_Level::net_Stop()
 {
+	KichR4_GameLevelStop();
 	for (int i = 0; i < 6; i++)
 		Objects.Update(true);
 	// Destroy all objects
@@ -103,6 +106,9 @@ BOOL IGame_Level::Load(u32 dwNum)
 	// Done
 	FS.r_close(LL_Stream);
 	bReady = true;
+#ifndef DEDICATED_SERVER
+	KichR4_GameLevelStart(name().c_str());
+#endif
 	if (!g_dedicated_server)
 		IR_Capture();
 #ifndef DEDICATED_SERVER

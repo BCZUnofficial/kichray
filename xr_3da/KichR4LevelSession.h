@@ -95,9 +95,13 @@ struct KichR4LevelSession {
         else if(key==0x24)camera.Reset(scene.low,scene.high);
         else return;
         ++revision;}
-    int32_t Draw(KichR4FrameSession& s,uint32_t w,uint32_t h){try{
+    int32_t Draw(KichR4FrameSession& s,uint32_t w,uint32_t h){
         if(!w || !h)return s.Record("B4.2 zero viewport",KICH_R4_E_ARGUMENT);
-        const kich_r4_scene::Matrix vp=camera.ViewProjection(w,h);visible=culled=0;kich_r4_scene::Matrix previous={};float previous_cutoff=-1;
+        return DrawWithMatrix(s,w,h,camera.ViewProjection(w,h));
+    }
+    int32_t DrawWithMatrix(KichR4FrameSession& s,uint32_t w,uint32_t h,const kich_r4_scene::Matrix& vp){try{
+        if(!w || !h)return s.Record("B4.2 zero viewport",KICH_R4_E_ARGUMENT);
+        visible=culled=0;kich_r4_scene::Matrix previous={};float previous_cutoff=-1;
         for(size_t i=0;i<scene.draws.size();++i){const kich_r4_level::Draw& mesh=scene.draws[i];if(!kich_r4_level::Visible(mesh,vp)){++culled;continue;}
             const float cutoff=textured && scene.materials[mesh.material].cutout?200.f/255.f:0.f;
             if(!visible || memcmp(&previous,&mesh.world,sizeof(previous)) || cutoff!=previous_cutoff){kich_r4_scene::Constants constants={};

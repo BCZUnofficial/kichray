@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "frustum.h"
 #include "KichRenderDevice.h"
+#include "KichR4Game.h"
 
 #pragma warning(disable : 4995)
 // mmsystem.h
@@ -55,6 +56,8 @@ void CRenderDevice::End(void)
 
 	IKichRenderDevice& backend = KichRenderDevice();
 	backend.PrepareFrameEnd(dwWidth, dwHeight);
+	// Capture eligibility before End decrements the final precache frame.
+	KichR4_GamePrepareEngineFrame();
 
 	//
 	if (dwPrecacheFrame)

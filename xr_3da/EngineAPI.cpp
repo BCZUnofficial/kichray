@@ -6,6 +6,7 @@
 #include "EngineAPI.h"
 #include "xrXRC.h"
 #include "KichR4Probe.h"
+#include "KichR4Game.h"
 
 #ifndef DEDICATED_SERVER
 #include "KichR4LevelFS.inl"
@@ -39,8 +40,9 @@ extern u32 renderer_value; // con cmd
 void CEngineAPI::Initialize(void)
 {
 #ifndef DEDICATED_SERVER
-	// Opt-in bridge diagnostics/viewers finish before legacy renderer loading.
-	KichR4_RunHardwareProbeIfRequested(Core.Params, KichR4_WriteProbeLog, &kich_r4_level_files);
+	// The game bridge takes priority over the earlier autonomous viewers.
+	if (!KichR4_GameInitialize(Core.Params, KichR4_WriteProbeLog, &kich_r4_level_files))
+		KichR4_RunHardwareProbeIfRequested(Core.Params, KichR4_WriteProbeLog, &kich_r4_level_files);
 #endif
 	//////////////////////////////////////////////////////////////////////////
 	// render
@@ -109,6 +111,7 @@ void CEngineAPI::Initialize(void)
 
 void CEngineAPI::Destroy(void)
 {
+	KichR4_GameShutdown();
 	if (hGame)
 	{
 		FreeLibrary(hGame);
