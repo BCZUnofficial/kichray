@@ -194,7 +194,8 @@ void CSkeletonX_PM::Render(float LOD)
 	FSlideWindow& SW = nSWI.sw[lod_id];
 #ifndef _EDITOR
 	if (RImplementation.phase == CRender::PHASE_NORMAL && KichR4_CaptureActive())
-		KichR4_CaptureModel(this, Parent, SW.num_verts, SW.offset, SW.num_tris);
+		KichR4_CaptureModel(this, Parent, SW.num_verts, SW.offset, SW.num_tris,
+			RenderMode == RM_SKINNING_SOFT ? KICH_R4_SKIN_SOFTWARE : KICH_R4_SKIN_HARDWARE);
 #endif
 	_Render(rm_geom, SW.num_verts, SW.offset, SW.num_tris);
 }
@@ -202,7 +203,8 @@ void CSkeletonX_ST::Render(float LOD)
 {
 #ifndef _EDITOR
 	if (RImplementation.phase == CRender::PHASE_NORMAL && KichR4_CaptureActive())
-		KichR4_CaptureModel(this, Parent, vCount, 0, dwPrimitives);
+		KichR4_CaptureModel(this, Parent, vCount, 0, dwPrimitives,
+			RenderMode == RM_SKINNING_SOFT ? KICH_R4_SKIN_SOFTWARE : KICH_R4_SKIN_HARDWARE);
 #endif
 	_Render(rm_geom, vCount, 0, dwPrimitives);
 }

@@ -27,9 +27,14 @@ struct State {
     wchar_t title[256];
     uint32_t generations,cleanups;
     uint32_t capture_fallbacks;
-    char capture_reason[192];
+    uint64_t capture_reason;
 };
 State state={};
+uint64_t ReasonKey(const char* reason) {
+    uint64_t key=14695981039346656037ull;
+    for(const unsigned char* p=reinterpret_cast<const unsigned char*>(reason);*p;++p){key^=*p;key*=1099511628211ull;}
+    return key;
+}
 struct FpuEnvironment {
     fenv_t environment;bool saved;
     FpuEnvironment():saved(fegetenv(&environment)==0){}
@@ -149,12 +154,13 @@ bool KichR4_GameInitialize(const char* params,KichR4LogFn log,const KichR4LevelF
     if(state.requested)return true;
     if(!kich_r4_game::Requested(params))return false;
     FpuEnvironment preserve;state.requested=true;state.preferred_dx11=true;state.log=log;
-    KichR4_CaptureEnable(true);
+    KichR4_CaptureEnable(true,state.log);
     if(files)state.files=*files;
     if(!state.files.open || !state.files.close || !GuardLoad()) {
         state.disabled=true;KichR4_CaptureEnable(false);UnloadIfIdle();Write("[R4 bridge B4.3b] DISABLED: bridge/files/ABI unavailable; continuing legacy game");return true;
     }
     Write("[R4 bridge B4.3b] armed: game HWND / camera; native DX11 static world + posed models + hands/weapons + HUD; F8 compare");
+    Write("[R4 bridge B4.3b.1] 2W compatibility enabled: equal-bone weights ignored; actual software/hardware skin path; model diagnostics");
     Write("[R4 bridge B4.3b] CPU geometry/pose/UI capture only; no DX9 frame copy or GPU readback; matching EXE, R1/R2, xrGame and R4 required");
     Write("[R4 bridge B4.3a] windowed presentation forced for this process; rs_fullscreen configuration is preserved; standalone viewer flags ignored");
     return true;
@@ -191,9 +197,10 @@ void KichR4_GamePrepare(const KichR4GameFrame& input) {
         if(!ready){state.input.allowed=false;++state.capture_fallbacks;
             const char* why=!batch?"CPU capture unavailable":!batch->error.empty()?batch->error.c_str():
                 !batch->renderer_seen?"renderer capture handshake missing; rebuild R1/R2":!batch->ui_seen?"HUD capture handshake missing; rebuild xrGame":"incomplete or mismatched CPU frame";
-            if(strcmp(state.capture_reason,why) || state.capture_fallbacks%300==0){Write("[R4 bridge B4.3b] legacy frame fallback: %s; engine_frame=%u count=%u",why,input.engine_frame,state.capture_fallbacks);
-                strncpy(state.capture_reason,why,sizeof(state.capture_reason)-1);state.capture_reason[sizeof(state.capture_reason)-1]=0;}}
-        else state.capture_reason[0]=0;
+            const uint64_t reason_key=ReasonKey(why);
+            if(state.capture_reason!=reason_key || state.capture_fallbacks%300==0){Write("[R4 bridge B4.3b] legacy frame fallback: %s; engine_frame=%u count=%u",why,input.engine_frame,state.capture_fallbacks);
+                state.capture_reason=reason_key;}}
+        else state.capture_reason=0;
     }
 }
 bool KichR4_GamePresentPrepared() {

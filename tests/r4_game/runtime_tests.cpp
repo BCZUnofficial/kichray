@@ -115,6 +115,14 @@ void CaptureGating() {
             case 3:batch.ui_scope=1;break;case 4:batch.Fail("unsupported UI input");break;}
         KichR4_GamePrepare(input);Require(!KichR4_GamePresentPrepared() && !state.scene && !state.disabled,"incomplete capture keeps the entire legacy frame without creating a partial native scene");}
     Require(Logged("renderer capture handshake") && Logged("HUD capture handshake") && Logged("unsupported UI input"),"missing matched binaries and unsupported capture have actionable diagnostics");
+    const size_t before=logs.size();const std::string long_reason="model="+std::string(220,'a')+"; invalid active 2W weight: vertex=17 bones=0/1 bits=0x7FC12345";
+    for(unsigned i=0;i<4;++i){KichR4_CaptureBeginFrame(input.width,input.height,input.engine_frame);KichR4_CaptureState()->frame.Fail(long_reason.c_str());
+        KichR4_GamePrepare(input);Require(!KichR4_GamePresentPrepared(),"long model diagnostic selects legacy frame");}
+    unsigned repeated=0;for(size_t i=before;i<logs.size();++i)if(logs[i].find("legacy frame fallback")!=std::string::npos)++repeated;
+    Require(repeated==1 && Logged("vertex=17 bones=0/1"),"long asset diagnostics retain details without logging every frame");
+    const size_t after=logs.size();KichR4_CaptureBeginFrame(input.width,input.height,input.engine_frame);
+    KichR4_CaptureState()->frame.Fail((long_reason+"; another cause").c_str());KichR4_GamePrepare(input);
+    Require(logs.size()==after+1 && Logged("another cause"),"different reasons beyond the same long asset prefix are logged separately");
     PresentFrame(input,true);Require(state.scene && !state.disabled,"complete capture resumes native rendering after temporary fallback");KichR4_GameShutdown();
 }
 }

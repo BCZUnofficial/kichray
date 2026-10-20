@@ -30,11 +30,17 @@ void UI(){declaration.elements={{0,0,3,0,9,0},{0,16,4,0,10,0},{0,20,1,0,5,0},{25
 }
 void Models(){const fixture::Bytes source=capture_fixture::Model(2);int original,copy;KichR4_CaptureLoad(&original,source.data(),static_cast<uint32_t>(source.size()));KichR4_CaptureCopy(&copy,&original);KichR4_CaptureForget(&original);
     CKinematics skeleton;skeleton.bones.resize(2);skeleton.bones[0].m[12]=10;skeleton.bones[1].m[12]=20;
-    KichR4_CaptureBeginFrame(960,540,2);KichR4_CaptureModel(&copy,&skeleton,3,3,1);
+    KichR4_CaptureBeginFrame(960,540,2);KichR4_CaptureModel(&copy,&skeleton,3,3,1,KICH_R4_SKIN_SOFTWARE);
     Require(KichR4_CapturedFrame()->models==1 && fabsf(KichR4_CapturedFrame()->vertices[0].p[0]-12.5f)<.0001f,"engine bone matrices copied and posed at draw time");
-    KichR4_CaptureBeginFrame(960,540,3);gpu.view.MaxZ=.02f;RCache.projection.m[0]=1.5f;KichR4_CaptureModel(&copy,&skeleton,3,3,1);
+    KichR4_CaptureBeginFrame(960,540,3);gpu.view.MaxZ=.02f;RCache.projection.m[0]=1.5f;KichR4_CaptureModel(&copy,&skeleton,3,3,1,KICH_R4_SKIN_SOFTWARE);
     Require(KichR4_CapturedFrame()->hands==1 && fabsf(KichR4_CapturedFrame()->vertices[0].p[0]-18.75f)<.0001f,"weapon keeps separate HUD FOV and near depth");
-    gpu.view.MaxZ=1;KichR4_CaptureBeginFrame(960,540,4);KichR4_CaptureModel(&copy,&skeleton,3,3,1);Require(KichR4_CapturedFrame()->commands.empty(),"non-camera projection omitted");
+    gpu.view.MaxZ=1;KichR4_CaptureBeginFrame(960,540,4);KichR4_CaptureModel(&copy,&skeleton,3,3,1,KICH_R4_SKIN_SOFTWARE);Require(KichR4_CapturedFrame()->commands.empty(),"non-camera projection omitted");
+    RCache.projection=Device.mProject;KichR4_CaptureBeginFrame(960,540,5);KichR4_CaptureModel(&copy,&skeleton,3,3,1);
+    Require(KichR4_CapturedFrame()->error.find("skin mode handshake")!=std::string::npos,"old 2W renderer export cannot silently select wrong skinning semantics");
+    KichR4_CaptureBeginFrame(960,540,6);KichR4_CaptureModel(&copy,&skeleton,3,3,1,KICH_R4_SKIN_HARDWARE);
+    Require(KichR4_CapturedFrame()->error.empty() && fabsf(KichR4_CapturedFrame()->vertices[0].p[0]-(10.f+10.f*64.f/255.f))<.0001f,"real renderer hardware flag applies legacy byte weight");
+    skeleton.bones.resize(1);KichR4_CaptureBeginFrame(960,540,7);KichR4_CaptureModel(&copy,&skeleton,3,3,1,KICH_R4_SKIN_HARDWARE);
+    Require(KichR4_CapturedFrame()->error.find("required=2 actual=1")!=std::string::npos,"actual pose bone bounds retained with detailed diagnostic");
     RCache.projection=Device.mProject;KichR4_CaptureForget(&copy);KichR4_CaptureBeginFrame(960,540,5);KichR4_CaptureModel(&copy,&skeleton,3,3,1);
     Require(!KichR4_CapturedFrame()->error.empty(),"missing source never silently drops model");
 }

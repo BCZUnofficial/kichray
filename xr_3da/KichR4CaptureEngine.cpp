@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "KichR4Capture.h"
 #include "KichR4CaptureInput.h"
+#include <stdio.h>
 #if !defined(_EDITOR) && !defined(DEDICATED_SERVER)
 #include "SkeletonCustom.h"
 namespace {
@@ -34,21 +35,28 @@ bool Snapshot(bool ui,Style& s){Metadata m;
 #endif
 void KichR4_CaptureModel(void* visual,void* parent,uint32_t vertices,uint32_t first,uint32_t triangles)
 {
+    KichR4_CaptureModel(visual,parent,vertices,first,triangles,KICH_R4_SKIN_UNKNOWN);
+}
+void KichR4_CaptureModel(void* visual,void* parent,uint32_t vertices,uint32_t first,uint32_t triangles,uint32_t skin_mode)
+{
 #if !defined(_EDITOR) && !defined(DEDICATED_SERVER)
     uint32_t count=0;if(!KichR4_CaptureActive() || !KichR4_CaptureModelNeeded(visual,count))return;
     if(memcmp(RCache.get_xform_view().m,Device.mView.m,sizeof(Fmatrix)))return;
     kich_r4_capture::ModelInput input={};input.visual=visual;input.count=vertices;input.first=first;input.triangles=triangles;
+    input.skin_mode=skin_mode;
     if(!Snapshot(false,input.style))return;
     if(input.style.max_z>=.1f && memcmp(RCache.get_xform_project().m,Device.mProject.m,sizeof(Fmatrix)))return;
     memcpy(input.world,RCache.get_xform_world().m,sizeof(input.world));Fmatrix vp;vp.mul(RCache.get_xform_project(),RCache.get_xform_view());memcpy(input.vp,vp.m,sizeof(input.vp));
     float bones[256][16];
     if(count){CKinematics* skeleton=static_cast<CKinematics*>(parent);
-        if(!CheckEngine(skeleton && count<=256 && count<=skeleton->LL_BoneCount(),"skeleton bone count mismatch"))return;
+        const uint32_t actual=skeleton?skeleton->LL_BoneCount():0;
+        if(!skeleton || count>256 || count>actual){char detail[160];snprintf(detail,sizeof(detail),"skeleton bone count mismatch: required=%u actual=%u",count,actual);
+            KichR4_CaptureModelFail(visual,detail);return;}
         for(uint32_t i=0;i<count;++i)memcpy(bones[i],skeleton->LL_GetTransform_R(static_cast<u16>(i)).m,sizeof(bones[i]));
         input.bones=&bones[0][0];input.bone_count=count;}
     KichR4_CaptureSubmitModel(input);
 #else
-    (void)visual;(void)parent;(void)vertices;(void)first;(void)triangles;
+    (void)visual;(void)parent;(void)vertices;(void)first;(void)triangles;(void)skin_mode;
 #endif
 }
 void KichR4_CaptureUIDraw(void* declaration,void* vb,void* ib,uint32_t stride,uint32_t topology,uint32_t base,

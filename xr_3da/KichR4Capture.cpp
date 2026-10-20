@@ -9,14 +9,14 @@ template<class F>void GuardCapture(F action){if(!capture)return;try{action(*capt
 }
 kich_r4_capture::State* KichR4_CaptureState(){return capture;}
 const kich_r4_capture::Batch* KichR4_CapturedFrame(){return capture?&capture->frame:NULL;}
-void KichR4_CaptureEnable(bool enabled){if(enabled){if(!capture)try{capture=new kich_r4_capture::State();}catch(...) {}}
+void KichR4_CaptureEnable(bool enabled,void (*log)(const char*)){if(enabled){if(!capture)try{capture=new kich_r4_capture::State();}catch(...) {}if(capture)capture->log=log;}
     else {delete capture;capture=NULL;}}
 bool KichR4_CaptureActive(){return capture && capture->frame.width && capture->frame.error.empty();}
 void KichR4_CaptureBeginFrame(uint32_t w,uint32_t h,uint32_t frame){GuardCapture([&](kich_r4_capture::State& c){c.Begin(w,h,frame);});}
 void KichR4_CaptureHUD(bool begin){GuardCapture([&](kich_r4_capture::State& c){c.frame.ui_seen=true;
     if(begin)++c.frame.ui_scope;else {kich_r4_level::Check(c.frame.ui_scope!=0,"HUD scope imbalance");--c.frame.ui_scope;}});}
-void KichR4_CaptureLoad(void* visual,const void* data,uint32_t bytes){GuardCapture([&](kich_r4_capture::State& c){
-    kich_r4_level::Check(visual && data && bytes,"empty model source");c.Load(visual,kich_r4_level::Span(static_cast<const unsigned char*>(data),bytes));});}
+void KichR4_CaptureLoad(void* visual,const void* data,uint32_t bytes,const char* name){GuardCapture([&](kich_r4_capture::State& c){
+    kich_r4_level::Check(visual && data && bytes,"empty model source");c.Load(visual,kich_r4_level::Span(static_cast<const unsigned char*>(data),bytes),name);});}
 void KichR4_CaptureCopy(void* visual,const void* source){GuardCapture([&](kich_r4_capture::State& c){c.Copy(visual,source);});}
 void KichR4_CaptureForget(void* visual){if(capture)capture->models.erase(visual);}
 void KichR4_CaptureLock(void* buffer,const void* data,uint32_t at,uint32_t bytes,uint32_t discard){GuardCapture([&](kich_r4_capture::State& c){c.Lock(buffer,data,at,bytes,discard);});}
@@ -25,6 +25,9 @@ void KichR4_CaptureBuffer(void* buffer,const void* data,uint32_t bytes){GuardCap
     kich_r4_capture::Buffer& b=c.buffers[buffer];b.segments.clear();b.Put(data,0,bytes);b.fixed=true;});}
 void KichR4_CaptureForgetBuffer(void* buffer){if(capture)capture->buffers.erase(buffer);}
 void KichR4_CaptureFail(const char* why){GuardCapture([&](kich_r4_capture::State& c){c.frame.Fail(why);});}
+void KichR4_CaptureModelFail(void* visual,const char* why){GuardCapture([&](kich_r4_capture::State& c){
+    const std::map<const void*,kich_r4_capture::Entry>::const_iterator found=c.models.find(visual);
+    c.frame.Fail(found==c.models.end()?why:kich_r4_capture::ModelError(found->second,why).c_str());});}
 bool KichR4_CaptureUIActive(){return KichR4_CaptureActive() && capture->frame.ui_scope!=0;}
 bool KichR4_CaptureModelNeeded(void* visual,uint32_t& bones){bool needed=false;bones=0;
     GuardCapture([&](kich_r4_capture::State& c){c.frame.renderer_seen=true;
@@ -39,7 +42,12 @@ void KichR4_CaptureSubmitModel(const kich_r4_capture::ModelInput& input){GuardCa
     Matrix world,vp;memcpy(world.m,input.world,sizeof(world));memcpy(vp.m,input.vp,sizeof(vp));
     Matrix bones[256];Check(input.bone_count<=256 && (!input.bone_count || input.bones),"model pose snapshot");
     if(input.bone_count)memcpy(bones,input.bones,input.bone_count*sizeof(Matrix));
-    c.frame.Model(input.visual,*found->second.mesh,world,vp,bones,input.bone_count,input.count,input.first,input.triangles,input.style);
+    Mesh& mesh=*found->second.mesh;
+    if(mesh.two_weights && (mesh.ignored_weights || mesh.outside_weights) && input.skin_mode>=1 && input.skin_mode<=2){
+        const uint32_t bit=1u<<input.skin_mode;if(!(mesh.diagnostic_modes&bit)){mesh.diagnostic_modes|=bit;
+            c.Diagnostic("2W skin path: model="+found->second.name+"; mode="+(input.skin_mode==KICH_R4_SKIN_HARDWARE?"hardware clamp/u8":"software raw")+"; "+mesh.first_weight_detail);}}
+    try{c.frame.Model(input.visual,mesh,world,vp,bones,input.bone_count,input.count,input.first,input.triangles,input.style,input.skin_mode);}
+    catch(const std::exception& e){c.frame.Fail(ModelError(found->second,e.what()).c_str());}
 });}
 
 void KichR4_CaptureSubmitUI(const kich_r4_capture::UIInput& input) {

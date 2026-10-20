@@ -44,7 +44,7 @@ def main():
         main=work/"main.cpp";main.write_text('#include "fake_engine.h"\nCaptureDevice Device;CaptureCache RCache;CaptureHardware HW;int main(){return 0;}\n')
         lib=work/"XR_3DA.dll.a"
         subprocess.run([*flags,*seam,str(main),*host,"-static-libgcc","-static-libstdc++","-luser32","-lgdi32","-Wl,--out-implib,"+str(lib),"-o",str(work/"XR_3DA.exe")],check=True)
-        client=work/"client.cpp";client.write_text('#include "KichR4Capture.h"\n#include "KichR4Game.h"\nextern "C" __declspec(dllexport) void CheckImports(){KichR4_CaptureActive();KichR4_CaptureHUD(true);KichR4_CaptureModel(0,0,0,0,0);KichR4_CaptureUIDraw(0,0,0,0,0,0,0,0,0,0,false);KichR4_GameSetModal(false);}\n')
+        client=work/"client.cpp";client.write_text('#include "KichR4Capture.h"\n#include "KichR4Game.h"\nextern "C" __declspec(dllexport) void CheckImports(){KichR4_CaptureActive();KichR4_CaptureHUD(true);KichR4_CaptureModel(0,0,0,0,0);KichR4_CaptureModel(0,0,0,0,0,KICH_R4_SKIN_HARDWARE);KichR4_CaptureUIDraw(0,0,0,0,0,0,0,0,0,0,false);KichR4_GameSetModal(false);}\n')
         subprocess.run([*flags,"-shared","-I"+str(ROOT/"xr_3da"),str(client),str(lib),"-o",str(work/"client.dll")],check=True)
         abi=work/"abi.c";abi.write_text('#include "KichR4Stream.h"\nint main(void){return sizeof(KichR4StreamDrawDesc)!=112 || sizeof(KichR4StreamAPI)!=24;}\n')
         subprocess.run([cc,"-std=c11","-Wall","-Wextra","-Werror","-I"+str(ROOT/"xr_3da"),"-c",str(abi),"-o",str(work/"abi.o")],check=True)

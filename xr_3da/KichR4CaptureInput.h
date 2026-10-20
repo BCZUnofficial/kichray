@@ -1,6 +1,7 @@
 #ifndef KICH_R4_CAPTURE_INPUT_H
 #define KICH_R4_CAPTURE_INPUT_H
 #include "KichR4Stream.h"
+#include "KichR4Capture.h"
 #include <string.h>
 /* Small EXE-internal borrowed snapshots. This header has no engine or STL
  * dependency: the old PCH adapter uses the engine's original EH settings,
@@ -11,7 +12,7 @@ struct Style {
     Style():blend(0),src(5),dst(6),clamp(0),cull(KICH_R4_CULL_BACK),depth(1),write(1),alpha_func(8),alpha_ref(0),min_z(0),max_z(1),scissor(false){memset(rect,0,sizeof(rect));}
 };
 struct ModelInput {
-    void* visual;uint32_t count,first,triangles,bone_count;
+    void* visual;uint32_t count,first,triangles,bone_count,skin_mode;
     float world[16],vp[16];const float* bones;Style style;
 };
 struct UIInput {
@@ -23,6 +24,7 @@ struct UIInput {
 bool KichR4_CaptureModelNeeded(void*,uint32_t& bones);
 bool KichR4_CaptureUIActive();
 void KichR4_CaptureFail(const char*);
+void KichR4_CaptureModelFail(void*,const char*);
 void KichR4_CaptureSubmitModel(const kich_r4_capture::ModelInput&);
 void KichR4_CaptureSubmitUI(const kich_r4_capture::UIInput&);
 #endif

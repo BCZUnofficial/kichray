@@ -46,7 +46,7 @@ void IRender_Visual::Load(const char* N, IReader* data, u32)
 {
 #ifndef _EDITOR
 	if (data)
-		KichR4_CaptureLoad(this, static_cast<const unsigned char*>(data->pointer()) - data->tell(), data->length());
+		KichR4_CaptureLoad(this, static_cast<const unsigned char*>(data->pointer()) - data->tell(), data->length(), N);
 #endif
 #ifdef DEBUG
 	dbg_name = N;
