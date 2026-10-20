@@ -543,6 +543,9 @@
     <ClInclude Include="KichR4Frame.h" />
     <ClInclude Include="KichR4FrameProbe.h" />
     <ClInclude Include="KichR4FrameSession.h" />
+    <ClInclude Include="KichR4Geometry.h" />
+    <ClInclude Include="KichR4GeometrySession.h" />
+    <ClInclude Include="KichR4TestScene.h" />
     <ClInclude Include="KichR4ResourceProbe.h" />
     <ClInclude Include="KichRenderDevice.h" />
     <ClInclude Include="EnnumerateVertices.h" />

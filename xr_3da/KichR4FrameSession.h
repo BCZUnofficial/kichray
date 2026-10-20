@@ -34,16 +34,23 @@ struct KichR4FrameSession {
         const int32_t hr=api.resize(device,w,h);
         return Record("resize",(hr<=0 || hr==KICH_R4_FRAME_SUSPENDED)?hr:KICH_R4_E_STATE);
     }
-    int32_t Draw(const KichR4FrameColor& color) {
+    int32_t BeginClear(const KichR4FrameColor& color) {
         int32_t hr=api.begin_frame(device);
         if(hr==KICH_R4_FRAME_SUSPENDED || hr==KICH_R4_FRAME_OCCLUDED)return hr;
         if(hr!=KICH_R4_OK)return Record("begin frame",hr<0?hr:KICH_R4_E_STATE);
         hr=api.clear(device,&color);
         if(hr!=KICH_R4_OK)return Record("clear",hr<0?hr:KICH_R4_E_STATE);
-        hr=api.present(device,1);
+        return KICH_R4_OK;
+    }
+    int32_t Present() {
+        const int32_t hr=api.present(device,1);
         if(hr==KICH_R4_OK)++rendered;
         else if(hr!=KICH_R4_FRAME_OCCLUDED)Record("present",hr<0?hr:KICH_R4_E_STATE);
         return failure?failure:hr;
+    }
+    int32_t Draw(const KichR4FrameColor& color) {
+        const int32_t hr=BeginClear(color);
+        return hr==KICH_R4_OK?Present():hr;
     }
     int32_t Stop(KichR4FrameStats* out) {
         if(!device)return KICH_R4_OK;

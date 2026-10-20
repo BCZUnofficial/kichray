@@ -42,6 +42,7 @@ struct Fixture
     int info_calls;
     int resource_api_calls;
     int frame_calls;
+    int geometry_calls;
     bool frame_cleanup_failed;
     std::wstring loaded_path;
     std::vector<std::string> logs;
@@ -115,7 +116,9 @@ void TestInactive()
         "game.exe \"unterminated -kich_r4_probe", "game.exe -kich_r4_resources_extra",
         "game.exe prefix-kich_r4_resources", "\"C:\\folder -kich_r4_resources\\game.exe\"",
         "game.exe -kich_r4_frame_extra", "game.exe prefix-kich_r4_frame",
-        "\"C:\\folder -kich_r4_frame\\game.exe\"", "game.exe \"unterminated -kich_r4_frame"};
+        "\"C:\\folder -kich_r4_frame\\game.exe\"", "game.exe \"unterminated -kich_r4_frame",
+        "-kich_r4_geometry_extra", "prefix-kich_r4_geometry", "\"C:\\folder -kich_r4_geometry\\game.exe\"",
+        "game.exe \"unterminated -kich_r4_geometry"};
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
     {
         Reset();
@@ -271,13 +274,36 @@ void TestFrameSwitch()
     Require(f.frame_calls==1 && !f.unloads && HasLog("DLL retained") && HasLog("continuing normal"),
         "a live target cannot lose its DLL implementation during fallback");
 }
+void TestGeometrySwitch()
+{
+    Reset();Run("-kich_r4_frame");Require(!f.geometry_calls,"B3 does not request geometry");
+    const char* args[]={"-kich_r4_geometry","game.exe \"-kich_r4_geometry\" -r2",
+        "-kich_r4_geometry -kich_r4_frame -kich_r4_probe"};
+    for(size_t i=0;i<sizeof(args)/sizeof(args[0]);++i){
+        Reset();Run(args[i]);
+        Require(f.probe_calls==1 && f.frame_calls==1 && f.geometry_calls==1 && !f.resource_api_calls && f.unloads==1,
+            "B4.1 implies one hardware probe and one geometry window");
+    }
+    Reset();Run("-kich_r4_geometry -kich_r4_resources");
+    Require(f.geometry_calls==1 && f.resource_api_calls==1 && f.unloads==1,"B2 and B4.1 flags compose");
+    Reset();++f.version;Run("-kich_r4_geometry");Require(!f.geometry_calls && f.unloads==1,"bad ABI skips geometry");
+    Reset();f.available=false;Run("-kich_r4_geometry");Require(!f.geometry_calls,"missing DLL skips geometry");
+    Reset();f.supported=0;f.info.status=KICH_R4_PROBE_DEVICE_FAILED;Run("-kich_r4_geometry");
+    Require(!f.geometry_calls && f.unloads==1,"unsupported hardware skips geometry");
+    Reset();f.change_fpu=true;const int original=fegetround();fesetround(FE_DOWNWARD);
+    Run("-kich_r4_geometry");const int restored=fegetround();fesetround(original);
+    Require(f.geometry_calls==1 && restored==FE_DOWNWARD,"geometry preserves engine FPU state");
+    Reset();f.frame_cleanup_failed=true;Run("-kich_r4_geometry");
+    Require(f.geometry_calls==1 && !f.unloads && HasLog("B4.1] cleanup incomplete"),"retain module after geometry cleanup failure");
+}
 }
 
 /* GUI entry point replaced here; production frame/controller/session have
  * separate tests and the real Win32 runner is cross-compiled with the SDK. */
-bool KichR4_CheckFrameBridge(void*,KichR4LogFn log)
+bool KichR4_CheckFrameBridge(void*,KichR4LogFn log,bool geometry)
 {
     ++f.frame_calls;
+    if(geometry)++f.geometry_calls;
     if(f.change_fpu)fesetround(FE_UPWARD);
     log("[R4 bridge B3] test runner seam");
     return !f.frame_cleanup_failed;
@@ -325,6 +351,7 @@ int main()
         TestFpuPreserved();
         TestResourceSwitch();
         TestFrameSwitch();
+        TestGeometrySwitch();
         printf("B0 loader: %d checks passed\n", checks);
         return 0;
     }

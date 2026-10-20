@@ -156,7 +156,7 @@ void UnloadBridge(HMODULE module, KichR4LogFn log)
 #endif
 }
 
-void CheckBridge(HMODULE module, KichR4LogFn log, bool resources, bool frame, bool* can_unload)
+void CheckBridge(HMODULE module, KichR4LogFn log, bool resources, bool frame, bool geometry, bool* can_unload)
 {
     const KichR4GetBridgeVersionFn get_version =
         reinterpret_cast<KichR4GetBridgeVersionFn>(GetProcAddress(module, KICH_R4_EXPORT_VERSION));
@@ -219,13 +219,14 @@ void CheckBridge(HMODULE module, KichR4LogFn log, bool resources, bool frame, bo
         if (resources)
             KichR4_CheckResourceBridge(module, log);
         if (frame)
-            *can_unload = KichR4_CheckFrameBridge(module, log);
+            *can_unload = KichR4_CheckFrameBridge(module, log, geometry);
     }
 }
 
-void RunProbe(KichR4LogFn log, bool resources, bool frame)
+void RunProbe(KichR4LogFn log, bool resources, bool frame, bool geometry)
 {
-    WriteLog(log, frame ? "[R4 bridge B0] begin: hardware diagnostics before the requested B3 window" :
+    WriteLog(log, geometry ? "[R4 bridge B0] begin: hardware diagnostics before the requested B4.1 geometry window" :
+        frame ? "[R4 bridge B0] begin: hardware diagnostics before the requested B3 window" :
         "[R4 bridge B0] begin: diagnostics only; no DX11 scene or swap chain");
     wchar_t path[MAX_PATH];
     const DWORD length = GetModuleFileNameW(NULL, path, MAX_PATH);
@@ -260,25 +261,26 @@ void RunProbe(KichR4LogFn log, bool resources, bool frame)
         return;
     }
     bool can_unload = true;
-    CheckBridge(module, log, resources, frame, &can_unload);
+    CheckBridge(module, log, resources, frame, geometry, &can_unload);
     if (can_unload)
         UnloadBridge(module, log);
     else
-        WriteLog(log, "[R4 bridge B3] cleanup incomplete; DLL retained until process exit; continuing R1/R2");
+        WriteLog(log, "[R4 bridge %s] cleanup incomplete; DLL retained until process exit; continuing R1/R2", geometry ? "B4.1" : "B3");
 }
 }
 
 void KichR4_RunHardwareProbeIfRequested(const char* command_line, KichR4LogFn log)
 {
     const bool resources = HasSwitch(command_line, "-kich_r4_resources");
-    const bool frame = HasSwitch(command_line, "-kich_r4_frame");
+    const bool geometry = HasSwitch(command_line, "-kich_r4_geometry");
+    const bool frame = geometry || HasSwitch(command_line, "-kich_r4_frame");
     if (!log || (!frame && !resources && !HasSwitch(command_line, "-kich_r4_probe")))
         return;
 
     /* D3D/driver initialization must not alter the legacy engine's FPU setup. */
     fenv_t saved_environment;
     const bool saved = fegetenv(&saved_environment) == 0;
-    RunProbe(log, resources, frame);
+    RunProbe(log, resources, frame, geometry);
     if (saved)
         fesetenv(&saved_environment);
     WriteLog(log, "[R4 bridge B0] end: continuing normal R1/R2 selection");

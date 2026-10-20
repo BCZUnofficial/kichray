@@ -10,6 +10,7 @@
 #include <new>
 #include "R4ResourceRules.h"
 #include "R4FrameDX11.h"
+#include "R4PipelineDX11.h"
 
 #if !defined(_M_IX86) && !defined(__i386__)
 #error The R4 resource bridge is Win32/x86 only.
@@ -59,12 +60,18 @@ struct Resource {
     ID3D11DepthStencilView* dsv;
     ID3D11VertexShader* vs;
     ID3D11PixelShader* ps;
-    ID3DBlob* bytecode; /* Retained for a future B3/B4 input layout. */
+    ID3DBlob* bytecode; /* Retained for B4 input layouts and reflection. */
+    uint32_t buffer_stride;
+    bool initialized;
+    std::unique_ptr<PipelineDX11> pipeline;
+    uint32_t* pipeline_released;
     std::vector<KichR4ShaderBinding> bindings;
     std::vector<KichR4ShaderVariable> variables;
     Resource() : texture(NULL), buffer(NULL), srv(NULL), rtv(NULL), dsv(NULL),
-        vs(NULL), ps(NULL), bytecode(NULL) { memset(&info,0,sizeof(info)); info.struct_size=sizeof(info); }
+        vs(NULL), ps(NULL), bytecode(NULL),buffer_stride(0),initialized(false),pipeline_released(NULL)
+        { memset(&info,0,sizeof(info)); info.struct_size=sizeof(info); }
     ~Resource() {
+        if(pipeline_released)++*pipeline_released;
         Release(dsv); Release(rtv); Release(srv); Release(texture); Release(buffer);
         Release(vs); Release(ps); Release(bytecode);
     }
@@ -83,6 +90,7 @@ struct Device {
     CompileFn compile;
     ReflectFn reflect;
     DWORD thread;
+    KichR4GeometryStats geometry_stats;
     ObjectStore<Resource> resources;
     KichR4ResourceStats stats;
     FrameDriverDX11 frame_driver;
@@ -90,6 +98,7 @@ struct Device {
     Device() : runtime(NULL), compiler(NULL), hw(NULL), context(NULL), compile(NULL),
         reflect(NULL), thread(GetCurrentThreadId()), resources(ids),frame_driver(hw,context),frame(frame_driver) {
         memset(&stats,0,sizeof(stats)); stats.struct_size=sizeof(stats);
+        memset(&geometry_stats,0,sizeof(geometry_stats));geometry_stats.struct_size=sizeof(geometry_stats);
     }
     void ClearResources() {
         if (context) { context->ClearState(); context->Flush(); }
@@ -256,6 +265,7 @@ int32_t KICH_R4_CALL CreateBuffer(KichR4Handle device, const KichR4BufferDesc* d
         D3D11_SUBRESOURCE_DATA initial={}; initial.pSysMem=data;
         hr=d->hw->CreateBuffer(&native,data ? &initial : NULL,&r->buffer); if (FAILED(hr)) return hr;
         r->info.kind=desc->kind; r->info.byte_size=desc->byte_size;
+        r->buffer_stride=desc->stride;r->initialized=data!=NULL;
         *out=d->Add(std::move(r)); return KICH_R4_OK;
     });
 }
@@ -460,6 +470,95 @@ int32_t KICH_R4_CALL DestroyFrameDevice(KichR4Handle device,KichR4FrameStats* ou
         delete d;return KICH_R4_OK;
     });
 }
+
+int32_t ShaderConstants(const Resource& shader,uint32_t& bytes)
+{
+    bytes=0;
+    for(size_t i=0;i<shader.bindings.size();++i) {
+        const KichR4ShaderBinding& b=shader.bindings[i];
+        if(b.kind!=KICH_R4_BIND_CONSTANTS || b.slot!=0 || b.count!=1 || !b.byte_size || b.byte_size>65536)
+            return KICH_R4_E_UNSUPPORTED;
+        if(b.byte_size>bytes)bytes=b.byte_size;
+    }
+    return KICH_R4_OK;
+}
+int32_t KICH_R4_CALL CreatePipeline(KichR4Handle device,const KichR4PipelineDesc* desc,KichR4Handle* out)
+{
+    if(!out)return KICH_R4_E_ARGUMENT;
+    *out=0;if(!desc || !ValidPipeline(*desc))return KICH_R4_E_ARGUMENT;
+    return Protect([&]() -> int32_t {
+        int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;
+        Resource* vs=d->resources.Find(desc->vertex_shader);Resource* ps=d->resources.Find(desc->pixel_shader);
+        if(!vs || !ps)return KICH_R4_E_HANDLE;
+        if(vs->info.kind!=KICH_R4_VERTEX_SHADER || ps->info.kind!=KICH_R4_PIXEL_SHADER)return KICH_R4_E_ARGUMENT;
+        uint32_t vs_bytes=0,ps_bytes=0;
+        hr=ShaderConstants(*vs,vs_bytes);if(hr<0)return hr;
+        hr=ShaderConstants(*ps,ps_bytes);if(hr<0)return hr;
+        std::unique_ptr<Resource> r(new Resource());r->pipeline.reset(new PipelineDX11());
+        hr=r->pipeline->Create(d->hw,*desc,vs->vs,ps->ps,vs->bytecode);if(hr<0)return hr;
+        r->pipeline->constant_bytes=vs_bytes>ps_bytes?vs_bytes:ps_bytes;r->info.kind=KICH_R4_GRAPHICS_PIPELINE;
+        Resource* saved=r.get();*out=d->Add(std::move(r));
+        saved->pipeline_released=&d->geometry_stats.pipelines_released;++d->geometry_stats.pipelines_created;
+        return KICH_R4_OK;
+    });
+}
+int32_t KICH_R4_CALL UpdateBuffer(KichR4Handle device,KichR4Handle buffer,const void* data,uint32_t bytes)
+{
+    if(!data || !bytes)return KICH_R4_E_ARGUMENT;
+    return Protect([&]() -> int32_t {
+        int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;
+        Resource* r=d->resources.Find(buffer);if(!r)return KICH_R4_E_HANDLE;
+        if(!r->buffer || r->info.kind<KICH_R4_VERTEX_BUFFER || r->info.kind>KICH_R4_CONSTANT_BUFFER ||
+            bytes!=r->info.byte_size)return KICH_R4_E_ARGUMENT;
+        d->context->UpdateSubresource(r->buffer,0,NULL,data,0,0);r->initialized=true;
+        ++d->geometry_stats.buffer_updates;return KICH_R4_OK;
+    });
+}
+int32_t KICH_R4_CALL DrawIndexed(KichR4Handle device,const KichR4DrawIndexedDesc* desc)
+{
+    if(!desc || desc->struct_size!=sizeof(*desc))return KICH_R4_E_ARGUMENT;
+    return Protect([&]() -> int32_t {
+        int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;
+        if(!d->frame.CanDraw())return KICH_R4_E_STATE;
+        Resource* p=d->resources.Find(desc->pipeline);Resource* vb=d->resources.Find(desc->vertex_buffer);
+        Resource* ib=d->resources.Find(desc->index_buffer);Resource* cb=d->resources.Find(desc->constant_buffer);
+        if(!p || !vb || !ib || !cb)return KICH_R4_E_HANDLE;
+        if(!p->pipeline || vb->info.kind!=KICH_R4_VERTEX_BUFFER || ib->info.kind!=KICH_R4_INDEX_BUFFER ||
+            cb->info.kind!=KICH_R4_CONSTANT_BUFFER || vb->buffer_stride!=p->pipeline->stride ||
+            cb->info.byte_size<p->pipeline->constant_bytes || !ValidDraw(*desc,ib->info.byte_size,ib->buffer_stride))return KICH_R4_E_ARGUMENT;
+        if(!vb->initialized || !ib->initialized || !cb->initialized)return KICH_R4_E_STATE;
+        if(desc->depth_mode==KICH_R4_DEPTH_ON) {hr=d->frame_driver.EnsureDepth();if(hr<0)return hr;}
+        const KichR4FrameStats size=d->frame.Stats();d->frame_driver.Bind(size.width,size.height);
+        p->pipeline->Draw(d->context,*desc,vb->buffer,ib->buffer,cb->buffer,ib->buffer_stride);
+        ++d->geometry_stats.draw_calls;d->geometry_stats.triangles+=desc->index_count/3;
+        return KICH_R4_OK;
+    });
+}
+KichR4GeometryStats GeometryStats(const Device& d)
+{
+    KichR4GeometryStats stats=d.geometry_stats;
+    stats.depth_created=d.frame_driver.DepthCreated();stats.depth_released=d.frame_driver.DepthReleased();return stats;
+}
+int32_t KICH_R4_CALL GetGeometryStats(KichR4Handle device,KichR4GeometryStats* out,uint32_t bytes)
+{
+    if(!OutputOK(out,bytes))return KICH_R4_E_ARGUMENT;
+    return Protect([&]() -> int32_t {
+        int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;
+        *out=GeometryStats(*d);return KICH_R4_OK;
+    });
+}
+int32_t KICH_R4_CALL DestroyGeometryDevice(KichR4Handle device,KichR4GeometryReport* out,uint32_t bytes)
+{
+    if((out && !OutputOK(out,bytes)) || (!out && bytes))return KICH_R4_E_ARGUMENT;
+    return Protect([&]() -> int32_t {
+        int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;
+        d->frame.Close();d->frame_driver.Close();d->ClearResources();
+        KichR4GeometryReport report={};report.struct_size=sizeof(report);report.frame=d->frame.Stats();
+        report.resources=d->stats;report.geometry=GeometryStats(*d);
+        for(size_t i=0;i<4;++i)if(slots[i].device==d){slots[i].device=NULL;slots[i].id=0;break;}
+        delete d;if(out)*out=report;return KICH_R4_OK;
+    });
+}
 }
 
 extern "C" int32_t KICH_R4_CALL KichR4_GetResourceAPI(uint32_t abi, KichR4ResourceAPI* out, uint32_t bytes)
@@ -478,5 +577,13 @@ extern "C" int32_t KICH_R4_CALL KichR4_GetFrameAPI(uint32_t abi,KichR4FrameAPI* 
     const KichR4FrameAPI api={sizeof(api),KICH_R4_FRAME_ABI,sizeof(void*),0,
         CreateDevice,DestroyFrameDevice,CreateFrameTarget,DestroyFrameTarget,
         ResizeFrame,BeginFrame,ClearFrame,PresentFrame,GetFrameStats};
+    *out=api;return KICH_R4_OK;
+}
+
+extern "C" int32_t KICH_R4_CALL KichR4_GetGeometryAPI(uint32_t abi,KichR4GeometryAPI* out,uint32_t bytes)
+{
+    if(abi!=KICH_R4_GEOMETRY_ABI || !OutputOK(out,bytes))return KICH_R4_E_ARGUMENT;
+    const KichR4GeometryAPI api={sizeof(api),KICH_R4_GEOMETRY_ABI,sizeof(void*),0,
+        CreatePipeline,UpdateBuffer,DrawIndexed,GetGeometryStats,DestroyGeometryDevice};
     *out=api;return KICH_R4_OK;
 }

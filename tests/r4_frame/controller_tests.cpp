@@ -31,7 +31,10 @@ struct Driver : FrameDriver {
 };
 KichR4FrameTargetDesc Desc(uint32_t w=960,uint32_t h=540){const KichR4FrameTargetDesc d={sizeof(d),w,h,reinterpret_cast<void*>(1)};return d;}
 KichR4FrameColor Color(){const KichR4FrameColor c={sizeof(c),{0.1f,0.2f,0.3f,1.f}};return c;}
-void Draw(FrameController& f){Require(f.Begin()==0,"begin");Require(f.Clear(Color())==0,"clear");Require(f.Present(1)==0,"present");}
+void Draw(FrameController& f){Require(!f.CanDraw(),"geometry closed before begin");
+    Require(f.Begin()==0 && !f.CanDraw(),"geometry waits for clear");
+    Require(f.Clear(Color())==0 && f.CanDraw(),"cleared target accepts geometry");
+    Require(f.Present(1)==0 && !f.CanDraw(),"present closes geometry submission");}
 void Sequence()
 {
     Driver d;FrameController f(d);

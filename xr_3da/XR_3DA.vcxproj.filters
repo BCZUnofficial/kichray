@@ -491,6 +491,9 @@
     <ClInclude Include="KichR4Frame.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="KichR4FrameProbe.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="KichR4FrameSession.h"><Filter>Interfaces\Render</Filter></ClInclude>
+    <ClInclude Include="KichR4Geometry.h"><Filter>Interfaces\Render</Filter></ClInclude>
+    <ClInclude Include="KichR4GeometrySession.h"><Filter>Interfaces\Render</Filter></ClInclude>
+    <ClInclude Include="KichR4TestScene.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="EngineAPI.h">
       <Filter>Engine\Core</Filter>
     </ClInclude>

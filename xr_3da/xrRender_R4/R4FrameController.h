@@ -46,6 +46,7 @@ public:
         memset(&stats_,0,sizeof(stats_));stats_.struct_size=sizeof(stats_);
     }
     static bool ValidSize(uint32_t w,uint32_t h) { return w && h && w<=16384 && h<=16384; }
+    bool CanDraw() const {return attached_ && view_ && open_ && cleared_ && !broken_ && !suspended_;}
     static bool ValidColor(const KichR4FrameColor& c) {
         if(c.struct_size!=sizeof(c)) return false;
         for(unsigned i=0;i<4;++i) if(!(c.rgba[i]>=0.f && c.rgba[i]<=1.f)) return false;

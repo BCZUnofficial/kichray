@@ -12,11 +12,15 @@ class FrameDriverDX11 : public FrameDriver {
     ID3D11DeviceContext*& context_;
     IDXGISwapChain* chain_;
     ID3D11RenderTargetView* view_;
+    ID3D11Texture2D* depth_texture_;
+    ID3D11DepthStencilView* depth_view_;
+    uint32_t width_,height_,depth_created_,depth_released_;
     FrameDriverDX11(const FrameDriverDX11&);
     FrameDriverDX11& operator=(const FrameDriverDX11&);
 public:
     FrameDriverDX11(ID3D11Device*& device,ID3D11DeviceContext*& context) :
-        device_(device),context_(context),chain_(NULL),view_(NULL) {}
+        device_(device),context_(context),chain_(NULL),view_(NULL),depth_texture_(NULL),depth_view_(NULL),
+        width_(0),height_(0),depth_created_(0),depth_released_(0) {}
     virtual ~FrameDriverDX11() { Close(); }
     virtual int32_t Create(void*,uint32_t,uint32_t);
     virtual void DropView();
@@ -27,6 +31,9 @@ public:
     virtual int32_t Present(uint32_t,bool);
     virtual int32_t RemovedReason();
     virtual void Close();
+    int32_t EnsureDepth(); /* Lazy: B3 clear-only path stays unchanged. */
+    uint32_t DepthCreated() const {return depth_created_;}
+    uint32_t DepthReleased() const {return depth_released_;}
 };
 }
 #endif
