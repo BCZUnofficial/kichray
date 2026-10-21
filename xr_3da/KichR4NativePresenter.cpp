@@ -10,7 +10,8 @@
 #include "KichR4Native.h"
 #include "KichR4NativeCPU.h"
 #include "KichR4GameSession.h"
-#include "KichR4NativeTools.h"
+#include "KichR4RendererContract.h"
+#include "KichR4BuildIdentity.h"
 bool KichR4_NativeTerrain(const char* shader,char (*layers)[128]);
 bool KichR4_NativeMaterialState(const char*,const char*,kich_r4_capture::Style&);
 bool KichR4_NativeNeedScreenshot();
@@ -29,31 +30,34 @@ struct Context {
     Context():loaded(false){memset(&frame,0,sizeof(frame));}
 };
 struct NativeState {
-    HMODULE module;kich_r4_game::APIs api;KichR4NativeToolsAPI tools;KichR4LevelFiles files;
+    HMODULE module;KichR4RendererAPI api;KichR4LevelFiles files;
     std::unique_ptr<Context> context;
     void (*log)(const char*);void* window;uint32_t width,height,color,debug,interval;bool debug_key;std::string desired;
-    NativeState():module(NULL),log(NULL),window(NULL),width(0),height(0),color(0xff000000),debug(0),interval(1),debug_key(false){memset(&api,0,sizeof(api));memset(&tools,0,sizeof(tools));memset(&files,0,sizeof(files));}
+    NativeState():module(NULL),log(NULL),window(NULL),width(0),height(0),color(0xff000000),debug(0),interval(1),debug_key(false){memset(&api,0,sizeof(api));memset(&files,0,sizeof(files));}
 } native;
 #if defined(__GNUC__)
 __attribute__((format(gnu_printf,1,2)))
 #endif
 void Write(const char* format,...){if(!native.log)return;char text[1024];va_list args;va_start(args,format);vsnprintf(text,sizeof(text),format,args);va_end(args);text[sizeof(text)-1]=0;native.log(text);}
-bool ReadAPIs(){HMODULE m=native.module;
-    const KichR4GetBridgeVersionFn version=reinterpret_cast<KichR4GetBridgeVersionFn>(GetProcAddress(m,KICH_R4_EXPORT_VERSION));
-    const KichR4GetFrameAPIFn frame=reinterpret_cast<KichR4GetFrameAPIFn>(GetProcAddress(m,KICH_R4_EXPORT_FRAME));
-    const KichR4GetResourceAPIFn resources=reinterpret_cast<KichR4GetResourceAPIFn>(GetProcAddress(m,KICH_R4_EXPORT_RESOURCES));
-    const KichR4GetGeometryAPIFn geometry=reinterpret_cast<KichR4GetGeometryAPIFn>(GetProcAddress(m,KICH_R4_EXPORT_GEOMETRY));
-    const KichR4GetLevelAPIFn level=reinterpret_cast<KichR4GetLevelAPIFn>(GetProcAddress(m,KICH_R4_EXPORT_LEVEL));
-    const KichR4GetStreamAPIFn stream=reinterpret_cast<KichR4GetStreamAPIFn>(GetProcAddress(m,KICH_R4_EXPORT_STREAM));
-    const KichR4GetDeferredAPIFn deferred=reinterpret_cast<KichR4GetDeferredAPIFn>(GetProcAddress(m,KICH_R4_EXPORT_DEFERRED));
-    const KichR4GetNativeToolsAPIFn extra=reinterpret_cast<KichR4GetNativeToolsAPIFn>(GetProcAddress(m,"KichR4_GetNativeToolsAPI"));
-    return version && frame && resources && geometry && level && stream && deferred && extra && version()==KICH_R4_BRIDGE_ABI_VERSION &&
-        frame(KICH_R4_FRAME_ABI,&native.api.frame,sizeof(native.api.frame))==0 && resources(KICH_R4_RESOURCE_ABI,&native.api.resources,sizeof(native.api.resources))==0 &&
-        geometry(KICH_R4_GEOMETRY_ABI,&native.api.geometry,sizeof(native.api.geometry))==0 && level(KICH_R4_LEVEL_ABI,&native.api.level,sizeof(native.api.level))==0 &&
-        stream(KICH_R4_STREAM_ABI,&native.api.stream,sizeof(native.api.stream))==0 && deferred(KICH_R4_DEFERRED_ABI,&native.api.deferred,sizeof(native.api.deferred))==0 &&
-        extra(KICH_R4_NATIVE_TOOLS_ABI,&native.tools,sizeof(native.tools))==0 && native.api.Valid() && KichR4StreamSession::ValidAPI(native.api.stream) && KichR4DeferredSession::ValidAPI(native.api.deferred) &&
-        native.tools.struct_size==sizeof(native.tools) && native.tools.abi_version==KICH_R4_NATIVE_TOOLS_ABI && native.tools.pointer_size==sizeof(void*) && !native.tools.flags &&
-        native.tools.read_pixels && native.tools.profile_mark && native.tools.get_profile && native.tools.reset_resources;
+void LogBuild(const char* module,const KichR4BuildInfo& b){
+    Write("[R4 G0] %s revision=%s dirty=%u source_sha256=%s shaders_sha256=%s compiled=%s config=%s compiler=%u pointer_size=%u",
+        module,b.revision,b.dirty,b.source_id,b.shader_id,b.compiled,b.configuration,b.compiler_version,b.pointer_size);
+}
+bool ReadAPIs(){
+    const KichR4BuildInfo exe=KichR4_LocalBuildInfo();LogBuild("XR_3DA.exe",exe);
+    const KichR4GetRendererAPIFn get=reinterpret_cast<KichR4GetRendererAPIFn>(GetProcAddress(native.module,KICH_R4_EXPORT_RENDERER));
+    if(!get){Write("[R4 G1] missing %s: rebuild/copy XR_3DA.exe and xrRender_R4.dll together",KICH_R4_EXPORT_RENDERER);return false;}
+    KichR4RendererAPI api={};const int32_t hr=get(KICH_R4_RENDERER_ABI,&api,sizeof(api));
+    if(hr!=KICH_R4_OK){Write("[R4 G1] renderer contract rejected: ABI=0x%08X bytes=%u HRESULT=0x%08X",
+        KICH_R4_RENDERER_ABI,static_cast<uint32_t>(sizeof(api)),static_cast<uint32_t>(hr));return false;}
+    const char* invalid=KichR4_ValidateRendererAPI(&api);
+    if(invalid){Write("[R4 G1] invalid renderer contract: %s",invalid);return false;}
+    LogBuild("xrRender_R4.dll",api.build);
+    if(!KichR4_BuildsMatch(&exe,&api.build)){
+        Write("[R4 G1] EXE/DLL source or shader identity mismatch; copy both files from the same source build");return false;}
+    native.api=api;
+    Write("[R4 G1] renderer ABI=0x%08X verified; transitional services; CPU capture remains until G3",api.abi_version);
+    return true;
 }
 void StopContext(){if(!native.context)return;Context& c=*native.context;if(c.frame.device){KichR4GeometryReport report={};const int32_t hr=c.level.bridge.Stop(c.frame,&report);
     Write("[R4 native B5] cleanup: HRESULT=0x%08X resources=%u/%u live=%u payload=%llu views=%u/%u",static_cast<uint32_t>(hr),report.resources.created,report.resources.released,report.resources.live_resources,static_cast<unsigned long long>(report.resources.payload_bytes),report.frame.views_created,report.frame.views_released);}
@@ -78,7 +82,7 @@ KichR4Handle OverrideTexture(void* context,const std::string& key,bool& handled)
     if(uploaded.handle){c.level.bridge.resources.release_resource(c.frame.device,uploaded.handle);}uploaded.handle=next;uploaded.revision=revision;return next;
 }
 void ConfigureContext(Context& c){c.frame.api=native.api.frame;c.level.bridge.resources=native.api.resources;c.level.bridge.api=native.api.geometry;
-    c.level.api=native.api.level;c.level.files=native.files;c.level.log=native.log;c.stream.api=native.api.stream;c.deferred.api=native.api.deferred;c.deferred.native_mode=true;c.deferred.tools=native.tools;
+    c.level.api=native.api.level;c.level.files=native.files;c.level.log=native.log;c.stream.api=native.api.stream;c.deferred.api=native.api.deferred;c.deferred.native_mode=true;c.deferred.tools=native.api.tools;
     c.level.keep_going=[](void*)->bool{KichR4_NativePumpLoading();return true;};
     c.level.texture_override=OverrideTexture;c.level.texture_context=&c;
 }
@@ -89,7 +93,7 @@ bool CreateContext(){native.context.reset(new Context());Context& c=*native.cont
 }
 bool ResetContext(){Context& previous=*native.context;
     std::unique_ptr<Context> next(new Context());next->frame=previous.frame;next->name=native.desired;ConfigureContext(*next);
-    KichR4ResourceStats report={};const int32_t hr=native.tools.reset_resources(previous.frame.device,&report,sizeof(report));
+    KichR4ResourceStats report={};const int32_t hr=native.api.tools.reset_resources(previous.frame.device,&report,sizeof(report));
     if(hr!=0){previous.frame.Record("native reset scene resources",hr<0?hr:KICH_R4_E_STATE);
         Write("[R4 native B5] scene reset failed: HRESULT=0x%08X",static_cast<uint32_t>(hr));return false;}
     Write("[R4 native B5] scene switch: %s -> %s; preserving device=%llu window target and %u presented frames; resources=%u/%u live=%u",
@@ -120,9 +124,9 @@ void KichR4_NativeLevel(const char* name){native.desired=name?name:"";}
 void KichR4_NativeClear(uint32_t color){native.color=color;}
 void KichR4_NativeSetInterval(bool vsync){native.interval=vsync?1:0;}
 bool KichR4_NativeReadPixels(std::vector<unsigned char>& out,uint32_t& w,uint32_t& h){if(!native.context)return false;Context& c=*native.context;
-    if(native.tools.read_pixels(c.frame.device,NULL,0,&w,&h)<0 || !w || !h || uint64_t(w)*h*4>256u*1024u*1024u)return false;
+    if(native.api.tools.read_pixels(c.frame.device,NULL,0,&w,&h)<0 || !w || !h || uint64_t(w)*h*4>256u*1024u*1024u)return false;
     out.resize(size_t(w)*h*4);
-    return native.tools.read_pixels(c.frame.device,out.data(),static_cast<uint32_t>(out.size()),&w,&h)==0;
+    return native.api.tools.read_pixels(c.frame.device,out.data(),static_cast<uint32_t>(out.size()),&w,&h)==0;
 }
 bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)return false;Context* context=native.context.get();
     try{if(context->name!=native.desired){if(!ResetContext())return false;context=native.context.get();}
@@ -146,11 +150,11 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
         if(hr==0){hr=c.frame.api.present(c.frame.device,native.interval);if(!hr)++c.frame.rendered;}
         QueryPerformanceCounter(&end);
         if(hr<0){Write("[R4 native B5] frame failed: step=%s HRESULT=0x%08X shader=%s",c.frame.step?c.frame.step:"present",static_cast<uint32_t>(hr),c.level.bridge.shader_error);return false;}
-        if(c.frame.rendered && c.frame.rendered%300==0){KichR4GPUProfile profile={};native.tools.get_profile(c.frame.device,&profile,sizeof(profile));
+        if(c.frame.rendered && c.frame.rendered%300==0){KichR4GPUProfile profile={};native.api.tools.get_profile(c.frame.device,&profile,sizeof(profile));
             Write("[R4 native B5] frames=%u legacy_draws=0 models=%u hands=%u UI=%u CPU_queue_ms=%.3f CPU_submit_ms=%.3f present_ms=%.3f shadow_passes_frame=%u GPU_ready=%u GPU_ms=[%.3f %.3f %.3f %.3f %.3f %.3f %.3f]",
                 c.frame.rendered,batch->models,batch->hands,batch->ui,input.prepare_ms,double(submitted.QuadPart-start.QuadPart)*1000.0/double(frequency.QuadPart),double(end.QuadPart-submitted.QuadPart)*1000.0/double(frequency.QuadPart),c.deferred.shadow_passes-shadows_before,profile.ready,
                 profile.milliseconds[0],profile.milliseconds[1],profile.milliseconds[2],profile.milliseconds[3],profile.milliseconds[4],profile.milliseconds[5],profile.milliseconds[6]);}
-        else if(c.loaded){KichR4GPUProfile unused={};native.tools.get_profile(c.frame.device,&unused,sizeof(unused));}
+        else if(c.loaded){KichR4GPUProfile unused={};native.api.tools.get_profile(c.frame.device,&unused,sizeof(unused));}
         {std::lock_guard<std::mutex> lock(runtime_mutex);std::set<std::string> alive;for(const auto& item:runtime)alive.insert(item.second.key);retired.clear();
             for(auto it=c.uploads.begin();it!=c.uploads.end();){if(!alive.count(it->first)){if(it->second.handle)c.level.bridge.resources.release_resource(c.frame.device,it->second.handle);it=c.uploads.erase(it);}else ++it;}}
         return true;

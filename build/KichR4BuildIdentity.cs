@@ -1,0 +1,125 @@
+// Runs inside Visual Studio's full-framework MSBuild. No engine dependency.
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Security.Cryptography;
+using System.Text;
+using Microsoft.Build.Framework;
+using Microsoft.Build.Utilities;
+
+public sealed class KichR4WriteBuildIdentity : Task
+{
+    [Required] public string Root { get; set; }
+    [Required] public string Output { get; set; }
+    [Required] public string Configuration { get; set; }
+
+    private static string Hex(byte[] bytes)
+    {
+        return BitConverter.ToString(bytes).Replace("-", "").ToLowerInvariant();
+    }
+    private static bool SourceFile(string path)
+    {
+        if (Path.GetFileName(path) == "KichR4BuildIdentity.generated.h") return false;
+        string extension = Path.GetExtension(path).ToLowerInvariant();
+        return extension == ".h" || extension == ".cpp" || extension == ".c" ||
+            extension == ".inl" || extension == ".def" || extension == ".vcxproj";
+    }
+    private string Fingerprint(string root)
+    {
+        var files = new List<string>();
+        foreach (string area in new[] { "xr_3da", "xrCore" })
+            foreach (string file in Directory.GetFiles(Path.Combine(root, area), "*", SearchOption.AllDirectories))
+                if (SourceFile(file)) files.Add(file);
+        files.Add(Path.Combine(root, "build", "KichR4BuildIdentity.cs"));
+        files.Add(Path.Combine(root, "build", "KichR4BuildIdentity.targets"));
+        files.Sort(StringComparer.Ordinal);
+        // Hash relative names plus lengths and per-file SHA256. Root location,
+        // build outputs, Git metadata, docs and tests do not affect this ID.
+        using (var manifest = new MemoryStream())
+        using (var writer = new BinaryWriter(manifest, Encoding.UTF8))
+        using (var sha = SHA256.Create())
+        {
+            writer.Write("KichRay-R4-source-manifest-v1");
+            foreach (string file in files)
+            {
+                writer.Write(file.Substring(root.Length).Replace('\\', '/'));
+                using (var input = File.OpenRead(file))
+                {
+                    writer.Write(input.Length);
+                    writer.Write(sha.ComputeHash(input));
+                }
+            }
+            writer.Flush();
+            return Hex(sha.ComputeHash(manifest.ToArray()));
+        }
+    }
+    private static string Git(string root, string arguments, out int exitCode)
+    {
+        var info = new ProcessStartInfo("git", arguments);
+        info.WorkingDirectory = root;
+        info.UseShellExecute = false;
+        info.CreateNoWindow = true;
+        info.RedirectStandardOutput = true;
+        info.RedirectStandardError = true;
+        using (var process = Process.Start(info))
+        {
+            // Drain both pipes asynchronously, including large dirty listings.
+            var output = process.StandardOutput.ReadToEndAsync();
+            var errors = process.StandardError.ReadToEndAsync();
+            if (!process.WaitForExit(5000)) { process.Kill(); throw new IOException("Git timed out"); }
+            System.Threading.Tasks.Task.WaitAll(output, errors);
+            exitCode = process.ExitCode;
+            return output.Result.Trim();
+        }
+    }
+    private static string Literal(string value)
+    {
+        return "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "").Replace("\n", " ") + "\"";
+    }
+    public override bool Execute()
+    {
+        try
+        {
+            string root = Path.GetFullPath(Root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            string sourceId = Fingerprint(root);
+            string shaderId;
+            using (var sha = SHA256.Create())
+            using (var input = File.OpenRead(Path.Combine(root, "xr_3da", "KichR4DeferredShaders.h")))
+                shaderId = Hex(sha.ComputeHash(input));
+            string revision = "archive";
+            int dirty = 2;
+            try
+            {
+                int code;
+                string top = Git(root, "rev-parse --show-toplevel", out code);
+                if (code == 0 && String.Equals(Path.GetFullPath(top).TrimEnd('\\', '/'), root.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase))
+                {
+                    string head = Git(root, "rev-parse HEAD", out code);
+                    if (code == 0 && head.Length == 40)
+                    {
+                        revision = head;
+                        string status = Git(root, "status --porcelain --untracked-files=normal -- xr_3da xrCore build", out code);
+                        if (code == 0) dirty = status.Length == 0 ? 0 : 1;
+                    }
+                }
+            }
+            catch (Exception) { /* ZIP and machines without Git use mandatory content IDs. */ }
+            if (Configuration.Length >= 48) throw new IOException("R4 configuration name is too long");
+            string text = "// Generated by MSBuild. Do not edit.\n#ifndef KICH_R4_BUILD_IDENTITY_GENERATED_H\n#define KICH_R4_BUILD_IDENTITY_GENERATED_H\n" +
+                "#define KICH_R4_BUILD_REVISION " + Literal(revision) + "\n" +
+                "#define KICH_R4_BUILD_DIRTY " + dirty + "u\n" +
+                "#define KICH_R4_BUILD_SOURCE_ID " + Literal(sourceId) + "\n" +
+                "#define KICH_R4_BUILD_SHADER_ID " + Literal(shaderId) + "\n" +
+                "#define KICH_R4_BUILD_CONFIGURATION " + Literal(Configuration) + "\n#endif\n";
+            if (!File.Exists(Output) || File.ReadAllText(Output) != text)
+                File.WriteAllText(Output, text, new UTF8Encoding(false));
+            return true;
+        }
+        catch (Exception error)
+        {
+            Log.LogError("R4 build identity generation failed: " + error.Message);
+            return false;
+        }
+    }
+}

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- Full-framework MSBuild supplied with VS2019/2022; no Python, PowerShell,
+       CMake or mandatory Git installation. Separate IntDir avoids build races. -->
+  <PropertyGroup>
+    <KichR4IdentityRoot>$(MSBuildThisFileDirectory)..\</KichR4IdentityRoot>
+  </PropertyGroup>
+  <UsingTask TaskName="KichR4WriteBuildIdentity" TaskFactory="RoslynCodeTaskFactory"
+             AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <Task>
+      <Reference Include="System.Core" />
+      <Code Type="Class" Language="cs" Source="$(MSBuildThisFileDirectory)KichR4BuildIdentity.cs" />
+    </Task>
+  </UsingTask>
+  <Target Name="KichR4GenerateBuildIdentity" BeforeTargets="ClCompile"
+          Condition="'$(DesignTimeBuild)' != 'true'">
+    <MakeDir Directories="$(IntDir)" />
+    <KichR4WriteBuildIdentity Root="$(KichR4IdentityRoot)"
+        Output="$(IntDir)KichR4BuildIdentity.generated.h"
+        Configuration="$(Configuration)|$(Platform)" />
+  </Target>
+</Project>

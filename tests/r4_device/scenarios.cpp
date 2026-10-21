@@ -1,5 +1,10 @@
 #include "fake_engine.h"
 
+// Lifecycle traces below exercise R1/R2. B5's native selector must remain off
+// in this seam; accidentally selecting it is a test failure, not a fake device.
+bool KichR4_NativeActive(){return false;}
+IKichRenderDevice& KichR4_NativeDevice(){throw std::runtime_error("unexpected native device in DX9 lifecycle test");}
+
 std::vector<std::string> events;
 FakeDevice gpu;
 FakeHW HW;

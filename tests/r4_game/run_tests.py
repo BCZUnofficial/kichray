@@ -22,7 +22,9 @@ def main():
                             "-o", str(output)], check=True)
             subprocess.run([str(output)], check=True)
         production = (ROOT/"xr_3da/KichR4GameEngine.cpp").read_text()
-        function = production[production.index("void KichR4_GamePrepareEngineFrame()") :]
+        # B5 appended a separate native presenter function. This legacy camera
+        # seam deliberately includes only the original prepare function.
+        function = production[production.index("void KichR4_GamePrepareEngineFrame()") : production.index("\nvoid KichR4_NativePostprocess")]
         engine_source = Path(folder)/"engine_frame.cpp"
         engine_source.write_text((HERE/"engine_frame_tests.cpp").read_text().replace("// PRODUCTION_FUNCTION", function))
         cxx = os.environ.get("CXX", "g++")

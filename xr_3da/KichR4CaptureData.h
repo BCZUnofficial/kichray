@@ -116,10 +116,23 @@ struct Batch {
         vertices.clear();indices.clear();commands.clear();error.clear();model_keys.clear();}
     bool Ready()const{return width && height && renderer_seen && ui_seen && !ui_scope && error.empty();}
     void Fail(const char* why){if(error.empty())error=why;}
-    void Reserve(uint32_t v,uint32_t i){Check(commands.size()<16384,"frame draw limit");
-        Check(uint64_t(vertices.size()+v)*sizeof(Vertex)+uint64_t(indices.size()+i)*4<=32u*1024u*1024u,"frame CPU geometry budget");}
+    void Reserve(uint32_t v,uint32_t i,const char* source="<unspecified>",uint32_t layer=UINT32_MAX){
+        const uint64_t used=uint64_t(vertices.size())*sizeof(Vertex)+uint64_t(indices.size())*4;
+        const uint64_t requested=uint64_t(v)*sizeof(Vertex)+uint64_t(i)*4;
+        const uint64_t limit=32u*1024u*1024u;
+        const char* why=commands.size()>=16384?"frame draw limit":used+requested>limit?"frame CPU geometry budget":NULL;
+        if(!why)return;
+        char detail[768];snprintf(detail,sizeof(detail),
+            "%s; frame=%u used_bytes=%llu request_bytes=%llu total_bytes=%llu limit_bytes=%llu "
+            "vertices=%llu indices=%llu request_vertices=%u request_indices=%u commands=%llu models=%u hands=%u UI=%u layer=%u source=%.180s",
+            why,engine_frame,static_cast<unsigned long long>(used),static_cast<unsigned long long>(requested),
+            static_cast<unsigned long long>(used+requested),static_cast<unsigned long long>(limit),
+            static_cast<unsigned long long>(vertices.size()),static_cast<unsigned long long>(indices.size()),v,i,
+            static_cast<unsigned long long>(commands.size()),models,hands,ui,layer,source?source:"<unnamed>");
+        throw std::runtime_error(detail);
+    }
     void Model(const void* identity,const Mesh& mesh,const Matrix& world,const Matrix& vp,const Matrix* bones,uint32_t bone_count,
-        uint32_t count,uint32_t first,uint32_t tris,const Style& style,uint32_t skin_mode=KICH_R4_SKIN_SOFTWARE) {
+        uint32_t count,uint32_t first,uint32_t tris,const Style& style,uint32_t skin_mode=KICH_R4_SKIN_SOFTWARE,const char* name="<unnamed model>") {
         Check(count && count<=mesh.vertices.size() && tris && uint64_t(first)+uint64_t(tris)*3<=mesh.indices.size(),"model draw range");
         Check(!mesh.skinned || (bones && mesh.bones<=bone_count),"model bone pose range");
         Check(!mesh.two_weights || skin_mode==KICH_R4_SKIN_SOFTWARE || skin_mode==KICH_R4_SKIN_HARDWARE,
@@ -132,7 +145,7 @@ struct Batch {
         key.append(reinterpret_cast<const char*>(&skin_mode),sizeof(skin_mode));
         key.append(reinterpret_cast<const char*>(&layer),sizeof(layer));
         if(!model_keys.insert(key).second)return;
-        Reserve(count,tris*3);const uint32_t base=static_cast<uint32_t>(vertices.size());const Matrix mvp=kich_r4_scene::Multiply(world,vp);
+        Reserve(count,tris*3,name,layer);const uint32_t base=static_cast<uint32_t>(vertices.size());const Matrix mvp=kich_r4_scene::Multiply(world,vp);
         const Matrix normal_world=kich_r4_lighting::NormalMatrix(world);
         Command cmd={static_cast<uint32_t>(indices.size()),tris*3,layer,mesh.texture,style};
         for(uint32_t i=0;i<count;++i){const SourceVertex& src=mesh.vertices[i];float p[4]={src.p[0],src.p[1],src.p[2],1};

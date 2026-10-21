@@ -57,6 +57,9 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="..\KichR4Bridge.h" />
+    <ClInclude Include="..\KichR4Renderer.h" />
+    <ClInclude Include="..\KichR4RendererContract.h" />
+    <ClInclude Include="..\KichR4BuildIdentity.h" />
     <ClInclude Include="..\KichR4Resources.h" />
     <ClInclude Include="..\KichR4Frame.h" />
     <ClInclude Include="..\KichR4Geometry.h" />
@@ -72,11 +75,13 @@
     <ClInclude Include="R4FrameDX11.h" />
     <ClInclude Include="R4ResourceRules.h" />
     <ClCompile Include="xrRender_R4.cpp" />
+    <ClCompile Include="R4RendererAdapter.cpp"><AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories></ClCompile>
     <ClCompile Include="R4Resources.cpp" />
     <ClCompile Include="R4FrameDX11.cpp" />
     <ClCompile Include="R4PipelineDX11.cpp" />
     <None Include="xrRender_R4.def" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Import Project="$(ProjectDir)..\..\build\KichR4BuildIdentity.targets" />
   <ImportGroup Label="ExtensionTargets" />
 </Project>

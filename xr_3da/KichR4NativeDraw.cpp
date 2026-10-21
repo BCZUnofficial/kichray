@@ -48,7 +48,7 @@ void KichR4_NativeBegin(uint32_t width,uint32_t height,uint32_t frame){menu_pp=m
 }
 void KichR4_NativeFillRect(int32_t left,int32_t top,int32_t right,int32_t bottom,uint32_t color){
     using namespace kich_r4_capture;State* s=KichR4_CaptureState();if(!s || left>=right || top>=bottom)return;
-    try{Batch& b=s->frame;b.Reserve(4,6);const uint32_t base=static_cast<uint32_t>(b.vertices.size()),first=static_cast<uint32_t>(b.indices.size());
+    try{Batch& b=s->frame;b.Reserve(4,6,"native fill rect",2);const uint32_t base=static_cast<uint32_t>(b.vertices.size()),first=static_cast<uint32_t>(b.indices.size());
         const float x[4]={float(left),float(left),float(right),float(right)},y[4]={float(top),float(bottom),float(top),float(bottom)};
         for(unsigned i=0;i<4;++i)b.vertices.push_back(b.Screen(x[i]-.5f,y[i]-.5f,0,1,0,0,color));
         const uint32_t indices[6]={0,1,2,2,1,3};for(unsigned i=0;i<6;++i)b.indices.push_back(base+indices[i]);
@@ -72,7 +72,8 @@ void KichR4_NativeDraw(void* declaration,void* vb,void* ib,uint32_t stride,uint3
         Style draw;KichR4_NativeStyle(draw);if(screen){draw.depth=draw.write=0;draw.cull=KICH_R4_CULL_NONE;draw.min_z=0;draw.max_z=1;draw.clamp=1;}
         const uint32_t layer=screen?2:draw.max_z<.1f?1:0;
         const std::string texture=(uv || effect==2 || effect==3)?TextureName(0):std::string();const std::string secondary=(effect==2 || effect==3)?TextureName(1):std::string();
-        Batch& batch=state->frame;batch.Reserve(indexed && vertex_count?std::min(n,vertex_count):n,topology>=D3DPT_TRIANGLELIST?primitives*3:primitives*6);const uint32_t vbase=static_cast<uint32_t>(batch.vertices.size());
+        Batch& batch=state->frame;batch.Reserve(indexed && vertex_count?std::min(n,vertex_count):n,topology>=D3DPT_TRIANGLELIST?primitives*3:primitives*6,
+            (active_shader+" / "+texture).c_str(),layer);const uint32_t vbase=static_cast<uint32_t>(batch.vertices.size());
         Matrix world,vp;memcpy(world.m,RCache.get_xform_world().m,64);Fmatrix native_vp;native_vp.mul(RCache.get_xform_project(),RCache.get_xform_view());memcpy(vp.m,native_vp.m,64);
         const Matrix mvp=kich_r4_scene::Multiply(world,vp),nm=kich_r4_lighting::NormalMatrix(world);
         std::vector<uint32_t> references(n);std::map<uint32_t,uint32_t> reused;

@@ -14,4 +14,11 @@ typedef struct KichR4NativeToolsAPI {
 } KichR4NativeToolsAPI;
 #pragma pack(pop)
 typedef int32_t (KICH_R4_CALL *KichR4GetNativeToolsAPIFn)(uint32_t,KichR4NativeToolsAPI*,uint32_t);
+#ifdef __cplusplus
+extern "C" {
+#endif
+int32_t KICH_R4_CALL KichR4_GetNativeToolsAPI(uint32_t,KichR4NativeToolsAPI*,uint32_t);
+#ifdef __cplusplus
+}
+#endif
 #endif

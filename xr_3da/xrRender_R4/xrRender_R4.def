@@ -1,5 +1,6 @@
 LIBRARY xrRender_R4
 EXPORTS
+    KichR4_GetRendererAPI
     KichR4_GetDeferredAPI
     KichR4_GetBridgeVersion
     KichR4_ProbeHardware

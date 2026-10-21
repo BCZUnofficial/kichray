@@ -55,7 +55,7 @@ void KichR4_CaptureSubmitModel(const kich_r4_capture::ModelInput& input){GuardCa
     if(mesh.two_weights && (mesh.ignored_weights || mesh.outside_weights) && input.skin_mode>=1 && input.skin_mode<=2){
         const uint32_t bit=1u<<input.skin_mode;if(!(mesh.diagnostic_modes&bit)){mesh.diagnostic_modes|=bit;
             c.Diagnostic("2W skin path: model="+found->second.name+"; mode="+(input.skin_mode==KICH_R4_SKIN_HARDWARE?"hardware clamp/u8":"software raw")+"; "+mesh.first_weight_detail);}}
-    try{c.frame.Model(input.visual,mesh,world,vp,bones,input.bone_count,input.count,input.first,input.triangles,input.style,input.skin_mode);}
+    try{c.frame.Model(input.visual,mesh,world,vp,bones,input.bone_count,input.count,input.first,input.triangles,input.style,input.skin_mode,found->second.name.c_str());}
     catch(const std::exception& e){c.frame.Fail(ModelError(found->second,e.what()).c_str());}
 });}
 
@@ -75,7 +75,7 @@ void KichR4_CaptureSubmitUI(const kich_r4_capture::UIInput& input) {
             if(texture.size()>4 && texture.substr(texture.size()-4)==".dds")texture.resize(texture.size()-4);
             Check(kich_r4_level::SafeName(texture) && texture[0]!='$',"HUD texture path");}
         Check(uint64_t(base)+start+count<=UINT32_MAX/stride,"HUD vertex offset overflow");
-        frame.Reserve(count,primitives*6);std::vector<Vertex> data;data.reserve(count);
+        frame.Reserve(count,primitives*6,input.texture,2);std::vector<Vertex> data;data.reserve(count);
         for(uint32_t i=0;i<count;++i){const unsigned char* p=source->second.Read((base+start+i)*stride,stride);float xyzw[4],tc[2]={};uint32_t argb;
             memcpy(xyzw,p+position,16);memcpy(&argb,p+color,4);if(uv!=UINT32_MAX)memcpy(tc,p+uv,8);
             data.push_back(frame.Screen(xyzw[0],xyzw[1],xyzw[2],xyzw[3],tc[0],tc[1],argb));}
@@ -95,7 +95,7 @@ void KichR4_CaptureSubmitUI(const kich_r4_capture::UIInput& input) {
         else {for(uint32_t i=0;i<primitives;++i){const Vertex& a=data[order[topology==2?i*2:i]];const Vertex& b=data[order[topology==2?i*2+1:i+1]];
                 const float dx=(b.p[0]/b.p[3]-a.p[0]/a.p[3])*frame.width*.5f;
                 const float dy=(b.p[1]/b.p[3]-a.p[1]/a.p[3])*frame.height*.5f;const float length=sqrtf(dx*dx+dy*dy);if(length<1.e-6f)continue;
-                frame.Reserve(4,6);Vertex line[4]={a,a,b,b};const float ox=-dy/length/frame.width,oy=dx/length/frame.height;
+                frame.Reserve(4,6,input.texture,2);Vertex line[4]={a,a,b,b};const float ox=-dy/length/frame.width,oy=dx/length/frame.height;
                 for(unsigned j=0;j<4;++j){const float sign=(j&1)?-1.f:1.f;line[j].p[0]+=sign*ox*line[j].p[3];line[j].p[1]+=sign*oy*line[j].p[3];}
                 const uint32_t at=static_cast<uint32_t>(frame.vertices.size());frame.vertices.insert(frame.vertices.end(),line,line+4);
                 const uint32_t ix[]={0,1,2,2,1,3};for(unsigned j=0;j<6;++j)frame.indices.push_back(at+ix[j]);}}

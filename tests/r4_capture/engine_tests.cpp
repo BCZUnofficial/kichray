@@ -4,6 +4,10 @@
 #include "../../xr_3da/KichR4Capture.h"
 #include <stdio.h>
 CaptureDevice Device;CaptureCache RCache;CaptureHardware HW;
+// This suite exercises the DX9 snapshot adapter. Native state is covered by
+// r4_native; satisfy the native hooks added to the production adapter in B5.
+bool KichR4_NativeActive(){return false;}
+bool KichR4_NativeStyle(kich_r4_capture::Style&){return false;}
 namespace {
 int checks=0;void Require(bool b,const char* why){++checks;if(!b)throw std::runtime_error(why);}
 IDirect3DDevice9 gpu;IDirect3DVertexDeclaration9 declaration;int vb,ib;
