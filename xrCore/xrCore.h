@@ -13,7 +13,9 @@
 #define XRAY_EXCEPTIONS 1 // XRAY
 #else
 // "release"
-#if defined(_CPPUNWIND)
+// Native R4 units contain STL failures locally with compiler unwinding enabled.
+// XRAY, Lua and Boost retain the engine Release policies below.
+#if defined(_CPPUNWIND) && !(defined(ENGINE_BUILD) && defined(KICH_R4_NATIVE_EH) && !defined(FORCE_NO_EXCEPTIONS))
 #error Please disable exceptions...
 #endif
 //	#define _HAS_EXCEPTIONS		1	// STL
