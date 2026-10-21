@@ -68,7 +68,7 @@ class IKichRenderDevice
     virtual void EndFrameTiming(CStatTimer& real, CStatTimer& total) = 0;
 };
 
-/* EXE-local singleton. B1 always selects the DX9 legacy adapter. */
+/* EXE-local singleton. Native R4 is fixed before device creation; otherwise DX9. */
 IKichRenderDevice& KichRenderDevice();
 
 #endif

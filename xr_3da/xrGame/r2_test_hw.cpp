@@ -1,7 +1,9 @@
 #include "stdafx.h"
+#include "../KichR4Native.h"
 
 BOOL xrRender_test_hw()
 {
+	if(KichR4_NativeActive())return TRUE;
 	D3DCAPS9 caps;
 	CHW _HW;
 	_HW.CreateD3D();

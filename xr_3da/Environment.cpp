@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "KichR4Native.h"
 #pragma hdrstop
 
 #ifndef _EDITOR
@@ -403,7 +404,7 @@ void CEnvironment::OnFrame()
 	}
 	VERIFY2(CurrentEnv.sun_dir.y < 0, "Invalid sun direction settings in lerp");
 
-	if (::Render->get_generation() == IRender_interface::GENERATION_R2)
+	if (::Render->get_generation() >= IRender_interface::GENERATION_R2)
 	{
 		//. very very ugly hack
 		if (HW.Caps.raster_major >= 3 && HW.Caps.geometry.bVTF)
@@ -440,6 +441,7 @@ void CEnvironment::OnFrame()
 	eff_Thunderbolt->OnFrame(t_id, CurrentEnv.bolt_period, CurrentEnv.bolt_duration);
 	eff_Rain->OnFrame();
 
+	if(KichR4_NativeActive())return;
 	// ******************** Environment params (setting)
 	CHK_DX(HW.pDevice->SetRenderState(
 		D3DRS_FOGCOLOR, color_rgba_f(CurrentEnv.fog_color.x, CurrentEnv.fog_color.y, CurrentEnv.fog_color.z, 0)));

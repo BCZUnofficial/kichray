@@ -7,6 +7,7 @@
 #include "sh_constant.h"
 #include "sh_rt.h"
 #include "KichR4Capture.h"
+#include "KichR4Native.h"
 
 IC void R_xforms::set_c_w(R_constant* C)
 {
@@ -42,6 +43,7 @@ IC void R_xforms::set_c_wvp(R_constant* C)
 IC void CBackend::set_xform(u32 ID, const Fmatrix& M)
 {
 	stat.xforms++;
+	if(KichR4_NativeActive())return;
 	CHK_DX(HW.pDevice->SetTransform((D3DTRANSFORMSTATETYPE)ID, (D3DMATRIX*)&M));
 }
 IC void CBackend::set_xform_world(const Fmatrix& M)
@@ -71,6 +73,7 @@ IC const Fmatrix& CBackend::get_xform_project()
 
 IC void CBackend::set_RT(IDirect3DSurface9* RT, u32 ID)
 {
+	if(KichR4_NativeActive())return;
 	if (RT != pRT[ID])
 	{
 		PGO(Msg("PGO:setRT"));
@@ -82,6 +85,7 @@ IC void CBackend::set_RT(IDirect3DSurface9* RT, u32 ID)
 
 IC void CBackend::set_ZB(IDirect3DSurface9* ZB)
 {
+	if(KichR4_NativeActive())return;
 	if (ZB != pZB)
 	{
 		PGO(Msg("PGO:setZB"));
@@ -153,12 +157,14 @@ IC void CBackend::set_Constants(R_constant_table* C)
 
 IC void CBackend::set_Element(ShaderElement* S, u32 pass)
 {
+	if(!S || pass>=S->passes.size())return;
 	SPass& P = *(S->passes[pass]);
 	set_States(P.state);
 	set_PS(P.ps);
 	set_VS(P.vs);
 	set_Constants(P.constants);
 	set_Textures(P.T);
+	if(KichR4_NativeActive())KichR4_NativeElement(S);
 #ifdef _EDITOR
 	set_Matrices(P.M);
 #endif
@@ -173,7 +179,7 @@ ICF void CBackend::set_Format(IDirect3DVertexDeclaration9* _decl)
 		stat.decl++;
 #endif
 		decl = _decl;
-		CHK_DX(HW.pDevice->SetVertexDeclaration(decl));
+		if(!KichR4_NativeActive())CHK_DX(HW.pDevice->SetVertexDeclaration(decl));
 	}
 }
 
@@ -184,7 +190,7 @@ ICF void CBackend::set_PS(IDirect3DPixelShader9* _ps, LPCSTR _n)
 		PGO(Msg("PGO:Pshader:%x", _ps));
 		stat.ps++;
 		ps = _ps;
-		CHK_DX(HW.pDevice->SetPixelShader(ps));
+		if(!KichR4_NativeActive())CHK_DX(HW.pDevice->SetPixelShader(ps));
 #ifdef DEBUG
 		ps_name = _n;
 #endif
@@ -198,7 +204,7 @@ ICF void CBackend::set_VS(IDirect3DVertexShader9* _vs, LPCSTR _n)
 		PGO(Msg("PGO:Vshader:%x", _vs));
 		stat.vs++;
 		vs = _vs;
-		CHK_DX(HW.pDevice->SetVertexShader(vs));
+		if(!KichR4_NativeActive())CHK_DX(HW.pDevice->SetVertexShader(vs));
 #ifdef DEBUG
 		vs_name = _n;
 #endif
@@ -215,7 +221,7 @@ ICF void CBackend::set_Vertices(IDirect3DVertexBuffer9* _vb, u32 _vb_stride)
 #endif
 		vb = _vb;
 		vb_stride = _vb_stride;
-		CHK_DX(HW.pDevice->SetStreamSource(0, vb, 0, vb_stride));
+		if(!KichR4_NativeActive())CHK_DX(HW.pDevice->SetStreamSource(0, vb, 0, vb_stride));
 	}
 }
 
@@ -228,12 +234,13 @@ ICF void CBackend::set_Indices(IDirect3DIndexBuffer9* _ib)
 		stat.ib++;
 #endif
 		ib = _ib;
-		CHK_DX(HW.pDevice->SetIndices(ib));
+		if(!KichR4_NativeActive())CHK_DX(HW.pDevice->SetIndices(ib));
 	}
 }
 
 ICF void CBackend::Render(D3DPRIMITIVETYPE T, u32 baseV, u32 startV, u32 countV, u32 startI, u32 PC)
 {
+	if(KichR4_NativeActive()){stat.calls++;stat.verts+=countV;stat.polys+=PC;KichR4_NativeDraw(decl,vb,ib,vb_stride,T,baseV,startV,countV,startI,PC,true);return;}
 #ifndef _EDITOR
 	if (KichR4_CaptureActive())
 		KichR4_CaptureUIDraw(decl, vb, ib, vb_stride, T, baseV, startV, countV, startI, PC, true);
@@ -248,6 +255,7 @@ ICF void CBackend::Render(D3DPRIMITIVETYPE T, u32 baseV, u32 startV, u32 countV,
 
 ICF void CBackend::Render(D3DPRIMITIVETYPE T, u32 startV, u32 PC)
 {
+	if(KichR4_NativeActive()){stat.calls++;stat.polys+=PC;KichR4_NativeDraw(decl,vb,NULL,vb_stride,T,0,startV,0,0,PC,false);return;}
 #ifndef _EDITOR
 	if (KichR4_CaptureActive())
 		KichR4_CaptureUIDraw(decl, vb, NULL, vb_stride, T, 0, startV, 0, 0, PC, false);
@@ -274,6 +282,7 @@ IC void CBackend::set_Geometry(SGeometry* _geom)
 
 IC void CBackend::set_Scissor(Irect* R)
 {
+	if(KichR4_NativeActive()){KichR4_NativeScissor(R?reinterpret_cast<int*>(R):NULL);return;}
 	if (R)
 	{
 		CHK_DX(HW.pDevice->SetRenderState(D3DRS_SCISSORTESTENABLE, TRUE));
@@ -289,6 +298,7 @@ IC void CBackend::set_Scissor(Irect* R)
 IC void CBackend::set_Stencil(u32 _enable, u32 _func, u32 _ref, u32 _mask, u32 _writemask, u32 _fail, u32 _pass,
 							  u32 _zfail)
 {
+	if(KichR4_NativeActive())return;
 	// Simple filter
 	if (stencil_enable != _enable)
 	{
@@ -335,6 +345,7 @@ IC void CBackend::set_Stencil(u32 _enable, u32 _func, u32 _ref, u32 _mask, u32 _
 }
 IC void CBackend::set_ColorWriteEnable(u32 _mask)
 {
+	if(KichR4_NativeActive()){colorwrite_mask=_mask;KichR4_NativeSetState(D3DRS_COLORWRITEENABLE,_mask);return;}
 	if (colorwrite_mask != _mask)
 	{
 		colorwrite_mask = _mask;
@@ -346,6 +357,7 @@ IC void CBackend::set_ColorWriteEnable(u32 _mask)
 }
 ICF void CBackend::set_CullMode(u32 _mode)
 {
+	if(KichR4_NativeActive()){cull_mode=_mode;KichR4_NativeSetState(D3DRS_CULLMODE,_mode);return;}
 	if (cull_mode != _mode)
 	{
 		cull_mode = _mode;

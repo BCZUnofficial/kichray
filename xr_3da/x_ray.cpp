@@ -6,6 +6,7 @@
 //	AlexMX		- Alexander Maksimchuk
 //-----------------------------------------------------------------------------
 #include "stdafx.h"
+#include "KichR4Native.h"
 #include "igame_level.h"
 #include "igame_persistent.h"
 
@@ -1199,7 +1200,8 @@ void CApplication::load_draw_internal()
 {
 	if (!sh_progress)
 	{
-		CHK_DX(HW.pDevice->Clear(0, 0, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1, 0));
+		if(KichR4_NativeActive())KichR4_NativeClear(0xff000000);
+		else CHK_DX(HW.pDevice->Clear(0, 0, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1, 0));
 		return;
 	}
 	// Draw logo

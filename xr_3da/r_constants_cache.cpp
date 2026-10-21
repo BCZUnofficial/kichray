@@ -1,10 +1,12 @@
 #include "stdafx.h"
+#include "KichR4Native.h"
 #pragma hdrstop
 
 #include "r_constants_cache.h"
 
 void R_constants::flush_cache()
 {
+	if(KichR4_NativeActive()){a_pixel.c_f.flush();a_vertex.c_f.flush();a_pixel.b_dirty=a_vertex.b_dirty=false;return;}
 	if (a_pixel.b_dirty)
 	{
 		// fp

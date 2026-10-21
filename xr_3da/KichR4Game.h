@@ -11,6 +11,8 @@ struct KichR4GameFrame {
     float view_projection[16],position[3];
     bool allowed,active,toggle_down,debug_down;
     KichR4LightingFrame lighting;
+    float time,prepare_ms;
+    float postprocess[24];
 };
 bool KichR4_GameInitialize(const char*,KichR4LogFn,const KichR4LevelFiles*);
 bool KichR4_GameWindowed();

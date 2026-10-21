@@ -14,6 +14,7 @@
 #include "r_constants_cache.h"
 #include "r_backend_xform.h"
 #include "fvf.h"
+#include "KichR4Native.h"
 
 const u32 CULL_CCW = D3DCULL_CCW;
 const u32 CULL_CW = D3DCULL_CW;
@@ -354,10 +355,12 @@ class ENGINE_API CBackend
 	void dbg_DIP(D3DPRIMITIVETYPE pt, ref_geom geom, u32 baseV, u32 startV, u32 countV, u32 startI, u32 PC);
 	IC void dbg_SetRS(D3DRENDERSTATETYPE p1, u32 p2)
 	{
+		if(KichR4_NativeActive()){KichR4_NativeSetState(p1,p2);return;}
 		CHK_DX(HW.pDevice->SetRenderState(p1, p2));
 	}
 	IC void dbg_SetSS(u32 sampler, D3DSAMPLERSTATETYPE type, u32 value)
 	{
+		if(KichR4_NativeActive())return;
 		CHK_DX(HW.pDevice->SetSamplerState(sampler, type, value));
 	}
 #ifdef DEBUG

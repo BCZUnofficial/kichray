@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "KichR4Native.h"
 #pragma once
 
 #include "Rain.h"
@@ -392,7 +393,7 @@ void CEffect_Rain::Render()
 	// Render if needed
 	if (vCount)
 	{
-		HW.pDevice->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+		RainSetState(D3DRS_CULLMODE, D3DCULL_NONE);
 		RCache.set_xform_world(Fidentity);
 		RCache.set_Shader(SH_Rain);
 		RCache.set_Geometry(hGeom_Rain);
@@ -402,23 +403,23 @@ void CEffect_Rain::Render()
 		{
 			DWORD zEnable = 0, zWrite = 0, alphaBlend = 0, srcBlend = 0, dstBlend = 0;
 			DWORD alphaTest = 0, alphaRef = 0, alphaFunc = 0, cullMode = 0, colorWrite = 0;
-			HW.pDevice->GetRenderState(D3DRS_ZENABLE, &zEnable);
-			HW.pDevice->GetRenderState(D3DRS_ZWRITEENABLE, &zWrite);
-			HW.pDevice->GetRenderState(D3DRS_ALPHABLENDENABLE, &alphaBlend);
-			HW.pDevice->GetRenderState(D3DRS_SRCBLEND, &srcBlend);
-			HW.pDevice->GetRenderState(D3DRS_DESTBLEND, &dstBlend);
-			HW.pDevice->GetRenderState(D3DRS_ALPHATESTENABLE, &alphaTest);
-			HW.pDevice->GetRenderState(D3DRS_ALPHAREF, &alphaRef);
-			HW.pDevice->GetRenderState(D3DRS_ALPHAFUNC, &alphaFunc);
-			HW.pDevice->GetRenderState(D3DRS_CULLMODE, &cullMode);
-			HW.pDevice->GetRenderState(D3DRS_COLORWRITEENABLE, &colorWrite);
+			RainGetState(D3DRS_ZENABLE, &zEnable);
+			RainGetState(D3DRS_ZWRITEENABLE, &zWrite);
+			RainGetState(D3DRS_ALPHABLENDENABLE, &alphaBlend);
+			RainGetState(D3DRS_SRCBLEND, &srcBlend);
+			RainGetState(D3DRS_DESTBLEND, &dstBlend);
+			RainGetState(D3DRS_ALPHATESTENABLE, &alphaTest);
+			RainGetState(D3DRS_ALPHAREF, &alphaRef);
+			RainGetState(D3DRS_ALPHAFUNC, &alphaFunc);
+			RainGetState(D3DRS_CULLMODE, &cullMode);
+			RainGetState(D3DRS_COLORWRITEENABLE, &colorWrite);
 			Msg("* [RAINSTAT][STATE] z=%lu zwrite=%lu blend=%lu src=%lu dst=%lu atest=%lu aref=%lu afunc=%lu cull=%lu colorwrite=0x%08lX",
 				zEnable, zWrite, alphaBlend, srcBlend, dstBlend, alphaTest, alphaRef, alphaFunc, cullMode, colorWrite);
 		}
 #endif
 
 		RCache.Render(D3DPT_TRIANGLELIST, vOffset, 0, vCount, 0, vCount / 2);
-		HW.pDevice->SetRenderState(D3DRS_CULLMODE, D3DCULL_CCW);
+		RainSetState(D3DRS_CULLMODE, D3DCULL_CCW);
 	}
 
 	// Particles

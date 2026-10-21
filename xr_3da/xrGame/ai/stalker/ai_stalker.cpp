@@ -459,8 +459,14 @@ BOOL CAI_Stalker::net_Spawn(CSE_Abstract* DC)
 	float rank_k = float(rank) / 100.f;
 	m_fRankImmunity = novice_rank_immunity + (expirienced_rank_immunity - novice_rank_immunity) * rank_k;
 	m_fRankVisibility = novice_rank_visibility + (expirienced_rank_visibility - novice_rank_visibility) * rank_k;
+
+	// Accuracy uses the actual 0..1000 character rank scale (master starts at 900).
+	// Leave the legacy immunity/visibility interpolation untouched in this patch.
+	CHARACTER_RANK_VALUE accuracy_rank = Rank();
+	clamp(accuracy_rank, 0, 1000);
+	const float accuracy_rank_k = float(accuracy_rank) / 1000.f;
 	m_fRankDisperison =
-		expirienced_rank_dispersion + (expirienced_rank_dispersion - novice_rank_dispersion) * (1 - rank_k);
+		novice_rank_dispersion + (expirienced_rank_dispersion - novice_rank_dispersion) * accuracy_rank_k;
 
 	if (!fis_zero(SpecificCharacter().panic_threshold()))
 		m_panic_threshold = SpecificCharacter().panic_threshold();

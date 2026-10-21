@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "R4FrameDX11.h"
+#include <string.h>
 
 namespace kich_r4 {
 namespace {
@@ -75,6 +76,19 @@ void FrameDriverDX11::Bind(uint32_t w,uint32_t h)
 void FrameDriverDX11::Clear(const float* rgba) {
     context_->ClearRenderTargetView(view_,rgba);
     if(depth_view_)context_->ClearDepthStencilView(depth_view_,D3D11_CLEAR_DEPTH,1.f,0);
+}
+int32_t FrameDriverDX11::ReadPixels(void* output,uint32_t bytes,uint32_t* width,uint32_t* height)
+{
+    if(!chain_ || !width || !height)return E_INVALIDARG;
+    *width=width_;*height=height_;if(!output)return S_OK;
+    if(uint64_t(width_)*height_*4>bytes)return E_INVALIDARG;
+    LocalCOM<ID3D11Texture2D> backbuffer,staging;
+    HRESULT hr=chain_->GetBuffer(0,__uuidof(ID3D11Texture2D),reinterpret_cast<void**>(&backbuffer.p));if(FAILED(hr))return hr;
+    D3D11_TEXTURE2D_DESC desc={};backbuffer.p->GetDesc(&desc);desc.Usage=D3D11_USAGE_STAGING;desc.BindFlags=0;desc.CPUAccessFlags=D3D11_CPU_ACCESS_READ;desc.MiscFlags=0;
+    hr=device_->CreateTexture2D(&desc,NULL,&staging.p);if(FAILED(hr))return hr;
+    context_->CopyResource(staging.p,backbuffer.p);D3D11_MAPPED_SUBRESOURCE mapped={};hr=context_->Map(staging.p,0,D3D11_MAP_READ,0,&mapped);if(FAILED(hr))return hr;
+    for(uint32_t y=0;y<height_;++y)memcpy(static_cast<unsigned char*>(output)+size_t(y)*width_*4,static_cast<const unsigned char*>(mapped.pData)+size_t(y)*mapped.RowPitch,width_*4);
+    context_->Unmap(staging.p,0);return S_OK;
 }
 int32_t FrameDriverDX11::EnsureDepth()
 {

@@ -1,3 +1,6 @@
+#if defined(KICH_R4_NATIVE_FRONTEND)
+#include "../KichR4NativePrelude.h"
+#else
 // stdafx.h : include file for standard system include files,
 // or project specific include files that are used frequently, but
 // are changed infrequently
@@ -31,3 +34,5 @@
 
 #define TEX_POINT_ATT "internal\\internal_light_attpoint"
 #define TEX_SPOT_ATT "internal\\internal_light_attclip"
+
+#endif

@@ -3,6 +3,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "stdafx.h"
+#include "../KichR4Native.h"
 #pragma hdrstop
 
 #include "../fmesh.h"
@@ -112,6 +113,7 @@ void FProgressive::Render(float LOD)
 	if (RImplementation.phase == CRender::PHASE_NORMAL && KichR4_CaptureActive())
 		KichR4_CaptureModel(this, NULL, SW.num_verts, iBase + SW.offset, SW.num_tris);
 #endif
+	if(KichR4_NativeActive() && KichR4_NativeInlineGeometry(this))return;
 	RCache.set_Geometry(rm_geom);
 	RCache.Render(D3DPT_TRIANGLELIST, vBase, 0, SW.num_verts, iBase + SW.offset, SW.num_tris);
 	RCache.stat.r.s_static.add(SW.num_verts);

@@ -1,4 +1,6 @@
 #include "stdafx.h"
+#include "KichR4Native.h"
+#include "KichR4NativeCPU.h"
 #pragma hdrstop
 
 #include "ResourceManager.h"
@@ -58,7 +60,7 @@ u32 CBlender_Compile::i_Sampler(LPCSTR _name)
 	// Find index
 	ref_constant C = ctable.get(name);
 	if (!C)
-		return u32(-1);
+		return KichR4_NativeActive()?static_cast<u32>(passTextures.size()):u32(-1);
 	R_ASSERT(C->type == RC_sampler);
 	u32 stage = C->samp.index;
 

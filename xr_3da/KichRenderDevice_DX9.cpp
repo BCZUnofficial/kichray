@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "KichRenderDevice.h"
 #include "KichR4Game.h"
+#include "KichR4Native.h"
 #include "KichR4Capture.h"
 #include "ResourceManager.h"
 #include <string.h>
@@ -287,6 +288,7 @@ class CKichRenderDeviceDX9 : public IKichRenderDevice
 
 IKichRenderDevice& KichRenderDevice()
 {
+    if(KichR4_NativeActive())return KichR4_NativeDevice();
     static CKichRenderDeviceDX9 backend;
     return backend;
 }

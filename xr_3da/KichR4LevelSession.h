@@ -18,8 +18,9 @@ struct KichR4LevelSession {
     bool textured,cancelled;
     std::string detail;
     void (*log)(const char*);
+    KichR4Handle (*texture_override)(void*,const std::string&,bool&);void* texture_context;
     bool (*keep_going)(void*);void* progress_context;
-    KichR4LevelSession():white(0),checker(0),textures_loaded(0),texture_fallbacks(0),budget_skips(0),frames(0),visible(0),culled(0),camera_steps(0),revision(0),cull(KICH_R4_CULL_BACK),depth(KICH_R4_DEPTH_ON),texture_bytes(0),submitted_triangles(0),submitted_draws(0),textured(true),cancelled(false),log(NULL),keep_going(NULL),progress_context(NULL){
+    KichR4LevelSession():white(0),checker(0),textures_loaded(0),texture_fallbacks(0),budget_skips(0),frames(0),visible(0),culled(0),camera_steps(0),revision(0),cull(KICH_R4_CULL_BACK),depth(KICH_R4_DEPTH_ON),texture_bytes(0),submitted_triangles(0),submitted_draws(0),textured(true),cancelled(false),log(NULL),texture_override(NULL),texture_context(NULL),keep_going(NULL),progress_context(NULL){
         memset(&bridge,0,sizeof(bridge));memset(&api,0,sizeof(api));memset(&files,0,sizeof(files));}
     static bool ValidAPI(const KichR4LevelAPI& a){return a.struct_size==sizeof(a) && a.abi_version==KICH_R4_LEVEL_ABI &&
         a.pointer_size==sizeof(void*) && !a.flags && a.create_texture_dds && a.create_pipeline && a.draw_textured;}
@@ -39,11 +40,12 @@ struct KichR4LevelSession {
         const KichR4DdsDesc desc={sizeof(desc),2048,0};return Expect(s,"B4.2 fallback texture",api.create_texture_dds(s.device,&desc,d.data(),static_cast<uint32_t>(d.size()),out));}
     KichR4Handle Texture(KichR4FrameSession& s,const std::string& name){
         if(name.empty())return white;
+        if(texture_override){bool handled=false;const KichR4Handle h=texture_override(texture_context,name,handled);if(handled)return h;}
         const std::map<std::string,KichR4Handle>::const_iterator cached=textures.find(name);if(cached!=textures.end())return cached->second;
         KichR4Handle result=checker;kich_r4_level::File file(files);const std::string path=name+".dds";
-        const int32_t opened=file.Open("$game_textures$",path.c_str());kich_r4_dds::Image image={};int32_t hr=opened;
+        int32_t opened=file.Open("$game_textures$",path.c_str());if(opened!=0 && texture_override)opened=file.Open("$level$",path.c_str());if(opened!=0 && texture_override && (name.find(':')!=std::string::npos || name[0]=='\\' || name[0]=='/'))opened=file.Open("$r4_absolute$",path.c_str());kich_r4_dds::Image image={};int32_t hr=opened;
         if(opened==0 && kich_r4_dds::Parse(file.view.data,file.view.bytes,2048,image)){
-            const uint64_t payload=uint64_t(image.bytes)*(image.format==kich_r4_dds::R8?4u:1u);
+            const uint64_t payload=kich_r4_dds::UploadBytes(image);
             if(payload<=384u*1024u*1024u-texture_bytes){const KichR4DdsDesc d={sizeof(d),2048,0};
                 KichR4Handle loaded=0;hr=api.create_texture_dds(s.device,&d,file.view.data,file.view.bytes,&loaded);
                 if(hr==0 && loaded){result=loaded;++textures_loaded;texture_bytes+=payload;}

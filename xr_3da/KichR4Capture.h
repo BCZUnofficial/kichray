@@ -21,6 +21,7 @@ KICH_R4_CAPTURE_API void KichR4_CaptureHUD(bool begin);
 KICH_R4_CAPTURE_API void KichR4_CaptureUIDraw(void* declaration,void* vb,void* ib,uint32_t stride,
     uint32_t topology,uint32_t base_vertex,uint32_t start_vertex,uint32_t vertex_count,uint32_t first_index,uint32_t primitives,bool indexed);
 #undef KICH_R4_CAPTURE_API
+void KichR4_CaptureLightShadow(const void*,bool);
 void KichR4_CaptureEnable(bool,void (*log)(const char*)=NULL);
 void KichR4_CaptureBeginFrame(uint32_t width,uint32_t height,uint32_t engine_frame);
 void KichR4_CaptureLoad(void* visual,const void* source,uint32_t bytes,const char* name=NULL);

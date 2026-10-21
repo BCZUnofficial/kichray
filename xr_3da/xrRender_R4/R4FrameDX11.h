@@ -31,6 +31,7 @@ public:
     virtual int32_t Present(uint32_t,bool);
     virtual int32_t RemovedReason();
     virtual void Close();
+    int32_t ReadPixels(void* output,uint32_t bytes,uint32_t* width,uint32_t* height);
     int32_t EnsureDepth(); /* Lazy: B3 clear-only path stays unchanged. */
     ID3D11RenderTargetView* ColorView() const {return view_;} /* borrowed */
     uint32_t DepthCreated() const {return depth_created_;}

@@ -505,7 +505,7 @@ void CLensFlare::Render(BOOL bSun, BOOL bFlares, BOOL bGradient)
             // Apply AFTER set_Shader: its state block can overwrite stencil.
             const bool sourceSkyMask = bSun && i == 0 &&
                 m_Current->m_Flags.is(CLensFlareDescriptor::flSource) &&
-                (::Render->get_generation() == IRender_interface::GENERATION_R2);
+                (::Render->get_generation() >= IRender_interface::GENERATION_R2);
             if (sourceSkyMask)
                 RCache.set_Stencil(TRUE, D3DCMP_EQUAL, 0x00, 0xff, 0x00);
 			RCache.Render(D3DPT_TRIANGLELIST, vBase, 0, 4, 0, 2);

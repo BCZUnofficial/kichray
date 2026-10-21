@@ -104,7 +104,9 @@ inline void Transform(const float* p,const Matrix& m,float* out) {
     for(unsigned c=0;c<4;++c)out[c]=p[0]*m.m[c]+p[1]*m.m[4+c]+p[2]*m.m[8+c]+m.m[12+c];
 }
 inline uint32_t RGBA(uint32_t argb){return (argb&0xff00ff00u)|((argb&0xffu)<<16)|((argb>>16)&0xffu);}
-struct Command {uint32_t first,count,layer;std::string texture;Style style;};
+struct Command {uint32_t first,count,layer;std::string texture;Style style;uint32_t effect;std::string secondary;
+    Command(uint32_t f,uint32_t n,uint32_t l,const std::string& t,const Style& s):first(f),count(n),layer(l),texture(t),style(s),effect(0){}
+};
 struct Batch {
     uint32_t width,height,engine_frame,models,hands,ui;bool renderer_seen,ui_seen;unsigned ui_scope;
     std::vector<Vertex> vertices;std::vector<uint32_t> indices;std::vector<Command> commands;std::string error;
@@ -174,7 +176,7 @@ struct Buffer {
 };
 struct State {
     Batch frame;std::map<const void*,Entry> models;std::map<void*,Buffer> buffers;
-    std::map<const void*,KichR4LocalLight> lights;
+    std::map<const void*,KichR4LocalLight> lights;std::set<const void*> unshadowed_lights;
     uint64_t stream_bytes;
     uint32_t diagnostics;void (*log)(const char*);
     State():stream_bytes(0),diagnostics(0),log(NULL){}
@@ -184,16 +186,16 @@ struct State {
         if(lights.size()<4096 || lights.find(id)!=lights.end())lights[id]=light;
     }
     void SelectLights(const float* camera,KichR4LightingFrame& out)const {
-        struct Choice {float score;KichR4LocalLight light;};std::vector<Choice> choices;out.count=0;
+        struct Choice {float score;KichR4LocalLight light;bool shadow;};std::vector<Choice> choices;out.count=0;out.shadow_mask=0;
         for(std::map<const void*,KichR4LocalLight>::const_iterator it=lights.begin();it!=lights.end();++it){
             const KichR4LocalLight& l=it->second;float distance=0;
             for(unsigned a=0;a<3;++a){const float d=l.position[a]-camera[a];distance+=d*d;}
             const float brightness=std::max(l.color[0],std::max(l.color[1],l.color[2]));
             if(distance>(150+l.range)*(150+l.range) || brightness<=0)continue;
-            Choice c={brightness*l.range*l.range/(distance+1)+(l.type==2 && distance<4?1.e10f:0),l};choices.push_back(c);
+            Choice c={brightness*l.range*l.range/(distance+1)+(l.type==2 && distance<4?1.e10f:0),l,unshadowed_lights.count(it->first)==0};choices.push_back(c);
         }
         std::stable_sort(choices.begin(),choices.end(),[](const Choice& a,const Choice& b){return a.score>b.score;});
-        out.count=static_cast<uint32_t>(std::min(size_t(8),choices.size()));for(unsigned i=0;i<out.count;++i)out.lights[i]=choices[i].light;
+        out.count=static_cast<uint32_t>(std::min(size_t(8),choices.size()));for(unsigned i=0;i<out.count;++i){out.lights[i]=choices[i].light;if(choices[i].shadow)out.shadow_mask|=1u<<i;}
     }
     void Diagnostic(const std::string& message){if(log && diagnostics<64){++diagnostics;log(("[R4 bridge B4.3b.1] "+message).c_str());}}
     void Begin(uint32_t w,uint32_t h,uint32_t f){frame.Begin(w,h,f);stream_bytes=0;
@@ -201,7 +203,7 @@ struct State {
     uint64_t ModelBytes()const {uint64_t result=0;std::set<const Mesh*> counted;
         for(std::map<const void*,Entry>::const_iterator i=models.begin();i!=models.end();++i){if(i->second.mesh && counted.insert(i->second.mesh.get()).second)result+=i->second.mesh->Bytes();}return result;}
     void Load(void* visual,Span source,const char* name=NULL){Entry& entry=models[visual];entry=Entry();entry.name=name && *name?std::string(name).substr(0,240):"<unnamed>";
-        try{entry.mesh=Decode(source);Check(ModelBytes()<=96u*1024u*1024u,"model registry CPU budget");}
+        try{entry.mesh=Decode(source);if(entry.mesh)Check(ModelBytes()<=96u*1024u*1024u,"model registry CPU budget");}
         catch(const std::exception& e){entry.mesh.reset();entry.error=ModelError(entry,e.what());Diagnostic("model rejected: "+entry.error);return;}
         if(entry.mesh && (entry.mesh->ignored_weights || entry.mesh->outside_weights)){char counts[128];snprintf(counts,sizeof(counts),"; ignored_unused=%u active_outside_01=%u; ",entry.mesh->ignored_weights,entry.mesh->outside_weights);
             Diagnostic("2W compatibility: model="+entry.name+counts+entry.mesh->first_weight_detail);}}

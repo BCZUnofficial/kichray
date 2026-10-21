@@ -3,6 +3,8 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "stdafx.h"
+#include "KichR4Native.h"
+#include "KichR4NativeCPU.h"
 #pragma hdrstop
 
 #pragma warning(disable : 4995)
@@ -413,7 +415,7 @@ void CResourceManager::_DumpMemoryUsage()
 
 void CResourceManager::Evict()
 {
-	CHK_DX(HW.pDevice->EvictManagedResources());
+	if(!KichR4_NativeActive())CHK_DX(HW.pDevice->EvictManagedResources());
 }
 /*
 BOOL	CResourceManager::_GetDetailTexture(LPCSTR Name,LPCSTR& T, R_constant_setup* &CS)

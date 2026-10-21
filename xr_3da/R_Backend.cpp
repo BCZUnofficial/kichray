@@ -1,4 +1,6 @@
 #include "stdafx.h"
+#include "KichR4Native.h"
+#include "KichR4NativeCPU.h"
 #pragma hdrstop
 #include "KichR4Capture.h"
 
@@ -13,7 +15,7 @@ void CBackend::CreateQuadIB()
 	u32 dwUsage = D3DUSAGE_WRITEONLY;
 	if (HW.Caps.geometry.bSoftware)
 		dwUsage |= D3DUSAGE_SOFTWAREPROCESSING;
-	R_CHK(HW.pDevice->CreateIndexBuffer(dwIdxCount * 2, dwUsage, D3DFMT_INDEX16, D3DPOOL_MANAGED, &QuadIB, NULL));
+	R_CHK(KichR4_NativeActive()?KichR4_CPUIndexBuffer(dwIdxCount*2,&QuadIB):HW.pDevice->CreateIndexBuffer(dwIdxCount * 2, dwUsage, D3DFMT_INDEX16, D3DPOOL_MANAGED, &QuadIB, NULL));
 	R_CHK(QuadIB->Lock(0, 0, (void**)&Indices, 0));
 	{
 		int Cnt = 0;
@@ -32,7 +34,7 @@ void CBackend::CreateQuadIB()
 		}
 	}
 #ifndef _EDITOR
-	KichR4_CaptureBuffer(QuadIB, Indices, dwIdxCount * 2);
+	if(!KichR4_NativeActive())KichR4_CaptureBuffer(QuadIB, Indices, dwIdxCount * 2);
 #endif
 	R_CHK(QuadIB->Unlock());
 }

@@ -1,4 +1,6 @@
 #include "stdafx.h"
+#include "KichR4Native.h"
+#include "KichR4NativeCPU.h"
 #pragma hdrstop
 
 #pragma warning(disable : 4995)
@@ -152,7 +154,7 @@ SDeclaration* CResourceManager::_CreateDecl(D3DVERTEXELEMENT9* dcl)
 	// Create _new
 	SDeclaration* D = xr_new<SDeclaration>();
 	u32 dcl_size = D3DXGetDeclLength(dcl) + 1;
-	CHK_DX(HW.pDevice->CreateVertexDeclaration(dcl, &D->dcl));
+	CHK_DX(KichR4_NativeActive()?KichR4_CPUDeclaration(dcl,&D->dcl):HW.pDevice->CreateVertexDeclaration(dcl, &D->dcl));
 	D->dcl_code.assign(dcl, dcl + dcl_size);
 	D->dwFlags |= xr_resource_flagged::RF_REGISTERED;
 	v_declarations.push_back(D);
@@ -188,7 +190,7 @@ SVS* CResourceManager::_CreateVS(LPCSTR _name)
 		SVS* _vs = xr_new<SVS>();
 		_vs->dwFlags |= xr_resource_flagged::RF_REGISTERED;
 		m_vs.insert(mk_pair(_vs->set_name(name), _vs));
-		if (0 == stricmp(_name, "null"))
+		if (KichR4_NativeActive() || 0 == stricmp(_name, "null"))
 		{
 			_vs->vs = NULL;
 			return _vs;
@@ -305,7 +307,7 @@ SPS* CResourceManager::_CreatePS(LPCSTR name)
 		SPS* _ps = xr_new<SPS>();
 		_ps->dwFlags |= xr_resource_flagged::RF_REGISTERED;
 		m_ps.insert(mk_pair(_ps->set_name(name), _ps));
-		if (0 == stricmp(name, "null"))
+		if (KichR4_NativeActive() || 0 == stricmp(name, "null"))
 		{
 			_ps->ps = NULL;
 			return _ps;

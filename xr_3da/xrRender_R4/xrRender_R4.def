@@ -9,3 +9,4 @@ EXPORTS
     KichR4_GetGeometryAPI
     KichR4_GetLevelAPI
     KichR4_GetStreamAPI
+    KichR4_GetNativeToolsAPI

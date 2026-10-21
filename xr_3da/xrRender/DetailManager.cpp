@@ -267,7 +267,7 @@ void CDetailManager::UpdateVisibleM()
 							if (ssa < r_ssaDISCARD)
 								continue;
 							u32 vis_id = 0;
-							if (ssa > r_ssaCHEAP)
+							if (UseVS() && ssa > r_ssaCHEAP)
 								vis_id = Item.vis_ID;
 
 							sp.r_items[vis_id].push_back(*siIT);

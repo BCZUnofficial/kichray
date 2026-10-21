@@ -84,13 +84,13 @@ float CAI_Stalker::GetWeaponAccuracy() const
 
 	if (movement().body_state() == eBodyStateStand)
 		if (zoom_state())
-			return (base * m_disp_stand_stand);
-		else
 			return (base * m_disp_stand_stand_zoom);
+		else
+			return (base * m_disp_stand_stand);
 	else if (zoom_state())
-		return (base * m_disp_stand_crouch);
-	else
 		return (base * m_disp_stand_crouch_zoom);
+	else
+		return (base * m_disp_stand_crouch);
 }
 
 void CAI_Stalker::g_fireParams(const CHudItem* pHudItem, Fvector& P, Fvector& D)

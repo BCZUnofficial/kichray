@@ -37,7 +37,10 @@ inline void Header(Span file){Reader h(Chunk(file,1));Check(h.U16()==14,"expecte
 inline bool SafeName(const std::string& s){if(s.empty() || s.size()>120 || s[0]=='\\' || s[0]=='/' || s.find("..")!=std::string::npos)return false;
     for(size_t i=0;i<s.size();++i){const unsigned char c=static_cast<unsigned char>(s[i]);if(c<32 || c==':' || c=='"' || c=='<' || c=='>' || c=='|' || c=='*' || c=='?')return false;}return true;}
 inline std::string Lower(std::string s){for(size_t i=0;i<s.size();++i){if(s[i]>='A' && s[i]<='Z')s[i]=static_cast<char>(s[i]-'A'+'a');if(s[i]=='/')s[i]='\\';}return s;}
-struct Material {std::string shader,texture;bool cutout;};
+struct Material {std::string shader,texture;bool cutout;uint32_t kind;std::string layers[4],texture_list;
+    uint32_t blend,source,destination,alpha_func;float alpha_ref;
+    Material(const std::string& s="",const std::string& t="",bool c=false):shader(s),texture(t),cutout(c),kind(0),blend(0),source(5),destination(6),alpha_func(c?7u:8u),alpha_ref(c?200.f/255.f:0.f){}
+};
 struct Vertex {float position[3],uv[2],normal[3],hemi;};
 static_assert(sizeof(Vertex)==36,"B4.4 static vertex stride");
 struct Buffer {std::vector<Vertex> vertices;};
@@ -100,7 +103,7 @@ inline std::vector<Window> TreeWindows(Span file){const Span c=Chunk(file,11,fal
 inline void Materials(Span level,Scene& out){Reader r(Chunk(level,2));const uint32_t count=r.U32();Check(count && count<=65536,"shader table limit");
     for(uint32_t i=0;i<count;++i){const std::string entry=r.Z();Material m={"","",false};const size_t slash=entry.find('/');
         if(slash!=std::string::npos){m.shader=Lower(entry.substr(0,slash));std::string textures=entry.substr(slash+1);const size_t comma=textures.find(',');
-            m.texture=Lower(textures.substr(0,comma));if(m.texture.size()>4 && m.texture.substr(m.texture.size()-4)==".dds")m.texture.resize(m.texture.size()-4);
+            m.texture_list=textures;m.texture=Lower(textures.substr(0,comma));if(m.texture.size()>4 && m.texture.substr(m.texture.size()-4)==".dds")m.texture.resize(m.texture.size()-4);
             if(!SafeName(m.texture) || m.texture[0]=='$')m.texture.clear();
             m.cutout=m.shader.find("aref")!=std::string::npos || m.shader.find("flora")!=std::string::npos || m.shader.find("tree")!=std::string::npos;}
         out.materials.push_back(m);

@@ -12,6 +12,7 @@
 #include "R4FrameDX11.h"
 #include "R4PipelineDX11.h"
 #include "R4DeferredRules.h"
+#include "../KichR4NativeTools.h"
 #include "../KichR4Level.h"
 #include "../KichR4Dds.h"
 
@@ -100,8 +101,13 @@ struct Device {
     FrameController frame;
     KichR4PassDesc pass;
     bool pass_active;
+    struct ProfileSlot {ID3D11Query* disjoint;ID3D11Query* stamp[8];bool pending;
+        ProfileSlot():disjoint(NULL),pending(false){memset(stamp,0,sizeof(stamp));}
+        void Reset(){Release(disjoint);for(unsigned i=0;i<8;++i)Release(stamp[i]);pending=false;}
+        ~ProfileSlot(){Reset();}} profile[4];
+    uint32_t profile_write;bool profile_open;
     Device() : runtime(NULL), compiler(NULL), hw(NULL), context(NULL), compile(NULL),
-        reflect(NULL), thread(GetCurrentThreadId()), resources(ids),frame_driver(hw,context),frame(frame_driver),pass_active(false) {
+        reflect(NULL), thread(GetCurrentThreadId()), resources(ids),frame_driver(hw,context),frame(frame_driver),pass_active(false),profile_write(0),profile_open(false) {
         memset(&pass,0,sizeof(pass));
         memset(&stats,0,sizeof(stats)); stats.struct_size=sizeof(stats);
         memset(&geometry_stats,0,sizeof(geometry_stats));geometry_stats.struct_size=sizeof(geometry_stats);
@@ -119,6 +125,7 @@ struct Device {
          * before FrameController could publish successful attachment. */
         frame_driver.Close();
         ClearResources();
+        for(unsigned i=0;i<4;++i)profile[i].Reset();
         Release(context); Release(hw);
         if (compiler) FreeLibrary(compiler);
         if (runtime) FreeLibrary(runtime);
@@ -661,23 +668,53 @@ int32_t KICH_R4_CALL CreateDdsTexture(KichR4Handle device,const KichR4DdsDesc* d
         int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;
         std::unique_ptr<Resource> r(new Resource());
         D3D11_TEXTURE2D_DESC native={};native.Width=image.width;native.Height=image.height;native.MipLevels=image.count;
-        native.ArraySize=1;native.Format=DdsFormat(image.format);native.SampleDesc.Count=1;
+        native.ArraySize=image.faces;native.MiscFlags=image.faces==6?D3D11_RESOURCE_MISC_TEXTURECUBE:0;native.Format=DdsFormat(image.format);native.SampleDesc.Count=1;
         native.Usage=D3D11_USAGE_IMMUTABLE;native.BindFlags=D3D11_BIND_SHADER_RESOURCE;
-        D3D11_SUBRESOURCE_DATA initial[15]={};
-        for(uint32_t i=0;i<image.count;++i){initial[i].pSysMem=image.mips[i].data;initial[i].SysMemPitch=image.mips[i].row_pitch;initial[i].SysMemSlicePitch=image.mips[i].bytes;}
+        D3D11_SUBRESOURCE_DATA initial[90]={};
+        for(uint32_t i=0;i<image.count*image.faces;++i){initial[i].pSysMem=image.mips[i].data;initial[i].SysMemPitch=image.mips[i].row_pitch;initial[i].SysMemSlicePitch=image.mips[i].bytes;}
         /* Normalize legacy luminance/BGRA/XRGB to the mandatory RGBA8 format;
          * preserve grayscale and opaque X bits without a BGRA device flag. */
         std::vector<std::vector<unsigned char> > converted;
-        if(image.format!=kich_r4_dds::RGBA && image.format<kich_r4_dds::BC1){native.Format=DXGI_FORMAT_R8G8B8A8_UNORM;converted.resize(image.count);
-            const uint32_t source_pixel=image.format==kich_r4_dds::R8?1u:4u;
-            for(uint32_t m=0;m<image.count;++m){const kich_r4_dds::Mip& mip=image.mips[m];std::vector<unsigned char>& rgba=converted[m];rgba.resize(size_t(mip.bytes/source_pixel)*4);
+        if(image.format!=kich_r4_dds::RGBA && image.format<kich_r4_dds::BC1){native.Format=DXGI_FORMAT_R8G8B8A8_UNORM;converted.resize(image.count*image.faces);
+            const uint32_t source_pixel=image.format==kich_r4_dds::R8?1u:image.format==kich_r4_dds::RGB24?3u:image.format>=kich_r4_dds::RGB565 && image.format<=kich_r4_dds::ARGB4444?2u:4u;
+            for(uint32_t m=0;m<image.count*image.faces;++m){const kich_r4_dds::Mip& mip=image.mips[m];std::vector<unsigned char>& rgba=converted[m];rgba.resize(size_t(mip.bytes/source_pixel)*4);
                 for(uint32_t i=0;i<mip.bytes/source_pixel;++i)kich_r4_dds::ToRGBA(image.format,mip.data+i*source_pixel,rgba.data()+i*4);
                 initial[m].pSysMem=rgba.data();initial[m].SysMemPitch=(mip.row_pitch/source_pixel)*4;initial[m].SysMemSlicePitch=static_cast<UINT>(rgba.size());}}
         hr=d->hw->CreateTexture2D(&native,initial,&r->texture);if(FAILED(hr))return hr;
         hr=d->hw->CreateShaderResourceView(r->texture,NULL,&r->srv);if(FAILED(hr))return hr;
         r->info.kind=KICH_R4_TEXTURE_2D;r->info.format=image.format>=kich_r4_dds::BC1?image.format:static_cast<uint32_t>(KICH_R4_RGBA8);r->info.width=image.width;r->info.height=image.height;
-        r->info.byte_size=image.bytes*(image.format==kich_r4_dds::R8?4u:1u);r->info.bindings=KICH_R4_SHADER_READ;
+        r->info.byte_size=0;for(uint32_t i=0;i<image.count*image.faces;++i)r->info.byte_size+=initial[i].SysMemSlicePitch;r->info.bindings=KICH_R4_SHADER_READ;
         *out=d->Add(std::move(r));return KICH_R4_OK;
+    });
+}
+int32_t KICH_R4_CALL ReadNativePixels(KichR4Handle device,void* output,uint32_t bytes,uint32_t* width,uint32_t* height){
+    return Protect([&]() -> int32_t {int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;return d->frame_driver.ReadPixels(output,bytes,width,height);});
+}
+int32_t KICH_R4_CALL NativeProfileMark(KichR4Handle device,uint32_t marker){
+    if(marker>7)return KICH_R4_E_ARGUMENT;
+    return Protect([&]() -> int32_t {int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;
+        Device::ProfileSlot& p=d->profile[d->profile_write];
+        if(marker==0){if(p.pending)return S_FALSE;
+            if(!p.disjoint){D3D11_QUERY_DESC q={D3D11_QUERY_TIMESTAMP_DISJOINT,0};hr=d->hw->CreateQuery(&q,&p.disjoint);if(FAILED(hr))return hr;
+                q.Query=D3D11_QUERY_TIMESTAMP;for(unsigned i=0;i<8;++i){hr=d->hw->CreateQuery(&q,&p.stamp[i]);if(FAILED(hr)){p.Reset();return hr;}}}
+            d->context->Begin(p.disjoint);d->profile_open=true;
+        }
+        if(!d->profile_open)return S_FALSE;
+        d->context->End(p.stamp[marker]);
+        if(marker==7){d->context->End(p.disjoint);p.pending=true;d->profile_open=false;d->profile_write=(d->profile_write+1)%4;}
+        return S_OK;
+    });
+}
+int32_t KICH_R4_CALL GetNativeProfile(KichR4Handle device,KichR4GPUProfile* out,uint32_t bytes){
+    if(!out || bytes<sizeof(*out))return KICH_R4_E_ARGUMENT;
+    return Protect([&]() -> int32_t {int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;memset(out,0,sizeof(*out));out->struct_size=sizeof(*out);
+        for(unsigned j=0;j<4;++j){Device::ProfileSlot& p=d->profile[(d->profile_write+j)%4];if(!p.pending)continue;
+            D3D11_QUERY_DATA_TIMESTAMP_DISJOINT timing={};if(d->context->GetData(p.disjoint,&timing,sizeof(timing),D3D11_ASYNC_GETDATA_DONOTFLUSH)!=S_OK)continue;
+            UINT64 stamp[8]={};bool ready=true;for(unsigned i=0;i<8;++i)if(d->context->GetData(p.stamp[i],&stamp[i],sizeof(stamp[i]),D3D11_ASYNC_GETDATA_DONOTFLUSH)!=S_OK)ready=false;
+            if(!ready)continue;
+            p.pending=false;if(timing.Disjoint || !timing.Frequency)continue;
+            out->ready=1;for(unsigned i=0;i<7;++i)out->milliseconds[i]=static_cast<float>(double(stamp[i+1]-stamp[i])*1000.0/double(timing.Frequency));return S_OK;
+        }return S_OK;
     });
 }
 KichR4GeometryStats GeometryStats(const Device& d)
@@ -751,4 +788,9 @@ extern "C" int32_t KICH_R4_CALL KichR4_GetLevelAPI(uint32_t abi,KichR4LevelAPI* 
     if(abi!=KICH_R4_LEVEL_ABI || !OutputOK(out,bytes))return KICH_R4_E_ARGUMENT;
     const KichR4LevelAPI api={sizeof(api),KICH_R4_LEVEL_ABI,sizeof(void*),0,CreateDdsTexture,CreateTexturedPipeline,DrawTextured};
     *out=api;return KICH_R4_OK;
+}
+
+extern "C" int32_t KICH_R4_CALL KichR4_GetNativeToolsAPI(uint32_t abi,KichR4NativeToolsAPI* out,uint32_t bytes){
+    if(abi!=KICH_R4_NATIVE_TOOLS_ABI || !OutputOK(out,bytes))return KICH_R4_E_ARGUMENT;
+    const KichR4NativeToolsAPI api={sizeof(api),KICH_R4_NATIVE_TOOLS_ABI,sizeof(void*),0,ReadNativePixels,NativeProfileMark,GetNativeProfile};*out=api;return KICH_R4_OK;
 }

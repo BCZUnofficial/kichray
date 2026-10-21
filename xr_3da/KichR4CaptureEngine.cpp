@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "KichR4Capture.h"
+#include "KichR4Native.h"
 #include "KichR4CaptureInput.h"
 #include <stdio.h>
 #if !defined(_EDITOR) && !defined(DEDICATED_SERVER)
@@ -11,7 +12,7 @@ struct Metadata {
     bool valid;Metadata():valid(true){}
     uint32_t Get(D3DRENDERSTATETYPE key){DWORD value=0;if(FAILED(HW.pDevice->GetRenderState(key,&value)))valid=false;return value;}
 };
-bool Snapshot(bool ui,Style& s){Metadata m;
+bool Snapshot(bool ui,Style& s){if(KichR4_NativeActive())return KichR4_NativeStyle(s);Metadata m;
     s.blend=m.Get(D3DRS_ALPHABLENDENABLE)!=0;s.src=m.Get(D3DRS_SRCBLEND);s.dst=m.Get(D3DRS_DESTBLEND);
     if(!CheckEngine(s.src>=1 && s.src<=10 && s.dst>=1 && s.dst<=10,"unsupported blend factors"))return false;
     if(!CheckEngine(!s.blend || m.Get(D3DRS_BLENDOP)==D3DBLENDOP_ADD,"unsupported blend operation"))return false;

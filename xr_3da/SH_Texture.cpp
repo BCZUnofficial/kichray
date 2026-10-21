@@ -1,4 +1,6 @@
 #include "stdafx.h"
+#include "KichR4Native.h"
+#include "KichR4NativeCPU.h"
 #pragma hdrstop
 
 #include "ResourceManager.h"
@@ -104,7 +106,7 @@ void CTexture::apply_theora(u32 dwStage)
 		VERIFY(u32(_pos) == rect.bottom * _w);
 		R_CHK(T2D->UnlockRect(0));
 	}
-	CHK_DX(HW.pDevice->SetTexture(dwStage, pSurface));
+	if(!KichR4_NativeActive())CHK_DX(HW.pDevice->SetTexture(dwStage, pSurface));
 };
 void CTexture::apply_avi(u32 dwStage)
 {
@@ -125,7 +127,7 @@ void CTexture::apply_avi(u32 dwStage)
 
 		R_CHK(T2D->UnlockRect(0));
 	}
-	CHK_DX(HW.pDevice->SetTexture(dwStage, pSurface));
+	if(!KichR4_NativeActive())CHK_DX(HW.pDevice->SetTexture(dwStage, pSurface));
 };
 void CTexture::apply_seq(u32 dwStage)
 {
@@ -144,11 +146,11 @@ void CTexture::apply_seq(u32 dwStage)
 		u32 frame_id = frame % frame_data;
 		pSurface = seqDATA[frame_id];
 	}
-	CHK_DX(HW.pDevice->SetTexture(dwStage, pSurface));
+	if(!KichR4_NativeActive())CHK_DX(HW.pDevice->SetTexture(dwStage, pSurface));
 };
 void CTexture::apply_normal(u32 dwStage)
 {
-	CHK_DX(HW.pDevice->SetTexture(dwStage, pSurface));
+	if(!KichR4_NativeActive())CHK_DX(HW.pDevice->SetTexture(dwStage, pSurface));
 };
 
 void CTexture::Preload()
@@ -214,7 +216,7 @@ void CTexture::Load()
 			u32 _w = pTheora->Width(false);
 			u32 _h = pTheora->Height(false);
 
-			HRESULT hrr = HW.pDevice->CreateTexture(_w, _h, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &pTexture, NULL);
+			HRESULT hrr = (KichR4_NativeActive()?KichR4_CPUTexture(*cName,_w,_h,&pTexture):HW.pDevice->CreateTexture(_w,_h,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&pTexture,NULL));
 
 			pSurface = pTexture;
 			if (FAILED(hrr))
@@ -242,8 +244,7 @@ void CTexture::Load()
 
 			// Now create texture
 			IDirect3DTexture9* pTexture = 0;
-			HRESULT hrr = HW.pDevice->CreateTexture(pAVI->m_dwWidth, pAVI->m_dwHeight, 1, 0, D3DFMT_A8R8G8B8,
-													D3DPOOL_MANAGED, &pTexture, NULL);
+			HRESULT hrr = (KichR4_NativeActive()?KichR4_CPUTexture(*cName,pAVI->m_dwWidth,pAVI->m_dwHeight,&pTexture):HW.pDevice->CreateTexture(pAVI->m_dwWidth,pAVI->m_dwHeight,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&pTexture,NULL));
 			pSurface = pTexture;
 			if (FAILED(hrr))
 			{

@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "../KichR4Native.h"
 #pragma hdrstop
 
 #include "..\igame_persistent.h"
@@ -123,6 +124,7 @@ struct FTreeVisual_setup
 
 void FTreeVisual::Render(float LOD)
 {
+	if(KichR4_NativeActive()){RCache.set_xform_world(xform);return;}
 	static FTreeVisual_setup tvs;
 	if (tvs.dwFrame != Device.dwFrame)
 		tvs.calculate();

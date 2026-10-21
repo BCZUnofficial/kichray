@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "KichR4Native.h"
 #pragma hdrstop
 
 #pragma warning(push)
@@ -10,6 +11,7 @@
 
 void CBackend::OnFrameEnd()
 {
+	if(KichR4_NativeActive()){Invalidate();return;}
 #ifndef DEDICATED_SERVER
 	for (u32 stage = 0; stage < HW.Caps.raster.dwStages; stage++)
 		CHK_DX(HW.pDevice->SetTexture(0, 0));
@@ -68,7 +70,7 @@ void CBackend::Invalidate()
 
 void CBackend::set_ClipPlanes(u32 _enable, Fplane* _planes /*=NULL */, u32 count /* =0*/)
 {
-	if (0 == HW.Caps.geometry.dwClipPlanes)
+	if (KichR4_NativeActive() || 0 == HW.Caps.geometry.dwClipPlanes)
 		return;
 	if (!_enable)
 	{
@@ -101,7 +103,7 @@ void CBackend::set_ClipPlanes(u32 _enable, Fplane* _planes /*=NULL */, u32 count
 #ifndef DEDICATED_SREVER
 void CBackend::set_ClipPlanes(u32 _enable, Fmatrix* _xform /*=NULL */, u32 fmask /* =0xff */)
 {
-	if (0 == HW.Caps.geometry.dwClipPlanes)
+	if (KichR4_NativeActive() || 0 == HW.Caps.geometry.dwClipPlanes)
 		return;
 	if (!_enable)
 	{
@@ -116,6 +118,7 @@ void CBackend::set_ClipPlanes(u32 _enable, Fmatrix* _xform /*=NULL */, u32 fmask
 
 void CBackend::set_Textures(STextureList* _T)
 {
+	if(KichR4_NativeActive()){T=_T;for(u32 i=0;i<16;++i){textures_ps[i]=NULL;KichR4_NativeTexture(i,NULL);}if(_T)for(STextureList::iterator i=_T->begin();i!=_T->end();++i)if(i->first<16){textures_ps[i->first]=&*i->second;KichR4_NativeTexture(i->first,&*i->second);}return;}
 	if (T == _T)
 		return;
 	T = _T;
@@ -189,6 +192,7 @@ void CBackend::set_ClipPlanes(u32 _enable, Fmatrix* _xform /*=NULL */, u32 fmask
 }
 void CBackend::set_Textures(STextureList* _T)
 {
+	if(KichR4_NativeActive()){T=_T;for(u32 i=0;i<16;++i){textures_ps[i]=NULL;KichR4_NativeTexture(i,NULL);}if(_T)for(STextureList::iterator i=_T->begin();i!=_T->end();++i)if(i->first<16){textures_ps[i->first]=&*i->second;KichR4_NativeTexture(i->first,&*i->second);}return;}
 }
 
 #endif

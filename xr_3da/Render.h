@@ -150,6 +150,7 @@ class ENGINE_API IRender_interface
 		GENERATION_DX81 = 81,
 		GENERATION_R2 = 90,
 		GENERATION_DX90 = 90,
+		GENERATION_R4 = 110,
 		GENERATION_forcedword = u32(-1)
 	};
 	enum ScreenshotMode

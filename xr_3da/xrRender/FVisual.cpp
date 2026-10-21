@@ -3,6 +3,8 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "stdafx.h"
+#include "../KichR4Native.h"
+#include "../KichR4NativeCPU.h"
 #pragma hdrstop
 
 #pragma warning(disable : 4995)
@@ -132,7 +134,7 @@ void Fvisual::Load(const char* N, IReader* data, u32 dwFlags)
 			u32 dwUsage = D3DUSAGE_WRITEONLY | (bSoft ? D3DUSAGE_SOFTWAREPROCESSING : 0);
 			BYTE* bytes = 0;
 			VERIFY(NULL == p_rm_Vertices);
-			R_CHK(HW.pDevice->CreateVertexBuffer(vCount * vStride, dwUsage, 0, D3DPOOL_MANAGED, &p_rm_Vertices, 0));
+			R_CHK((KichR4_NativeActive()?KichR4_CPUVertexBuffer(vCount*vStride,&p_rm_Vertices):HW.pDevice->CreateVertexBuffer(vCount*vStride,dwUsage,0,D3DPOOL_MANAGED,&p_rm_Vertices,0)));
 			R_CHK(p_rm_Vertices->Lock(0, 0, (void**)&bytes, 0));
 			CopyMemory(bytes, data->pointer(), vCount * vStride);
 			p_rm_Vertices->Unlock();
@@ -169,7 +171,7 @@ void Fvisual::Load(const char* N, IReader* data, u32 dwFlags)
 
 			VERIFY(NULL == p_rm_Indices);
 			R_CHK(
-				HW.pDevice->CreateIndexBuffer(iCount * 2, dwUsage, D3DFMT_INDEX16, D3DPOOL_MANAGED, &p_rm_Indices, 0));
+				(KichR4_NativeActive()?KichR4_CPUIndexBuffer(iCount*2,&p_rm_Indices):HW.pDevice->CreateIndexBuffer(iCount*2,dwUsage,D3DFMT_INDEX16,D3DPOOL_MANAGED,&p_rm_Indices,0)));
 			R_CHK(p_rm_Indices->Lock(0, 0, (void**)&bytes, 0));
 			CopyMemory(bytes, data->pointer(), iCount * 2);
 			p_rm_Indices->Unlock();
@@ -188,6 +190,7 @@ void Fvisual::Render(float)
 	if (RImplementation.phase == CRender::PHASE_NORMAL && KichR4_CaptureActive())
 		KichR4_CaptureModel(this, NULL, vCount, iBase, dwPrimitives);
 #endif
+	if(KichR4_NativeActive() && KichR4_NativeInlineGeometry(this))return;
 #if RENDER == R_R2
 	if (m_fast && RImplementation.phase == CRender::PHASE_SMAP)
 	{

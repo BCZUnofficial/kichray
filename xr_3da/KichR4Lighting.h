@@ -6,7 +6,7 @@ struct KichR4LocalLight {
     float position[3],range,direction[3],cone,color[3];uint32_t type;
 };
 struct KichR4LightingFrame {
-    uint32_t valid,count;
+    uint32_t valid,count,shadow_mask;
     float sun_direction[3],sun_color[3],ambient[3],hemi[3],fog[3];
     KichR4LocalLight lights[8];
 };

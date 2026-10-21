@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "KichR4Native.h"
 
 //-----------------------------------------------------------------------------
 // Name: WndProc()
@@ -36,6 +37,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
 	break;
 	case WM_SETCURSOR:
+		if(KichR4_NativeActive()){if(Device.b_is_Active && LOWORD(lParam)==HTCLIENT){SetCursor(NULL);return 1;}return DefWindowProc(hWnd,uMsg,wParam,lParam);}
 		return 1;
 	case WM_SYSCOMMAND:
 		// Prevent moving/sizing and power loss in fullscreen mode

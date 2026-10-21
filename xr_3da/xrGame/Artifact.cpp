@@ -100,7 +100,7 @@ void CArtefact::Load(LPCSTR section)
 		m_sParticlesName = pSettings->r_string(section, "particles");
 
 	const bool config_lights_enabled = !!pSettings->r_bool(section, "lights_enabled");
-	const bool r2_world_light = (::Render && ::Render->get_generation() == IRender_interface::GENERATION_R2);
+	const bool r2_world_light = (::Render && ::Render->get_generation() >= IRender_interface::GENERATION_R2);
 
 	// Keep the original R1 behaviour intact. On R2 every artefact gets a small
 	// world-space point light while it is independent (not inside an inventory).

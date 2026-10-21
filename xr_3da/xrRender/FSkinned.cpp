@@ -3,6 +3,8 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "stdafx.h"
+#include "../KichR4Native.h"
+#include "../KichR4NativeCPU.h"
 #pragma hdrstop
 
 #pragma warning(disable : 4995)
@@ -197,6 +199,7 @@ void CSkeletonX_PM::Render(float LOD)
 		KichR4_CaptureModel(this, Parent, SW.num_verts, SW.offset, SW.num_tris,
 			RenderMode == RM_SKINNING_SOFT ? KICH_R4_SKIN_SOFTWARE : KICH_R4_SKIN_HARDWARE);
 #endif
+	if(KichR4_NativeActive())return;
 	_Render(rm_geom, SW.num_verts, SW.offset, SW.num_tris);
 }
 void CSkeletonX_ST::Render(float LOD)
@@ -206,6 +209,7 @@ void CSkeletonX_ST::Render(float LOD)
 		KichR4_CaptureModel(this, Parent, vCount, 0, dwPrimitives,
 			RenderMode == RM_SKINNING_SOFT ? KICH_R4_SKIN_SOFTWARE : KICH_R4_SKIN_HARDWARE);
 #endif
+	if(KichR4_NativeActive())return;
 	_Render(rm_geom, vCount, 0, dwPrimitives);
 }
 
@@ -258,7 +262,7 @@ void CSkeletonX_ext::_Load_hw(Fvisual& V, void* _verts_)
 			VERIFY(vStride == sizeof(vertHW_1W));
 			BYTE* bytes = 0;
 			VERIFY(NULL == V.p_rm_Vertices);
-			R_CHK(HW.pDevice->CreateVertexBuffer(V.vCount * vStride, dwUsage, 0, D3DPOOL_MANAGED, &V.p_rm_Vertices, 0));
+			R_CHK((KichR4_NativeActive()?KichR4_CPUVertexBuffer(V.vCount*vStride,&V.p_rm_Vertices):HW.pDevice->CreateVertexBuffer(V.vCount*vStride,dwUsage,0,D3DPOOL_MANAGED,&V.p_rm_Vertices,0)));
 			R_CHK(V.p_rm_Vertices->Lock(0, 0, (void**)&bytes, 0));
 			vertHW_1W* dst = (vertHW_1W*)bytes;
 			vertBoned1W* src = (vertBoned1W*)_verts_;
@@ -281,7 +285,7 @@ void CSkeletonX_ext::_Load_hw(Fvisual& V, void* _verts_)
 			VERIFY(vStride == sizeof(vertHW_2W));
 			BYTE* bytes = 0;
 			VERIFY(NULL == V.p_rm_Vertices);
-			R_CHK(HW.pDevice->CreateVertexBuffer(V.vCount * vStride, dwUsage, 0, D3DPOOL_MANAGED, &V.p_rm_Vertices, 0));
+			R_CHK((KichR4_NativeActive()?KichR4_CPUVertexBuffer(V.vCount*vStride,&V.p_rm_Vertices):HW.pDevice->CreateVertexBuffer(V.vCount*vStride,dwUsage,0,D3DPOOL_MANAGED,&V.p_rm_Vertices,0)));
 			R_CHK(V.p_rm_Vertices->Lock(0, 0, (void**)&bytes, 0));
 			vertHW_2W* dst = (vertHW_2W*)bytes;
 			vertBoned2W* src = (vertBoned2W*)_verts_;

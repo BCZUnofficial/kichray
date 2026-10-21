@@ -1,10 +1,13 @@
 #include "stdafx.h"
+#include "KichR4Native.h"
+#include "KichR4NativeCPU.h"
 #pragma hdrstop
 
 #include "tss_def.h"
 
 IDirect3DStateBlock9* SimulatorStates::record()
 {
+	if(KichR4_NativeActive()){xr_vector<KichR4CPUState> cpu;for(u32 i=0;i<States.size();++i){const State& v=States[i];KichR4CPUState x={v.type,v.v1,v.v2,v.v3};cpu.push_back(x);}return KichR4_CPUStates(cpu.empty()?NULL:&cpu[0],cpu.size());}
 	CHK_DX(HW.pDevice->BeginStateBlock());
 	for (u32 it = 0; it < States.size(); it++)
 	{
@@ -100,4 +103,10 @@ BOOL SimulatorStates::equal(SimulatorStates& S)
 void SimulatorStates::clear()
 {
 	States.clear();
+}
+
+u32 SimulatorStates::get_RS(u32 key,u32 fallback) const
+{
+    for(u32 i=0;i<States.size();++i)if(States[i].type==0 && States[i].v1==key)return States[i].v2;
+    return fallback;
 }

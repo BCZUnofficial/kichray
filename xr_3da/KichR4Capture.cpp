@@ -12,6 +12,7 @@ void KichR4_CaptureLight(const void* id,const KichR4LocalLight& light,bool activ
     if(!capture)return;
     try{capture->Light(id,light,active);}catch(...){} /* light hooks never break legacy rendering */
 }
+void KichR4_CaptureLightShadow(const void* id,bool shadow){if(!capture)return;if(shadow)capture->unshadowed_lights.erase(id);else capture->unshadowed_lights.insert(id);}
 void KichR4_CaptureLighting(const float* camera,KichR4LightingFrame& frame){
     frame.count=0;if(!capture || !camera)return;
     try{capture->SelectLights(camera,frame);}catch(...){frame.count=0;}
