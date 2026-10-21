@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "KichR4Native.h"
 #include "xrtheora_surface.h"
 #include "xrtheora_stream.h"
 #ifndef _EDITOR
@@ -140,6 +141,11 @@ BOOL CTheoraSurface::Load(const char* fname)
 		u32 v_dev = CAP_VERSION(HW.Caps.raster_major, HW.Caps.raster_minor);
 		u32 v_need = CAP_VERSION(2, 0);
 		bShaderYUV2RGB = (v_dev >= v_need);
+#if !defined(_EDITOR) && !defined(DEDICATED_SERVER)
+		// Native UI samples RGB; the legacy YUV conversion shader is not used.
+		if (KichR4_NativeActive())
+			bShaderYUV2RGB = FALSE;
+#endif
 	}
 	return res;
 }

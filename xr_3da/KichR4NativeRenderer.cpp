@@ -137,7 +137,10 @@ void CRender::Calculate(){queue.clear();if(!loaded || !g_pGameLevel)return;ViewB
     if(psDeviceFlags.test(rsDrawDynamic)){xr_vector<ISpatial*> objects;g_SpatialSpace->q_frustum(objects,ISpatial_DB::O_ORDERED,STYPE_RENDERABLE,ViewBase);
         for(u32 i=0;i<objects.size();++i){objects[i]->spatial_updatesector();IRenderable* r=objects[i]->dcast_Renderable();if(r){set_Object(r);r->renderable_Render();}}set_Object(NULL);}
 }
-void CRender::Render(){if(!loaded || !g_pGamePersistent)return;flush();if(Details)Details->Render();g_pGamePersistent->Environment().RenderSky();g_pGamePersistent->Environment().RenderClouds();
+void CRender::Render(){if(!g_pGamePersistent)return;
+    // The main menu asks the renderer to invoke its PP-UI callback even without a level.
+    if(g_pGamePersistent->OnRenderPPUI_query()){queue.clear();g_pGamePersistent->OnRenderPPUI_main();return;}
+    if(!loaded)return;flush();if(Details)Details->Render();g_pGamePersistent->Environment().RenderSky();g_pGamePersistent->Environment().RenderClouds();
     if(Wallmarks)Wallmarks->Render();for(u32 i=0;i<glows.size();++i)glows[i]->Draw();g_pGamePersistent->Environment().RenderFlares();g_pGamePersistent->Environment().RenderLast();
 }
 BOOL CRender::occ_visible(vis_data& v){return ViewBase.testSphere_dirty(v.sphere.P,v.sphere.R);}
