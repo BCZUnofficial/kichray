@@ -63,6 +63,8 @@
     <ClInclude Include="..\KichR4Level.h" />
     <ClInclude Include="..\KichR4Stream.h" />
     <ClInclude Include="R4StreamRules.h" />
+    <ClInclude Include="..\KichR4Deferred.h" />
+    <ClInclude Include="R4DeferredRules.h" />
     <ClInclude Include="..\KichR4Dds.h" />
     <ClInclude Include="R4GeometryRules.h" />
     <ClInclude Include="R4PipelineDX11.h" />

@@ -3,6 +3,7 @@
 #include "KichR4LevelData.h"
 #include "KichR4Stream.h"
 #include "KichR4CaptureInput.h"
+#include "KichR4LightingMath.h"
 #include <memory>
 #include <set>
 #include <map>
@@ -10,9 +11,20 @@
 namespace kich_r4_capture {
 using kich_r4_level::Span;using kich_r4_level::Reader;using kich_r4_level::Check;
 using kich_r4_level::Chunk;using kich_r4_level::Finite;using kich_r4_scene::Matrix;
-struct Vertex {float p[4],uv[2];uint32_t color;};
-static_assert(sizeof(Vertex)==28,"B4.3b native vertex stride");
-struct SourceVertex {float p[3],uv[2],weight;uint16_t bone[2];};
+struct Vertex {float p[4],uv[2];uint32_t color;float normal[4],world[3];};
+static_assert(sizeof(Vertex)==56,"B4.4 native vertex stride");
+struct SourceVertex {float p[3],uv[2],weight;uint16_t bone[2];uint32_t normal;};
+static_assert(sizeof(SourceVertex)==32,"B4.4 compact CPU source vertex");
+inline uint32_t PackNormal(float x,float y,float z){
+    if(!Finite(x) || !Finite(y) || !Finite(z))return 0;
+    const kich_r4_scene::Vec3 n=kich_r4_scene::Normalize(kich_r4_scene::Vec3{x,y,z});
+    if(kich_r4_scene::Dot(n,n)<.1f)return 0;
+    const float values[]={n.x,n.y,n.z};uint32_t bits=0;
+    for(unsigned i=0;i<3;++i)bits|=static_cast<uint32_t>(std::max(0.f,std::min(1023.f,(values[i]+1)*511.5f+.5f)))<<(i*10);
+    return bits;
+}
+inline kich_r4_scene::Vec3 UnpackNormal(uint32_t bits){if(!bits)return kich_r4_scene::Vec3{0,0,0};
+    return kich_r4_scene::Normalize(kich_r4_scene::Vec3{(bits&1023)*(2.f/1023)-1,((bits>>10)&1023)*(2.f/1023)-1,((bits>>20)&1023)*(2.f/1023)-1});}
 struct Mesh {
     std::vector<SourceVertex> vertices;std::vector<uint16_t> indices;std::string texture;
     uint32_t bones,ignored_weights,outside_weights,diagnostic_modes;bool skinned,two_weights;
@@ -65,6 +77,8 @@ inline std::shared_ptr<Mesh> Decode(Span source) {
     for(uint32_t i=0;i<count;++i){const unsigned char* p=vertices.Take(stride);SourceVertex& v=mesh->vertices[i];v={};
         Reader xyz(Span(p+pos,12)),tc(Span(p+uv,8));for(unsigned a=0;a<3;++a)v.p[a]=xyz.Float();
         v.uv[0]=tc.Float();v.uv[1]=tc.Float();
+        if(mesh->skinned || (format&0x10u)){Reader normal(Span(p+(mesh->skinned?pos+12:12),12));
+            const float nx=normal.Float(),ny=normal.Float(),nz=normal.Float();v.normal=PackNormal(nx,ny,nz);}
         if(mesh->skinned){if(stride==60){Reader b(Span(p+56,4));const uint32_t id=b.U32();Check(id<256,"1W model bone limit");v.bone[0]=v.bone[1]=static_cast<uint16_t>(id);}
             else {Reader b(Span(p,4)),w(Span(p+52,4));v.bone[0]=b.U16();v.bone[1]=b.U16();const uint32_t bits=w.U32();memcpy(&v.weight,&bits,4);
                 if(v.bone[0]>=256 || v.bone[1]>=256)Check(false,WeightDetail(i,v.bone[0],v.bone[1],bits,"2W bone index outside 0..255").c_str());
@@ -117,13 +131,23 @@ struct Batch {
         key.append(reinterpret_cast<const char*>(&layer),sizeof(layer));
         if(!model_keys.insert(key).second)return;
         Reserve(count,tris*3);const uint32_t base=static_cast<uint32_t>(vertices.size());const Matrix mvp=kich_r4_scene::Multiply(world,vp);
+        const Matrix normal_world=kich_r4_lighting::NormalMatrix(world);
         Command cmd={static_cast<uint32_t>(indices.size()),tris*3,layer,mesh.texture,style};
         for(uint32_t i=0;i<count;++i){const SourceVertex& src=mesh.vertices[i];float p[4]={src.p[0],src.p[1],src.p[2],1};
+            kich_r4_scene::Vec3 n=UnpackNormal(src.normal);
             if(mesh.skinned){float a[4];Transform(src.p,bones[src.bone[0]],a);
+                const kich_r4_scene::Vec3 na=kich_r4_lighting::Direction(n,bones[src.bone[0]]);
                 if(src.bone[0]==src.bone[1]){for(unsigned c=0;c<3;++c)p[c]=a[c];}
                 else{float b[4];Transform(src.p,bones[src.bone[1]],b);const float weight=SkinWeight(src.weight,skin_mode);
-                    const float inverse=1.f-weight;for(unsigned c=0;c<3;++c)p[c]=a[c]*inverse+b[c]*weight;}}
+                    const float inverse=1.f-weight;for(unsigned c=0;c<3;++c)p[c]=a[c]*inverse+b[c]*weight;}
+                if(src.bone[0]==src.bone[1])n=na;
+                else {const kich_r4_scene::Vec3 nb=kich_r4_lighting::Direction(n,bones[src.bone[1]]);const float w=SkinWeight(src.weight,skin_mode);
+                    n=kich_r4_scene::Vec3{na.x*(1-w)+nb.x*w,na.y*(1-w)+nb.y*w,na.z*(1-w)+nb.z*w};}}
             Vertex v={};Transform(p,mvp,v.p);for(unsigned c=0;c<4;++c)Check(Finite(v.p[c]),"model clip coordinates");
+            float wp[4];Transform(p,world,wp);for(unsigned c=0;c<3;++c){Check(Finite(wp[c]),"model world coordinates");v.world[c]=wp[c];}
+            n=kich_r4_scene::Normalize(kich_r4_lighting::Direction(n,normal_world));
+            v.normal[0]=n.x;v.normal[1]=n.y;v.normal[2]=n.z;v.normal[3]=1;
+            for(unsigned c=0;c<3;++c)Check(Finite(v.normal[c]),"model world normal");
             v.uv[0]=src.uv[0];v.uv[1]=src.uv[1];v.color=0xffffffffu;vertices.push_back(v);}
         for(uint32_t i=0;i<tris*3;++i){const uint32_t at=mesh.indices[first+i];Check(at<count,"progressive model vertex range");indices.push_back(base+at);}
         commands.push_back(cmd);if(layer)++hands;else ++models;
@@ -150,9 +174,27 @@ struct Buffer {
 };
 struct State {
     Batch frame;std::map<const void*,Entry> models;std::map<void*,Buffer> buffers;
+    std::map<const void*,KichR4LocalLight> lights;
     uint64_t stream_bytes;
     uint32_t diagnostics;void (*log)(const char*);
     State():stream_bytes(0),diagnostics(0),log(NULL){}
+    void Light(const void* id,const KichR4LocalLight& light,bool active){
+        if(!id)return;
+        if(!active || !kich_r4_lighting::ValidLight(light)){lights.erase(id);return;}
+        if(lights.size()<4096 || lights.find(id)!=lights.end())lights[id]=light;
+    }
+    void SelectLights(const float* camera,KichR4LightingFrame& out)const {
+        struct Choice {float score;KichR4LocalLight light;};std::vector<Choice> choices;out.count=0;
+        for(std::map<const void*,KichR4LocalLight>::const_iterator it=lights.begin();it!=lights.end();++it){
+            const KichR4LocalLight& l=it->second;float distance=0;
+            for(unsigned a=0;a<3;++a){const float d=l.position[a]-camera[a];distance+=d*d;}
+            const float brightness=std::max(l.color[0],std::max(l.color[1],l.color[2]));
+            if(distance>(150+l.range)*(150+l.range) || brightness<=0)continue;
+            Choice c={brightness*l.range*l.range/(distance+1)+(l.type==2 && distance<4?1.e10f:0),l};choices.push_back(c);
+        }
+        std::stable_sort(choices.begin(),choices.end(),[](const Choice& a,const Choice& b){return a.score>b.score;});
+        out.count=static_cast<uint32_t>(std::min(size_t(8),choices.size()));for(unsigned i=0;i<out.count;++i)out.lights[i]=choices[i].light;
+    }
     void Diagnostic(const std::string& message){if(log && diagnostics<64){++diagnostics;log(("[R4 bridge B4.3b.1] "+message).c_str());}}
     void Begin(uint32_t w,uint32_t h,uint32_t f){frame.Begin(w,h,f);stream_bytes=0;
         for(std::map<void*,Buffer>::iterator i=buffers.begin();i!=buffers.end();++i)if(!i->second.fixed){i->second.segments.clear();i->second.pending=NULL;}}

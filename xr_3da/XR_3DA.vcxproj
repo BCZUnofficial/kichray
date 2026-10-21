@@ -560,6 +560,11 @@
     <ClInclude Include="KichR4CaptureInput.h" />
     <ClInclude Include="KichR4CaptureData.h" />
     <ClInclude Include="KichR4StreamSession.h" />
+    <ClInclude Include="KichR4Deferred.h" />
+    <ClInclude Include="KichR4DeferredSession.h" />
+    <ClInclude Include="KichR4DeferredShaders.h" />
+    <ClInclude Include="KichR4Lighting.h" />
+    <ClInclude Include="KichR4LightingMath.h" />
     <ClInclude Include="KichR4Dds.h" />
     <ClInclude Include="KichR4ResourceProbe.h" />
     <ClInclude Include="KichRenderDevice.h" />

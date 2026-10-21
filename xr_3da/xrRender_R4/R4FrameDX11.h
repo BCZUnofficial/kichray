@@ -32,6 +32,7 @@ public:
     virtual int32_t RemovedReason();
     virtual void Close();
     int32_t EnsureDepth(); /* Lazy: B3 clear-only path stays unchanged. */
+    ID3D11RenderTargetView* ColorView() const {return view_;} /* borrowed */
     uint32_t DepthCreated() const {return depth_created_;}
     uint32_t DepthReleased() const {return depth_released_;}
 };

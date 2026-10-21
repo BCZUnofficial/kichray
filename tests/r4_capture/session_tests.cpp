@@ -11,16 +11,16 @@ int32_t Upload(KichR4Handle,KichR4Handle handle,const void* data,uint32_t bytes)
     Object& o=f->Find(handle);Require(data && bytes==o.bytes.size(),"uploads cover complete existing native buffer");memcpy(o.bytes.data(),data,bytes);++f->updates;return 0;}
 int32_t Release(KichR4Handle,KichR4Handle handle){const int32_t hr=f->Call("release replaced");if(hr)return hr;Require(f->objects.erase(handle)==1,"replaced upload buffer released exactly once");++f->released;return 0;}
 int32_t StreamPipeline(KichR4Handle,const KichR4PipelineDesc* d,KichR4Handle* out){*out=0;const int32_t hr=f->Call("stream pipeline");if(hr)return hr;
-    Require(ValidPipeline(*d) && d->vertex_stride==28 && d->element_count==3 && d->elements[0].format==KICH_R4_FLOAT4 && d->elements[2].format==KICH_R4_UNORM8X4,"posed clip-space / UV / RGBA pipeline");
+    Require(ValidPipeline(*d) && d->vertex_stride==sizeof(kich_r4_capture::Vertex) && d->element_count==3 && d->elements[0].format==KICH_R4_FLOAT4 && d->elements[2].format==KICH_R4_UNORM8X4,"posed clip-space / UV / RGBA pipeline");
     *out=f->Add(KICH_R4_GRAPHICS_PIPELINE);return 0;}
 int32_t StreamDraw(KichR4Handle,const KichR4StreamDrawDesc* d){const int32_t hr=f->Call("stream draw");if(hr)return hr;
     Require(ValidStreamDraw(*d) && f->frame.CanDraw(),"stream draws inside owned native frame");
     const Object& ib=f->Find(d->draw.index_buffer);const Object& vb=f->Find(d->draw.vertex_buffer);
     Require(ValidDraw(d->draw,static_cast<uint32_t>(ib.bytes.size()),ib.stride),"native index range validated");
-    for(uint32_t i=0;i<d->draw.index_count;++i){uint32_t at;memcpy(&at,ib.bytes.data()+(d->draw.start_index+i)*4,4);Require(uint64_t(at)*28<vb.bytes.size(),"every submitted index addresses uploaded posed vertices");}
+    for(uint32_t i=0;i<d->draw.index_count;++i){uint32_t at;memcpy(&at,ib.bytes.data()+(d->draw.start_index+i)*4,4);Require(uint64_t(at)*sizeof(kich_r4_capture::Vertex)<vb.bytes.size(),"every submitted index addresses uploaded posed vertices");}
     Require(f->Find(d->texture).kind==KICH_R4_TEXTURE_2D,"stream uses native DDS resources");submitted.push_back(*d);return 0;}
 kich_r4_game::APIs APIs(){KichR4LevelSession level;KichR4FrameSession frame={};Configure(level,frame);
-    kich_r4_game::APIs a={frame.api,level.bridge.resources,level.bridge.api,level.api,{}};
+    kich_r4_game::APIs a={frame.api,level.bridge.resources,level.bridge.api,level.api,{}, {}};
     a.resources.create_buffer=UploadBuffer;a.resources.release_resource=Release;a.geometry.update_buffer=Upload;
     a.stream={sizeof(a.stream),KICH_R4_STREAM_ABI,sizeof(void*),0,StreamPipeline,StreamDraw};return a;}
 KichR4GameFrame Input(){fixture::Level source;kich_r4_level::Scene scene;kich_r4_level::Parse({source.level.data(),static_cast<uint32_t>(source.level.size())},

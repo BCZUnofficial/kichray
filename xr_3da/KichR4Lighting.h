@@ -1,0 +1,27 @@
+#ifndef KICH_R4_LIGHTING_H
+#define KICH_R4_LIGHTING_H
+#include <stdint.h>
+/* CPU snapshots only. type follows IRender_Light: POINT=1, SPOT=2. */
+struct KichR4LocalLight {
+    float position[3],range,direction[3],cone,color[3];uint32_t type;
+};
+struct KichR4LightingFrame {
+    uint32_t valid,count;
+    float sun_direction[3],sun_color[3],ambient[3],hemi[3],fog[3];
+    KichR4LocalLight lights[8];
+};
+static_assert(sizeof(KichR4LocalLight)==48,"CPU light layout");
+#if defined(_WIN32)
+#if defined(ENGINE_BUILD)
+#define KICH_R4_LIGHT_EXPORT __declspec(dllexport)
+#else
+#define KICH_R4_LIGHT_EXPORT __declspec(dllimport)
+#endif
+#else
+#define KICH_R4_LIGHT_EXPORT
+#endif
+KICH_R4_LIGHT_EXPORT void KichR4_CaptureLight(const void*,const KichR4LocalLight&,bool);
+#undef KICH_R4_LIGHT_EXPORT
+/* EXE-only helper keeps allocation/exception handling out of the PCH adapter. */
+void KichR4_CaptureLighting(const float*,KichR4LightingFrame&);
+#endif

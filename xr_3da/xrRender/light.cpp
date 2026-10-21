@@ -1,5 +1,17 @@
 #include "StdAfx.h"
 #include "light.h"
+#include "../KichR4Lighting.h"
+
+void light::CaptureR4() const
+{
+#if !defined(_EDITOR)
+    KichR4LocalLight out={};out.type=flags.type;out.range=range;out.cone=cone;
+    out.position[0]=position.x;out.position[1]=position.y;out.position[2]=position.z;
+    out.direction[0]=direction.x;out.direction[1]=direction.y;out.direction[2]=direction.z;
+    out.color[0]=color.r;out.color[1]=color.g;out.color[2]=color.b;
+    KichR4_CaptureLight(this,out,flags.bActive!=0);
+#endif
+}
 
 light::light(void) : ISpatial(g_SpatialSpace)
 {
@@ -97,6 +109,7 @@ void light::set_active(bool a)
 		spatial_unregister();
 		// Msg								("!!! L-unregister: %X",u32(this));
 	}
+	CaptureR4();
 }
 
 void light::set_position(const Fvector& P)
@@ -106,6 +119,7 @@ void light::set_position(const Fvector& P)
 		return;
 	position.set(P);
 	spatial_move();
+	CaptureR4();
 }
 
 void light::set_range(float R)
@@ -115,6 +129,7 @@ void light::set_range(float R)
 		return;
 	range = R;
 	spatial_move();
+	CaptureR4();
 };
 
 void light::set_cone(float angle)
@@ -124,6 +139,7 @@ void light::set_cone(float angle)
 	VERIFY(cone < deg2rad(121.f)); // 120 is hard limit for lights
 	cone = angle;
 	spatial_move();
+	CaptureR4();
 }
 void light::set_rotation(const Fvector& D, const Fvector& R)
 {
@@ -132,6 +148,7 @@ void light::set_rotation(const Fvector& D, const Fvector& R)
 	right.normalize(R);
 	if (!fsimilar(1.f, old_D.dotproduct(D)))
 		spatial_move();
+	CaptureR4();
 }
 
 void light::spatial_move()

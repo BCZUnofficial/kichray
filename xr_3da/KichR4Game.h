@@ -2,13 +2,15 @@
 #define KICH_R4_GAME_H
 #include "KichR4Probe.h"
 #include <stdint.h>
+#include "KichR4Lighting.h"
 
 /* EXE integration only. No changes to CRenderDevice or IRender_interface ABI. */
 struct KichR4GameFrame {
     void* window;
     uint32_t width,height,engine_frame;
     float view_projection[16],position[3];
-    bool allowed,active,toggle_down;
+    bool allowed,active,toggle_down,debug_down;
+    KichR4LightingFrame lighting;
 };
 bool KichR4_GameInitialize(const char*,KichR4LogFn,const KichR4LevelFiles*);
 bool KichR4_GameWindowed();

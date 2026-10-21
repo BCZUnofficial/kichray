@@ -79,9 +79,11 @@ class light : public IRender_Light, public ISpatial
 #endif
 
   public:
+	void CaptureR4() const; // CPU snapshot only; no new fields or virtual slots
 	virtual void set_type(LT type)
 	{
 		flags.type = type;
+		CaptureR4();
 	}
 	virtual void set_active(bool b);
 	virtual bool get_active()
@@ -100,10 +102,12 @@ class light : public IRender_Light, public ISpatial
 	virtual void set_color(const Fcolor& C)
 	{
 		color.set(C);
+		CaptureR4();
 	}
 	virtual void set_color(float r, float g, float b)
 	{
 		color.set(r, g, b, 1);
+		CaptureR4();
 	}
 	virtual void set_texture(LPCSTR name);
 

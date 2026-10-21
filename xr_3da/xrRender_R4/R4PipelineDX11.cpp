@@ -10,7 +10,7 @@ DXGI_FORMAT Format(uint32_t f){switch(f){case KICH_R4_FLOAT2:return DXGI_FORMAT_
 case KICH_R4_FLOAT3:return DXGI_FORMAT_R32G32B32_FLOAT;case KICH_R4_FLOAT4:return DXGI_FORMAT_R32G32B32A32_FLOAT;
 case KICH_R4_UNORM8X4:return DXGI_FORMAT_R8G8B8A8_UNORM;default:return DXGI_FORMAT_UNKNOWN;}}
 }
-PipelineDX11::PipelineDX11():layout_(NULL),vs_(NULL),ps_(NULL),stride(0),constant_bytes(0),textured(false),stream(false)
+PipelineDX11::PipelineDX11():layout_(NULL),vs_(NULL),ps_(NULL),shadow_sampler_(NULL),stride(0),constant_bytes(0),textured(false),stream(false),advanced(false)
 {for(unsigned i=0;i<6;++i)raster_[i]=NULL;for(unsigned i=0;i<3;++i)depth_[i]=NULL;
  for(unsigned i=0;i<2;++i){sampler_[i]=NULL;}for(unsigned i=0;i<100;++i){blends_[i]=NULL;}}
 PipelineDX11::~PipelineDX11(){
@@ -18,10 +18,11 @@ PipelineDX11::~PipelineDX11(){
     for(unsigned i=0;i<6;++i){ReleasePipeline(raster_[i]);}
     ReleasePipeline(layout_);ReleasePipeline(vs_);ReleasePipeline(ps_);
     for(unsigned i=0;i<2;++i)ReleasePipeline(sampler_[i]);
+    ReleasePipeline(shadow_sampler_);
     for(unsigned i=0;i<100;++i)ReleasePipeline(blends_[i]);
 }
 HRESULT PipelineDX11::Create(ID3D11Device* hw,const KichR4PipelineDesc& d,
-    ID3D11VertexShader* vs,ID3D11PixelShader* ps,ID3DBlob* code,bool with_texture,bool with_stream)
+    ID3D11VertexShader* vs,ID3D11PixelShader* ps,ID3DBlob* code,bool with_texture,bool with_stream,bool with_advanced)
 {
     D3D11_INPUT_ELEMENT_DESC elements[8]={};
     for(uint32_t i=0;i<d.element_count;++i){const KichR4VertexElement& e=d.elements[i];
@@ -44,7 +45,12 @@ HRESULT PipelineDX11::Create(ID3D11Device* hw,const KichR4PipelineDesc& d,
         sampler.AddressU=sampler.AddressV=sampler.AddressW=i?D3D11_TEXTURE_ADDRESS_CLAMP:D3D11_TEXTURE_ADDRESS_WRAP;
         sampler.MaxAnisotropy=1;sampler.ComparisonFunc=D3D11_COMPARISON_NEVER;sampler.MaxLOD=D3D11_FLOAT32_MAX;
         hr=hw->CreateSamplerState(&sampler,&sampler_[i]);if(FAILED(hr))return hr;}
-    vs_=vs;ps_=ps;vs_->AddRef();ps_->AddRef();stride=d.vertex_stride;textured=with_texture;stream=with_stream;return S_OK;
+    if(with_advanced){D3D11_SAMPLER_DESC s={};s.Filter=D3D11_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
+        s.AddressU=s.AddressV=s.AddressW=D3D11_TEXTURE_ADDRESS_BORDER;
+        s.BorderColor[0]=s.BorderColor[1]=s.BorderColor[2]=s.BorderColor[3]=1;
+        s.MaxAnisotropy=1;s.ComparisonFunc=D3D11_COMPARISON_LESS_EQUAL;s.MaxLOD=D3D11_FLOAT32_MAX;
+        hr=hw->CreateSamplerState(&s,&shadow_sampler_);if(FAILED(hr))return hr;}
+    vs_=vs;ps_=ps;vs_->AddRef();ps_->AddRef();stride=d.vertex_stride;textured=with_texture;stream=with_stream;advanced=with_advanced;return S_OK;
 }
 HRESULT PipelineDX11::Blend(ID3D11DeviceContext* ctx,const KichR4StreamDrawDesc& d,ID3D11BlendState** out)
 {
@@ -65,7 +71,7 @@ HRESULT PipelineDX11::Blend(ID3D11DeviceContext* ctx,const KichR4StreamDrawDesc&
     }*out=blends_[at];return S_OK;
 }
 HRESULT PipelineDX11::Draw(ID3D11DeviceContext* ctx,const KichR4DrawIndexedDesc& d,
-    ID3D11Buffer* vb,ID3D11Buffer* ib,ID3D11Buffer* cb,uint32_t index_stride,ID3D11ShaderResourceView* texture,const KichR4StreamDrawDesc* extra)
+    ID3D11Buffer* vb,ID3D11Buffer* ib,ID3D11Buffer* cb,uint32_t index_stride,ID3D11ShaderResourceView* texture,const KichR4StreamDrawDesc* extra,ID3D11ShaderResourceView* const* inputs)
 {
     ID3D11BlendState* blend=NULL;
     if(extra){const HRESULT hr=Blend(ctx,*extra,&blend);if(FAILED(hr))return hr;}
@@ -76,7 +82,8 @@ HRESULT PipelineDX11::Draw(ID3D11DeviceContext* ctx,const KichR4DrawIndexedDesc&
     ctx->VSSetShader(vs_,NULL,0);ctx->PSSetShader(ps_,NULL,0);
     ctx->GSSetShader(NULL,NULL,0);ctx->HSSetShader(NULL,NULL,0);ctx->DSSetShader(NULL,NULL,0);
     ctx->VSSetConstantBuffers(0,1,&cb);ctx->PSSetConstantBuffers(0,1,&cb);
-    ctx->PSSetShaderResources(0,1,&texture);ctx->PSSetSamplers(0,1,&sampler_[extra?extra->clamp_texture:0]);
+    if(advanced){ctx->PSSetShaderResources(0,8,inputs);ID3D11SamplerState* samplers[]={sampler_[extra?extra->clamp_texture:0],shadow_sampler_};ctx->PSSetSamplers(0,2,samplers);}
+    else {ctx->PSSetShaderResources(0,1,&texture);ctx->PSSetSamplers(0,1,&sampler_[extra?extra->clamp_texture:0]);}
     ctx->RSSetState(raster_[d.cull_mode+(extra && extra->scissor_enable?3:0)]);
     ctx->OMSetDepthStencilState(depth_[extra && d.depth_mode && !extra->depth_write?2:d.depth_mode],0);
     if(extra){D3D11_VIEWPORT view={};UINT n=1;ctx->RSGetViewports(&n,&view);view.MinDepth=extra->min_depth;view.MaxDepth=extra->max_depth;

@@ -11,6 +11,7 @@
 #include "R4ResourceRules.h"
 #include "R4FrameDX11.h"
 #include "R4PipelineDX11.h"
+#include "R4DeferredRules.h"
 #include "../KichR4Level.h"
 #include "../KichR4Dds.h"
 
@@ -97,12 +98,16 @@ struct Device {
     KichR4ResourceStats stats;
     FrameDriverDX11 frame_driver;
     FrameController frame;
+    KichR4PassDesc pass;
+    bool pass_active;
     Device() : runtime(NULL), compiler(NULL), hw(NULL), context(NULL), compile(NULL),
-        reflect(NULL), thread(GetCurrentThreadId()), resources(ids),frame_driver(hw,context),frame(frame_driver) {
+        reflect(NULL), thread(GetCurrentThreadId()), resources(ids),frame_driver(hw,context),frame(frame_driver),pass_active(false) {
+        memset(&pass,0,sizeof(pass));
         memset(&stats,0,sizeof(stats)); stats.struct_size=sizeof(stats);
         memset(&geometry_stats,0,sizeof(geometry_stats));geometry_stats.struct_size=sizeof(geometry_stats);
     }
     void ClearResources() {
+        pass_active=false;
         if (context) { context->ClearState(); context->Flush(); }
         stats.released += resources.Size();
         resources.Clear();
@@ -426,19 +431,21 @@ int32_t KICH_R4_CALL DestroyFrameTarget(KichR4Handle device)
 {
     return Protect([&]() -> int32_t {
         int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;
-        d->frame.Close();return KICH_R4_OK;
+        d->pass_active=false;d->frame.Close();return KICH_R4_OK;
     });
 }
 int32_t KICH_R4_CALL ResizeFrame(KichR4Handle device,uint32_t w,uint32_t h)
 {
     return Protect([&]() -> int32_t {
-        int32_t hr;Device* d=FindDevice(device,hr);return d?d->frame.Resize(w,h):hr;
+        int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;
+        d->pass_active=false;return d->frame.Resize(w,h);
     });
 }
 int32_t KICH_R4_CALL BeginFrame(KichR4Handle device)
 {
     return Protect([&]() -> int32_t {
-        int32_t hr;Device* d=FindDevice(device,hr);return d?d->frame.Begin():hr;
+        int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;
+        d->pass_active=false;return d->frame.Begin();
     });
 }
 int32_t KICH_R4_CALL ClearFrame(KichR4Handle device,const KichR4FrameColor* color)
@@ -451,7 +458,8 @@ int32_t KICH_R4_CALL ClearFrame(KichR4Handle device,const KichR4FrameColor* colo
 int32_t KICH_R4_CALL PresentFrame(KichR4Handle device,uint32_t interval)
 {
     return Protect([&]() -> int32_t {
-        int32_t hr;Device* d=FindDevice(device,hr);return d?d->frame.Present(interval):hr;
+        int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;
+        d->pass_active=false;return d->frame.Present(interval);
     });
 }
 int32_t KICH_R4_CALL GetFrameStats(KichR4Handle device,KichR4FrameStats* out,uint32_t bytes)
@@ -473,11 +481,13 @@ int32_t KICH_R4_CALL DestroyFrameDevice(KichR4Handle device,KichR4FrameStats* ou
     });
 }
 
-int32_t ShaderConstants(const Resource& shader,uint32_t& bytes,bool texture=false)
+int32_t ShaderConstants(const Resource& shader,uint32_t& bytes,bool texture=false,bool advanced=false)
 {
     bytes=0;
     for(size_t i=0;i<shader.bindings.size();++i) {
         const KichR4ShaderBinding& b=shader.bindings[i];
+        if(advanced && b.count==1 && ((b.kind==KICH_R4_BIND_TEXTURE && b.slot<8) ||
+            (b.kind==KICH_R4_BIND_SAMPLER && b.slot<2)))continue;
         if(texture && (b.kind==KICH_R4_BIND_TEXTURE || b.kind==KICH_R4_BIND_SAMPLER) && b.slot==0 && b.count==1)continue;
         if(b.kind!=KICH_R4_BIND_CONSTANTS || b.slot!=0 || b.count!=1 || !b.byte_size || b.byte_size>65536)
             return KICH_R4_E_UNSUPPORTED;
@@ -485,7 +495,7 @@ int32_t ShaderConstants(const Resource& shader,uint32_t& bytes,bool texture=fals
     }
     return KICH_R4_OK;
 }
-int32_t CreatePipelineImpl(KichR4Handle device,const KichR4PipelineDesc* desc,KichR4Handle* out,bool texture,bool stream=false)
+int32_t CreatePipelineImpl(KichR4Handle device,const KichR4PipelineDesc* desc,KichR4Handle* out,bool texture,bool stream=false,bool advanced=false)
 {
     if(!out)return KICH_R4_E_ARGUMENT;
     *out=0;if(!desc || !ValidPipeline(*desc))return KICH_R4_E_ARGUMENT;
@@ -496,9 +506,9 @@ int32_t CreatePipelineImpl(KichR4Handle device,const KichR4PipelineDesc* desc,Ki
         if(vs->info.kind!=KICH_R4_VERTEX_SHADER || ps->info.kind!=KICH_R4_PIXEL_SHADER)return KICH_R4_E_ARGUMENT;
         uint32_t vs_bytes=0,ps_bytes=0;
         hr=ShaderConstants(*vs,vs_bytes);if(hr<0)return hr;
-        hr=ShaderConstants(*ps,ps_bytes,texture);if(hr<0)return hr;
+        hr=ShaderConstants(*ps,ps_bytes,texture,advanced);if(hr<0)return hr;
         std::unique_ptr<Resource> r(new Resource());r->pipeline.reset(new PipelineDX11());
-        hr=r->pipeline->Create(d->hw,*desc,vs->vs,ps->ps,vs->bytecode,texture,stream);if(hr<0)return hr;
+        hr=r->pipeline->Create(d->hw,*desc,vs->vs,ps->ps,vs->bytecode,texture,stream,advanced);if(hr<0)return hr;
         r->pipeline->constant_bytes=vs_bytes>ps_bytes?vs_bytes:ps_bytes;r->info.kind=KICH_R4_GRAPHICS_PIPELINE;
         Resource* saved=r.get();*out=d->Add(std::move(r));
         saved->pipeline_released=&d->geometry_stats.pipelines_released;++d->geometry_stats.pipelines_created;
@@ -511,6 +521,8 @@ int32_t KICH_R4_CALL CreateTexturedPipeline(KichR4Handle device,const KichR4Pipe
 {return CreatePipelineImpl(device,desc,out,true);}
 int32_t KICH_R4_CALL CreateStreamPipeline(KichR4Handle device,const KichR4PipelineDesc* desc,KichR4Handle* out)
 {return CreatePipelineImpl(device,desc,out,true,true);}
+int32_t KICH_R4_CALL CreateDeferredPipeline(KichR4Handle device,const KichR4PipelineDesc* desc,KichR4Handle* out)
+{return CreatePipelineImpl(device,desc,out,true,true,true);}
 int32_t KICH_R4_CALL UpdateBuffer(KichR4Handle device,KichR4Handle buffer,const void* data,uint32_t bytes)
 {
     if(!data || !bytes)return KICH_R4_E_ARGUMENT;
@@ -529,7 +541,7 @@ int32_t SubmitDraw(Device* d,const KichR4DrawIndexedDesc* desc,Resource* texture
         Resource* p=d->resources.Find(desc->pipeline);Resource* vb=d->resources.Find(desc->vertex_buffer);
         Resource* ib=d->resources.Find(desc->index_buffer);Resource* cb=d->resources.Find(desc->constant_buffer);
         if(!p || !vb || !ib || !cb)return KICH_R4_E_HANDLE;
-        if(!p->pipeline || p->pipeline->textured!=(texture!=NULL) || p->pipeline->stream!=(extra!=NULL) || vb->info.kind!=KICH_R4_VERTEX_BUFFER || ib->info.kind!=KICH_R4_INDEX_BUFFER ||
+        if(!p->pipeline || p->pipeline->advanced || p->pipeline->textured!=(texture!=NULL) || p->pipeline->stream!=(extra!=NULL) || vb->info.kind!=KICH_R4_VERTEX_BUFFER || ib->info.kind!=KICH_R4_INDEX_BUFFER ||
             cb->info.kind!=KICH_R4_CONSTANT_BUFFER || vb->buffer_stride!=p->pipeline->stride ||
             cb->info.byte_size<p->pipeline->constant_bytes || !ValidDraw(*desc,ib->info.byte_size,ib->buffer_stride))return KICH_R4_E_ARGUMENT;
         if(!vb->initialized || !ib->initialized || !cb->initialized)return KICH_R4_E_STATE;
@@ -568,6 +580,65 @@ int32_t KICH_R4_CALL DrawStream(KichR4Handle device,const KichR4StreamDrawDesc* 
         Resource* texture=d->resources.Find(desc->texture);if(!texture)return KICH_R4_E_HANDLE;
         if(texture->info.kind!=KICH_R4_TEXTURE_2D || !texture->srv)return KICH_R4_E_ARGUMENT;
         return SubmitDraw(d,&desc->draw,texture,desc);
+    });
+}
+int32_t KICH_R4_CALL BeginDeferredPass(KichR4Handle device,const KichR4PassDesc* pass)
+{
+    if(!pass || !ValidPass(*pass))return KICH_R4_E_ARGUMENT;
+    return Protect([&]() -> int32_t {
+        int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;
+        if(!d->frame.CanDraw())return KICH_R4_E_STATE;
+        ID3D11RenderTargetView* colors[4]={};ID3D11DepthStencilView* depth=NULL;
+        for(uint32_t i=0;i<pass->color_count;++i){
+            if(!pass->colors[i]){const KichR4FrameStats size=d->frame.Stats();
+                if(size.width!=pass->width || size.height!=pass->height)return KICH_R4_E_ARGUMENT;
+                colors[i]=d->frame_driver.ColorView();if(!colors[i])return KICH_R4_E_STATE;
+            }else {Resource* r=d->resources.Find(pass->colors[i]);if(!r)return KICH_R4_E_HANDLE;
+                if(!r->rtv || r->info.width!=pass->width || r->info.height!=pass->height)return KICH_R4_E_ARGUMENT;
+                colors[i]=r->rtv;}
+        }
+        if(pass->depth){Resource* r=d->resources.Find(pass->depth);if(!r)return KICH_R4_E_HANDLE;
+            if(!r->dsv || r->info.width!=pass->width || r->info.height!=pass->height)return KICH_R4_E_ARGUMENT;
+            depth=r->dsv;}
+        ID3D11ShaderResourceView* empty[8]={};d->context->PSSetShaderResources(0,8,empty);
+        d->context->OMSetRenderTargets(pass->color_count,colors,depth);
+        D3D11_VIEWPORT viewport={};viewport.Width=static_cast<float>(pass->width);viewport.Height=static_cast<float>(pass->height);viewport.MaxDepth=1;
+        d->context->RSSetViewports(1,&viewport);
+        if(pass->clear_flags&KICH_R4_CLEAR_COLOR)for(uint32_t i=0;i<pass->color_count;++i)d->context->ClearRenderTargetView(colors[i],pass->color);
+        if(pass->clear_flags&KICH_R4_CLEAR_DEPTH)d->context->ClearDepthStencilView(depth,D3D11_CLEAR_DEPTH,pass->depth_value,0);
+        d->pass=*pass;d->pass_active=true;return KICH_R4_OK;
+    });
+}
+int32_t KICH_R4_CALL DrawDeferred(KichR4Handle device,const KichR4DeferredDrawDesc* desc)
+{
+    if(!desc || !ValidDeferredDraw(*desc))return KICH_R4_E_ARGUMENT;
+    return Protect([&]() -> int32_t {
+        int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;
+        if(!d->frame.CanDraw() || !d->pass_active)return KICH_R4_E_STATE;
+        const KichR4DrawIndexedDesc& draw=desc->state.draw;
+        Resource* p=d->resources.Find(draw.pipeline);Resource* vb=d->resources.Find(draw.vertex_buffer);
+        Resource* ib=d->resources.Find(draw.index_buffer);Resource* cb=d->resources.Find(draw.constant_buffer);
+        if(!p || !vb || !ib || !cb)return KICH_R4_E_HANDLE;
+        if(!p->pipeline || !p->pipeline->advanced || vb->info.kind!=KICH_R4_VERTEX_BUFFER ||
+            ib->info.kind!=KICH_R4_INDEX_BUFFER || cb->info.kind!=KICH_R4_CONSTANT_BUFFER ||
+            vb->buffer_stride!=p->pipeline->stride || cb->info.byte_size<p->pipeline->constant_bytes ||
+            !ValidDraw(draw,ib->info.byte_size,ib->buffer_stride) || (draw.depth_mode && !d->pass.depth))return KICH_R4_E_ARGUMENT;
+        if(!vb->initialized || !ib->initialized || !cb->initialized)return KICH_R4_E_STATE;
+        ID3D11ShaderResourceView* inputs[8]={};
+        for(unsigned i=0;i<8;++i)if(desc->textures[i]){
+            const KichR4Handle handle=desc->textures[i];
+            if(handle==d->pass.depth)return KICH_R4_E_ARGUMENT;
+            for(unsigned c=0;c<d->pass.color_count;++c)if(handle==d->pass.colors[c])return KICH_R4_E_ARGUMENT;
+            Resource* r=d->resources.Find(handle);if(!r)return KICH_R4_E_HANDLE;
+            if(!r->srv)return KICH_R4_E_ARGUMENT;
+            inputs[i]=r->srv;
+        }
+        hr=p->pipeline->Draw(d->context,draw,vb->buffer,ib->buffer,cb->buffer,ib->buffer_stride,NULL,&desc->state,inputs);
+        if(hr<0)return hr;
+        ++d->geometry_stats.draw_calls;
+        const uint64_t tris=uint64_t(d->geometry_stats.triangles)+draw.index_count/3;
+        d->geometry_stats.triangles=tris>UINT32_MAX?UINT32_MAX:static_cast<uint32_t>(tris);
+        return KICH_R4_OK;
     });
 }
 DXGI_FORMAT DdsFormat(uint32_t format)
@@ -644,6 +715,12 @@ extern "C" int32_t KICH_R4_CALL KichR4_GetResourceAPI(uint32_t abi, KichR4Resour
         CompileShader, GetInfo, GetBinding, GetVariable, ReleaseResource, GetStats};
     *out=api;
     return KICH_R4_OK;
+}
+extern "C" int32_t KICH_R4_CALL KichR4_GetDeferredAPI(uint32_t abi,KichR4DeferredAPI* out,uint32_t bytes)
+{
+    if(abi!=KICH_R4_DEFERRED_ABI || !OutputOK(out,bytes))return KICH_R4_E_ARGUMENT;
+    const KichR4DeferredAPI api={sizeof(api),KICH_R4_DEFERRED_ABI,sizeof(void*),0,CreateDeferredPipeline,BeginDeferredPass,DrawDeferred};
+    *out=api;return KICH_R4_OK;
 }
 extern "C" int32_t KICH_R4_CALL KichR4_GetStreamAPI(uint32_t abi,KichR4StreamAPI* out,uint32_t bytes)
 {

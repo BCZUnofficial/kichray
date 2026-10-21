@@ -8,6 +8,14 @@ template<class F>void GuardCapture(F action){if(!capture)return;try{action(*capt
     catch(...){try{capture->frame.Fail("CPU capture exception");}catch(...) {}}}
 }
 kich_r4_capture::State* KichR4_CaptureState(){return capture;}
+void KichR4_CaptureLight(const void* id,const KichR4LocalLight& light,bool active){
+    if(!capture)return;
+    try{capture->Light(id,light,active);}catch(...){} /* light hooks never break legacy rendering */
+}
+void KichR4_CaptureLighting(const float* camera,KichR4LightingFrame& frame){
+    frame.count=0;if(!capture || !camera)return;
+    try{capture->SelectLights(camera,frame);}catch(...){frame.count=0;}
+}
 const kich_r4_capture::Batch* KichR4_CapturedFrame(){return capture?&capture->frame:NULL;}
 void KichR4_CaptureEnable(bool enabled,void (*log)(const char*)){if(enabled){if(!capture)try{capture=new kich_r4_capture::State();}catch(...) {}if(capture)capture->log=log;}
     else {delete capture;capture=NULL;}}

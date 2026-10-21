@@ -38,8 +38,8 @@ inline bool SafeName(const std::string& s){if(s.empty() || s.size()>120 || s[0]=
     for(size_t i=0;i<s.size();++i){const unsigned char c=static_cast<unsigned char>(s[i]);if(c<32 || c==':' || c=='"' || c=='<' || c=='>' || c=='|' || c=='*' || c=='?')return false;}return true;}
 inline std::string Lower(std::string s){for(size_t i=0;i<s.size();++i){if(s[i]>='A' && s[i]<='Z')s[i]=static_cast<char>(s[i]-'A'+'a');if(s[i]=='/')s[i]='\\';}return s;}
 struct Material {std::string shader,texture;bool cutout;};
-struct Vertex {float position[3],uv[2];};
-static_assert(sizeof(Vertex)==20,"B4.2 vertex stride");
+struct Vertex {float position[3],uv[2],normal[3],hemi;};
+static_assert(sizeof(Vertex)==36,"B4.4 static vertex stride");
 struct Buffer {std::vector<Vertex> vertices;};
 struct Draw {
     uint32_t vb,ib,first,count,material;Matrix world;Vec3 low,high;
@@ -57,12 +57,12 @@ inline float Short(const unsigned char* p){const uint32_t n=uint32_t(p[0])|(uint
 inline float Half(const unsigned char* p){const uint32_t h=uint32_t(p[0])|(uint32_t(p[1])<<8),ex=(h>>10)&31,m=h&1023;
     Check(ex!=31,"non-finite half UV");const float n=ex?ldexpf(static_cast<float>(1024+m),static_cast<int>(ex)-25):ldexpf(static_cast<float>(m),-24);return h&32768?-n:n;}
 inline void Vertices(Span file,Scene& out){Reader r(Chunk(file,9));const uint32_t count=r.U32();Check(count && count<=4096,"invalid vertex buffer count");out.vertices.resize(count);
-    for(uint32_t b=0;b<count;++b){Element pos,uv,tangent,binormal;uint32_t stride=0;bool end=false;
+    for(uint32_t b=0;b<count;++b){Element pos,uv,normal,tangent,binormal;uint32_t stride=0;bool end=false;
         for(unsigned d=0;d<65;++d){const unsigned char* e=r.Take(8);const uint32_t stream=uint32_t(e[0])|(uint32_t(e[1])<<8),offset=uint32_t(e[2])|(uint32_t(e[3])<<8),type=e[4];
             if(stream==255 && type==17){end=true;break;}
             Check(stream==0 && e[5]==0 && TypeBytes(type),"unsupported vertex declaration");
             Check(offset+TypeBytes(type)<=2048,"vertex stride limit");stride=std::max(stride,offset+TypeBytes(type));
-            Element* target=NULL;if(e[7]==0){if(e[6]==0)target=&pos;else if(e[6]==5)target=&uv;else if(e[6]==6)target=&tangent;else if(e[6]==7)target=&binormal;}
+            Element* target=NULL;if(e[7]==0){if(e[6]==0)target=&pos;else if(e[6]==3)target=&normal;else if(e[6]==5)target=&uv;else if(e[6]==6)target=&tangent;else if(e[6]==7)target=&binormal;}
             if(target){Check(!target->found,"duplicate vertex semantic");target->found=true;target->offset=offset;target->type=type;}
         }
         Check(end && stride && pos.found && (pos.type==2 || pos.type==3),"expected FLOAT3/4 position");
@@ -70,6 +70,10 @@ inline void Vertices(Span file,Scene& out){Reader r(Chunk(file,9));const uint32_
         const uint32_t n=r.U32();Check(n && n<=r.Left()/stride && uint64_t(n)*sizeof(Vertex)<=64u*1024u*1024u,"invalid vertex buffer size");
         Budget(out,uint64_t(n)*sizeof(Vertex));const unsigned char* source=r.Take(n*stride);Buffer& vb=out.vertices[b];vb.vertices.resize(n);
         for(uint32_t i=0;i<n;++i){const unsigned char* p=source+i*stride;Vertex& v=vb.vertices[i];Reader xyz(Span(p+pos.offset,12));
+            v.normal[0]=v.normal[1]=v.normal[2]=0;v.hemi=1;
+            if(normal.found){const unsigned char* np=p+normal.offset;
+                if(normal.type==4){v.normal[0]=np[2]*(2.f/255)-1;v.normal[1]=np[1]*(2.f/255)-1;v.normal[2]=np[0]*(2.f/255)-1;v.hemi=np[3]/255.f;}
+                else if(normal.type==2 || normal.type==3){Reader nr(Span(np,12));for(unsigned a=0;a<3;++a)v.normal[a]=nr.Float();}}
             for(unsigned a=0;a<3;++a){v.position[a]=xyz.Float();Check(fabsf(v.position[a])<=1.e6f,"vertex position limit");}
             const unsigned char* tc=p+uv.offset;
             if(uv.type==1 || uv.type==3){Reader rr(Span(tc,8));v.uv[0]=rr.Float();v.uv[1]=rr.Float();}

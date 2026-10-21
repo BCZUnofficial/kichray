@@ -55,7 +55,7 @@ int32_t Buffer(KichR4Handle,const KichR4BufferDesc* d,const void* data,uint32_t 
     const int32_t hr=f->Call("buffer");if(hr)return hr;Require(ValidBuffer(*d,data,bytes),"viewer buffers satisfy real B2 rules");
     *out=f->Add(d->kind,data,bytes,d->stride);return 0;}
 int32_t Pipeline(KichR4Handle,const KichR4PipelineDesc* p,KichR4Handle* out){*out=0;const int32_t hr=f->Call("pipeline");if(hr)return hr;
-    Require(ValidPipeline(*p) && p->vertex_stride==20 && p->elements[1].semantic==KICH_R4_TEXCOORD,"position/UV textured layout");*out=f->Add(KICH_R4_GRAPHICS_PIPELINE);return 0;}
+    Require(ValidPipeline(*p) && p->vertex_stride==sizeof(kich_r4_level::Vertex) && p->elements[1].semantic==KICH_R4_TEXCOORD,"position/UV textured layout");*out=f->Add(KICH_R4_GRAPHICS_PIPELINE);return 0;}
 int32_t Texture(KichR4Handle,const KichR4DdsDesc* d,const void* data,uint32_t bytes,KichR4Handle* out){*out=0;
     const int32_t hr=f->Call(++f->texture_calls<=2?"placeholder":"source DDS");if(hr)return hr;kich_r4_dds::Image image={};
     Require(d->struct_size==sizeof(*d) && kich_r4_dds::Parse(data,bytes,d->max_dimension,image),"real DDS reader validates upload");*out=f->Add(KICH_R4_TEXTURE_2D);return 0;}
@@ -65,8 +65,8 @@ int32_t Update(KichR4Handle,KichR4Handle h,const void* data,uint32_t bytes){cons
 int32_t Draw(KichR4Handle,const KichR4TexturedDrawDesc* d){const int32_t hr=f->Call("draw");if(hr)return hr;
     Require(f->frame.CanDraw() && d->struct_size==sizeof(*d),"textured draw between clear and present");
     Object& vb=f->Find(d->draw.vertex_buffer);Object& ib=f->Find(d->draw.index_buffer);
-    Require(vb.kind==KICH_R4_VERTEX_BUFFER && vb.stride==20 && ib.kind==KICH_R4_INDEX_BUFFER && ValidDraw(d->draw,static_cast<uint32_t>(ib.bytes.size()),4),"real converted buffer ranges");
-    for(uint32_t i=0;i<d->draw.index_count;++i){uint32_t vertex;memcpy(&vertex,ib.bytes.data()+(d->draw.start_index+i)*4,4);Require(vertex<vb.bytes.size()/20,"every submitted index addresses its selected VB");}
+    Require(vb.kind==KICH_R4_VERTEX_BUFFER && vb.stride==sizeof(kich_r4_level::Vertex) && ib.kind==KICH_R4_INDEX_BUFFER && ValidDraw(d->draw,static_cast<uint32_t>(ib.bytes.size()),4),"real converted buffer ranges");
+    for(uint32_t i=0;i<d->draw.index_count;++i){uint32_t vertex;memcpy(&vertex,ib.bytes.data()+(d->draw.start_index+i)*4,4);Require(vertex<vb.bytes.size()/sizeof(kich_r4_level::Vertex),"every submitted index addresses its selected VB");}
     const KichR4Handle texture=d->texture;
     Require(f->Find(texture).kind==KICH_R4_TEXTURE_2D,"live owned texture bound");f->bound_textures.push_back(texture);++f->draws;return 0;}
 int32_t Destroy(KichR4Handle,KichR4GeometryReport* out,uint32_t bytes){const int32_t hr=f->Call("destroy");if(hr)return hr;

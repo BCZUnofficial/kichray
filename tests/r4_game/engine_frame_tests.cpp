@@ -11,17 +11,21 @@ struct Entity {} entity;
 struct Level {bool bReady;Entity* view;Entity* CurrentViewEntity(){return view;}} level={true,&entity};
 Level* g_pGameLevel=&level;
 struct Menu {bool active;bool IsActive(){return active;}} menu={false};
-struct Persistent {Menu* m_pMainMenu;} persistent={&menu};
+struct WeatherVector {float x,y,z,w;};
+struct CEnvDescriptorMixer {WeatherVector sun_dir,sun_color,ambient,hemi_color,fog_color;};
+struct EnvironmentType {CEnvDescriptorMixer CurrentEnv;} environment={};
+struct Persistent {Menu* m_pMainMenu;EnvironmentType& Environment(){return environment;}} persistent={&menu};
 Persistent* g_pGamePersistent=&persistent;
 struct ConsoleType {bool bVisible;} console={false};ConsoleType* Console=&console;
 struct EngineDevice {void* m_hWnd;unsigned dwWidth,dwHeight,dwFrame,dwPrecacheFrame;
     struct {float m[4][4];} mFullTransform;struct {float x,y,z;} vCameraPosition;int b_is_Active;bool paused;bool Paused(){return paused;}} Device={};
 std::vector<int> g_loading_events;
-const int FALSE=0,VK_F8=119;
+const int FALSE=0,VK_F8=119,VK_F9=120;
 short GetAsyncKeyState(int which){return which==VK_F8 && key?static_cast<short>(0x8000):0;}
 void Require(bool ok,const char* why){++checks;if(!ok)throw std::runtime_error(why);}
 }
 bool KichR4_GameWindowed(){return armed;}
+void KichR4_CaptureLighting(const float*,KichR4LightingFrame& out){out.count=0;}
 void KichR4_GamePrepare(const KichR4GameFrame& in){++prepared;captured=in;}
 // PRODUCTION_FUNCTION
 int main(){try {
@@ -36,6 +40,10 @@ int main(){try {
     Require(prepared==1 && captured.allowed && captured.active && captured.toggle_down,"playable input and F8 sampled");
     Require(captured.width==1280 && captured.height==720 && captured.engine_frame==123 && captured.window==Device.m_hWnd,"game window and frame dimensions forwarded");
     Require(!memcmp(captured.view_projection,Device.mFullTransform.m,64) && captured.position[0]==1 && captured.position[2]==3,"camera matrix passed byte-for-byte without a viewer camera");
+    environment.CurrentEnv.sun_dir={.1f,-.9f,.2f,0};environment.CurrentEnv.sun_color={.5f,.6f,.7f,0};
+    environment.CurrentEnv.ambient={.04f,.05f,.06f,0};environment.CurrentEnv.hemi_color={.2f,.3f,.4f,1};environment.CurrentEnv.fog_color={.6f,.5f,.4f,0};
+    KichR4_GamePrepareEngineFrame();Require(captured.lighting.valid && captured.lighting.sun_direction[1]==-.9f && captured.lighting.sun_color[2]==.7f,"weather sun copied from engine");
+    Require(captured.lighting.ambient[1]==.05f && captured.lighting.hemi[2]==.4f && captured.lighting.fog[0]==.6f,"ambient/hemi/fog copied without alpha padding");
     for(unsigned blocked=0;blocked<7;++blocked) {
         level.bReady=true;level.view=&entity;menu.active=false;console.bVisible=false;Device.dwPrecacheFrame=0;Device.paused=false;g_loading_events.clear();
         switch(blocked) {case 0:level.bReady=false;break;case 1:level.view=NULL;break;case 2:menu.active=true;break;case 3:console.bVisible=true;break;

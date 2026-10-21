@@ -3,20 +3,21 @@
 #include "KichR4Game.h"
 #include "KichR4LevelSession.h"
 #include "KichR4StreamSession.h"
+#include "KichR4DeferredSession.h"
 
 namespace kich_r4_game {
-inline bool Requested(const char* params) {
+inline bool Requested(const char* params,const char* flag="-kich_r4_game") {
     if(!params)return false;
-    const char flag[]="-kich_r4_game";
+    const size_t flag_length=strlen(flag);
     while(*params) {
         while(*params==' ' || *params=='\t')++params;
         bool quoted=false,match=true;size_t length=0;
         while(*params && (quoted || (*params!=' ' && *params!='\t'))) {
             const char ch=*params++;
             if(ch=='"')quoted=!quoted;
-            else {if(length>=sizeof(flag)-1 || ch!=flag[length])match=false;++length;}
+            else {if(length>=flag_length || ch!=flag[length])match=false;++length;}
         }
-        if(!quoted && match && length==sizeof(flag)-1)return true;
+        if(!quoted && match && length==flag_length)return true;
     }
     return false;
 }
@@ -36,6 +37,7 @@ struct APIs {
     KichR4GeometryAPI geometry;
     KichR4LevelAPI level;
     KichR4StreamAPI stream;
+    KichR4DeferredAPI deferred;
     bool Valid()const {return KichR4FrameSession::ValidAPI(frame) &&
         KichR4GeometrySession::ValidResources(resources) && KichR4GeometrySession::ValidAPI(geometry) &&
         KichR4LevelSession::ValidAPI(level);}
@@ -48,16 +50,19 @@ struct Session {
     KichR4FrameSession frame;
     KichR4LevelSession level;
     KichR4StreamSession stream;
+    KichR4DeferredSession deferred;
     char name[64];
     void* window;
     uint32_t width,height;
-    bool loaded,enabled,key_down;
+    bool loaded,enabled,key_down,use_deferred,debug_key;
+    uint32_t debug;
     uint64_t legacy_frames;
     explicit Session(const APIs& a,const KichR4LevelFiles& fs,const char* level_name,KichR4LogFn log):
-        window(NULL),width(0),height(0),loaded(false),enabled(true),key_down(false),legacy_frames(0) {
+        window(NULL),width(0),height(0),loaded(false),enabled(true),key_down(false),use_deferred(true),debug_key(false),debug(0),legacy_frames(0) {
         memset(&frame,0,sizeof(frame));memset(name,0,sizeof(name));
         frame.api=a.frame;level.bridge.resources=a.resources;level.bridge.api=a.geometry;
         stream.api=a.stream;
+        deferred.api=a.deferred;
         level.api=a.level;level.files=fs;level.log=log;
         if(LevelName(level_name))memcpy(name,level_name,strlen(level_name)+1);
         else frame.Record("B4.3a level name",KICH_R4_E_ARGUMENT);
@@ -65,6 +70,8 @@ struct Session {
     int32_t Render(const KichR4GameFrame& input,const kich_r4_capture::Batch* captured=NULL) {
         const bool rising=input.toggle_down && !key_down;
         key_down=input.toggle_down;
+        if(input.active && input.allowed && input.debug_down && !debug_key && use_deferred)debug=(debug+1)%6;
+        debug_key=input.debug_down;
         if(input.active && input.allowed && rising)enabled=!enabled;
         if(!input.active || !input.allowed || !enabled) {++legacy_frames;return 0;}
         if(frame.failure)return frame.failure;
@@ -90,8 +97,10 @@ struct Session {
         const KichR4FrameColor color={sizeof(color),{.08f,.10f,.13f,1.f}};
         int32_t hr=frame.BeginClear(color);
         if(hr==KICH_R4_FRAME_SUSPENDED || hr==KICH_R4_FRAME_OCCLUDED)return 1;
-        if(hr==0)hr=level.DrawWithMatrix(frame,width,height,vp);
-        if(hr==0 && captured)hr=stream.Draw(frame,level,*captured);
+        const bool lit=use_deferred && deferred.api.struct_size;
+        if(hr==0 && lit)hr=deferred.Draw(frame,level,stream,input,captured,debug);
+        if(hr==0 && !lit)hr=level.DrawWithMatrix(frame,width,height,vp);
+        if(hr==0 && !lit && captured)hr=stream.Draw(frame,level,*captured);
         if(hr==0)hr=frame.Present();
         return hr==0 || hr==KICH_R4_FRAME_OCCLUDED?1:hr;
     }

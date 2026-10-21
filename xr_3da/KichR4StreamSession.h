@@ -40,15 +40,20 @@ struct KichR4StreamSession {
         if(handle && level.Expect(s,"B4.3b release replaced buffer",level.bridge.resources.release_resource(s.device,handle))<0)return s.failure;
         handle=next;capacity=count;return 0;
     }
-    int32_t Draw(KichR4FrameSession& s,KichR4LevelSession& level,const kich_r4_capture::Batch& batch){
+    int32_t Upload(KichR4FrameSession& s,KichR4LevelSession& level,const kich_r4_capture::Batch& batch){
         if(!batch.Ready())return s.Record("B4.3b incomplete CPU frame",KICH_R4_E_STATE);
         if(batch.commands.empty())return 0;
-        if(!pipeline && Start(s,level)<0)return s.failure;
         if(Capacity(s,level,KICH_R4_VERTEX_BUFFER,static_cast<uint32_t>(batch.vertices.size()),sizeof(vertices[0]),vertex_capacity,vb)<0 ||
             Capacity(s,level,KICH_R4_INDEX_BUFFER,static_cast<uint32_t>(batch.indices.size()),4,index_capacity,ib)<0)return s.failure;
         vertices.resize(vertex_capacity);indices.resize(index_capacity);std::copy(batch.vertices.begin(),batch.vertices.end(),vertices.begin());std::copy(batch.indices.begin(),batch.indices.end(),indices.begin());
         if(level.Expect(s,"B4.3b upload posed vertices",level.bridge.api.update_buffer(s.device,vb,vertices.data(),static_cast<uint32_t>(vertices.size()*sizeof(vertices[0]))))<0 ||
             level.Expect(s,"B4.3b upload indices",level.bridge.api.update_buffer(s.device,ib,indices.data(),static_cast<uint32_t>(indices.size()*4)))<0)return s.failure;
+        ++frames;return 0;
+    }
+    int32_t Draw(KichR4FrameSession& s,KichR4LevelSession& level,const kich_r4_capture::Batch& batch){
+        if(batch.commands.empty())return Upload(s,level,batch);
+        if(!pipeline && Start(s,level)<0)return s.failure;
+        if(Upload(s,level,batch)<0)return s.failure;
         for(unsigned layer=0;layer<3;++layer)for(size_t i=0;i<batch.commands.size();++i){const kich_r4_capture::Command& c=batch.commands[i];if(c.layer!=layer)continue;
             const KichR4Handle texture=c.texture.empty()?white:level.Texture(s,c.texture);
             if(layer==2 && texture==level.checker)return s.Record("B4.3b HUD DDS unavailable",KICH_R4_E_UNSUPPORTED);
@@ -59,7 +64,7 @@ struct KichR4StreamSession {
             d.scissor_enable=c.style.scissor?1:0;d.depth_write=c.style.write;memcpy(d.scissor,c.style.rect,sizeof(d.scissor));d.min_depth=c.style.min_z;d.max_depth=c.style.max_z;
             if(level.Expect(s,layer==0?"B4.3b draw model":layer==1?"B4.3b draw hands/weapon":"B4.3b draw HUD",api.draw(s.device,&d))<0)return s.failure;
             ++layer_draws[layer];
-        }++frames;return 0;
+        }return 0;
     }
 };
 #endif
