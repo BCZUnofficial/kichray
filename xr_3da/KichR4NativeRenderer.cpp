@@ -25,13 +25,13 @@ class R4ROS:public IRender_ObjectSpecific {
         if(parent){p=parent->renderable.xform.c;if(parent->renderable.visual)parent->renderable.xform.transform_tiny(p,parent->renderable.visual->vis.sphere.P);}
         float exposure=1;const bool trace=g_pGameLevel && g_pGameLevel->bReady;
         if(trace){const Fvector directions[5]={{0,1,0},{.70710678f,.70710678f,0},{-.70710678f,.70710678f,0},{0,.70710678f,.70710678f},{0,.70710678f,-.70710678f}};
-            exposure=0;for(u32 i=0;i<5;++i)if(!g_pGameLevel->ObjectSpace.RayTest(p,directions[i],32,collide::rqtStatic,NULL))exposure+=.2f;}
+            exposure=0;for(u32 i=0;i<5;++i)if(!g_pGameLevel->ObjectSpace.RayTest(p,directions[i],32,collide::rqtStatic,NULL,NULL))exposure+=.2f;}
         sky=clampr((e.ambient.x+e.ambient.y+e.ambient.z)/3.f+(e.hemi_color.x+e.hemi_color.y+e.hemi_color.z)*exposure/3.f,0.f,1.f);total=sky;
-        Fvector sun;sun.invert(e.sun_dir);if(!trace || !g_pGameLevel->ObjectSpace.RayTest(p,sun,256,collide::rqtStatic,NULL))total+=(e.sun_color.x+e.sun_color.y+e.sun_color.z)/3.f;
+        Fvector sun;sun.invert(e.sun_dir);if(!trace || !g_pGameLevel->ObjectSpace.RayTest(p,sun,256,collide::rqtStatic,NULL,NULL))total+=(e.sun_color.x+e.sun_color.y+e.sun_color.z)/3.f;
         KichR4LightingFrame lights={};KichR4_CaptureLighting(&p.x,lights);
         for(u32 i=0;i<lights.count;++i){const KichR4LocalLight& l=lights.lights[i];Fvector d;d.set(l.position[0]-p.x,l.position[1]-p.y,l.position[2]-p.z);const float distance=d.magnitude();if(distance>=l.range || distance<EPS_L)continue;d.div(distance);
             if(l.type==IRender_Light::SPOT && -(d.x*l.direction[0]+d.y*l.direction[1]+d.z*l.direction[2])<cosf(l.cone*.5f))continue;
-            if(trace && g_pGameLevel->ObjectSpace.RayTest(p,d,distance,collide::rqtStatic,NULL))continue;const float fade=1-distance/l.range;total+=(l.color[0]+l.color[1]+l.color[2])*fade*fade/3.f;}
+            if(trace && g_pGameLevel->ObjectSpace.RayTest(p,d,distance,collide::rqtStatic,NULL,NULL))continue;const float fade=1-distance/l.range;total+=(l.color[0]+l.color[1]+l.color[2])*fade*fade/3.f;}
         total=clampr(total,0.f,1.f);
     }
 public:
@@ -66,7 +66,7 @@ public:
     void set_radius(float v){radius=v;}void set_texture(LPCSTR v){shader.create("effects\\flare",v);}
     void set_color(const Fcolor& c){color=c;}void set_color(float r,float g,float b){color.set(r,g,b,1);}
     void Draw(){if(!active || !shader || !RImplementation.ViewBase.testSphere_dirty(position,radius))return;
-        if(g_pGameLevel){Fvector ray;ray.sub(position,Device.vCameraPosition);const float distance=ray.magnitude();if(distance>EPS_L){ray.div(distance);if(g_pGameLevel->ObjectSpace.RayTest(Device.vCameraPosition,ray,distance,collide::rqtStatic,NULL))return;}}
+        if(g_pGameLevel){Fvector ray;ray.sub(position,Device.vCameraPosition);const float distance=ray.magnitude();if(distance>EPS_L){ray.div(distance);if(g_pGameLevel->ObjectSpace.RayTest(Device.vCameraPosition,ray,distance,collide::rqtStatic,NULL,NULL))return;}}
         Fvector right,up;right.mul(Device.vCameraRight,radius);up.mul(Device.vCameraTop,radius);
         u32 offset;FVF::LIT* v=(FVF::LIT*)RCache.Vertex.Lock(4,sizeof(FVF::LIT),offset);Fvector p;
         const float coords[4][2]={{-1,-1},{-1,1},{1,-1},{1,1}};
@@ -154,7 +154,7 @@ IRender_Visual* CRender::model_CreateParticles(LPCSTR name){PS::CPEDef* d=PSLibr
 IRender_DetailModel* CRender::model_CreateDM(IReader* f){CDetail* d=xr_new<CDetail>();d->Load(f);return d;}
 IRender_Visual* CRender::model_Create(LPCSTR n,IReader* f){return Models->Create(n,f);}IRender_Visual* CRender::model_CreateChild(LPCSTR n,IReader* f){return Models->CreateChild(n,f);}
 IRender_Visual* CRender::model_Duplicate(IRender_Visual* v){return Models->Instance_Duplicate(v);}void CRender::model_Delete(IRender_Visual*& v,BOOL discard){Models->Delete(v,discard);}
-void CRender::model_Delete(IRender_DetailModel*& v){if(v)v->Unload();xr_delete(v);}
+void CRender::model_Delete(IRender_DetailModel*& v){if(v)static_cast<CDetail*>(v)->Unload();xr_delete(v);}
 void CRender::Screenshot(ScreenshotMode m,LPCSTR n){KichR4_NativeScreenshot(m,n);}
 void CRender::rmNear(){KichR4_NativeViewport(0,.02f);}void CRender::rmFar(){KichR4_NativeViewport(.99999f,1);}void CRender::rmNormal(){KichR4_NativeViewport(0,1);}
 
