@@ -114,7 +114,7 @@ struct KichR4DeferredSession {
             if(l.Expect(s,"B5 static transparent surface",api.draw(s.device,&d))<0)return s.failure;
         }return 0;
     }
-    enum ModelPass {GeometryModels,ShadowModels,ForwardBase,ForwardAdd,HUD,Environment};
+    enum ModelPass {GeometryModels,ShadowModels,ForwardBase,ForwardAdd,HUD,Environment,MenuPP};
     int32_t Models(KichR4FrameSession& s,KichR4LevelSession& l,KichR4StreamSession& stream,const kich_r4_capture::Batch* batch,
         ModelPass pass,const kich_r4_lighting::Constants& frame,const KichR4Handle* maps=NULL){
         if(!batch)return 0;
@@ -128,25 +128,25 @@ struct KichR4DeferredSession {
             if(pass==ShadowModels && !Opaque(c))continue;
             if((pass==ForwardBase || pass==ForwardAdd) && (c.layer==2 || Opaque(c)))continue;
             if(pass==HUD && c.layer!=2)continue;
-            if(native_mode){const bool env=c.effect==2 || c.effect==3;
+            if(native_mode){if((pass==MenuPP)!=(c.effect==7))continue;const bool env=c.effect==2 || c.effect==3;
                 if(pass==Environment && !env)continue;
                 if(pass!=Environment && env)continue;
                 if(pass==ForwardAdd && c.effect && c.effect!=6)continue;}
             else if(pass==Environment)continue;
             kich_r4_lighting::Constants constants=frame;constants.alpha[0]=c.style.alpha_ref;constants.alpha[1]=static_cast<float>(c.style.alpha_func);constants.alpha[2]=c.style.blend?1.f:0.f;
-            if(native_mode && (c.effect==2 || c.effect==3 || c.effect==1 || c.effect==5))constants.alpha[3]=0;
+            if(native_mode && (c.effect==2 || c.effect==3 || c.effect==1 || c.effect==5 || c.effect==7))constants.alpha[3]=0;
             if(Constants(s,l,constants)<0)return s.failure;
             kich_r4_capture::Style style=c.style;
             unsigned pipeline=pass==GeometryModels?ModelGeometry:pass==ShadowModels?ModelShadow:pass==ForwardBase?ForwardSun:pass==ForwardAdd?ForwardLocal:Plain;
-            if(native_mode && pass!=ShadowModels && pass!=GeometryModels){if(c.effect==2)pipeline=Sky;else if(c.effect==3)pipeline=Clouds;else if(c.effect==4)pipeline=Water;else if(c.effect==5)pipeline=Distortion;else if(c.effect==1)pipeline=Plain;}
+            if(native_mode && pass!=ShadowModels && pass!=GeometryModels){if(c.effect==2)pipeline=Sky;else if(c.effect==3)pipeline=Clouds;else if(c.effect==4)pipeline=Water;else if(c.effect==5 || c.effect==7)pipeline=Distortion;else if(c.effect==1)pipeline=Plain;}
             if(pass==ShadowModels){style.depth=style.write=1;style.blend=style.clamp=0;style.scissor=false;style.min_z=0;style.max_z=1;}
             if(pass==ForwardAdd){style.blend=1;style.src=style.dst=2;style.write=0;}
             KichR4DeferredDrawDesc d=Description(pipelines[pipeline],stream.vb,stream.ib,cb,c.count,c.first,style);
             d.textures[0]=c.texture.empty()?white:l.Texture(s,c.texture);
-            if(pass==HUD && d.textures[0]==l.checker)return s.Record("B4.4 HUD DDS unavailable",KICH_R4_E_UNSUPPORTED);
+            if(!native_mode && pass==HUD && d.textures[0]==l.checker)return s.Record("B4.4 HUD DDS unavailable",KICH_R4_E_UNSUPPORTED);
             if(maps)for(unsigned j=0;j<6;++j)d.textures[j+2]=maps[j];
             if(native_mode && c.effect){if(c.effect==2 || c.effect==3)d.textures[1]=c.secondary.empty()?d.textures[0]:l.Texture(s,c.secondary);
-                if(c.effect==4 || c.effect==5)d.textures[1]=scene_color;}
+                if(c.effect==4 || c.effect==5 || c.effect==7)d.textures[1]=scene_color;}
             if(l.Expect(s,"B4.4 model/forward/UI draw",api.draw(s.device,&d))<0)return s.failure;
             if(pass==GeometryModels || pass==ForwardBase || pass==HUD)++stream.layer_draws[c.layer];
         }return 0;
@@ -162,14 +162,19 @@ struct KichR4DeferredSession {
     int32_t DrawMenu(KichR4FrameSession& s,KichR4LevelSession& l,KichR4StreamSession& stream,const KichR4GameFrame& input,const kich_r4_capture::Batch& batch){
         if(!cb && Start(s,l)<0)return s.failure;
         if(ScreenTargets(s,l,input.width,input.height)<0 || stream.Upload(s,l,batch)<0)return s.failure;
-        if(Pass(s,l,input.width,input.height,1,final_color,0,0,KICH_R4_CLEAR_COLOR)<0 || Models(s,l,stream,&batch,HUD,base)<0)return s.failure;
-        return Process(s,l,input);
+        if(Pass(s,l,input.width,input.height,1,native_mode?scene_color:final_color,0,0,KICH_R4_CLEAR_COLOR)<0 || Models(s,l,stream,&batch,HUD,base)<0)return s.failure;
+        if(native_mode){kich_r4_lighting::Constants copy=base;copy.alpha[1]=8;copy.alpha[3]=0;
+            // Sample a separate menu image: the lens must never read its own render target.
+            if(Pass(s,l,input.width,input.height,1,final_color,0,0,0)<0 || Fullscreen(s,l,Copy,copy,scene_color,0,NULL)<0 || Models(s,l,stream,&batch,MenuPP,base)<0)return s.failure;}
+        return Process(s,l,input,true);
     }
-    int32_t Process(KichR4FrameSession& s,KichR4LevelSession& l,const KichR4GameFrame& input){
+    int32_t Process(KichR4FrameSession& s,KichR4LevelSession& l,const KichR4GameFrame& input,bool menu=false){
         kich_r4_lighting::Constants c=base;const float* p=input.postprocess;
         c.screen[0]=static_cast<float>(input.width);c.screen[1]=static_cast<float>(input.height);
         memcpy(c.alpha,p,16);memcpy(c.light_position,p+4,16);c.light_direction[0]=p[9];c.light_direction[1]=p[8];
         memcpy(c.sun_color,p+10,12);memcpy(c.ambient,p+13,12);memcpy(c.hemi,p+16,12);memcpy(c.fog,p+19,12);
+        if(menu){c.alpha[3]=0;memset(c.light_position,0,sizeof(c.light_position));
+            for(unsigned i=0;i<3;++i){c.sun_color[i]=.5f;c.ambient[i]=0;c.hemi[i]=1.f/3.f;}}
         if(Pass(s,l,input.width,input.height,1,0,0,0,0)<0)return s.failure;
         return Fullscreen(s,l,Postprocess,c,final_color,0,NULL);
     }

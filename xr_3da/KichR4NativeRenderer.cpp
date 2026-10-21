@@ -106,8 +106,17 @@ void CRender::level_Unload(){queue.clear();KichR4_NativeLevel(NULL);static_glows
     for(u32 i=0;i<visuals.size();++i){visuals[i]->Release();xr_delete(visuals[i]);}visuals.clear();shaders.clear();for(u32 i=0;i<sectors.size();++i)xr_delete(sectors[i]);sectors.clear();
     for(u32 i=0;i<vertices.size();++i)_RELEASE(vertices[i]);vertices.clear();for(u32 i=0;i<indices.size();++i)_RELEASE(indices[i]);indices.clear();declarations.clear();for(u32 i=0;i<windows.size();++i)xr_free(windows[i].sw);windows.clear();loaded=false;
 }
-IDirect3DBaseTexture9* CRender::texture_load(LPCSTR name,u32& bytes){bytes=0;string_path path;IReader* f=NULL;string_path absolute;strconcat(sizeof(absolute),absolute,name,".dds");if(FS.exist(absolute))f=FS.r_open(absolute);else if(FS.exist(path,"$level$",name,".dds"))f=FS.r_open(path);else if(FS.exist(path,"$game_textures$",name,".dds"))f=FS.r_open(path);
-    u32 w=1,h=1;if(f){if(f->length()>=128){const unsigned char* p=(const unsigned char*)f->pointer();CopyMemory(&h,p+12,4);CopyMemory(&w,p+16,4);bytes=f->length();}FS.r_close(f);}IDirect3DTexture9* result=NULL;R_CHK(KichR4_CPUTexture(name,w,h,&result));return result;}
+IDirect3DBaseTexture9* CRender::texture_load(LPCSTR name,u32& bytes){bytes=0;std::string base=name?name:"";
+    if(base.size()>=4 && !stricmp(base.c_str()+base.size()-4,".dds"))base.resize(base.size()-4);
+    string_path path;IReader* f=NULL;const std::string absolute=base+".dds";
+    if(FS.exist(absolute.c_str()))f=FS.r_open(absolute.c_str());
+    else if(FS.exist(path,"$level$",base.c_str(),".dds"))f=FS.r_open(path);
+    else if(FS.exist(path,"$game_saves$",base.c_str(),".dds"))f=FS.r_open(path);
+    else if(FS.exist(path,"$game_textures$",base.c_str(),".dds"))f=FS.r_open(path);
+    u32 w=1,h=1;if(f){if(f->length()>=128){const unsigned char* p=(const unsigned char*)f->pointer();u32 magic,width,height;CopyMemory(&magic,p,4);CopyMemory(&height,p+12,4);CopyMemory(&width,p+16,4);
+        if(magic==0x20534444u && width && height && width<=16384 && height<=16384){w=width;h=height;bytes=f->length();}}FS.r_close(f);}
+    IDirect3DTexture9* result=NULL;R_CHK(KichR4_CPUTexture(base.c_str(),w,h,&result));return result;
+}
 HRESULT CRender::shader_compile(LPCSTR,LPCSTR,UINT,void*,void*,LPCSTR,LPCSTR,DWORD,void*,void*,void*){return E_NOTIMPL;}
 ref_shader CRender::getShader(int id){R_ASSERT(id>=0 && id<(int)shaders.size());return shaders[id];}
 IRender_Sector* CRender::getSector(int id){R_ASSERT(id>=0 && id<(int)sectors.size());return sectors[id];}
@@ -139,7 +148,8 @@ void CRender::Calculate(){queue.clear();if(!loaded || !g_pGameLevel)return;ViewB
 }
 void CRender::Render(){if(!g_pGamePersistent)return;
     // The main menu asks the renderer to invoke its PP-UI callback even without a level.
-    if(g_pGamePersistent->OnRenderPPUI_query()){queue.clear();g_pGamePersistent->OnRenderPPUI_main();return;}
+    if(g_pGamePersistent->OnRenderPPUI_query()){queue.clear();g_pGamePersistent->OnRenderPPUI_main();
+        KichR4_NativeMenuPP(true);g_pGamePersistent->OnRenderPPUI_PP();KichR4_NativeMenuPP(false);return;}
     if(!loaded)return;flush();if(Details)Details->Render();g_pGamePersistent->Environment().RenderSky();g_pGamePersistent->Environment().RenderClouds();
     if(Wallmarks)Wallmarks->Render();for(u32 i=0;i<glows.size();++i)glows[i]->Draw();g_pGamePersistent->Environment().RenderFlares();g_pGamePersistent->Environment().RenderLast();
 }

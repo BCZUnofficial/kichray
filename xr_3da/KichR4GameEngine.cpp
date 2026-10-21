@@ -39,7 +39,7 @@ void KichR4_NativePresentEngineFrame()
 {
     KichR4GameFrame input={};input.window=Device.m_hWnd;input.width=Device.dwWidth;input.height=Device.dwHeight;input.engine_frame=Device.dwFrame;
     CopyMemory(input.view_projection,Device.mFullTransform.m,64);CopyMemory(input.position,&Device.vCameraPosition.x,12);input.active=Device.b_is_Active!=FALSE;
-    input.prepare_ms=static_cast<float>(KichR4_NativeQueueTime());input.time=Device.fTimeGlobal;KichR4_NativePostprocess(input.postprocess);input.allowed=g_pGameLevel && g_pGameLevel->bReady;input.debug_down=(GetAsyncKeyState(VK_F9)&0x8000)!=0;
+    input.prepare_ms=static_cast<float>(KichR4_NativeQueueTime());input.time=Device.fTimeGlobal;KichR4_NativePostprocess(input.postprocess);input.allowed=g_pGameLevel && g_pGameLevel->bReady && !(g_pGamePersistent && g_pGamePersistent->OnRenderPPUI_query());input.debug_down=(GetAsyncKeyState(VK_F9)&0x8000)!=0;
     input.lighting.valid=1;input.lighting.sun_direction[1]=-1;input.lighting.ambient[0]=input.lighting.ambient[1]=input.lighting.ambient[2]=.2f;
     if(g_pGamePersistent){const CEnvDescriptorMixer& env=g_pGamePersistent->Environment().CurrentEnv;
         CopyMemory(input.lighting.sun_direction,&env.sun_dir.x,12);CopyMemory(input.lighting.sun_color,&env.sun_color.x,12);CopyMemory(input.lighting.ambient,&env.ambient.x,12);

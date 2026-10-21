@@ -120,10 +120,12 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
         }
         const kich_r4_capture::Batch* batch=KichR4_CapturedFrame();if(!batch || !batch->Ready()){Write("[R4 native B5] rejected CPU frame: %s",batch?batch->error.c_str():"queue unavailable");return false;}
         if(input.debug_down && !native.debug_key){native.debug=(native.debug+1)%6;}native.debug_key=input.debug_down;
+        if(!c.frame.rendered){const float* p=input.postprocess;Write("[R4 native B5] output: gamma=%.3f brightness=%.3f contrast=%.3f balance=[%.3f %.3f %.3f] PP_base=[%.3f %.3f %.3f] PP_add=[%.3f %.3f %.3f]",
+            p[0],p[1],p[2],p[19],p[20],p[21],p[10],p[11],p[12],p[13],p[14],p[15]);}
         const KichR4FrameColor color={sizeof(color),{((native.color>>16)&255)/255.f,((native.color>>8)&255)/255.f,(native.color&255)/255.f,1}};
         int32_t hr=c.frame.BeginClear(color);if(hr==KICH_R4_FRAME_OCCLUDED || hr==KICH_R4_FRAME_SUSPENDED)return true;
-        if(hr==0 && c.loaded)hr=c.deferred.Draw(c.frame,c.level,c.stream,input,batch,native.debug);
-        if(hr==0 && !c.loaded)hr=c.deferred.DrawMenu(c.frame,c.level,c.stream,input,*batch);
+        if(hr==0 && c.loaded && input.allowed)hr=c.deferred.Draw(c.frame,c.level,c.stream,input,batch,native.debug);
+        else if(hr==0)hr=c.deferred.DrawMenu(c.frame,c.level,c.stream,input,*batch);
         if(hr==0 && KichR4_NativeNeedScreenshot()){std::vector<unsigned char> pixels;uint32_t w=0,h=0;if(KichR4_NativeReadPixels(pixels,w,h))KichR4_NativeWriteScreenshot(pixels.data(),w,h);}
         QueryPerformanceCounter(&submitted);
         if(hr==0){hr=c.frame.api.present(c.frame.device,native.interval);if(!hr)++c.frame.rendered;}

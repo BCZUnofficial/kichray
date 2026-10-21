@@ -42,8 +42,15 @@ struct KichR4LevelSession {
         if(name.empty())return white;
         if(texture_override){bool handled=false;const KichR4Handle h=texture_override(texture_context,name,handled);if(handled)return h;}
         const std::map<std::string,KichR4Handle>::const_iterator cached=textures.find(name);if(cached!=textures.end())return cached->second;
-        KichR4Handle result=checker;kich_r4_level::File file(files);const std::string path=name+".dds";
-        int32_t opened=file.Open("$game_textures$",path.c_str());if(opened!=0 && texture_override)opened=file.Open("$level$",path.c_str());if(opened!=0 && texture_override && (name.find(':')!=std::string::npos || name[0]=='\\' || name[0]=='/'))opened=file.Open("$r4_absolute$",path.c_str());kich_r4_dds::Image image={};int32_t hr=opened;
+        KichR4Handle result=checker;kich_r4_level::File file(files);std::string path=name;
+        if(path.size()<4 || kich_r4_level::Lower(path.substr(path.size()-4))!=".dds")path+=".dds";
+        int32_t opened;
+        if(texture_override){
+            const bool absolute=name.find(':')!=std::string::npos || name[0]=='\\' || name[0]=='/';
+            if(absolute)opened=file.Open("$r4_absolute$",path.c_str());
+            else{opened=file.Open("$level$",path.c_str());if(opened!=0)opened=file.Open("$game_saves$",path.c_str());if(opened!=0)opened=file.Open("$game_textures$",path.c_str());}
+        }else opened=file.Open("$game_textures$",path.c_str());
+        kich_r4_dds::Image image={};int32_t hr=opened;
         if(opened==0 && kich_r4_dds::Parse(file.view.data,file.view.bytes,2048,image)){
             const uint64_t payload=kich_r4_dds::UploadBytes(image);
             if(payload<=384u*1024u*1024u-texture_bytes){const KichR4DdsDesc d={sizeof(d),2048,0};
