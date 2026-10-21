@@ -9,6 +9,20 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
 	switch (uMsg)
 	{
+	case WM_ERASEBKGND:
+		// DX11 owns the client image, including the last frame during loading.
+		if (KichR4_NativeActive())
+			return 1;
+		break;
+	case WM_PAINT:
+		if (KichR4_NativeActive())
+		{
+			PAINTSTRUCT paint;
+			BeginPaint(hWnd, &paint);
+			EndPaint(hWnd, &paint);
+			return 0;
+		}
+		break;
 	case WM_ACTIVATE: {
 		Device.OnWM_Activate(wParam, lParam);
 		/*

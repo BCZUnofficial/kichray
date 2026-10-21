@@ -53,6 +53,6 @@ void KichR4_NativeWriteScreenshot(const unsigned char* rgba,uint32_t width,uint3
 
 bool KichR4_NativeMaterialState(const char* name,const char* textures,kich_r4_capture::Style& style){
     ref_shader shader;shader.create(name,textures);if(!shader || !shader->E[0] || shader->E[0]->passes.empty())return false;
-    const SimulatorStates& state=shader->E[0]->passes[0]->state->state_code;style.blend=state.get_RS(D3DRS_ALPHABLENDENABLE,0);style.src=state.get_RS(D3DRS_SRCBLEND,5);style.dst=state.get_RS(D3DRS_DESTBLEND,6);
-    style.alpha_func=state.get_RS(D3DRS_ALPHATESTENABLE,0)?state.get_RS(D3DRS_ALPHAFUNC,7):8;style.alpha_ref=(state.get_RS(D3DRS_ALPHAREF,0)&255)/255.f;style.write=state.get_RS(D3DRS_ZWRITEENABLE,1);return true;
+    const SimulatorStates& state=shader->E[0]->passes[0]->state->state_code;style.blend=state.get_RS(D3DRS_ALPHABLENDENABLE,0)!=0;style.src=state.get_RS(D3DRS_SRCBLEND,5);style.dst=state.get_RS(D3DRS_DESTBLEND,6);
+    style.alpha_func=state.get_RS(D3DRS_ALPHATESTENABLE,0)?state.get_RS(D3DRS_ALPHAFUNC,7):8;style.alpha_ref=(state.get_RS(D3DRS_ALPHAREF,0)&255)/255.f;style.write=state.get_RS(D3DRS_ZWRITEENABLE,1)!=0;return true;
 }

@@ -9,7 +9,8 @@
 #include <string>
 extern xr_token* vid_mode_token;
 extern void free_vid_mode_list();
-void KichR4_NativePresentEngineFrame();
+extern ENGINE_API BOOL g_appLoaded;
+void KichR4_NativePresentEngineFrame(bool loading);
 namespace {
 void NativeLog(const char* v){Msg("%s",v);}
 int32_t NativeFileOpen(const char* alias,const char* name,KichR4FileView* out){if(!alias || !name || !out)return static_cast<int32_t>(0x80070057u);if(strcmp(alias,"$r4_absolute$"))return kich_r4_level_files.open(alias,name,out);
@@ -43,7 +44,9 @@ void Window(void* window,KichRenderDeviceSize& size){HWND h=static_cast<HWND>(wi
     SetCursor(NULL);Msg("[R4 native B5] window=%s render=%ux%u client=%dx%d at=(%d,%d)",fullscreen?"fullscreen borderless":"windowed",size.width,size.height,width,height,left,top);
 }
 class Device11:public IKichRenderDevice {
+    bool loading;
 public:
+    Device11():loading(true){}
     void SetupGPU(bool,bool,bool){}bool IsReferenceDevice()const{return false;}
     void CreateHW(void* window,KichRenderDeviceSize& size){Window(window,size);Modes(window);R_ASSERT(!HW.pDevice && !HW.pD3D);
         ZeroMemory(&HW.Caps,sizeof(HW.Caps));HW.Caps.geometry.dwRegisters=22;HW.Caps.geometry.dwVertexCache=24;HW.Caps.raster.dwStages=8;HW.Caps.raster_major=3;HW.Caps.raster.bCubemap=TRUE;HW.Caps.raster.bNonPow2=TRUE;HW.Caps.bScissor=TRUE;
@@ -62,7 +65,11 @@ public:
     void BeginFrame(){KichR4_NativeBegin(Device.dwWidth,Device.dwHeight,Device.dwFrame);RCache.OnFrameBegin();}
     void Clear(bool backbuffer){if(backbuffer)KichR4_NativeClear(0xff000000);}
     void ClearTarget(){KichR4_NativeClear(0xff000000);}
-    void PrepareFrameEnd(uint32_t,uint32_t){}void EndFrame(){KichR4_NativeSetInterval(psDeviceFlags.test(rsVSync));KichR4_NativePresentEngineFrame();RCache.OnFrameEnd();}
+    void PrepareFrameEnd(uint32_t,uint32_t){
+        // End() decrements the last precache frame before calling EndFrame().
+        loading=!g_appLoaded || !g_loading_events.empty() || Device.dwPrecacheFrame!=0;
+    }
+    void EndFrame(){KichR4_NativeSetInterval(psDeviceFlags.test(rsVSync));KichR4_NativePresentEngineFrame(loading);RCache.OnFrameEnd();}
     void OverdrawBegin(){}void OverdrawEnd(uint32_t,uint32_t){}
     void SetCameraMatrices(const Fmatrix& view,const Fmatrix& projection,const Fmatrix& full,Fmatrix& inverse){RCache.set_xform_view(view);RCache.set_xform_project(projection);D3DXMatrixInverse(reinterpret_cast<D3DXMATRIX*>(&inverse),NULL,reinterpret_cast<const D3DXMATRIX*>(&full));}
     void BeginFrameTiming(CStatTimer& real){real.FrameStart();real.Begin();}void EndFrameTiming(CStatTimer& real,CStatTimer& total){real.End();real.FrameEnd();total.accum=real.accum;}
