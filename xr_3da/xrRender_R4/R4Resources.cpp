@@ -333,10 +333,11 @@ HRESULT ReadShaderTable(Device& d, Resource& r)
                 if (entry.byte_offset>b.byte_size || entry.byte_size>b.byte_size-entry.byte_offset) return E_UNEXPECTED;
                 r.variables.push_back(entry);
             }
-        } else if (bd.Type==D3D_SIT_TEXTURE && bd.Dimension==D3D_SRV_DIMENSION_TEXTURE2D)
+        } else if (bd.Type==D3D_SIT_TEXTURE &&
+            (bd.Dimension==D3D_SRV_DIMENSION_TEXTURE2D || bd.Dimension==D3D_SRV_DIMENSION_TEXTURECUBE))
             b.kind=KICH_R4_BIND_TEXTURE;
         else if (bd.Type==D3D_SIT_SAMPLER) b.kind=KICH_R4_BIND_SAMPLER;
-        else return E_NOTIMPL; /* B2 v1 does not promise UAV/structured/cube resources. */
+        else return E_NOTIMPL; /* UAV/structured and other texture dimensions are unsupported. */
         r.bindings.push_back(b);
     }
     r.info.binding_count=static_cast<uint32_t>(r.bindings.size());
