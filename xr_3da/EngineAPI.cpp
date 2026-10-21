@@ -8,6 +8,7 @@
 #include "KichR4Probe.h"
 #include "KichR4Game.h"
 #include "KichR4Native.h"
+#include "Render.h"
 
 #ifndef DEDICATED_SERVER
 #include "KichR4LevelFS.inl"

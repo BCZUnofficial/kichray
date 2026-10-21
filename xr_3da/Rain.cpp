@@ -17,6 +17,33 @@
 #include "xr_ioc_cmd.h"
 #endif
 
+// Route rain render states to the selected renderer without touching a DX9 device in R4.
+static HRESULT RainSetState(D3DRENDERSTATETYPE state, DWORD value)
+{
+#ifndef _EDITOR
+    if (KichR4_NativeActive())
+    {
+        KichR4_NativeSetState(static_cast<uint32_t>(state), value);
+        return S_OK;
+    }
+#endif
+    return HW.pDevice->SetRenderState(state, value);
+}
+
+static HRESULT RainGetState(D3DRENDERSTATETYPE state, DWORD* value)
+{
+    if (!value)
+        return E_POINTER;
+#ifndef _EDITOR
+    if (KichR4_NativeActive())
+    {
+        *value = KichR4_NativeGetState(static_cast<uint32_t>(state));
+        return S_OK;
+    }
+#endif
+    return HW.pDevice->GetRenderState(state, value);
+}
+
 static const int max_desired_items = 2500;
 static const float source_radius = 12.5f;
 static const float source_offset = 40.f;
