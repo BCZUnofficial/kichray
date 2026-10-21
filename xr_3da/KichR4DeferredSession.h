@@ -6,16 +6,18 @@
 #include "KichR4LightingMath.h"
 #include "KichR4Game.h"
 #include "KichR4NativeTools.h"
+#include <set>
 /* EXE-side pass planner. Native resources remain owned by the R4 device;
  * destroying that device releases partial construction and all cached maps. */
 struct KichR4DeferredSession {
-    enum Pipeline {StaticGeometry,ModelGeometry,StaticShadow,ModelShadow,Sun,Local,ForwardSun,ForwardLocal,Plain,Combine,Sky,Clouds,Water,Distortion,StaticForward,StaticWater,Copy,Postprocess,PipelineCount};
+    enum Pipeline {StaticGeometry,ModelGeometry,StaticShadow,ModelShadow,Sun,Local,ForwardSun,ForwardLocal,Plain,Combine,Sky,Clouds,Water,Distortion,StaticForward,StaticWater,Copy,Postprocess,StaticPlain,PipelineCount};
     KichR4DeferredAPI api;
     KichR4Handle pipelines[PipelineCount],shaders[17],cb,screen_vb,screen_ib,white;
     KichR4Handle albedo,normal,depth,light,sun_map,local_maps[8][6],scene_color,final_color;
     uint32_t width,height,frames,shadow_passes,local_passes;
     kich_r4_lighting::Constants base;
     bool native_mode;KichR4NativeToolsAPI tools;
+    std::set<uint32_t> simple_transparent;
     void Mark(KichR4FrameSession& s,unsigned n){if(native_mode && tools.profile_mark)tools.profile_mark(s.device,n);}
     KichR4DeferredSession():cb(0),screen_vb(0),screen_ib(0),white(0),albedo(0),normal(0),depth(0),light(0),sun_map(0),scene_color(0),final_color(0),width(0),height(0),frames(0),shadow_passes(0),local_passes(0),native_mode(false){
         memset(&tools,0,sizeof(tools));
@@ -29,7 +31,7 @@ struct KichR4DeferredSession {
         for(unsigned i=0;i<17;++i){level.Continue();KichR4ShaderDesc d={};d.struct_size=sizeof(d);d.kind=i<4?KICH_R4_VERTEX_SHADER:KICH_R4_PIXEL_SHADER;
             memcpy(d.entry,entries[i],strlen(entries[i])+1);memcpy(d.name,"kich_b44_deferred",18);
             if(level.Expect(s,entries[i],level.bridge.resources.compile_shader(s.device,&d,source,static_cast<uint32_t>(strlen(source)),&shaders[i],level.bridge.shader_error,sizeof(level.bridge.shader_error)))<0)return s.failure;}
-        const unsigned vs[]={0,1,0,2,3,3,1,1,1,3,1,1,1,1,0,0,3,3},ps[]={4,4,5,5,6,7,8,9,10,11,12,13,14,15,8,14,10,16};
+        const unsigned vs[]={0,1,0,2,3,3,1,1,1,3,1,1,1,1,0,0,3,3,0},ps[]={4,4,5,5,6,7,8,9,10,11,12,13,14,15,8,14,10,16,10};
         for(unsigned i=0;i<PipelineCount;++i){KichR4PipelineDesc d={};d.struct_size=sizeof(d);d.vertex_shader=shaders[vs[i]];d.pixel_shader=shaders[ps[i]];
             const bool model=vs[i]==1 || vs[i]==2,screen=vs[i]==3;
             d.vertex_stride=model?sizeof(kich_r4_capture::Vertex):screen?20:sizeof(kich_r4_level::Vertex);
@@ -111,7 +113,18 @@ struct KichR4DeferredSession {
             if(Constants(s,l,c)<0)return s.failure;
             kich_r4_capture::Style style;style.blend=m.blend;style.src=m.source;style.dst=m.destination;style.write=0;style.cull=KICH_R4_CULL_NONE;
             KichR4DeferredDrawDesc d=Description(pipelines[m.kind==2?StaticWater:StaticForward],l.vertex_buffers[mesh.vb],l.index_buffers[mesh.ib],cb,mesh.count,mesh.first,style);d.textures[0]=l.materials[mesh.material];d.textures[1]=scene_color;d.textures[2]=sun_map;
-            if(l.Expect(s,"B5 static transparent surface",api.draw(s.device,&d))<0)return s.failure;
+            const bool simple=simple_transparent.count(mesh.material)!=0;
+            int32_t hr=KICH_R4_OK;
+            if(!simple)hr=api.draw(s.device,&d);
+            if(simple || hr==KICH_R4_E_ARGUMENT){
+                if(!simple){simple_transparent.insert(mesh.material);
+                    l.Write("[R4 native B5] transparent compatibility: shader=%s texture=%s kind=%u HRESULT=0x%08X blend=%u/%u/%u; using basic R4 alpha surface",
+                        m.shader.c_str(),m.texture.c_str(),m.kind,static_cast<uint32_t>(hr),m.blend,m.source,m.destination);}
+                c.alpha[1]=8;c.alpha[3]=0;if(Constants(s,l,c)<0)return s.failure;
+                d.state.draw.pipeline=pipelines[StaticPlain];d.state.blend_enable=1;d.state.source_blend=5;d.state.dest_blend=6;
+                d.textures[1]=d.textures[2]=0;hr=api.draw(s.device,&d);
+            }
+            if(l.Expect(s,"B5 static transparent surface",hr)<0)return s.failure;
         }return 0;
     }
     enum ModelPass {GeometryModels,ShadowModels,ForwardBase,ForwardAdd,HUD,Environment,MenuPP};
@@ -135,8 +148,10 @@ struct KichR4DeferredSession {
             else if(pass==Environment)continue;
             kich_r4_lighting::Constants constants=frame;constants.alpha[0]=c.style.alpha_ref;constants.alpha[1]=static_cast<float>(c.style.alpha_func);constants.alpha[2]=c.style.blend?1.f:0.f;
             if(native_mode && (c.effect==2 || c.effect==3 || c.effect==1 || c.effect==5 || c.effect==7))constants.alpha[3]=0;
+            if(native_mode && pass==MenuPP)constants.alpha[3]=30;
             if(Constants(s,l,constants)<0)return s.failure;
             kich_r4_capture::Style style=c.style;
+            if(native_mode && pass==MenuPP)style.blend=0;
             unsigned pipeline=pass==GeometryModels?ModelGeometry:pass==ShadowModels?ModelShadow:pass==ForwardBase?ForwardSun:pass==ForwardAdd?ForwardLocal:Plain;
             if(native_mode && pass!=ShadowModels && pass!=GeometryModels){if(c.effect==2)pipeline=Sky;else if(c.effect==3)pipeline=Clouds;else if(c.effect==4)pipeline=Water;else if(c.effect==5 || c.effect==7)pipeline=Distortion;else if(c.effect==1)pipeline=Plain;}
             if(pass==ShadowModels){style.depth=style.write=1;style.blend=style.clamp=0;style.scissor=false;style.min_z=0;style.max_z=1;}
@@ -160,6 +175,7 @@ struct KichR4DeferredSession {
         return l.Expect(s,"B4.4 fullscreen draw",api.draw(s.device,&d));
     }
     int32_t DrawMenu(KichR4FrameSession& s,KichR4LevelSession& l,KichR4StreamSession& stream,const KichR4GameFrame& input,const kich_r4_capture::Batch& batch){
+        base.screen[0]=static_cast<float>(input.width);base.screen[1]=static_cast<float>(input.height);
         if(!cb && Start(s,l)<0)return s.failure;
         if(ScreenTargets(s,l,input.width,input.height)<0 || stream.Upload(s,l,batch)<0)return s.failure;
         if(Pass(s,l,input.width,input.height,1,native_mode?scene_color:final_color,0,0,KICH_R4_CLEAR_COLOR)<0 || Models(s,l,stream,&batch,HUD,base)<0)return s.failure;

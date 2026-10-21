@@ -90,8 +90,11 @@ float4 PSWater(Varying v,bool front:SV_IsFrontFace):SV_Target {
     float3 n=Normal(v,front);float fresnel=pow(1-saturate(dot(n,normalize(camera.xyz-v.w))),5);
     float3 lit=water.rgb*SunLight(v.w,n,saturate(v.n.w));return float4(lerp(lerp(behind,lit,.35),hemi.rgb,fresnel*.5),.8);
 }
-float4 PSDistortion(Varying v):SV_Target {float4 mask=Base(v);float2 offset=(mask.rg-.5)*.015*mask.a;
-    return float4(image1.Sample(surface,saturate(v.p.xy/screen.xy+offset)).rgb,mask.a);}
+float4 PSDistortion(Varying v):SV_Target {float4 mask=Base(v);bool menu=alpha.w>29.5 && alpha.w<30.5;
+    // Match R2 distort.ps: the menu mask is alpha-blended over neutral 0.5.
+    float2 offset=(mask.rg-.5)*(menu?.05:.015)*mask.a;
+    return float4(image1.Sample(surface,saturate(v.p.xy/max(screen.xy,1)+offset)).rgb,menu?1:mask.a);
+}
 
 float4 PSPostprocess(Varying v):SV_Target {
     float2 split=light_position.yz*.5;float2 uv=v.uv;
