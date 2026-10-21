@@ -52,7 +52,8 @@ bool ReadAPIs(){HMODULE m=native.module;
         geometry(KICH_R4_GEOMETRY_ABI,&native.api.geometry,sizeof(native.api.geometry))==0 && level(KICH_R4_LEVEL_ABI,&native.api.level,sizeof(native.api.level))==0 &&
         stream(KICH_R4_STREAM_ABI,&native.api.stream,sizeof(native.api.stream))==0 && deferred(KICH_R4_DEFERRED_ABI,&native.api.deferred,sizeof(native.api.deferred))==0 &&
         extra(KICH_R4_NATIVE_TOOLS_ABI,&native.tools,sizeof(native.tools))==0 && native.api.Valid() && KichR4StreamSession::ValidAPI(native.api.stream) && KichR4DeferredSession::ValidAPI(native.api.deferred) &&
-        native.tools.struct_size==sizeof(native.tools) && native.tools.pointer_size==sizeof(void*) && native.tools.read_pixels && native.tools.profile_mark && native.tools.get_profile;
+        native.tools.struct_size==sizeof(native.tools) && native.tools.abi_version==KICH_R4_NATIVE_TOOLS_ABI && native.tools.pointer_size==sizeof(void*) && !native.tools.flags &&
+        native.tools.read_pixels && native.tools.profile_mark && native.tools.get_profile && native.tools.reset_resources;
 }
 void StopContext(){if(!native.context)return;Context& c=*native.context;if(c.frame.device){KichR4GeometryReport report={};const int32_t hr=c.level.bridge.Stop(c.frame,&report);
     Write("[R4 native B5] cleanup: HRESULT=0x%08X resources=%u/%u live=%u payload=%llu views=%u/%u",static_cast<uint32_t>(hr),report.resources.created,report.resources.released,report.resources.live_resources,static_cast<unsigned long long>(report.resources.payload_bytes),report.frame.views_created,report.frame.views_released);}
@@ -76,12 +77,26 @@ KichR4Handle OverrideTexture(void* context,const std::string& key,bool& handled)
     if(hr<0){c.frame.Record("native video/user texture upload",hr);return c.level.checker;}
     if(uploaded.handle){c.level.bridge.resources.release_resource(c.frame.device,uploaded.handle);}uploaded.handle=next;uploaded.revision=revision;return next;
 }
-bool CreateContext(){native.context.reset(new Context());Context& c=*native.context;c.frame.api=native.api.frame;c.level.bridge.resources=native.api.resources;c.level.bridge.api=native.api.geometry;
+void ConfigureContext(Context& c){c.frame.api=native.api.frame;c.level.bridge.resources=native.api.resources;c.level.bridge.api=native.api.geometry;
     c.level.api=native.api.level;c.level.files=native.files;c.level.log=native.log;c.stream.api=native.api.stream;c.deferred.api=native.api.deferred;c.deferred.native_mode=true;c.deferred.tools=native.tools;
     c.level.keep_going=[](void*)->bool{KichR4_NativePumpLoading();return true;};
     c.level.texture_override=OverrideTexture;c.level.texture_context=&c;
+}
+bool CreatePlaceholders(Context& c){return c.level.Placeholder(c.frame,false,&c.level.white)==0 && c.level.Placeholder(c.frame,true,&c.level.checker)==0;}
+bool CreateContext(){native.context.reset(new Context());Context& c=*native.context;ConfigureContext(c);
     if(c.frame.Start(native.window,native.width,native.height)<0)return false;
-    return c.level.Placeholder(c.frame,false,&c.level.white)==0 && c.level.Placeholder(c.frame,true,&c.level.checker)==0;
+    return CreatePlaceholders(c);
+}
+bool ResetContext(){Context& previous=*native.context;
+    std::unique_ptr<Context> next(new Context());next->frame=previous.frame;next->name=native.desired;ConfigureContext(*next);
+    KichR4ResourceStats report={};const int32_t hr=native.tools.reset_resources(previous.frame.device,&report,sizeof(report));
+    if(hr!=0){previous.frame.Record("native reset scene resources",hr<0?hr:KICH_R4_E_STATE);
+        Write("[R4 native B5] scene reset failed: HRESULT=0x%08X",static_cast<uint32_t>(hr));return false;}
+    Write("[R4 native B5] scene switch: %s -> %s; preserving device=%llu window target and %u presented frames; resources=%u/%u live=%u",
+        previous.name.empty()?"<menu>":previous.name.c_str(),next->name.empty()?"<menu>":next->name.c_str(),
+        static_cast<unsigned long long>(previous.frame.device),previous.frame.rendered,report.created,report.released,report.live_resources);
+    native.context=std::move(next);
+    return CreatePlaceholders(*native.context);
 }
 }
 void KichR4_NativeTextureChanged(void* texture){std::lock_guard<std::mutex> lock(runtime_mutex);Runtime& r=runtime[texture];if(r.texture)return;r.texture=texture;char key[64];snprintf(key,sizeof(key),"r4_runtime__%llu",static_cast<unsigned long long>(++texture_serial));r.key=key;}
@@ -110,7 +125,7 @@ bool KichR4_NativeReadPixels(std::vector<unsigned char>& out,uint32_t& w,uint32_
     return native.tools.read_pixels(c.frame.device,out.data(),static_cast<uint32_t>(out.size()),&w,&h)==0;
 }
 bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)return false;Context* context=native.context.get();
-    try{if(context->name!=native.desired){StopContext();if(!CreateContext())return false;context=native.context.get();context->name=native.desired;}
+    try{if(context->name!=native.desired){if(!ResetContext())return false;context=native.context.get();}
         Context& c=*context;LARGE_INTEGER start,end,submitted,frequency;QueryPerformanceCounter(&start);const uint32_t shadows_before=c.deferred.shadow_passes;QueryPerformanceFrequency(&frequency);
         if(!c.loaded && !c.name.empty() && input.allowed){if(c.level.Start(c.frame,c.name.c_str())!=0)return false;c.loaded=true;
             for(size_t i=0;i<c.level.scene.materials.size();++i){kich_r4_level::Material& m=c.level.scene.materials[i];char layers[4][128]={};if(KichR4_NativeTerrain(m.shader.c_str(),layers)){m.kind=1;for(unsigned j=0;j<4;++j)m.layers[j]=layers[j];}

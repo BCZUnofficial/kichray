@@ -691,6 +691,19 @@ int32_t KICH_R4_CALL CreateDdsTexture(KichR4Handle device,const KichR4DdsDesc* d
 int32_t KICH_R4_CALL ReadNativePixels(KichR4Handle device,void* output,uint32_t bytes,uint32_t* width,uint32_t* height){
     return Protect([&]() -> int32_t {int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;return d->frame_driver.ReadPixels(output,bytes,width,height);});
 }
+int32_t KICH_R4_CALL ResetNativeResources(KichR4Handle device,KichR4ResourceStats* out,uint32_t bytes){
+    if((out && !OutputOK(out,bytes)) || (!out && bytes))return KICH_R4_E_ARGUMENT;
+    return Protect([&]() -> int32_t {int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;
+        if((d->frame.Stats().flags&KICH_R4_FRAME_OPEN) || d->profile_open)return KICH_R4_E_STATE;
+        d->ClearResources();memset(&d->pass,0,sizeof(d->pass));
+        for(unsigned i=0;i<4;++i)d->profile[i].Reset();
+        d->profile_write=0;d->profile_open=false;
+        // Submit deferred releases after dropping all scene references; keep the swap chain.
+        d->context->Flush();
+        if(out)*out=d->stats;
+        return KICH_R4_OK;
+    });
+}
 int32_t KICH_R4_CALL NativeProfileMark(KichR4Handle device,uint32_t marker){
     if(marker>7)return KICH_R4_E_ARGUMENT;
     return Protect([&]() -> int32_t {int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;
@@ -793,5 +806,5 @@ extern "C" int32_t KICH_R4_CALL KichR4_GetLevelAPI(uint32_t abi,KichR4LevelAPI* 
 
 extern "C" int32_t KICH_R4_CALL KichR4_GetNativeToolsAPI(uint32_t abi,KichR4NativeToolsAPI* out,uint32_t bytes){
     if(abi!=KICH_R4_NATIVE_TOOLS_ABI || !OutputOK(out,bytes))return KICH_R4_E_ARGUMENT;
-    const KichR4NativeToolsAPI api={sizeof(api),KICH_R4_NATIVE_TOOLS_ABI,sizeof(void*),0,ReadNativePixels,NativeProfileMark,GetNativeProfile};*out=api;return KICH_R4_OK;
+    const KichR4NativeToolsAPI api={sizeof(api),KICH_R4_NATIVE_TOOLS_ABI,sizeof(void*),0,ReadNativePixels,NativeProfileMark,GetNativeProfile,ResetNativeResources};*out=api;return KICH_R4_OK;
 }

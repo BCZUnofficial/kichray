@@ -127,7 +127,7 @@ struct KichR4DeferredSession {
             if(l.Expect(s,"B5 static transparent surface",hr)<0)return s.failure;
         }return 0;
     }
-    enum ModelPass {GeometryModels,ShadowModels,ForwardBase,ForwardAdd,HUD,Environment,MenuPP};
+    enum ModelPass {GeometryModels,ShadowModels,ForwardBase,ForwardAdd,HUD,Environment,MenuPP,MenuOverlay};
     int32_t Models(KichR4FrameSession& s,KichR4LevelSession& l,KichR4StreamSession& stream,const kich_r4_capture::Batch* batch,
         ModelPass pass,const kich_r4_lighting::Constants& frame,const KichR4Handle* maps=NULL){
         if(!batch)return 0;
@@ -141,7 +141,10 @@ struct KichR4DeferredSession {
             if(pass==ShadowModels && !Opaque(c))continue;
             if((pass==ForwardBase || pass==ForwardAdd) && (c.layer==2 || Opaque(c)))continue;
             if(pass==HUD && c.layer!=2)continue;
-            if(native_mode){if((pass==MenuPP)!=(c.effect==7))continue;const bool env=c.effect==2 || c.effect==3;
+            if(native_mode){if(pass==MenuPP){if(c.effect!=7)continue;}
+                else if(pass==MenuOverlay){if(c.effect!=8)continue;}
+                else if(c.effect==7 || c.effect==8)continue;
+                const bool env=c.effect==2 || c.effect==3;
                 if(pass==Environment && !env)continue;
                 if(pass!=Environment && env)continue;
                 if(pass==ForwardAdd && c.effect && c.effect!=6)continue;}
@@ -181,7 +184,7 @@ struct KichR4DeferredSession {
         if(Pass(s,l,input.width,input.height,1,native_mode?scene_color:final_color,0,0,KICH_R4_CLEAR_COLOR)<0 || Models(s,l,stream,&batch,HUD,base)<0)return s.failure;
         if(native_mode){kich_r4_lighting::Constants copy=base;copy.alpha[1]=8;copy.alpha[3]=0;
             // Sample a separate menu image: the lens must never read its own render target.
-            if(Pass(s,l,input.width,input.height,1,final_color,0,0,0)<0 || Fullscreen(s,l,Copy,copy,scene_color,0,NULL)<0 || Models(s,l,stream,&batch,MenuPP,base)<0)return s.failure;}
+            if(Pass(s,l,input.width,input.height,1,final_color,0,0,0)<0 || Fullscreen(s,l,Copy,copy,scene_color,0,NULL)<0 || Models(s,l,stream,&batch,MenuPP,base)<0 || Models(s,l,stream,&batch,MenuOverlay,base)<0)return s.failure;}
         return Process(s,l,input,true);
     }
     int32_t Process(KichR4FrameSession& s,KichR4LevelSession& l,const KichR4GameFrame& input,bool menu=false){
