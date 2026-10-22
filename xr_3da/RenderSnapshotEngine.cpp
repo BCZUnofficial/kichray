@@ -25,58 +25,173 @@ void SnapshotMatrix(const char* key,const Fmatrix& matrix){
 }
 }
 void RenderSnapshot_EngineDeviceEvent(const char* reason){RenderSnapshot_Abort(reason);++snapshot_device_generation;}
-void RenderSnapshot_EngineBegin(){
+void RenderSnapshot_EngineBegin()
+{
 #if !defined(DEDICATED_SERVER) && !defined(_EDITOR)
-    const bool level_loaded=g_pGameLevel && g_pGameLevel->bReady;
-    char level_name[128];strncpy_s(level_name,g_pGameLevel?g_pGameLevel->name().c_str():"NONE",_TRUNCATE);
-    if(snapshot_last_level!=g_pGameLevel || strcmp(snapshot_last_level_name,level_name) || snapshot_last_level_loaded!=level_loaded){
-        ++snapshot_level_generation;snapshot_last_level=g_pGameLevel;snapshot_last_level_loaded=level_loaded;
-        strncpy_s(snapshot_last_level_name,level_name,_TRUNCATE);RenderSnapshot_Event("LEVEL",level_name,"GENERATION_CHANGED","OBSERVED");}
-    RenderSnapshot_FrameIDs(UINT64_MAX,UINT64_MAX,snapshot_level_generation,snapshot_device_generation);
-    const bool menu=g_pGamePersistent && g_pGamePersistent->OnRenderPPUI_query();
-    const char* screen=RenderSnapshot_UIScreen();
-    if(menu || !strcmp(screen,"MENU"))screen=level_loaded?"MENU":"START_MENU";
-    else if(!strcmp(screen,"DIALOG"))screen="OTHER";
-    else if(!level_loaded && !strcmp(screen,"GAME"))screen="START_MENU";
-    RenderSnapshot_UIState(screen,RenderSnapshot_UIRoot(),RenderSnapshot_UIInputOwner(),level_loaded,Console && Console->bVisible,Device.Paused()!=0);
-    if(!RenderSnapshot_Wanted())return;
-    RenderSnapshotInfo info={};info.frame=Device.dwFrame;info.width=Device.dwWidth;info.height=Device.dwHeight;
-    info.console_visible=Console && Console->bVisible;info.paused=Device.Paused();info.hud=psHUD_Flags.test(HUD_DRAW)?1:0;
-    CopyMemory(info.position,&Device.vCameraPosition.x,12);CopyMemory(info.direction,&Device.vCameraDirection.x,12);
-    info.fov=Device.fFOV;info.time=Device.fTimeGlobal;
-    const bool native=KichR4_NativeActive();
-    strcpy_s(info.renderer,native?"R4":Render && Render->get_generation()==IRender_interface::GENERATION_R2?"R2":"R1");
-    strcpy_s(info.api,native?"D3D11":"D3D9");
-    strcpy_s(info.scene,Device.dwPrecacheFrame || !g_loading_events.empty()?"LOADING":menu || !g_pGameLevel || !g_pGameLevel->bReady?"MENU":"GAME");
-    strncpy_s(info.level,g_pGameLevel?g_pGameLevel->name().c_str():"NONE",_TRUNCATE);
-    if(g_pGamePersistent){CEnvironment& env=g_pGamePersistent->Environment();
-        strncpy_s(info.weather,env.CurrentWeatherName.size()?env.CurrentWeatherName.c_str():"UNKNOWN",_TRUNCATE);
-        info.wind=env.wind_strength_factor;info.game_time=env.SnapshotGameTime();CopyMemory(info.sun,&env.CurrentEnv.sun_dir.x,12);}
-    const KichR4BuildInfo build=KichR4_LocalBuildInfo();strcpy_s(info.build,build.revision);strcpy_s(info.source_id,build.source_id);strcpy_s(info.shader_id,build.shader_id);
-    string_path directory;
-    FS.update_path(directory,"$logs$","");
-    strncpy_s(info.directory,directory,_TRUNCATE);
-    strcpy_s(info.adapter,"NOT_AVAILABLE");
-    if(!native && HW.pD3D){D3DADAPTER_IDENTIFIER9 adapter={};if(SUCCEEDED(HW.pD3D->GetAdapterIdentifier(HW.DevAdapter,0,&adapter)))strncpy_s(info.adapter,adapter.Description,_TRUNCATE);}
-    RenderSnapshot_Begin(info);
-    RenderSnapshot_U64("FRAME","engine_frame",Device.dwFrame);RenderSnapshot_U64("FRAME","level_generation",snapshot_level_generation);
-    RenderSnapshot_U64("FRAME","device_generation",snapshot_device_generation);RenderSnapshot_U64("FRAME","engine_time_ms",Device.dwTimeGlobal);
-    RenderSnapshot_U64("UI_STATE","level_exists",g_pGameLevel?1:0);RenderSnapshot_U64("UI_STATE","level_ready",level_loaded?1:0);
-    RenderSnapshot_U64("UI_STATE","device_active",Device.b_is_Active?1:0);RenderSnapshot_U64("UI_STATE","device_ready",Device.b_is_Ready?1:0);
-    RenderSnapshot_U64("UI_STATE","menu_ppui_requested",menu?1:0);RenderSnapshot_Text("UI_STATE","observed_screen",screen);
-    RenderSnapshot_Text("UI_STATE","root_window",RenderSnapshot_UIRoot());RenderSnapshot_Text("UI_STATE","input_owner",RenderSnapshot_UIInputOwner());
-    RenderSnapshot_Text("UI_STATE","input_owner_identity","PROCESS_HANDLE_NOT_PERSISTENT");
-    RenderSnapshot_Text("UI_STATE","cursor_status","AWAITING_UI_CURSOR_RENDER_CALLBACK");
-    RenderSnapshot_Text("CAMERA","matrix_layout","Fmatrix.m row-major memory; engine row-vector convention");
-    RenderSnapshot_Value("CAMERA","aspect",Device.fASPECT);RenderSnapshot_Value("CAMERA","frame_delta_seconds",Device.fTimeDelta);
-    SnapshotMatrix("view",Device.mView);SnapshotMatrix("world_projection",Device.mProject);SnapshotMatrix("world_view_projection",Device.mFullTransform);
-    RenderSnapshot_Text("CAMERA","projection_sample_point","GRAPHICAL_BEGIN_BEFORE_BACKEND_FRAME");
-    RenderSnapshot_Text("TIMINGS","d3d9_gpu_status",native?"R4_QUERY_PROVIDER":"NOT_INSTRUMENTED");
-    RenderSnapshot_Value("SETTINGS","details_enabled",psDeviceFlags.test(rsDetails)?1:0);
-    if(Console){float value=0,minimum=0,maximum=0;Console->GetFloat("hud_fov",value,minimum,maximum);
-        RenderSnapshot_Value("CAMERA","configured_hud_fov_multiplier",value);RenderSnapshot_Text("CAMERA","hud_projection_source","DRAW_PASS_TELEMETRY_WHEN_BOUND");
-        Console->GetFloat("r__detail_density",value,minimum,maximum);RenderSnapshot_Value("SETTINGS","detail_density",value);
-        Console->GetFloat("r__detail_radius",value,minimum,maximum);RenderSnapshot_Value("SETTINGS","detail_radius",value);}
+	const bool level_loaded = g_pGameLevel && g_pGameLevel->bReady;
+
+	// Keep the shared string alive while accessing its character data.
+	shared_str level_name_storage;
+
+	if (g_pGameLevel)
+		level_name_storage = g_pGameLevel->name();
+
+	const char* level_name_source = level_name_storage.c_str();
+
+	// During loading, the level object may exist without an assigned name.
+	if (!level_name_source || level_name_source[0] == '\0')
+		level_name_source = g_pGameLevel ? "NOT_READY" : "NONE";
+
+	char level_name[128] = {};
+	strncpy_s(level_name, sizeof(level_name), level_name_source, _TRUNCATE);
+
+	if (snapshot_last_level != g_pGameLevel || strcmp(snapshot_last_level_name, level_name) != 0 ||
+		snapshot_last_level_loaded != level_loaded)
+	{
+		++snapshot_level_generation;
+		snapshot_last_level = g_pGameLevel;
+		snapshot_last_level_loaded = level_loaded;
+
+		strncpy_s(snapshot_last_level_name, sizeof(snapshot_last_level_name), level_name, _TRUNCATE);
+
+		RenderSnapshot_Event("LEVEL", level_name, "GENERATION_CHANGED", "OBSERVED");
+	}
+
+	RenderSnapshot_FrameIDs(UINT64_MAX, UINT64_MAX, snapshot_level_generation, snapshot_device_generation);
+
+	const bool menu = g_pGamePersistent && g_pGamePersistent->OnRenderPPUI_query();
+
+	const char* screen = RenderSnapshot_UIScreen();
+
+	if (menu || !strcmp(screen, "MENU"))
+		screen = level_loaded ? "MENU" : "START_MENU";
+	else if (!strcmp(screen, "DIALOG"))
+		screen = "OTHER";
+	else if (!level_loaded && !strcmp(screen, "GAME"))
+		screen = "START_MENU";
+
+	RenderSnapshot_UIState(screen, RenderSnapshot_UIRoot(), RenderSnapshot_UIInputOwner(), level_loaded,
+						   Console && Console->bVisible, Device.Paused() != 0);
+
+	if (!RenderSnapshot_Wanted())
+		return;
+
+	RenderSnapshotInfo info = {};
+
+	info.frame = Device.dwFrame;
+	info.width = Device.dwWidth;
+	info.height = Device.dwHeight;
+	info.console_visible = Console && Console->bVisible;
+	info.paused = Device.Paused();
+	info.hud = psHUD_Flags.test(HUD_DRAW) ? 1 : 0;
+
+	CopyMemory(info.position, &Device.vCameraPosition.x, 12);
+	CopyMemory(info.direction, &Device.vCameraDirection.x, 12);
+
+	info.fov = Device.fFOV;
+	info.time = Device.fTimeGlobal;
+
+	const bool native = KichR4_NativeActive();
+
+	strcpy_s(info.renderer,
+			 native ? "R4" : (Render && Render->get_generation() == IRender_interface::GENERATION_R2 ? "R2" : "R1"));
+
+	strcpy_s(info.api, native ? "D3D11" : "D3D9");
+
+	strcpy_s(info.scene, (Device.dwPrecacheFrame || !g_loading_events.empty())
+							 ? "LOADING"
+							 : ((menu || !g_pGameLevel || !g_pGameLevel->bReady) ? "MENU" : "GAME"));
+
+	// Reuse the validated name instead of calling name().c_str() again.
+	strncpy_s(info.level, sizeof(info.level), level_name, _TRUNCATE);
+
+	if (g_pGamePersistent)
+	{
+		CEnvironment& env = g_pGamePersistent->Environment();
+
+		strncpy_s(info.weather, env.CurrentWeatherName.size() ? env.CurrentWeatherName.c_str() : "UNKNOWN", _TRUNCATE);
+
+		info.wind = env.wind_strength_factor;
+		info.game_time = env.SnapshotGameTime();
+
+		CopyMemory(info.sun, &env.CurrentEnv.sun_dir.x, 12);
+	}
+
+	const KichR4BuildInfo build = KichR4_LocalBuildInfo();
+
+	strcpy_s(info.build, build.revision);
+	strcpy_s(info.source_id, build.source_id);
+	strcpy_s(info.shader_id, build.shader_id);
+
+	string_path directory;
+	FS.update_path(directory, "$logs$", "");
+	strncpy_s(info.directory, directory, _TRUNCATE);
+
+	strcpy_s(info.adapter, "NOT_AVAILABLE");
+
+	if (!native && HW.pD3D)
+	{
+		D3DADAPTER_IDENTIFIER9 adapter = {};
+
+		if (SUCCEEDED(HW.pD3D->GetAdapterIdentifier(HW.DevAdapter, 0, &adapter)))
+		{
+			strncpy_s(info.adapter, adapter.Description, _TRUNCATE);
+		}
+	}
+
+	RenderSnapshot_Begin(info);
+
+	RenderSnapshot_U64("FRAME", "engine_frame", Device.dwFrame);
+	RenderSnapshot_U64("FRAME", "level_generation", snapshot_level_generation);
+	RenderSnapshot_U64("FRAME", "device_generation", snapshot_device_generation);
+	RenderSnapshot_U64("FRAME", "engine_time_ms", Device.dwTimeGlobal);
+
+	RenderSnapshot_U64("UI_STATE", "level_exists", g_pGameLevel ? 1 : 0);
+	RenderSnapshot_U64("UI_STATE", "level_ready", level_loaded ? 1 : 0);
+	RenderSnapshot_U64("UI_STATE", "device_active", Device.b_is_Active ? 1 : 0);
+	RenderSnapshot_U64("UI_STATE", "device_ready", Device.b_is_Ready ? 1 : 0);
+	RenderSnapshot_U64("UI_STATE", "menu_ppui_requested", menu ? 1 : 0);
+
+	RenderSnapshot_Text("UI_STATE", "observed_screen", screen);
+	RenderSnapshot_Text("UI_STATE", "root_window", RenderSnapshot_UIRoot());
+	RenderSnapshot_Text("UI_STATE", "input_owner", RenderSnapshot_UIInputOwner());
+
+	RenderSnapshot_Text("UI_STATE", "input_owner_identity", "PROCESS_HANDLE_NOT_PERSISTENT");
+
+	RenderSnapshot_Text("UI_STATE", "cursor_status", "AWAITING_UI_CURSOR_RENDER_CALLBACK");
+
+	RenderSnapshot_Text("CAMERA", "matrix_layout", "Fmatrix.m row-major memory; engine row-vector convention");
+
+	RenderSnapshot_Value("CAMERA", "aspect", Device.fASPECT);
+	RenderSnapshot_Value("CAMERA", "frame_delta_seconds", Device.fTimeDelta);
+
+	SnapshotMatrix("view", Device.mView);
+	SnapshotMatrix("world_projection", Device.mProject);
+	SnapshotMatrix("world_view_projection", Device.mFullTransform);
+
+	RenderSnapshot_Text("CAMERA", "projection_sample_point", "GRAPHICAL_BEGIN_BEFORE_BACKEND_FRAME");
+
+	RenderSnapshot_Text("TIMINGS", "d3d9_gpu_status", native ? "R4_QUERY_PROVIDER" : "NOT_INSTRUMENTED");
+
+	RenderSnapshot_Value("SETTINGS", "details_enabled", psDeviceFlags.test(rsDetails) ? 1 : 0);
+
+	if (Console)
+	{
+		float value = 0;
+		float minimum = 0;
+		float maximum = 0;
+
+		Console->GetFloat("hud_fov", value, minimum, maximum);
+		RenderSnapshot_Value("CAMERA", "configured_hud_fov_multiplier", value);
+
+		RenderSnapshot_Text("CAMERA", "hud_projection_source", "DRAW_PASS_TELEMETRY_WHEN_BOUND");
+
+		Console->GetFloat("r__detail_density", value, minimum, maximum);
+		RenderSnapshot_Value("SETTINGS", "detail_density", value);
+
+		Console->GetFloat("r__detail_radius", value, minimum, maximum);
+		RenderSnapshot_Value("SETTINGS", "detail_radius", value);
+	}
 #endif
 }
 void RenderSnapshot_EngineEnd(){
