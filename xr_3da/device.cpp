@@ -2,6 +2,7 @@
 #include "frustum.h"
 #include "KichRenderDevice.h"
 #include "KichR4Game.h"
+#include "RenderSnapshot.h"
 
 #pragma warning(disable : 4995)
 // mmsystem.h
@@ -35,6 +36,7 @@ BOOL CRenderDevice::Begin()
 	if (state == KichDeviceNeedsReset)
 		Reset();
 	// Other failures retain the legacy BeginScene/CHK_DX path.
+	RenderSnapshot_EngineBegin();
 	backend.BeginFrame();
 	FPU::m24r();
 	g_bRendering = TRUE;
@@ -84,6 +86,7 @@ void CRenderDevice::End(void)
 
 	g_bRendering = FALSE;
 	backend.EndFrame();
+	RenderSnapshot_EngineEnd();
 #endif
 }
 

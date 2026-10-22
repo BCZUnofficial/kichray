@@ -18,7 +18,7 @@ def main():
         flags = [os.environ.get("CXX", "g++"), "-std=c++11", "-Wall", "-Wextra", "-Werror", "-I"+str(HERE), "-I"+str(work)]
         for name, extra in [
             ("contract", [ROOT/"xr_3da/xrRender_R4/R4RendererAdapter.cpp"]),
-            ("budget", [ROOT/"xr_3da/KichR4Capture.cpp"]),
+            ("budget", [ROOT/"xr_3da/KichR4Capture.cpp",ROOT/"xr_3da/RenderSnapshot.cpp"]),
         ]:
             output = work/name
             subprocess.run([*flags, str(HERE/(name+"_tests.cpp")), *map(str, extra), "-o", str(output)], check=True)

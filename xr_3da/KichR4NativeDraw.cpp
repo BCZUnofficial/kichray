@@ -5,6 +5,8 @@
 #include "KichR4CaptureData.h"
 #include "ResourceManager.h"
 #include "KichR4LevelOption.h"
+#include "KichR4DetailData.h"
+#include "RenderSnapshot.h"
 #include <map>
 #include <string>
 #include <chrono>
@@ -42,6 +44,7 @@ void KichR4_NativeElement(ShaderElement* e){active_shader.clear();effect=0;if(e 
 void KichR4_NativeTexture(uint32_t stage,CTexture* t){if(stage<16){textures[stage]=t;if(t)t->bind(stage);}}
 double KichR4_NativeQueueTime(){return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-queue_begin).count();}
 void KichR4_NativeBegin(uint32_t width,uint32_t height,uint32_t frame){menu_pp=menu_overlay=false;queue_begin=std::chrono::steady_clock::now();memset(states,0,sizeof(states));style=kich_r4_capture::Style();states[D3DRS_ZENABLE]=states[D3DRS_ZWRITEENABLE]=1;
+    KichR4_DetailFrame().ClearFrame(frame);
     states[D3DRS_CULLMODE]=D3DCULL_CCW;states[D3DRS_SRCBLEND]=D3DBLEND_SRCALPHA;states[D3DRS_DESTBLEND]=D3DBLEND_INVSRCALPHA;states[D3DRS_ALPHAFUNC]=D3DCMP_GREATER;
     states[D3DRS_COLORWRITEENABLE]=15;states[255]=D3DTADDRESS_WRAP;effect=0;active_shader.clear();memset(textures,0,sizeof(textures));
     KichR4_CaptureBeginFrame(width,height,frame);kich_r4_capture::State* s=KichR4_CaptureState();if(s){s->frame.renderer_seen=true;s->frame.ui_seen=true;}
@@ -53,7 +56,7 @@ void KichR4_NativeFillRect(int32_t left,int32_t top,int32_t right,int32_t bottom
         for(unsigned i=0;i<4;++i)b.vertices.push_back(b.Screen(x[i]-.5f,y[i]-.5f,0,1,0,0,color));
         const uint32_t indices[6]={0,1,2,2,1,3};for(unsigned i=0;i<6;++i)b.indices.push_back(base+indices[i]);
         Style draw;draw.blend=draw.depth=draw.write=0;draw.cull=KICH_R4_CULL_NONE;draw.alpha_func=8;
-        Command command(first,6,2,std::string(),draw);command.effect=menu_pp?7:menu_overlay?8:0;b.commands.push_back(command);++b.ui;
+        Command command(first,6,2,std::string(),draw);command.console=g_render_snapshot_console;command.effect=menu_pp?7:menu_overlay?8:0;b.commands.push_back(command);++b.ui;
     }catch(const std::exception& e){s->frame.Fail(e.what());}
 }
 void KichR4_NativeDraw(void* declaration,void* vb,void* ib,uint32_t stride,uint32_t topology,uint32_t base,uint32_t start,uint32_t vertex_count,uint32_t first,uint32_t primitives,bool indexed){
@@ -69,6 +72,7 @@ void KichR4_NativeDraw(void* declaration,void* vb,void* ib,uint32_t stride,uint3
         const uint32_t n=topology==D3DPT_TRIANGLELIST?primitives*3:topology==D3DPT_TRIANGLESTRIP || topology==D3DPT_TRIANGLEFAN?primitives+2:
             topology==D3DPT_LINELIST?primitives*2:topology==D3DPT_LINESTRIP?primitives+1:topology==D3DPT_POINTLIST?primitives:0;
         Check(n && n<4u*1024u*1024u,"native primitive count");Check(!indexed || uint64_t(first+n)*2<=in,"native index range");
+        if(Has(active_shader.c_str(),"detail")){kich_r4_detail::Frame& details=KichR4_DetailFrame();++details.legacy_draws;details.legacy_vertices+=indexed?vertex_count:n;details.legacy_indices+=indexed?n:0;}
         Style draw;KichR4_NativeStyle(draw);if(screen){draw.depth=draw.write=0;draw.cull=KICH_R4_CULL_NONE;draw.min_z=0;draw.max_z=1;draw.clamp=1;}
         const uint32_t layer=screen?2:draw.max_z<.1f?1:0;
         const std::string texture=(uv || effect==2 || effect==3)?TextureName(0):std::string();const std::string secondary=(effect==2 || effect==3)?TextureName(1):std::string();
@@ -108,6 +112,8 @@ void KichR4_NativeDraw(void* declaration,void* vb,void* ib,uint32_t stride,uint3
                 Vertex quad[4]={va,va,vbv,vbv};for(unsigned j=0;j<4;++j){const float sign=j&1?1.f:-1.f;quad[j].p[0]+=sign*x*quad[j].p[3];quad[j].p[1]+=sign*y*quad[j].p[3];batch.vertices.push_back(quad[j]);}
                 const uint32_t ix[]={0,1,2,2,1,3};for(unsigned j=0;j<6;++j)batch.indices.push_back(q+ix[j]);}}
         Command cmd={ibase,static_cast<uint32_t>(batch.indices.size())-ibase,layer,texture,draw};cmd.effect=screen && menu_pp?7:screen && menu_overlay?8:effect;cmd.secondary=secondary;
+        if(g_render_snapshot_active){cmd.shader=active_shader;cmd.resource=texture;cmd.skin="CPU_CAPTURE_STREAM";}
+        cmd.console=g_render_snapshot_console;
         if(effect==2){cmd.style.depth=1;cmd.style.write=0;cmd.style.cull=KICH_R4_CULL_NONE;}
         batch.commands.push_back(cmd);if(layer==2)++batch.ui;else if(layer==1)++batch.hands;else ++batch.models;
         (void)vertex_count;

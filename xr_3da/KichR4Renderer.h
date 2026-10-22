@@ -2,6 +2,7 @@
 #define KICH_R4_RENDERER_H
 #include "KichR4Deferred.h"
 #include "KichR4NativeTools.h"
+#include "KichR4Detail.h"
 
 /* G1 entry point. C ABI, pack(4), __cdecl; no engine/STL/D3D objects.
  * This revision advertises the transitional implementation explicitly. It
@@ -19,7 +20,7 @@
  * All buffers/strings are borrowed only for a call; output storage is caller
  * owned. No exceptions or CRT allocations may cross this boundary.
  */
-#define KICH_R4_RENDERER_ABI UINT32_C(0x00010000)
+#define KICH_R4_RENDERER_ABI UINT32_C(0x00020000)
 #define KICH_R4_EXPORT_RENDERER "KichR4_GetRendererAPI"
 #define KICH_R4_RENDERER_TRANSITIONAL UINT32_C(1)
 
@@ -39,11 +40,12 @@ typedef struct KichR4RendererAPI {
     KichR4StreamAPI stream;
     KichR4DeferredAPI deferred;
     KichR4NativeToolsAPI tools;
+    KichR4DetailAPI details;
 } KichR4RendererAPI;
 #pragma pack(pop)
 typedef char KichR4BuildInfo_size[(sizeof(KichR4BuildInfo)==288)?1:-1];
 #if defined(_M_IX86) || defined(__i386__)
-typedef char KichR4RendererAPI_x86_size[(sizeof(KichR4RendererAPI)==560)?1:-1];
+typedef char KichR4RendererAPI_x86_size[(sizeof(KichR4RendererAPI)==596)?1:-1];
 #endif
 typedef int32_t (KICH_R4_CALL *KichR4GetRendererAPIFn)(uint32_t,KichR4RendererAPI*,uint32_t);
 #ifdef __cplusplus

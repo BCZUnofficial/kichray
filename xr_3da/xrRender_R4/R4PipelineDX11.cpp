@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "R4PipelineDX11.h"
+#include "../KichR4Detail.h"
 namespace kich_r4 {
 namespace {
 template<class T>void ReleasePipeline(T*& p){if(p){p->Release();p=NULL;}}
@@ -10,7 +11,7 @@ DXGI_FORMAT Format(uint32_t f){switch(f){case KICH_R4_FLOAT2:return DXGI_FORMAT_
 case KICH_R4_FLOAT3:return DXGI_FORMAT_R32G32B32_FLOAT;case KICH_R4_FLOAT4:return DXGI_FORMAT_R32G32B32A32_FLOAT;
 case KICH_R4_UNORM8X4:return DXGI_FORMAT_R8G8B8A8_UNORM;default:return DXGI_FORMAT_UNKNOWN;}}
 }
-PipelineDX11::PipelineDX11():layout_(NULL),vs_(NULL),ps_(NULL),shadow_sampler_(NULL),stride(0),constant_bytes(0),textured(false),stream(false),advanced(false)
+PipelineDX11::PipelineDX11():layout_(NULL),vs_(NULL),ps_(NULL),shadow_sampler_(NULL),stride(0),constant_bytes(0),textured(false),stream(false),advanced(false),instanced(false)
 {for(unsigned i=0;i<6;++i)raster_[i]=NULL;for(unsigned i=0;i<3;++i)depth_[i]=NULL;
  for(unsigned i=0;i<2;++i){sampler_[i]=NULL;}for(unsigned i=0;i<100;++i){blends_[i]=NULL;}}
 PipelineDX11::~PipelineDX11(){
@@ -22,14 +23,21 @@ PipelineDX11::~PipelineDX11(){
     for(unsigned i=0;i<100;++i)ReleasePipeline(blends_[i]);
 }
 HRESULT PipelineDX11::Create(ID3D11Device* hw,const KichR4PipelineDesc& d,
-    ID3D11VertexShader* vs,ID3D11PixelShader* ps,ID3DBlob* code,bool with_texture,bool with_stream,bool with_advanced)
+    ID3D11VertexShader* vs,ID3D11PixelShader* ps,ID3DBlob* code,bool with_texture,bool with_stream,bool with_advanced,bool with_instances)
 {
     D3D11_INPUT_ELEMENT_DESC elements[8]={};
     for(uint32_t i=0;i<d.element_count;++i){const KichR4VertexElement& e=d.elements[i];
         elements[i].SemanticName=Semantic(e.semantic);elements[i].SemanticIndex=e.semantic_index;
         elements[i].Format=Format(e.format);elements[i].AlignedByteOffset=e.byte_offset;
         elements[i].InputSlotClass=D3D11_INPUT_PER_VERTEX_DATA;}
-    HRESULT hr=hw->CreateInputLayout(elements,d.element_count,code->GetBufferPointer(),code->GetBufferSize(),&layout_);
+    uint32_t element_count=d.element_count;
+    if(with_instances){
+        element_count=6;
+        elements[0]={"POSITION",0,DXGI_FORMAT_R32G32B32_FLOAT,0,0,D3D11_INPUT_PER_VERTEX_DATA,0};
+        elements[1]={"TEXCOORD",0,DXGI_FORMAT_R32G32B32A32_FLOAT,0,12,D3D11_INPUT_PER_VERTEX_DATA,0};
+        for(unsigned i=0;i<4;++i)elements[i+2]={"TEXCOORD",i+1,DXGI_FORMAT_R32G32B32A32_FLOAT,1,i*16,D3D11_INPUT_PER_INSTANCE_DATA,1};
+    }
+    HRESULT hr=hw->CreateInputLayout(elements,element_count,code->GetBufferPointer(),code->GetBufferSize(),&layout_);
     if(FAILED(hr))return hr;
     const D3D11_CULL_MODE modes[]={D3D11_CULL_BACK,D3D11_CULL_FRONT,D3D11_CULL_NONE};
     for(unsigned i=0;i<(with_stream?6u:3u);++i){D3D11_RASTERIZER_DESC r={};r.FillMode=D3D11_FILL_SOLID;
@@ -50,7 +58,7 @@ HRESULT PipelineDX11::Create(ID3D11Device* hw,const KichR4PipelineDesc& d,
         s.BorderColor[0]=s.BorderColor[1]=s.BorderColor[2]=s.BorderColor[3]=1;
         s.MaxAnisotropy=1;s.ComparisonFunc=D3D11_COMPARISON_LESS_EQUAL;s.MaxLOD=D3D11_FLOAT32_MAX;
         hr=hw->CreateSamplerState(&s,&shadow_sampler_);if(FAILED(hr))return hr;}
-    vs_=vs;ps_=ps;vs_->AddRef();ps_->AddRef();stride=d.vertex_stride;textured=with_texture;stream=with_stream;advanced=with_advanced;return S_OK;
+    vs_=vs;ps_=ps;vs_->AddRef();ps_->AddRef();stride=d.vertex_stride;textured=with_texture;stream=with_stream;advanced=with_advanced;instanced=with_instances;return S_OK;
 }
 HRESULT PipelineDX11::Blend(ID3D11DeviceContext* ctx,const KichR4StreamDrawDesc& d,ID3D11BlendState** out)
 {
@@ -71,13 +79,15 @@ HRESULT PipelineDX11::Blend(ID3D11DeviceContext* ctx,const KichR4StreamDrawDesc&
     }*out=blends_[at];return S_OK;
 }
 HRESULT PipelineDX11::Draw(ID3D11DeviceContext* ctx,const KichR4DrawIndexedDesc& d,
-    ID3D11Buffer* vb,ID3D11Buffer* ib,ID3D11Buffer* cb,uint32_t index_stride,ID3D11ShaderResourceView* texture,const KichR4StreamDrawDesc* extra,ID3D11ShaderResourceView* const* inputs)
+    ID3D11Buffer* vb,ID3D11Buffer* ib,ID3D11Buffer* cb,uint32_t index_stride,ID3D11ShaderResourceView* texture,const KichR4StreamDrawDesc* extra,ID3D11ShaderResourceView* const* inputs,ID3D11Buffer* instances,uint32_t count,uint32_t first)
 {
     ID3D11BlendState* blend=NULL;
     if(extra){const HRESULT hr=Blend(ctx,*extra,&blend);if(FAILED(hr))return hr;}
     const UINT offset=0;ctx->IASetInputLayout(layout_);
     ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     ctx->IASetVertexBuffers(0,1,&vb,&stride,&offset);
+    const UINT instance_stride=sizeof(KichR4DetailInstance);
+    ctx->IASetVertexBuffers(1,1,&instances,&instance_stride,&offset);
     ctx->IASetIndexBuffer(ib,index_stride==2?DXGI_FORMAT_R16_UINT:DXGI_FORMAT_R32_UINT,0);
     ctx->VSSetShader(vs_,NULL,0);ctx->PSSetShader(ps_,NULL,0);
     ctx->GSSetShader(NULL,NULL,0);ctx->HSSetShader(NULL,NULL,0);ctx->DSSetShader(NULL,NULL,0);
@@ -89,7 +99,8 @@ HRESULT PipelineDX11::Draw(ID3D11DeviceContext* ctx,const KichR4DrawIndexedDesc&
     if(extra){D3D11_VIEWPORT view={};UINT n=1;ctx->RSGetViewports(&n,&view);view.MinDepth=extra->min_depth;view.MaxDepth=extra->max_depth;
         ctx->RSSetViewports(1,&view);if(extra->scissor_enable){const D3D11_RECT rect={extra->scissor[0],extra->scissor[1],extra->scissor[2],extra->scissor[3]};ctx->RSSetScissorRects(1,&rect);}}
     ctx->OMSetBlendState(blend,NULL,0xffffffffu);
-    ctx->DrawIndexed(d.index_count,d.start_index,0);
+    if(instanced)ctx->DrawIndexedInstanced(d.index_count,count,d.start_index,0,first);
+    else ctx->DrawIndexed(d.index_count,d.start_index,0);
     return S_OK;
 }
 }

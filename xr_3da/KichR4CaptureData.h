@@ -104,8 +104,9 @@ inline void Transform(const float* p,const Matrix& m,float* out) {
     for(unsigned c=0;c<4;++c)out[c]=p[0]*m.m[c]+p[1]*m.m[4+c]+p[2]*m.m[8+c]+m.m[12+c];
 }
 inline uint32_t RGBA(uint32_t argb){return (argb&0xff00ff00u)|((argb&0xffu)<<16)|((argb>>16)&0xffu);}
-struct Command {uint32_t first,count,layer;std::string texture;Style style;uint32_t effect;std::string secondary;
-    Command(uint32_t f,uint32_t n,uint32_t l,const std::string& t,const Style& s):first(f),count(n),layer(l),texture(t),style(s),effect(0){}
+struct Command {uint32_t first,count,layer;std::string texture;Style style;uint32_t effect;std::string secondary,resource,shader,skin;
+    bool console;
+    Command(uint32_t f,uint32_t n,uint32_t l,const std::string& t,const Style& s):first(f),count(n),layer(l),texture(t),style(s),effect(0),console(false){}
 };
 struct Batch {
     uint32_t width,height,engine_frame,models,hands,ui;bool renderer_seen,ui_seen;unsigned ui_scope;
@@ -132,7 +133,7 @@ struct Batch {
         throw std::runtime_error(detail);
     }
     void Model(const void* identity,const Mesh& mesh,const Matrix& world,const Matrix& vp,const Matrix* bones,uint32_t bone_count,
-        uint32_t count,uint32_t first,uint32_t tris,const Style& style,uint32_t skin_mode=KICH_R4_SKIN_SOFTWARE,const char* name="<unnamed model>") {
+        uint32_t count,uint32_t first,uint32_t tris,const Style& style,uint32_t skin_mode=KICH_R4_SKIN_SOFTWARE,const char* name="<unnamed model>",bool diagnostic=false) {
         Check(count && count<=mesh.vertices.size() && tris && uint64_t(first)+uint64_t(tris)*3<=mesh.indices.size(),"model draw range");
         Check(!mesh.skinned || (bones && mesh.bones<=bone_count),"model bone pose range");
         Check(!mesh.two_weights || skin_mode==KICH_R4_SKIN_SOFTWARE || skin_mode==KICH_R4_SKIN_HARDWARE,
@@ -148,6 +149,7 @@ struct Batch {
         Reserve(count,tris*3,name,layer);const uint32_t base=static_cast<uint32_t>(vertices.size());const Matrix mvp=kich_r4_scene::Multiply(world,vp);
         const Matrix normal_world=kich_r4_lighting::NormalMatrix(world);
         Command cmd={static_cast<uint32_t>(indices.size()),tris*3,layer,mesh.texture,style};
+        if(diagnostic){cmd.resource=name;cmd.skin=mesh.skinned?"CPU_CAPTURE_SKIN":"CPU_CAPTURE_RIGID";}
         for(uint32_t i=0;i<count;++i){const SourceVertex& src=mesh.vertices[i];float p[4]={src.p[0],src.p[1],src.p[2],1};
             kich_r4_scene::Vec3 n=UnpackNormal(src.normal);
             if(mesh.skinned){float a[4];Transform(src.p,bones[src.bone[0]],a);

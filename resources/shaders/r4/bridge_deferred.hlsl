@@ -18,6 +18,16 @@ Varying VSStatic(StaticInput v){Varying o;o.p=mul(float4(v.p,1),mvp);o.uv=v.uv;o
 Varying VSModel(ModelInput v){Varying o;o.p=v.p;o.uv=v.uv;o.c=v.c;o.n=v.n;o.w=v.w;return o;}
 Varying VSModelShadow(ModelInput v){Varying o=VSModel(v);o.p=mul(float4(v.w,1),mvp);return o;}
 Varying VSScreen(ScreenInput v){Varying o=(Varying)0;o.p=float4(v.p,1);o.uv=v.uv;o.c=1;return o;}
+// G3a: one copy of mesh vertices; per-instance 3x4 transform and sun/hemi.
+struct DetailInput {float3 p:POSITION;float4 misc:TEXCOORD0;
+    float4 m0:TEXCOORD1;float4 m1:TEXCOORD2;float4 m2:TEXCOORD3;float4 light:TEXCOORD4;};
+Varying VSDetail(DetailInput v){Varying o=(Varying)0;float4 local=float4(v.p,1);
+    float3 p=float3(dot(v.m0,local),dot(v.m1,local),dot(v.m2,local));
+    if(world[2].x>.5){float f=2.8284271*frac(dot(float4(p,1),world[0]))-1.4142136;
+        float cyclic=f*f-1;float height=p.y-v.m1.w;
+        p.xz+=world[1].xz*(height*cyclic)*v.misc.z;}
+    o.p=mul(float4(p,1),mvp);o.w=p;o.uv=v.misc.xy;o.c=1;
+    o.n=float4(normalize(p-float3(v.m0.w,v.m1.w-.75,v.m2.w)),v.light.y);return o;}
 float4 Base(Varying v){float4 c=image0.Sample(surface,v.uv)*v.c;
     if(alpha.w>9.5 && alpha.w<10.5){float4 mask=shadow0.Sample(surface,v.uv);mask/=max(dot(mask,1),.0001);
         float2 tc=v.uv*50;float3 detail=shadow1.Sample(surface,tc).rgb*mask.r+shadow2.Sample(surface,tc).rgb*mask.g+

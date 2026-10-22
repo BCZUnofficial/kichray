@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 root=Path(__file__).resolve().parents[2]
 tool=os.environ.get('GLSLANG','glslangValidator')
-entries=('VSStatic','VSModel','VSModelShadow','VSScreen','PSGeometry','PSShadow','PSSun','PSLocal','PSForwardSun','PSForwardLocal','PSPlain','PSCombine')
+entries=('VSStatic','VSModel','VSModelShadow','VSScreen','VSDetail','PSGeometry','PSShadow','PSSun','PSLocal','PSForwardSun','PSForwardLocal','PSPlain','PSCombine')
 source=root/'resources/shaders/r4/bridge_deferred.hlsl'
 with tempfile.TemporaryDirectory(prefix='kich-b44-hlsl-') as folder:
     reflection=''
@@ -22,4 +22,4 @@ with tempfile.TemporaryDirectory(prefix='kich-b44-hlsl-') as folder:
             raise SystemExit('Missing/wrong HLSL member offset: '+name)
     if not re.search(r'Frame: .*size 816\b',reflection):
         raise SystemExit('Wrong HLSL cbuffer size')
-print('PASS: 12 HLSL entries; 16 cbuffer member offsets and 816-byte size (glslang, not FXC/GPU)')
+print('PASS: 13 HLSL entries; 16 cbuffer member offsets and 816-byte size (glslang, not FXC/GPU)')

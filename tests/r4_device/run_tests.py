@@ -56,7 +56,9 @@ def unit(old):
     for path, names in TARGETS.items():
         content = subprocess.check_output(["git", "show", BASE+":"+path], cwd=ROOT).decode() if old else (ROOT/path).read_text()
         bodies.extend(method(content, name) for name in names)
-    return '#include "fake_engine.h"\n' + ("" if old else '#include "'+str(ROOT/'xr_3da/KichRenderDevice_DX9.cpp')+'"\n') + "\n\n".join(bodies)
+    # Snapshot internals have their own production tests. This seam isolates
+    # and compares device/GPU ownership traces with capture disabled.
+    return '#include "fake_engine.h"\ninline void RenderSnapshot_EngineBegin(){}\ninline void RenderSnapshot_EngineEnd(){}\n' + ("" if old else '#include "'+str(ROOT/'xr_3da/KichRenderDevice_DX9.cpp')+'"\n') + "\n\n".join(bodies)
 
 
 def main():

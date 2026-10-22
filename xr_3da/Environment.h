@@ -236,6 +236,7 @@ class ENGINE_API CEnvironment
 
   public:
 	float wind_strength_factor;
+	float SnapshotGameTime() const { return fGameTime; }
 	float wind_gust_factor;
 	// Environments
 	CEnvDescriptorMixer CurrentEnv;

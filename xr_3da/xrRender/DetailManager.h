@@ -1,4 +1,4 @@
-// DetailManager.h: interface for the CDetailManager class.
+ï»¿// DetailManager.h: interface for the CDetailManager class.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -30,11 +30,11 @@ class CDetailManager
 {
   public:
 	struct SlotItem
-	{ // îäèí êóñòèê
+	{ // Ð¾Ð´Ð¸Ð½ ÐºÑƒÑÑ‚Ð¸Ðº
 		float scale;
 		float scale_calculated;
 		Fmatrix mRotY;
-		u32 vis_ID; // èíäåêñ â visibility ñïèñêå îí æå òèï [íå êà÷àåòñÿ, êà÷àåòñÿ1, êà÷àåòñÿ2]
+		u32 vis_ID; // Ð¸Ð½Ð´ÐµÐºÑ Ð² visibility ÑÐ¿Ð¸ÑÐºÐµ Ð¾Ð½ Ð¶Ðµ Ñ‚Ð¸Ð¿ [Ð½Ðµ ÐºÐ°Ñ‡Ð°ÐµÑ‚ÑÑ, ÐºÐ°Ñ‡Ð°ÐµÑ‚ÑÑ1, ÐºÐ°Ñ‡Ð°ÐµÑ‚ÑÑ2]
 		float c_hemi;
 		float c_sun;
 #if RENDER == R_R1
@@ -44,9 +44,9 @@ class CDetailManager
 	DEFINE_VECTOR(SlotItem*, SlotItemVec, SlotItemVecIt);
 	struct SlotPart
 	{							//
-		u32 id;					// ID ìîäåëüêè
-		SlotItemVec items;		// ñïèñîê êóñòèêîâ
-		SlotItemVec r_items[3]; // ñïèñîê êóñòèêîâ for render
+		u32 id;					// ID Ð¼Ð¾Ð´ÐµÐ»ÑŒÐºÐ¸
+		SlotItemVec items;		// ÑÐ¿Ð¸ÑÐ¾Ðº ÐºÑƒÑÑ‚Ð¸ÐºÐ¾Ð²
+		SlotItemVec r_items[3]; // ÑÐ¿Ð¸ÑÐ¾Ðº ÐºÑƒÑÑ‚Ð¸ÐºÐ¾Ð² for render
 	};
 	enum SlotType
 	{
@@ -56,14 +56,14 @@ class CDetailManager
 		stFORCEDWORD = 0xffffffff
 	};
 	struct Slot
-	{ // ðàñïàêîâàíûé ñëîò ðàçìåðîì DETAIL_SLOT_SIZE
+	{ // Ñ€Ð°ÑÐ¿Ð°ÐºÐ¾Ð²Ð°Ð½Ñ‹Ð¹ ÑÐ»Ð¾Ñ‚ Ñ€Ð°Ð·Ð¼ÐµÑ€Ð¾Ð¼ DETAIL_SLOT_SIZE
 		struct
 		{
 			u32 empty : 1;
 			u32 type : 1;
 			u32 frame : 30;
 		};
-		int sx, sz;					// êîîðäèíàòû ñëîòà X x Y
+		int sx, sz;					// ÐºÐ¾Ð¾Ñ€Ð´Ð¸Ð½Ð°Ñ‚Ñ‹ ÑÐ»Ð¾Ñ‚Ð° X x Y
 		vis_data vis;				//
 		SlotPart G[dm_obj_in_slot]; //
 
@@ -130,7 +130,7 @@ class CDetailManager
 	int cache_cx;
 	int cache_cz;
 
-	PSS poolSI; // pool èç êîòîðîãî âûäåëÿþòñÿ SlotItem
+	PSS poolSI; // pool Ð¸Ð· ÐºÐ¾Ñ‚Ð¾Ñ€Ð¾Ð³Ð¾ Ð²Ñ‹Ð´ÐµÐ»ÑÑŽÑ‚ÑÑ SlotItem
 
 	void UpdateVisibleM();
 	void UpdateVisibleS();
@@ -142,7 +142,11 @@ class CDetailManager
 
 	IC bool UseVS()
 	{
+#ifdef KICH_R4_NATIVE_FRONTEND
+		return true; // Native detail VS does not depend on legacy D3D9 caps.
+#else
 		return HW.Caps.geometry_major >= 1;
+#endif
 	}
 
 	// Software processor

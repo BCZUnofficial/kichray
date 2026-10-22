@@ -52,7 +52,7 @@ def main():
         flags = [cxx,"-std=c++11","-O2","-Wall","-Wextra","-Werror","-I"+str(HERE),"-I"+folder,"-I"+str(ROOT/"xr_3da")]
         for name in ("data", "engine", "session", "skin"):
             output = Path(folder)/name
-            sources = [str(HERE/(name+"_tests.cpp")),str(ROOT/"xr_3da/KichR4Capture.cpp")]
+            sources = [str(HERE/(name+"_tests.cpp")),str(ROOT/"xr_3da/KichR4Capture.cpp"),str(ROOT/"xr_3da/RenderSnapshot.cpp")]
             if name == "engine": sources.append(str(adapter))
             subprocess.run([*flags,*sources,"-o",str(output)],check=True)
             subprocess.run([str(output)],check=True)

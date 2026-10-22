@@ -2,6 +2,7 @@
 #pragma hdrstop
 
 #include "xrRender_console.h"
+#include "../RenderSnapshot.h"
 
 u32 ps_Preset = 2;
 xr_token qpreset_token[] = {{"Minimum", 0}, {"Low", 1}, {"Default", 2}, {"High", 3}, {"Extreme", 4}, {0, 0}};
@@ -283,8 +284,16 @@ class CCC_BuildSSA : public IConsole_Command
 };
 #endif
 //-----------------------------------------------------------------------
+class CCC_FrameSnapshot : public IConsole_Command {
+public:
+    CCC_FrameSnapshot(LPCSTR name):IConsole_Command(name){}
+    void Execute(LPCSTR args){if(!args || xr_strcmp(args,"1")){Msg("! usage: d_snapshot 1");return;}
+        Msg(RenderSnapshot_Request()?"[snapshot] armed: next complete frame":"! [snapshot] request queue is full");}
+    void Save(IWriter*){}
+};
 void xrRender_initconsole()
 {
+	CMD1(CCC_FrameSnapshot,"d_snapshot");
 	CMD3(CCC_Preset, "_preset", &ps_Preset, qpreset_token);
 
 	// Common

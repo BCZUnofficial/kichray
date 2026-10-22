@@ -3,6 +3,7 @@
 #include "..\fbasicvisual.h"
 #include "..\customhud.h"
 #include "..\xr_object.h"
+#include "../RenderSnapshot.h"
 
 IC bool pred_sp_sort(ISpatial* _1, ISpatial* _2)
 {
@@ -153,6 +154,7 @@ void CRender::render_main(Fmatrix& m_ViewProjection, bool _fportals)
 
 void CRender::render_menu()
 {
+	if(g_render_snapshot_active)RenderSnapshot_Pass("MENU_UI");
 	//	Globals
 	RCache.set_CullMode(CULL_CCW);
 	RCache.set_Stencil(FALSE);
@@ -201,6 +203,7 @@ void CRender::render_menu()
 extern u32 g_r;
 void CRender::Render()
 {
+	if(g_render_snapshot_active)RenderSnapshot_Pass("SCENE_PREPARE");
 	g_r = 1;
 	VERIFY(0 == mapDistort.size());
 
@@ -248,6 +251,7 @@ void CRender::Render()
 		Device.Statistic->RenderCALC.End();
 
 		// flush
+		if(g_render_snapshot_active)RenderSnapshot_Pass("Z_PREFILL");
 		Target->phase_scene_prepare();
 		RCache.set_ColorWriteEnable(FALSE);
 		r_dsgraph_render_graph(0);
@@ -297,6 +301,7 @@ void CRender::Render()
 	Device.Statistic->RenderCALC.End();
 
 	BOOL split_the_scene_to_minimize_wait = FALSE;
+	if(g_render_snapshot_active)RenderSnapshot_Pass("GBUFFER");
 	if (ps_r2_ls_flags.test(R2FLAG_EXP_SPLIT_SCENE))
 		split_the_scene_to_minimize_wait = TRUE;
 
@@ -433,6 +438,7 @@ void CRender::Render()
 	// Directional light - fucking sun
 	if (bSUN)
 	{
+		if(g_render_snapshot_active)RenderSnapshot_Pass("SUN_SHADOW_AND_LIGHT");
 		RImplementation.stats.l_visible++;
 		render_sun_near();
 		render_sun();
@@ -441,6 +447,7 @@ void CRender::Render()
 	}
 
 	// Lighting, non dependant on OCCQ
+	if(g_render_snapshot_active)RenderSnapshot_Pass("LOCAL_SHADOW_AND_LIGHT");
 	Target->phase_accumulator();
 	HOM.Disable();
 	render_lights(LP_normal);
@@ -449,12 +456,14 @@ void CRender::Render()
 	render_lights(LP_pending);
 
 	// Postprocess
+	if(g_render_snapshot_active)RenderSnapshot_Pass("COMBINE_POSTPROCESS");
 	Target->phase_combine();
 	VERIFY(0 == mapDistort.size());
 }
 
 void CRender::render_forward()
 {
+	if(g_render_snapshot_active)RenderSnapshot_Pass("FORWARD_TRANSPARENCY");
 	VERIFY(0 == mapDistort.size());
 	RImplementation.o.distortion = RImplementation.o.distortion_enabled; // enable distorion
 
@@ -474,4 +483,5 @@ void CRender::render_forward()
 	}
 
 	RImplementation.o.distortion = FALSE; // disable distorion
+	if(g_render_snapshot_active)RenderSnapshot_Pass("COMBINE_POSTPROCESS");
 }

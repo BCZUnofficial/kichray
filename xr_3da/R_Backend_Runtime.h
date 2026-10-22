@@ -8,6 +8,7 @@
 #include "sh_rt.h"
 #include "KichR4Capture.h"
 #include "KichR4Native.h"
+#include "RenderSnapshot.h"
 
 IC void R_xforms::set_c_w(R_constant* C)
 {
@@ -159,6 +160,7 @@ IC void CBackend::set_Element(ShaderElement* S, u32 pass)
 {
 	if(!S || pass>=S->passes.size())return;
 	SPass& P = *(S->passes[pass]);
+	if(g_render_snapshot_active)RenderSnapshot_Shaders(P.vs?P.vs->cName.c_str():"NONE",P.ps?P.ps->cName.c_str():"NONE");
 	set_States(P.state);
 	set_PS(P.ps);
 	set_VS(P.vs);
@@ -185,6 +187,7 @@ ICF void CBackend::set_Format(IDirect3DVertexDeclaration9* _decl)
 
 ICF void CBackend::set_PS(IDirect3DPixelShader9* _ps, LPCSTR _n)
 {
+	if(g_render_snapshot_active)RenderSnapshot_ShaderStage(false,_n);
 	if (ps != _ps)
 	{
 		PGO(Msg("PGO:Pshader:%x", _ps));
@@ -199,6 +202,7 @@ ICF void CBackend::set_PS(IDirect3DPixelShader9* _ps, LPCSTR _n)
 
 ICF void CBackend::set_VS(IDirect3DVertexShader9* _vs, LPCSTR _n)
 {
+	if(g_render_snapshot_active)RenderSnapshot_ShaderStage(true,_n);
 	if (vs != _vs)
 	{
 		PGO(Msg("PGO:Vshader:%x", _vs));
@@ -249,7 +253,9 @@ ICF void CBackend::Render(D3DPRIMITIVETYPE T, u32 baseV, u32 startV, u32 countV,
 	stat.verts += countV;
 	stat.polys += PC;
 	constants.flush();
-	CHK_DX(HW.pDevice->DrawIndexedPrimitive(T, baseV, startV, countV, startI, PC));
+	const HRESULT draw_result=HW.pDevice->DrawIndexedPrimitive(T, baseV, startV, countV, startI, PC);
+	if(g_render_snapshot_active)RenderSnapshot_D3D9Draw(vb,ib,vb_stride,T,countV,startI,PC,true,draw_result);
+	CHK_DX(draw_result);
 	PGO(Msg("PGO:DIP:%dv/%df", countV, PC));
 }
 
@@ -264,7 +270,9 @@ ICF void CBackend::Render(D3DPRIMITIVETYPE T, u32 startV, u32 PC)
 	stat.verts += 3 * PC;
 	stat.polys += PC;
 	constants.flush();
-	CHK_DX(HW.pDevice->DrawPrimitive(T, startV, PC));
+	const HRESULT draw_result=HW.pDevice->DrawPrimitive(T, startV, PC);
+	if(g_render_snapshot_active)RenderSnapshot_D3D9Draw(vb,NULL,vb_stride,T,0,0,PC,false,draw_result);
+	CHK_DX(draw_result);
 	PGO(Msg("PGO:DIP:%dv/%df", 3 * PC, PC));
 }
 

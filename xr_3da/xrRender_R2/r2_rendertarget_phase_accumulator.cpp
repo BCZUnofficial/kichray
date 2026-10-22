@@ -1,10 +1,12 @@
 #include "stdafx.h"
+#include "../RenderSnapshot.h"
 
 extern void kich_wet_surfaces_render();
 extern void kich_wet_objects_finish();
 
 void CRenderTarget::phase_accumulator()
 {
+	if(g_render_snapshot_active)RenderSnapshot_Pass("LIGHT_ACCUMULATION");
 	// KICH_WET_V1: run once per frame, after the G-buffer/wallmarks exist
 	// and immediately before the first lighting accumulation pass.
 	if (dwAccumulatorClearMark != Device.dwFrame)

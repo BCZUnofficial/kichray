@@ -3,6 +3,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "stdafx.h"
+#include "RenderSnapshot.h"
 #include "KichR4Native.h"
 #include "kichgelkhut_console_filter.h"
 #include "igame_level.h"
@@ -187,6 +188,7 @@ void CConsole::OnRender()
 
 	if (!bVisible)
 		return;
+	g_render_snapshot_console=g_render_snapshot_active;
 	if (0 == pFont)
 		pFont = xr_new<CGameFont>("hud_font_di", CGameFont::fsDeviceIndependent);
 
@@ -283,6 +285,7 @@ void CConsole::OnRender()
 		}
 	}
 	pFont->OnRender();
+	g_render_snapshot_console=false;
 }
 
 void CConsole::OnPressKey(int dik, BOOL bHold)

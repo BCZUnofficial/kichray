@@ -4,6 +4,7 @@
 #include "..\irenderable.h"
 #include "..\igame_persistent.h"
 #include "..\environment.h"
+#include "../RenderSnapshot.h"
 
 using namespace R_dsgraph;
 
@@ -34,6 +35,7 @@ void __fastcall mapNormal_Render(mapNormalItems& N)
 	for (; I != E; I++)
 	{
 		_NormalItem& Ni = *I;
+		if(g_render_snapshot_active)RenderSnapshot_Context("STATIC","UNKNOWN_RELEASE_VISUAL","DSGRAPH_NORMAL");
 		Ni.pVisual->Render(calcLOD(Ni.ssa, Ni.pVisual->vis.sphere.R));
 	}
 }
@@ -52,6 +54,7 @@ void __fastcall mapMatrix_Render(mapMatrixItems& N)
 	for (; I != E; I++)
 	{
 		_MatrixItem& Ni = *I;
+		if(g_render_snapshot_active)RenderSnapshot_Context("DYNAMIC_MODEL","UNKNOWN_RELEASE_VISUAL","DSGRAPH_MATRIX");
 		RCache.set_xform_world(Ni.Matrix);
 		RImplementation.apply_object(Ni.pObject);
 		RImplementation.apply_lmaterial();
@@ -67,6 +70,7 @@ void __fastcall sorted_L1(mapSorted_Node* N)
 	IRender_Visual* V = N->val.pVisual;
 	VERIFY(V && V->shader._get());
 	RCache.set_Element(N->val.se);
+	if(g_render_snapshot_active)RenderSnapshot_Context("SORTED_TRANSPARENT","UNKNOWN_RELEASE_VISUAL","DSGRAPH_SORTED");
 	RCache.set_xform_world(N->val.Matrix);
 	RImplementation.apply_object(N->val.pObject);
 	RImplementation.apply_lmaterial();

@@ -1,6 +1,7 @@
 /* EXE-owned CPU mirror. Borrowed stream pointers are consumed before Unlock. */
 #include "KichR4Capture.h"
 #include "KichR4CaptureData.h"
+#include "RenderSnapshot.h"
 namespace {
 kich_r4_capture::State* capture=NULL;
 template<class F>void GuardCapture(F action){if(!capture)return;try{action(*capture);}
@@ -55,7 +56,7 @@ void KichR4_CaptureSubmitModel(const kich_r4_capture::ModelInput& input){GuardCa
     if(mesh.two_weights && (mesh.ignored_weights || mesh.outside_weights) && input.skin_mode>=1 && input.skin_mode<=2){
         const uint32_t bit=1u<<input.skin_mode;if(!(mesh.diagnostic_modes&bit)){mesh.diagnostic_modes|=bit;
             c.Diagnostic("2W skin path: model="+found->second.name+"; mode="+(input.skin_mode==KICH_R4_SKIN_HARDWARE?"hardware clamp/u8":"software raw")+"; "+mesh.first_weight_detail);}}
-    try{c.frame.Model(input.visual,mesh,world,vp,bones,input.bone_count,input.count,input.first,input.triangles,input.style,input.skin_mode,found->second.name.c_str());}
+    try{c.frame.Model(input.visual,mesh,world,vp,bones,input.bone_count,input.count,input.first,input.triangles,input.style,input.skin_mode,found->second.name.c_str(),g_render_snapshot_active);}
     catch(const std::exception& e){c.frame.Fail(ModelError(found->second,e.what()).c_str());}
 });}
 

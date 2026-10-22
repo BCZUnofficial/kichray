@@ -1,9 +1,11 @@
 #include "stdafx.h"
+#include "../RenderSnapshot.h"
 
 extern int ps_r2_sun_shadow_cull;
 
 void CRenderTarget::phase_smap_direct(light* L, u32 sub_phase)
 {
+	if(g_render_snapshot_active)RenderSnapshot_Pass("SUN_SHADOW");
 	// Targets
 	if (RImplementation.o.HW_smap)
 		u_setrt(rt_smap_surf, NULL, NULL, rt_smap_depth->pRT);
@@ -60,6 +62,7 @@ void CRenderTarget::phase_smap_direct(light* L, u32 sub_phase)
 
 void CRenderTarget::phase_smap_direct_tsh(light* L, u32 sub_phase)
 {
+	if(g_render_snapshot_active)RenderSnapshot_Pass("SUN_SHADOW_TRANSPARENT");
 	VERIFY(RImplementation.o.Tshadows);
 	u32 _clr = 0xffffffff; // color_rgba(127,127,12,12);
 	RCache.set_ColorWriteEnable();

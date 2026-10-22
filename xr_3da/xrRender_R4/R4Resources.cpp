@@ -12,7 +12,11 @@
 #include "R4FrameDX11.h"
 #include "R4PipelineDX11.h"
 #include "R4DeferredRules.h"
+#include "R4DetailRules.h"
 #include "../KichR4NativeTools.h"
+#include "../KichR4Detail.h"
+#include "../RenderSnapshot.h"
+#include <stdio.h>
 #include "../KichR4Level.h"
 #include "../KichR4Dds.h"
 
@@ -67,13 +71,17 @@ struct Resource {
     ID3DBlob* bytecode; /* Retained for B4 input layouts and reflection. */
     uint32_t buffer_stride;
     bool initialized;
+    bool dynamic_instances;
+    uint32_t instance_count;
+    char shader_entry[96],pixel_entry[96];
+    float alpha[4];
     std::unique_ptr<PipelineDX11> pipeline;
     uint32_t* pipeline_released;
     std::vector<KichR4ShaderBinding> bindings;
     std::vector<KichR4ShaderVariable> variables;
     Resource() : texture(NULL), buffer(NULL), srv(NULL), rtv(NULL), dsv(NULL),
-        vs(NULL), ps(NULL), bytecode(NULL),buffer_stride(0),initialized(false),pipeline_released(NULL)
-        { memset(&info,0,sizeof(info)); info.struct_size=sizeof(info); }
+        vs(NULL), ps(NULL), bytecode(NULL),buffer_stride(0),initialized(false),dynamic_instances(false),instance_count(0),pipeline_released(NULL)
+        { memset(&info,0,sizeof(info)); info.struct_size=sizeof(info);memset(shader_entry,0,sizeof(shader_entry));memset(pixel_entry,0,sizeof(pixel_entry));memset(alpha,0,sizeof(alpha)); }
     ~Resource() {
         if(pipeline_released)++*pipeline_released;
         Release(dsv); Release(rtv); Release(srv); Release(texture); Release(buffer);
@@ -101,19 +109,21 @@ struct Device {
     FrameController frame;
     KichR4PassDesc pass;
     bool pass_active;
+    KichR4SnapshotSink snapshot_sink;
     struct ProfileSlot {ID3D11Query* disjoint;ID3D11Query* stamp[8];bool pending;
         ProfileSlot():disjoint(NULL),pending(false){memset(stamp,0,sizeof(stamp));}
         void Reset(){Release(disjoint);for(unsigned i=0;i<8;++i)Release(stamp[i]);pending=false;}
         ~ProfileSlot(){Reset();}} profile[4];
     uint32_t profile_write;bool profile_open;
     Device() : runtime(NULL), compiler(NULL), hw(NULL), context(NULL), compile(NULL),
-        reflect(NULL), thread(GetCurrentThreadId()), resources(ids),frame_driver(hw,context),frame(frame_driver),pass_active(false),profile_write(0),profile_open(false) {
+        reflect(NULL), thread(GetCurrentThreadId()), resources(ids),frame_driver(hw,context),frame(frame_driver),pass_active(false),snapshot_sink(NULL),profile_write(0),profile_open(false) {
         memset(&pass,0,sizeof(pass));
         memset(&stats,0,sizeof(stats)); stats.struct_size=sizeof(stats);
         memset(&geometry_stats,0,sizeof(geometry_stats));geometry_stats.struct_size=sizeof(geometry_stats);
     }
     void ClearResources() {
         pass_active=false;
+        snapshot_sink=NULL;
         if (context) { context->ClearState(); context->Flush(); }
         stats.released += resources.Size();
         resources.Clear();
@@ -280,6 +290,7 @@ int32_t KICH_R4_CALL CreateBuffer(KichR4Handle device, const KichR4BufferDesc* d
         hr=d->hw->CreateBuffer(&native,data ? &initial : NULL,&r->buffer); if (FAILED(hr)) return hr;
         r->info.kind=desc->kind; r->info.byte_size=desc->byte_size;
         r->buffer_stride=desc->stride;r->initialized=data!=NULL;
+        if(desc->kind==KICH_R4_CONSTANT_BUFFER && data && bytes==816)memcpy(r->alpha,static_cast<const unsigned char*>(data)+800,16);
         *out=d->Add(std::move(r)); return KICH_R4_OK;
     });
 }
@@ -374,6 +385,7 @@ int32_t KICH_R4_CALL CompileShader(KichR4Handle device, const KichR4ShaderDesc* 
         else hr=d->hw->CreatePixelShader(r->bytecode->GetBufferPointer(),r->bytecode->GetBufferSize(),NULL,&r->ps);
         if (FAILED(hr)) return hr;
         r->info.kind=desc->kind;
+        CopyName(r->shader_entry,sizeof(r->shader_entry),desc->entry);
         *out=d->Add(std::move(r)); return KICH_R4_OK;
     });
 }
@@ -503,7 +515,7 @@ int32_t ShaderConstants(const Resource& shader,uint32_t& bytes,bool texture=fals
     }
     return KICH_R4_OK;
 }
-int32_t CreatePipelineImpl(KichR4Handle device,const KichR4PipelineDesc* desc,KichR4Handle* out,bool texture,bool stream=false,bool advanced=false)
+int32_t CreatePipelineImpl(KichR4Handle device,const KichR4PipelineDesc* desc,KichR4Handle* out,bool texture,bool stream=false,bool advanced=false,bool instanced=false)
 {
     if(!out)return KICH_R4_E_ARGUMENT;
     *out=0;if(!desc || !ValidPipeline(*desc))return KICH_R4_E_ARGUMENT;
@@ -516,8 +528,9 @@ int32_t CreatePipelineImpl(KichR4Handle device,const KichR4PipelineDesc* desc,Ki
         hr=ShaderConstants(*vs,vs_bytes);if(hr<0)return hr;
         hr=ShaderConstants(*ps,ps_bytes,texture,advanced);if(hr<0)return hr;
         std::unique_ptr<Resource> r(new Resource());r->pipeline.reset(new PipelineDX11());
-        hr=r->pipeline->Create(d->hw,*desc,vs->vs,ps->ps,vs->bytecode,texture,stream,advanced);if(hr<0)return hr;
+        hr=r->pipeline->Create(d->hw,*desc,vs->vs,ps->ps,vs->bytecode,texture,stream,advanced,instanced);if(hr<0)return hr;
         r->pipeline->constant_bytes=vs_bytes>ps_bytes?vs_bytes:ps_bytes;r->info.kind=KICH_R4_GRAPHICS_PIPELINE;
+        CopyName(r->shader_entry,sizeof(r->shader_entry),vs->shader_entry);CopyName(r->pixel_entry,sizeof(r->pixel_entry),ps->shader_entry);
         Resource* saved=r.get();*out=d->Add(std::move(r));
         saved->pipeline_released=&d->geometry_stats.pipelines_released;++d->geometry_stats.pipelines_created;
         return KICH_R4_OK;
@@ -531,17 +544,62 @@ int32_t KICH_R4_CALL CreateStreamPipeline(KichR4Handle device,const KichR4Pipeli
 {return CreatePipelineImpl(device,desc,out,true,true);}
 int32_t KICH_R4_CALL CreateDeferredPipeline(KichR4Handle device,const KichR4PipelineDesc* desc,KichR4Handle* out)
 {return CreatePipelineImpl(device,desc,out,true,true,true);}
+int32_t KICH_R4_CALL CreateDetailPipeline(KichR4Handle device,const KichR4DetailPipelineDesc* desc,KichR4Handle* out){
+    if(out)*out=0;
+    if(!desc || desc->struct_size!=sizeof(*desc))return KICH_R4_E_ARGUMENT;
+    KichR4PipelineDesc p={};p.struct_size=sizeof(p);p.vertex_stride=sizeof(KichR4DetailVertex);
+    p.vertex_shader=desc->vs;p.pixel_shader=desc->ps;p.element_count=2;
+    p.elements[0]={KICH_R4_POSITION,0,KICH_R4_FLOAT3,0};p.elements[1]={KICH_R4_TEXCOORD,0,KICH_R4_FLOAT4,12};
+    return CreatePipelineImpl(device,&p,out,true,true,true,true);
+}
+int32_t KICH_R4_CALL CreateDetailInstances(KichR4Handle device,uint32_t capacity,KichR4Handle* out){
+    if(!out)return KICH_R4_E_ARGUMENT;
+    *out=0;if(!ValidDetailCapacity(capacity))return KICH_R4_E_ARGUMENT;
+    return Protect([&]()->int32_t{int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;
+        std::unique_ptr<Resource> r(new Resource());D3D11_BUFFER_DESC b={};
+        b.ByteWidth=capacity*sizeof(KichR4DetailInstance);b.Usage=D3D11_USAGE_DYNAMIC;
+        b.BindFlags=D3D11_BIND_VERTEX_BUFFER;b.CPUAccessFlags=D3D11_CPU_ACCESS_WRITE;
+        hr=d->hw->CreateBuffer(&b,NULL,&r->buffer);if(hr<0)return hr;
+        r->info.kind=KICH_R4_VERTEX_BUFFER;r->info.byte_size=b.ByteWidth;r->buffer_stride=sizeof(KichR4DetailInstance);
+        r->dynamic_instances=true;*out=d->Add(std::move(r));return KICH_R4_OK;});
+}
+int32_t KICH_R4_CALL UploadDetailInstances(KichR4Handle device,KichR4Handle handle,const KichR4DetailInstance* data,uint32_t count){
+    if(!data || !ValidDetailCapacity(count))return KICH_R4_E_ARGUMENT;
+    return Protect([&]()->int32_t{int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;
+        Resource* r=d->resources.Find(handle);if(!r)return KICH_R4_E_HANDLE;
+        if(!r->dynamic_instances || uint64_t(count)*sizeof(*data)>r->info.byte_size)return KICH_R4_E_ARGUMENT;
+        D3D11_MAPPED_SUBRESOURCE mapped={};hr=d->context->Map(r->buffer,0,D3D11_MAP_WRITE_DISCARD,0,&mapped);if(hr<0)return hr;
+        memcpy(mapped.pData,data,size_t(count)*sizeof(*data));d->context->Unmap(r->buffer,0);
+        r->initialized=true;r->instance_count=count;++d->geometry_stats.buffer_updates;return KICH_R4_OK;});
+}
 int32_t KICH_R4_CALL UpdateBuffer(KichR4Handle device,KichR4Handle buffer,const void* data,uint32_t bytes)
 {
     if(!data || !bytes)return KICH_R4_E_ARGUMENT;
     return Protect([&]() -> int32_t {
         int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;
         Resource* r=d->resources.Find(buffer);if(!r)return KICH_R4_E_HANDLE;
-        if(!r->buffer || r->info.kind<KICH_R4_VERTEX_BUFFER || r->info.kind>KICH_R4_CONSTANT_BUFFER ||
+        if(!r->buffer || r->dynamic_instances || r->info.kind<KICH_R4_VERTEX_BUFFER || r->info.kind>KICH_R4_CONSTANT_BUFFER ||
             bytes!=r->info.byte_size)return KICH_R4_E_ARGUMENT;
         d->context->UpdateSubresource(r->buffer,0,NULL,data,0,0);r->initialized=true;
+        if(r->info.kind==KICH_R4_CONSTANT_BUFFER && bytes==816)memcpy(r->alpha,static_cast<const unsigned char*>(data)+800,16);
         ++d->geometry_stats.buffer_updates;return KICH_R4_OK;
     });
+}
+void SnapshotDraw(Device* d,const KichR4DrawIndexedDesc& desc,Resource* pipeline,Resource* vb,Resource* cb,const KichR4StreamDrawDesc* state,const KichR4Handle* textures,const KichR4DetailDrawDesc* detail=NULL){
+    if(!d->snapshot_sink)return;
+    RenderSnapshotDraw event={};event.struct_size=sizeof(event);event.submitted=1;event.topology=4;
+    event.index_count=desc.index_count;event.vertex_capacity=vb->info.byte_size/vb->buffer_stride;
+    event.instance_count=detail?detail->instance_count:1;event.start_index=desc.start_index;event.first_instance=detail?detail->first_instance:0;
+    event.pipeline=desc.pipeline;event.vb=desc.vertex_buffer;event.ib=desc.index_buffer;event.cb=desc.constant_buffer;event.instances=detail?detail->instance_buffer:0;
+    memcpy(event.vertex_shader,pipeline->shader_entry,sizeof(event.vertex_shader));memcpy(event.pixel_shader,pipeline->pixel_entry,sizeof(event.pixel_shader));
+    if(textures)memcpy(event.textures,textures,sizeof(event.textures));
+    if(detail)strcpy(event.skin,"NONE_INSTANCED_DETAIL");
+    snprintf(event.states,sizeof(event.states),"enum=D3D11;depth=%u;depth_write=%u;depth_func=LESS_EQUAL;alpha_shader_func=%.0f;alpha_ref=%.8f;blend=%u;src_legacy=%u;dst_legacy=%u;blend_op=ADD;cull=%u;front=CLOCKWISE;stencil=OFF;scissor=%u;viewport_depth=%.5f/%.5f;raw_topology=TRIANGLELIST",
+        desc.depth_mode,state?state->depth_write:desc.depth_mode,cb->alpha[1],cb->alpha[0],state?state->blend_enable:0,state?state->source_blend:2,state?state->dest_blend:1,desc.cull_mode==KICH_R4_CULL_BACK?3:desc.cull_mode==KICH_R4_CULL_FRONT?2:1,state?state->scissor_enable:0,state?state->min_depth:0,state?state->max_depth:1);
+    snprintf(event.samplers,sizeof(event.samplers),"s0:MIN_MAG_MIP_LINEAR;UVW=%s;s1=%s",state && state->clamp_texture?"CLAMP":"WRAP",pipeline->pipeline->advanced?"COMPARISON_MIN_MAG_LINEAR_MIP_POINT;UVW=BORDER;cmp=LESS_EQUAL":"NOT_BOUND_BY_THIS_PIPELINE");
+    /* Callback cannot reenter GPU services; the EXE recorder catches its own
+     * allocation failures and copies everything before returning. */
+    d->snapshot_sink(&event);
 }
 int32_t SubmitDraw(Device* d,const KichR4DrawIndexedDesc* desc,Resource* texture,const KichR4StreamDrawDesc* extra=NULL)
 {
@@ -557,6 +615,7 @@ int32_t SubmitDraw(Device* d,const KichR4DrawIndexedDesc* desc,Resource* texture
         const KichR4FrameStats size=d->frame.Stats();d->frame_driver.Bind(size.width,size.height);
         const int32_t drawn=p->pipeline->Draw(d->context,*desc,vb->buffer,ib->buffer,cb->buffer,ib->buffer_stride,texture?texture->srv:NULL,extra);
         if(drawn<0)return drawn;
+        const KichR4Handle inputs[8]={extra?extra->texture:0,0,0,0,0,0,0,0};SnapshotDraw(d,*desc,p,vb,cb,extra,inputs);
         ++d->geometry_stats.draw_calls;
         const uint64_t triangles=uint64_t(d->geometry_stats.triangles)+desc->index_count/3;
         d->geometry_stats.triangles=triangles>UINT32_MAX?UINT32_MAX:static_cast<uint32_t>(triangles);
@@ -617,7 +676,7 @@ int32_t KICH_R4_CALL BeginDeferredPass(KichR4Handle device,const KichR4PassDesc*
         d->pass=*pass;d->pass_active=true;return KICH_R4_OK;
     });
 }
-int32_t KICH_R4_CALL DrawDeferred(KichR4Handle device,const KichR4DeferredDrawDesc* desc)
+int32_t DrawDeferredOrDetail(KichR4Handle device,const KichR4DeferredDrawDesc* desc,const KichR4DetailDrawDesc* detail)
 {
     if(!desc || !ValidDeferredDraw(*desc))return KICH_R4_E_ARGUMENT;
     return Protect([&]() -> int32_t {
@@ -627,11 +686,15 @@ int32_t KICH_R4_CALL DrawDeferred(KichR4Handle device,const KichR4DeferredDrawDe
         Resource* p=d->resources.Find(draw.pipeline);Resource* vb=d->resources.Find(draw.vertex_buffer);
         Resource* ib=d->resources.Find(draw.index_buffer);Resource* cb=d->resources.Find(draw.constant_buffer);
         if(!p || !vb || !ib || !cb)return KICH_R4_E_HANDLE;
-        if(!p->pipeline || !p->pipeline->advanced || vb->info.kind!=KICH_R4_VERTEX_BUFFER ||
+        if(!p->pipeline || !p->pipeline->advanced || p->pipeline->instanced!=(detail!=NULL) || vb->info.kind!=KICH_R4_VERTEX_BUFFER ||
             ib->info.kind!=KICH_R4_INDEX_BUFFER || cb->info.kind!=KICH_R4_CONSTANT_BUFFER ||
             vb->buffer_stride!=p->pipeline->stride || cb->info.byte_size<p->pipeline->constant_bytes ||
             !ValidDraw(draw,ib->info.byte_size,ib->buffer_stride) || (draw.depth_mode && !d->pass.depth))return KICH_R4_E_ARGUMENT;
         if(!vb->initialized || !ib->initialized || !cb->initialized)return KICH_R4_E_STATE;
+        Resource* instances=NULL;
+        if(detail){instances=d->resources.Find(detail->instance_buffer);if(!instances)return KICH_R4_E_HANDLE;
+            if(!instances->dynamic_instances || !ValidDetailRange(detail->first_instance,detail->instance_count,instances->instance_count))return KICH_R4_E_ARGUMENT;
+            if(!instances->initialized)return KICH_R4_E_STATE;}
         ID3D11ShaderResourceView* inputs[8]={};
         for(unsigned i=0;i<8;++i)if(desc->textures[i]){
             const KichR4Handle handle=desc->textures[i];
@@ -641,13 +704,20 @@ int32_t KICH_R4_CALL DrawDeferred(KichR4Handle device,const KichR4DeferredDrawDe
             if(!r->srv)return KICH_R4_E_ARGUMENT;
             inputs[i]=r->srv;
         }
-        hr=p->pipeline->Draw(d->context,draw,vb->buffer,ib->buffer,cb->buffer,ib->buffer_stride,NULL,&desc->state,inputs);
+        hr=p->pipeline->Draw(d->context,draw,vb->buffer,ib->buffer,cb->buffer,ib->buffer_stride,NULL,&desc->state,inputs,
+            instances?instances->buffer:NULL,detail?detail->instance_count:0,detail?detail->first_instance:0);
         if(hr<0)return hr;
+        SnapshotDraw(d,draw,p,vb,cb,&desc->state,desc->textures,detail);
         ++d->geometry_stats.draw_calls;
-        const uint64_t tris=uint64_t(d->geometry_stats.triangles)+draw.index_count/3;
+        const uint64_t tris=uint64_t(d->geometry_stats.triangles)+uint64_t(draw.index_count/3)*(detail?detail->instance_count:1);
         d->geometry_stats.triangles=tris>UINT32_MAX?UINT32_MAX:static_cast<uint32_t>(tris);
         return KICH_R4_OK;
     });
+}
+int32_t KICH_R4_CALL DrawDeferred(KichR4Handle device,const KichR4DeferredDrawDesc* desc){return DrawDeferredOrDetail(device,desc,NULL);}
+int32_t KICH_R4_CALL DrawDetail(KichR4Handle device,const KichR4DetailDrawDesc* desc){
+    if(!desc || desc->struct_size!=sizeof(*desc))return KICH_R4_E_ARGUMENT;
+    return DrawDeferredOrDetail(device,&desc->surface,desc);
 }
 DXGI_FORMAT DdsFormat(uint32_t format)
 {
@@ -690,6 +760,9 @@ int32_t KICH_R4_CALL CreateDdsTexture(KichR4Handle device,const KichR4DdsDesc* d
 }
 int32_t KICH_R4_CALL ReadNativePixels(KichR4Handle device,void* output,uint32_t bytes,uint32_t* width,uint32_t* height){
     return Protect([&]() -> int32_t {int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;return d->frame_driver.ReadPixels(output,bytes,width,height);});
+}
+int32_t KICH_R4_CALL SetSnapshotSink(KichR4Handle device,KichR4SnapshotSink sink){
+    return Protect([&]()->int32_t{int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;d->snapshot_sink=sink;return KICH_R4_OK;});
 }
 int32_t KICH_R4_CALL ResetNativeResources(KichR4Handle device,KichR4ResourceStats* out,uint32_t bytes){
     if((out && !OutputOK(out,bytes)) || (!out && bytes))return KICH_R4_E_ARGUMENT;
@@ -806,5 +879,10 @@ extern "C" int32_t KICH_R4_CALL KichR4_GetLevelAPI(uint32_t abi,KichR4LevelAPI* 
 
 extern "C" int32_t KICH_R4_CALL KichR4_GetNativeToolsAPI(uint32_t abi,KichR4NativeToolsAPI* out,uint32_t bytes){
     if(abi!=KICH_R4_NATIVE_TOOLS_ABI || !OutputOK(out,bytes))return KICH_R4_E_ARGUMENT;
-    const KichR4NativeToolsAPI api={sizeof(api),KICH_R4_NATIVE_TOOLS_ABI,sizeof(void*),0,ReadNativePixels,NativeProfileMark,GetNativeProfile,ResetNativeResources};*out=api;return KICH_R4_OK;
+    const KichR4NativeToolsAPI api={sizeof(api),KICH_R4_NATIVE_TOOLS_ABI,sizeof(void*),0,ReadNativePixels,NativeProfileMark,GetNativeProfile,ResetNativeResources,SetSnapshotSink};*out=api;return KICH_R4_OK;
+}
+extern "C" int32_t KICH_R4_CALL KichR4_GetDetailAPI(uint32_t abi,KichR4DetailAPI* out,uint32_t bytes){
+    if(abi!=KICH_R4_DETAIL_ABI || !out || bytes<sizeof(*out))return KICH_R4_E_ARGUMENT;
+    const KichR4DetailAPI api={sizeof(api),KICH_R4_DETAIL_ABI,sizeof(void*),0,CreateDetailPipeline,CreateDetailInstances,UploadDetailInstances,DrawDetail};
+    *out=api;return KICH_R4_OK;
 }

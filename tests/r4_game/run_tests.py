@@ -18,7 +18,7 @@ def main():
             extra = [str(ROOT/"xr_3da/KichR4Capture.cpp")] if source == "runtime_tests" else []
             subprocess.run([os.environ.get("CXX", "g++"), "-std=c++11", "-O2",
                             "-Wall", "-Wextra", "-Werror", "-Wno-cast-function-type",
-                            "-I"+str(HERE/"fake_win32"), str(HERE/(source+".cpp")), *extra,
+                            "-I"+str(HERE/"fake_win32"), str(HERE/(source+".cpp")), *extra,str(ROOT/"xr_3da/RenderSnapshot.cpp"),
                             "-o", str(output)], check=True)
             subprocess.run([str(output)], check=True)
         production = (ROOT/"xr_3da/KichR4GameEngine.cpp").read_text()

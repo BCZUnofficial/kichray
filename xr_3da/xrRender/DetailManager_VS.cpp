@@ -2,6 +2,7 @@
 #pragma hdrstop
 
 #include "detailmanager.h"
+#include "../RenderSnapshot.h"
 
 #ifdef _EDITOR
 #include "igame_persistent.h"
@@ -188,6 +189,7 @@ void CDetailManager::hw_Render_dump(ref_constant x_array, u32 var_id, u32 lod_id
 		xr_vector<SlotItemVec*>& vis = list[O];
 		if (!vis.empty())
 		{
+			if(g_render_snapshot_active){char name[64];sprintf_s(name,"level.details/mesh_%u",O);RenderSnapshot_Context("DETAIL",name,lod_id?"DETAIL_STILL":"DETAIL_WAVE");RenderSnapshot_Skin("NONE_CONSTANT_BATCH");}
 			// Setup matrices + colors (and flush it as nesessary)
 			RCache.set_Element(Object.shader->E[lod_id]);
 			RImplementation.apply_lmaterial();

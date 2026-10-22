@@ -6,6 +6,10 @@
 #pragma hdrstop
 
 #include "DetailManager.h"
+#include "../RenderSnapshot.h"
+#ifdef KICH_R4_NATIVE_FRONTEND
+#include "KichR4DetailData.h"
+#endif
 #ifndef _EDITOR
 #include "xrRender_console.h"
 #endif
@@ -139,10 +143,14 @@ void CDetailManager::Load()
 	bwdithermap(2, dither);
 
 	// Hardware specific optimizations
+#ifdef KICH_R4_NATIVE_FRONTEND
+	KichR4_DetailLoad(*this);
+#else
 	if (UseVS())
 		hw_Load();
 	else
 		soft_Load();
+#endif
 
 	// swing desc
 	// normal
@@ -161,10 +169,14 @@ void CDetailManager::Load()
 #endif
 void CDetailManager::Unload()
 {
+#ifdef KICH_R4_NATIVE_FRONTEND
+	KichR4_DetailUnload();
+#else
 	if (UseVS())
 		hw_Unload();
 	else
 		soft_Unload();
+#endif
 
 	for (DetailIt it = objects.begin(); it != objects.end(); it++)
 	{
@@ -310,7 +322,21 @@ void CDetailManager::Render()
 
 	float factor = g_pGamePersistent->Environment().wind_strength_factor;
 	swing_current.lerp(swing_desc[0], swing_desc[1], factor);
+	if(g_render_snapshot_active){
+		RenderSnapshot_Context("DETAIL","level.details","details\\set");RenderSnapshot_Skin("NONE");
+#ifndef KICH_R4_NATIVE_FRONTEND
+		u32 counts[3]={};
+		for(unsigned variant=0;variant<3;++variant)for(size_t mesh=0;mesh<m_visibles[variant].size();++mesh)
+			for(size_t slot=0;slot<m_visibles[variant][mesh].size();++slot)counts[variant]+=static_cast<u32>(m_visibles[variant][mesh][slot]->size());
+		RenderSnapshot_Text("DETAIL_RENDERER","path",UseVS()?"D3D9_CONSTANT_BATCH":"D3D9_SOFTWARE");
+		RenderSnapshot_Value("DETAIL_RENDERER","still_instances",counts[0]);RenderSnapshot_Value("DETAIL_RENDERER","wind1_instances",counts[1]);RenderSnapshot_Value("DETAIL_RENDERER","wind2_instances",counts[2]);
+		RenderSnapshot_Value("DETAIL_RENDERER","visible_instances",counts[0]+counts[1]+counts[2]);RenderSnapshot_Value("DETAIL_RENDERER","unique_meshes",objects.size());RenderSnapshot_Value("DETAIL_RENDERER","hardware_batch_size",hw_BatchSize);
+#endif
+	}
 
+#ifdef KICH_R4_NATIVE_FRONTEND
+	KichR4_DetailPrepare(*this);
+#else
 	RCache.set_CullMode(CULL_NONE);
 	RCache.set_xform_world(Fidentity);
 	if (UseVS())
@@ -318,7 +344,9 @@ void CDetailManager::Render()
 	else
 		soft_Render();
 	RCache.set_CullMode(CULL_CCW);
+#endif
 	Device.Statistic->RenderDUMP_DT_Render.End();
+	if(g_render_snapshot_active)RenderSnapshot_Context("UNKNOWN","UNKNOWN","UNKNOWN");
 	m_frame_rendered = Device.dwFrame;
 }
 

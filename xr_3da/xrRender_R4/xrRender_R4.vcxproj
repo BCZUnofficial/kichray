@@ -58,6 +58,8 @@
   <ItemGroup>
     <ClInclude Include="..\KichR4Bridge.h" />
     <ClInclude Include="..\KichR4Renderer.h" />
+    <ClInclude Include="..\KichR4Detail.h" />
+    <ClInclude Include="..\RenderSnapshot.h" />
     <ClInclude Include="..\KichR4RendererContract.h" />
     <ClInclude Include="..\KichR4BuildIdentity.h" />
     <ClInclude Include="..\KichR4Resources.h" />

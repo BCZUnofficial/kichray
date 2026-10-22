@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "../RenderSnapshot.h"
 
 void CRenderTarget::phase_smap_spot_clear()
 {
@@ -11,6 +12,7 @@ void CRenderTarget::phase_smap_spot_clear()
 
 void CRenderTarget::phase_smap_spot(light* L)
 {
+	if(g_render_snapshot_active)RenderSnapshot_Pass("LOCAL_SHADOW");
 	// Targets + viewport
 	if (RImplementation.o.HW_smap)
 		u_setrt(rt_smap_surf, NULL, NULL, rt_smap_depth->pRT);
@@ -31,6 +33,7 @@ void CRenderTarget::phase_smap_spot(light* L)
 
 void CRenderTarget::phase_smap_spot_tsh(light* L)
 {
+	if(g_render_snapshot_active)RenderSnapshot_Pass("LOCAL_SHADOW_TRANSPARENT");
 	VERIFY(RImplementation.o.Tshadows);
 	RCache.set_ColorWriteEnable();
 	if (IRender_Light::OMNIPART == L->flags.type)

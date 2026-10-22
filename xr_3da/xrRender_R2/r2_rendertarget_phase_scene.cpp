@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "../RenderSnapshot.h"
 
 extern bool kich_wet_geometry_pass;
 extern void kich_wet_objects_tick();
@@ -22,6 +23,7 @@ void CRenderTarget::phase_scene_prepare()
 // begin
 void CRenderTarget::phase_scene_begin()
 {
+	if(g_render_snapshot_active)RenderSnapshot_Pass("GBUFFER");
 	kich_wet_geometry_pass = true;
 	// Targets, use accumulator for temporary storage
 	if (RImplementation.o.albedo_wo)
