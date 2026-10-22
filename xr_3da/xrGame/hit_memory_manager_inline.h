@@ -13,6 +13,9 @@ IC CHitMemoryManager::CHitMemoryManager(CCustomMonster* object, CAI_Stalker* sta
 	VERIFY(object);
 	m_object = object;
 	m_stalker = stalker;
+	m_recent_hit_object_id = ALife::_OBJECT_ID(-1);
+	m_recent_hit_time = 0;
+	m_recent_hit_revision = 0;
 #ifdef USE_SELECTED_HIT
 	m_selected_hit = 0;
 #endif
@@ -45,4 +48,9 @@ IC CCustomMonster& CHitMemoryManager::object() const
 IC const ALife::_OBJECT_ID& CHitMemoryManager::last_hit_object_id() const
 {
 	return (m_last_hit_object_id);
+}
+
+IC u32 CHitMemoryManager::recent_hit_revision() const
+{
+	return m_recent_hit_revision;
 }

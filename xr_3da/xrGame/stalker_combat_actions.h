@@ -96,6 +96,13 @@ class CStalkerActionGetReadyToKill : public CStalkerActionCombatBase
 
 class CStalkerActionKillEnemy : public CStalkerActionCombatBase
 {
+  private:
+	const CCoverPoint* m_fire_recovery_cover;
+	u32 m_fire_recovery_started;
+	u32 m_fire_recovery_settled;
+	u32 m_fire_recovery_last_attempt;
+	bool m_fire_recovery_retry;
+
   protected:
 	typedef CStalkerActionCombatBase inherited;
 
@@ -138,6 +145,10 @@ class CStalkerActionLookOut : public CStalkerActionCombatBase
   private:
 	u32 m_last_change_time;
 	CRandom32 m_crouch_look_out_random;
+	Fvector m_peek_anchor;
+	u32 m_peek_last_query;
+	u32 m_peek_started;
+	bool m_peek_moving;
 
   public:
 	CStalkerActionLookOut(CAI_Stalker* object, LPCSTR action_name = "");
@@ -204,7 +215,17 @@ class CStalkerActionDetourEnemy : public CStalkerActionCombatBase
 class CStalkerActionSearchEnemy : public CStalkerActionCombatBase
 {
   private:
-	const CCoverPoint* m_enemy_cover;
+	Fvector m_search_anchor;
+	Fvector m_search_observed_position;
+	u16 m_search_enemy_id;
+	Fvector m_search_direction;
+	u32 m_search_vertex;
+	u32 m_search_memory_time;
+	u32 m_search_started;
+	u32 m_search_stage_time;
+	u32 m_search_stage;
+	bool m_search_has_anchor;
+	bool m_search_moving;
 
   protected:
 	typedef CStalkerActionCombatBase inherited;
@@ -238,6 +259,11 @@ class CStalkerActionPostCombatWait : public CStalkerActionCombatBase
 
 class CStalkerActionHideFromGrenade : public CStalkerActionCombatBase
 {
+  private:
+	u32 m_grenade_last_query;
+	u16 m_grenade_object_id;
+	Fvector m_grenade_last_position;
+	bool m_grenade_escape_active;
   protected:
 	typedef CStalkerActionCombatBase inherited;
 
@@ -254,6 +280,8 @@ class CStalkerActionHideFromGrenade : public CStalkerActionCombatBase
 
 class CStalkerActionSuddenAttack : public CStalkerActionCombatBase
 {
+  private:
+	u32 m_sudden_started;
   protected:
 	typedef CStalkerActionCombatBase inherited;
 

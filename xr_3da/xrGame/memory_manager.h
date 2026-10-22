@@ -63,6 +63,7 @@ class CMemoryManager
 	u32 memory_time(const CObject* object) const;
 	Fvector memory_position(const CObject* object) const;
 	void make_object_visible_somewhen(const CEntityAlive* enemy);
+	bool share_enemy_memory(const CMemoryInfo& information, u16 source_id);
 
   public:
 	template <typename T, typename _predicate>

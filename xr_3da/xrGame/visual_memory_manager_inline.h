@@ -47,5 +47,7 @@ IC bool CVisualMemoryManager::enabled() const
 
 IC void CVisualMemoryManager::enable(bool value)
 {
+	if (m_stalker && m_enabled != value)
+		reset_direct_sight_update();
 	m_enabled = value;
 }

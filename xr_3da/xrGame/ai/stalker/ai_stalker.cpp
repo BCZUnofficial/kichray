@@ -151,13 +151,29 @@ void CAI_Stalker::reinit()
 	m_can_kill_enemy = false;
 	m_can_kill_member = false;
 	m_pick_distance = 0.f;
-	m_pick_frame_id = 0;
+	m_pick_frame_id = u32(-1);
+	m_combat_fire_position.set(0.f, 0.f, 0.f);
+	m_combat_fire_direction.set(0.f, 0.f, 1.f);
+	m_combat_target_offset.set(0.f, .9f, 0.f);
+	m_combat_target_offset_id = u16(-1);
+	m_combat_fire_enemy_id = u16(-1);
+	m_combat_fire_weapon_id = u16(-1);
+	m_combat_last_visual_time = u32(-1);
+	m_combat_suppression_shots = 0;
+	m_combat_fire_blocked_since = u32(-1);
+	m_combat_fire_gate_frame = u32(-1);
+	m_combat_center_pick_distance = 0.f;
+	m_combat_center_can_kill_enemy = false;
+	m_combat_aim_locked = false;
+	m_combat_fire_allowed = false;
+	m_combat_fire_block_reason = 0;
 
 	m_weapon_shot_random_seed = s32(Level().timeServer_Async());
 
 	m_best_cover = 0;
 	m_best_cover_actual = false;
 	m_best_cover_value = flt_max;
+	reset_best_cover_state();
 
 	m_throw_actual = false;
 	m_computed_object_position = Fvector().set(flt_max, flt_max, flt_max);

@@ -21,6 +21,7 @@
 #include "profiler.h"
 #include "client_spawn_manager.h"
 #include "memory_manager.h"
+#include "stalker_combat_memory_utils.h"
 #include "../IGame_Persistent.h"
 
 #ifndef MASTER_GOLD
@@ -67,6 +68,13 @@ const CHitObject* CHitMemoryManager::hit(const CEntityAlive* object) const
 	return (0);
 }
 
+float CHitMemoryManager::recent_hit_weight(const CEntityAlive* entity_alive) const
+{
+	if (!m_stalker || !entity_alive || entity_alive->ID() != m_recent_hit_object_id)
+		return 0.f;
+	return stalker_combat_memory::recent_hit_weight(Device.dwTimeGlobal, m_recent_hit_time, 5000);
+}
+
 void CHitMemoryManager::add(const CEntityAlive* entity_alive)
 {
 	add(0, Fvector().set(0, 0, 1), entity_alive, 0);
@@ -80,6 +88,9 @@ void CHitMemoryManager::reinit()
 {
 	m_hits = 0;
 	m_last_hit_object_id = ALife::_OBJECT_ID(-1);
+	m_recent_hit_object_id = ALife::_OBJECT_ID(-1);
+	m_recent_hit_time = 0;
+	m_recent_hit_revision = 0;
 }
 
 void CHitMemoryManager::reload(LPCSTR section)
@@ -106,6 +117,13 @@ void CHitMemoryManager::add(float amount, const Fvector& vLocalDir, const CObjec
 
 	if (who && !fis_zero(amount))
 		m_last_hit_object_id = who->ID();
+
+	if (m_stalker && who && amount > 0.f && smart_cast<const CEntityAlive*>(who))
+	{
+		m_recent_hit_object_id = who->ID();
+		m_recent_hit_time = Device.dwTimeGlobal;
+		++m_recent_hit_revision;
+	}
 
 	object().callback(GameObject::eHit)(m_object->lua_game_object(), amount, vLocalDir,
 										smart_cast<const CGameObject*>(who)->lua_game_object(), element);
@@ -232,6 +250,11 @@ void CHitMemoryManager::enable(const CObject* object, bool enable)
 
 void CHitMemoryManager::remove_links(CObject* object)
 {
+	if (m_stalker && object->ID() == m_recent_hit_object_id)
+	{
+		m_recent_hit_object_id = ALife::_OBJECT_ID(-1);
+		m_recent_hit_time = 0;
+	}
 	VERIFY(m_hits);
 	HITS::iterator I = std::find_if(m_hits->begin(), m_hits->end(), CHitObjectPredicate(object));
 	if (I != m_hits->end())
@@ -281,13 +304,15 @@ void CHitMemoryManager::save(NET_Packet& packet) const
 		packet.w_float((*I).m_self_params.m_orientation.roll);
 #endif // USE_ORIENTATION
 #ifdef USE_LEVEL_TIME
-		packet.w_u32((Device.dwTimeGlobal >= (*I).m_level_time) ? (Device.dwTimeGlobal - (*I).m_level_time) : 0);
+		packet.w_u32(stalker_combat_memory::saved_age(Device.dwTimeGlobal, (*I).m_level_time));
 #endif // USE_LAST_LEVEL_TIME
 #ifdef USE_LEVEL_TIME
-		packet.w_u32((Device.dwTimeGlobal >= (*I).m_level_time) ? (Device.dwTimeGlobal - (*I).m_last_level_time) : 0);
+		packet.w_u32(m_stalker ? stalker_combat_memory::saved_age(Device.dwTimeGlobal, (*I).m_last_level_time)
+								  : ((Device.dwTimeGlobal >= (*I).m_level_time) ? (Device.dwTimeGlobal - (*I).m_last_level_time) : 0));
 #endif // USE_LAST_LEVEL_TIME
 #ifdef USE_FIRST_LEVEL_TIME
-		packet.w_u32((Device.dwTimeGlobal >= (*I).m_level_time) ? (Device.dwTimeGlobal - (*I).m_first_level_time) : 0);
+		packet.w_u32(m_stalker ? stalker_combat_memory::saved_age(Device.dwTimeGlobal, (*I).m_first_level_time)
+								  : ((Device.dwTimeGlobal >= (*I).m_level_time) ? (Device.dwTimeGlobal - (*I).m_first_level_time) : 0));
 #endif // USE_FIRST_LEVEL_TIME
 		packet.w_vec3((*I).m_direction);
 		packet.w_u16((*I).m_bone_index);
@@ -297,6 +322,13 @@ void CHitMemoryManager::save(NET_Packet& packet) const
 
 void CHitMemoryManager::load(IReader& packet)
 {
+	// Fresh-hit urgency is transient; the existing save packet is unchanged.
+	if (m_stalker)
+	{
+		m_recent_hit_object_id = ALife::_OBJECT_ID(-1);
+		m_recent_hit_time = 0;
+		m_recent_hit_revision = 0;
+	}
 	if (!m_object->g_Alive())
 		return;
 
@@ -329,19 +361,25 @@ void CHitMemoryManager::load(IReader& packet)
 		packet.r_float(object.m_self_params.m_orientation.roll);
 #endif
 #ifdef USE_LEVEL_TIME
-		VERIFY(Device.dwTimeGlobal >= object.m_level_time);
+		if (!m_stalker)
+			VERIFY(Device.dwTimeGlobal >= object.m_level_time);
 		object.m_level_time = packet.r_u32();
-		object.m_level_time += Device.dwTimeGlobal;
+		object.m_level_time = m_stalker ? stalker_combat_memory::restored_timestamp(Device.dwTimeGlobal, object.m_level_time)
+								 : object.m_level_time + Device.dwTimeGlobal;
 #endif // USE_LEVEL_TIME
 #ifdef USE_LAST_LEVEL_TIME
-		VERIFY(Device.dwTimeGlobal >= object.m_last_level_time);
+		if (!m_stalker)
+			VERIFY(Device.dwTimeGlobal >= object.m_last_level_time);
 		object.m_last_level_time = packet.r_u32();
-		object.m_last_level_time += Device.dwTimeGlobal;
+		object.m_last_level_time = m_stalker ? stalker_combat_memory::restored_timestamp(Device.dwTimeGlobal, object.m_last_level_time)
+								 : object.m_last_level_time + Device.dwTimeGlobal;
 #endif // USE_LAST_LEVEL_TIME
 #ifdef USE_FIRST_LEVEL_TIME
-		VERIFY(Device.dwTimeGlobal >= (*I).m_first_level_time);
+		if (!m_stalker)
+			VERIFY(Device.dwTimeGlobal >= object.m_first_level_time);
 		object.m_first_level_time = packet.r_u32();
-		object.m_first_level_time += Device.dwTimeGlobal;
+		object.m_first_level_time = m_stalker ? stalker_combat_memory::restored_timestamp(Device.dwTimeGlobal, object.m_first_level_time)
+								 : object.m_first_level_time + Device.dwTimeGlobal;
 #endif // USE_FIRST_LEVEL_TIME
 		packet.r_fvector3(object.m_direction);
 		object.m_bone_index = packet.r_u16();

@@ -1599,6 +1599,11 @@
     <ClInclude Include="stalker_anomaly_actions.h" />
     <ClInclude Include="stalker_anomaly_planner.h" />
     <ClInclude Include="stalker_base_action.h" />
+    <ClInclude Include="stalker_combat_memory_utils.h" />
+    <ClInclude Include="stalker_combat_cover_policy.h" />
+    <ClInclude Include="stalker_combat_fire_policy.h" />
+    <ClInclude Include="stalker_combat_diagnostics.h" />
+    <ClInclude Include="stalker_combat_trace_policy.h" />
     <ClInclude Include="stalker_combat_actions.h" />
     <ClInclude Include="stalker_combat_actions_inline.h" />
     <ClInclude Include="stalker_combat_action_base.h" />
@@ -5369,6 +5374,7 @@
       <PrecompiledHeaderFile Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">pch_script.h</PrecompiledHeaderFile>
       <PrecompiledHeaderOutputFile Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">$(IntDir)$(ProjectName)_script.pch</PrecompiledHeaderOutputFile>
     </ClCompile>
+    <ClCompile Include="stalker_combat_diagnostics.cpp" />
     <ClCompile Include="stalker_danger_by_sound_actions.cpp" />
     <ClCompile Include="stalker_danger_by_sound_planner.cpp" />
     <ClCompile Include="stalker_danger_grenade_actions.cpp" />

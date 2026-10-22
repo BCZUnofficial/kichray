@@ -316,6 +316,21 @@ class CAI_Stalker : public CCustomMonster, public CObjectHandler, public CAI_Phr
 	bool m_can_kill_enemy;
 	float m_pick_distance;
 	u32 m_pick_frame_id;
+	Fvector m_combat_fire_position;
+	Fvector m_combat_fire_direction;
+	Fvector m_combat_target_offset;
+	u16 m_combat_target_offset_id;
+	u16 m_combat_fire_enemy_id;
+	u16 m_combat_fire_weapon_id;
+	u32 m_combat_last_visual_time;
+	u32 m_combat_suppression_shots;
+	u32 m_combat_fire_blocked_since;
+	u32 m_combat_fire_gate_frame;
+	float m_combat_center_pick_distance;
+	bool m_combat_center_can_kill_enemy;
+	bool m_combat_aim_locked;
+	bool m_combat_fire_allowed;
+	u8 m_combat_fire_block_reason;
 	collide::rq_results rq_storage;
 
   private:
@@ -330,6 +345,11 @@ class CAI_Stalker : public CCustomMonster, public CObjectHandler, public CAI_Phr
 	float pick_distance();
 	IC float start_pick_distance() const;
 	bool fire_make_sense();
+	bool combat_target_position(Fvector& position, bool aim_point = false);
+	bool combat_fire_solution();
+	u32 combat_fire_blocked_time() const;
+	LPCSTR combat_fire_block_reason() const;
+	u32 combat_suppression_remaining() const;
 
 	virtual LPCSTR Name() const;
 	virtual BOOL feel_touch_contact(CObject* O);
@@ -499,16 +519,37 @@ class CAI_Stalker : public CCustomMonster, public CObjectHandler, public CAI_Phr
 	bool m_best_cover_actual;
 	bool m_best_cover_can_try_advance;
 	const CCoverPoint* m_best_cover_advance_cover;
+	u32 m_best_cover_last_search_time;
+	u32 m_best_cover_last_change_time;
+	Fvector m_best_cover_search_position;
+	Fvector m_best_cover_enemy_position;
+	float m_best_cover_exposure;
+	struct SCombatCoverFailure
+	{
+		const CCoverPoint* cover;
+		u32 time;
+	};
+	SCombatCoverFailure m_failed_combat_covers[4];
+	u32 m_failed_combat_cover_next;
+	const CCoverPoint* m_cover_progress_point;
+	Fvector m_cover_progress_position;
+	u32 m_cover_progress_time;
 
   private:
 	float best_cover_value(const Fvector& position_to_cover_from);
 	const CCoverPoint* find_best_cover(const Fvector& position_to_cover_from);
 	void update_best_cover_actuality(const Fvector& position_to_cover_from);
+	void reset_best_cover_state();
+	void accept_best_cover(const CCoverPoint* point, const Fvector& position_to_cover_from);
+	bool update_cover_progress();
 	void on_best_cover_changed(const CCoverPoint* new_cover, const CCoverPoint* old_cover);
 
   public:
 	void best_cover_can_try_advance();
 	const CCoverPoint* best_cover(const Fvector& position_to_cover_from);
+	bool combat_cover_blocked(const CCoverPoint* point) const;
+	void invalidate_best_cover();
+	void abandon_best_cover(const char* reason);
 
   public:
 	void subscribe_on_best_cover_changed(const on_best_cover_changed_delegate& delegate);

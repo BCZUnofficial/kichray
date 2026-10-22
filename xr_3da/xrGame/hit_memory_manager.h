@@ -49,6 +49,10 @@ class CHitMemoryManager
 	CHitObject* m_selected_hit;
 #endif
 	ALife::_OBJECT_ID m_last_hit_object_id;
+	// Transient threat data is separate from the last hitter used for kill attribution.
+	ALife::_OBJECT_ID m_recent_hit_object_id;
+	u32 m_recent_hit_time;
+	u32 m_recent_hit_revision;
 
   public:
 	IC CHitMemoryManager(CCustomMonster* object, CAI_Stalker* stalker);
@@ -72,6 +76,8 @@ class CHitMemoryManager
 	const CHitObject* hit(const CEntityAlive* object) const;
 	IC void set_squad_objects(HITS* squad_objects);
 	IC const ALife::_OBJECT_ID& last_hit_object_id() const;
+	float recent_hit_weight(const CEntityAlive* object) const;
+	IC u32 recent_hit_revision() const;
 
   public:
 	void enable(const CObject* object, bool enable);

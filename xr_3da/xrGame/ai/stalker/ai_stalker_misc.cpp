@@ -184,7 +184,8 @@ void CAI_Stalker::process_enemies()
 			continue;
 		}
 
-		memory().make_object_visible_somewhen(member->memory().enemy().selected());
+		if (!memory().share_enemy_memory(member->memory().memory(member->memory().enemy().selected()), member->ID()))
+			continue;
 		found = true;
 		break;
 	}

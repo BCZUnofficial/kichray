@@ -33,9 +33,16 @@ class CVisualMemoryManager
 		ALife::_OBJECT_ID m_object_id;
 		CVisibleObject m_visible_object;
 	};
+	struct CDirectSight
+	{
+		const CObject* m_object;
+		u32 m_time;
+		bool m_current_update;
+	};
 
   private:
 	typedef xr_vector<CDelayedVisibleObject> DELAYED_VISIBLE_OBJECTS;
+	typedef xr_vector<CDirectSight> DIRECT_SIGHTS;
 
   private:
 	CCustomMonster* m_object;
@@ -49,6 +56,8 @@ class CVisualMemoryManager
 
   private:
 	DELAYED_VISIBLE_OBJECTS m_delayed_objects;
+	// Personal confirmations are transient: squad reports and loaded saves cannot create one.
+	DIRECT_SIGHTS m_direct_sights;
 
   private:
 	CVisionParameters m_free;
@@ -61,6 +70,8 @@ class CVisualMemoryManager
 
   public:
 	void add_visible_object(const CObject* object, float time_delta, bool fictitious = false);
+	bool add_shared_memory(const CVisibleObject& report);
+	u32 direct_visible_time(const CObject* object) const;
 
   protected:
 	IC void fill_object(CVisibleObject& visible_object, const CGameObject* game_object);
@@ -81,6 +92,10 @@ class CVisualMemoryManager
 
   private:
 	void initialize();
+	void remember_direct_sight(const CObject* object);
+	void forget_direct_sight(const CObject* object);
+	void reset_direct_sight_update();
+	bool direct_visible_in_update(const CObject* object) const;
 
   public:
 	CVisualMemoryManager(CCustomMonster* object);

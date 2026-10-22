@@ -18,6 +18,7 @@
 #include "weaponmagazined.h"
 #include "missile.h"
 #include "ai_monster_space.h"
+#include "stalker_combat_fire_policy.h"
 
 using namespace ObjectHandlerSpace;
 
@@ -96,24 +97,31 @@ void CObjectHandlerPlanner::set_goal(MonsterSpace::EObjectAction object_action, 
 	condition.add_condition(CWorldProperty(condition_id, true));
 	set_target_state(condition);
 
-	if (!game_object || (min_queue_size < 0))
+	if (!game_object || !stalker_combat_fire_policy::queue_parameters_provided(min_queue_size))
 		return;
 
 	CWeaponMagazined* weapon = smart_cast<CWeaponMagazined*>(game_object);
 	if (!weapon)
 		return;
 
-	if ((m_min_queue_size != min_queue_size) || (m_max_queue_size != max_queue_size) ||
-		(m_min_queue_interval != min_queue_interval) || (m_max_queue_interval != max_queue_interval) ||
-		(m_next_time_change <= Device.dwTimeGlobal))
+	if (max_queue_size == u32(-1))
+		max_queue_size = min_queue_size;
+	min_queue_size = _max(1u, min_queue_size);
+	max_queue_size = _max(min_queue_size, max_queue_size);
+	max_queue_interval = _max(min_queue_interval, max_queue_interval);
+	const bool profile_changed = (m_min_queue_size != min_queue_size) || (m_max_queue_size != max_queue_size) ||
+		(m_min_queue_interval != min_queue_interval) || (m_max_queue_interval != max_queue_interval);
+	if (stalker_combat_fire_policy::refresh_queue(m_queue_weapon_id, weapon->ID(), profile_changed,
+		Device.dwTimeGlobal, m_next_time_change))
 	{
+		m_queue_weapon_id = weapon->ID();
 		m_min_queue_size = min_queue_size;
 		m_max_queue_size = max_queue_size;
 		m_min_queue_interval = min_queue_interval;
 		m_max_queue_interval = max_queue_interval;
 
 		if (m_max_queue_size == m_min_queue_size)
-			m_queue_size = _max(1, m_min_queue_size);
+			m_queue_size = _max(1u, m_min_queue_size);
 		else
 			m_queue_size = _max(1, ::Random.randI(m_min_queue_size, m_max_queue_size));
 
@@ -124,12 +132,33 @@ void CObjectHandlerPlanner::set_goal(MonsterSpace::EObjectAction object_action, 
 
 		m_next_time_change = Device.dwTimeGlobal + m_queue_interval;
 
-		weapon->SetQueueSize(m_queue_size);
 		this->action(uid(weapon->ID(), eWorldOperatorQueueWait1))
 			.set_inertia_time(m_queue_interval ? m_queue_interval : 300);
 		this->action(uid(weapon->ID(), eWorldOperatorQueueWait2))
 			.set_inertia_time(m_queue_interval ? m_queue_interval : 300);
 	}
+
+    const u32 fired = u32(_max(0, weapon->ShotsFired()));
+    const int current_queue = weapon->GetQueueSize();
+    const bool finished = weapon->StopedAfterQueueFired() ||
+        (current_queue >= 0 && fired >= u32(current_queue));
+    const bool fire_goal = goal == eWorldPropertyFiring1 || goal == eWorldPropertyFiring2;
+    if (weapon->GetState() == CWeapon::eFire && weapon->IsWorking() && (!fire_goal || finished))
+    {
+        // Do not reopen an already completed burst when selecting the next
+        // profile. Preserve the queue-wait condition before changing its size.
+        if (finished)
+            weapon->StopedAfterQueueFired(true);
+        weapon->FireEnd();
+    }
+    u32 queue_size = m_queue_size;
+    if (stalker_combat_fire_policy::queue_in_progress(weapon->GetState() == CWeapon::eFire,
+        !!weapon->IsWorking(), weapon->StopedAfterQueueFired(), fired, current_queue))
+        queue_size = _max(queue_size, fired);
+    // A live burst must reach equality: the weapon marks queue completion with
+    // ShotsFired() == GetQueueSize(), not with a greater-than comparison.
+    if (weapon->GetQueueSize() != int(queue_size))
+        weapon->SetQueueSize(queue_size);
 }
 
 #ifdef LOG_ACTION
@@ -491,6 +520,7 @@ void CObjectHandlerPlanner::setup(CAI_Stalker* object)
 	m_min_queue_interval = 0;
 	m_max_queue_interval = 0;
 	m_next_time_change = 0;
+	m_queue_weapon_id = u16(-1);
 
 	clear();
 
@@ -531,6 +561,8 @@ void CObjectHandlerPlanner::add_item(CInventoryItem* inventory_item)
 
 void CObjectHandlerPlanner::remove_item(CInventoryItem* inventory_item)
 {
+	if (m_queue_weapon_id == inventory_item->object().ID())
+		m_queue_weapon_id = u16(-1);
 	VERIFY(target_state().conditions().size() == 1);
 	if (action_object_id(target_state().conditions().back().condition()) == inventory_item->object().ID())
 	{

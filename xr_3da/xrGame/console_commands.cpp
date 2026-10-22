@@ -9,6 +9,7 @@
 #include "level.h"
 #include "script_debugger.h"
 #include "ai_debug.h"
+#include "stalker_combat_diagnostics.h"
 #include "alife_simulator.h"
 #include "game_cl_base.h"
 #include "game_cl_single.h"
@@ -1526,6 +1527,9 @@ void CCC_RegisterCommands()
 	g_OptConCom.Init();
 
 	CMD1(CCC_MemStats, "stat_memory");
+
+	CMD4(CCC_Integer, "ai_combat_trace", &stalker_combat_diagnostics::trace_enabled, 0, 1);
+	CMD4(CCC_Integer, "ai_combat_trace_id", &stalker_combat_diagnostics::trace_object_id, -1, 65534);
 	// game
 	psActorFlags.set(AF_ALWAYSRUN, true);
 	CMD3(CCC_Mask, "g_always_run", &psActorFlags, AF_ALWAYSRUN);

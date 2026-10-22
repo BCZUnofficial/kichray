@@ -14,6 +14,9 @@ class CStalkerActionCombatBase : public CStalkerActionBase
 {
   protected:
 	typedef CStalkerActionBase inherited;
+	shared_str m_trace_action_name;
+	mutable int m_queue_distance_band;
+	mutable u16 m_queue_target_id;
 
   public:
 	CStalkerActionCombatBase(CAI_Stalker* object, LPCSTR action_name = "");

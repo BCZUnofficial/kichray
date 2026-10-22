@@ -44,6 +44,7 @@ class CObjectHandlerPlanner : public CActionPlanner<CAI_Stalker, true>
 	u32 m_queue_size;
 	u32 m_queue_interval;
 	u32 m_next_time_change;
+	u16 m_queue_weapon_id;
 
   private:
 	void add_evaluators(CWeapon* weapon);

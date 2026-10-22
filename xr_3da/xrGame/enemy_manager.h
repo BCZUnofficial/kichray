@@ -35,6 +35,8 @@ class CEnemyManager : public CObjectManager<const CEntityAlive>
 
   private:
 	u32 m_last_enemy_change;
+	u32 m_last_threat_check;
+	u32 m_last_threat_hit_revision;
 
   private:
 	IC bool enemy_inertia(const CEntityAlive* previous_enemy) const;
@@ -43,6 +45,7 @@ class CEnemyManager : public CObjectManager<const CEntityAlive>
 	bool change_from_wounded(const CEntityAlive* current, const CEntityAlive* previous) const;
 	void remove_wounded();
 	void try_change_enemy();
+	void try_change_stalker_enemy(const CEntityAlive* previous, const bool& only_wounded);
 
   protected:
 	void on_enemy_change(const CEntityAlive* previous_enemy);

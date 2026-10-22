@@ -50,16 +50,23 @@
 #include "../../stalker_decision_space.h"
 #include "../../script_game_object.h"
 #include "../../inventory.h"
+#include "../../stalker_combat_fire_policy.h"
+#include "../../stalker_combat_diagnostics.h"
 
 using namespace StalkerSpace;
 
 const float DANGER_DISTANCE = 3.f;
 const u32 DANGER_INTERVAL = 120000;
 
-const float PRECISE_DISTANCE = 2.5f;
-const float FLOOR_DISTANCE = 2.f;
-const float NEAR_DISTANCE = 2.5f;
-const u32 FIRE_MAKE_SENSE_INTERVAL = 10000;
+// Fire decisions are bounded independently from the longer enemy memory.
+namespace
+{
+enum ECombatFireBlockReason
+{
+    combat_fire_none, combat_fire_no_target, combat_fire_no_weapon, combat_fire_aiming,
+    combat_fire_world, combat_fire_friendly, combat_fire_suppression_age, combat_fire_suppression_ammo
+};
+}
 
 float CAI_Stalker::GetWeaponAccuracy() const
 {
@@ -588,6 +595,9 @@ void CAI_Stalker::can_kill_entity_from(const Fvector& position, Fvector directio
 	m_pick_distance = 0.f;
 	rq_storage.r_clear();
 	can_kill_entity(position, direction, distance, rq_storage);
+	// Lateral safety rays must never make a blocked central shot look clear.
+	m_combat_center_pick_distance = m_pick_distance;
+	m_combat_center_can_kill_enemy = m_can_kill_enemy;
 	if (m_can_kill_member && m_can_kill_enemy)
 		return;
 
@@ -619,7 +629,10 @@ IC float CAI_Stalker::start_pick_distance() const
 	if (!memory().enemy().selected())
 		return (result);
 
-	return (_max(result, memory().enemy().selected()->Position().distance_to(Position()) + 1.f));
+	const CMemoryInfo known = memory().memory(memory().enemy().selected());
+	if (!known.m_object)
+		return (result);
+	return (_max(result, known.m_object_params.m_position.distance_to(Position()) + 1.f));
 }
 
 float CAI_Stalker::pick_distance()
@@ -640,10 +653,15 @@ void CAI_Stalker::update_can_kill_info()
 	m_can_kill_member = false;
 	m_can_kill_enemy = false;
 
-	Fvector position, direction;
-	VERIFY(inventory().ActiveItem());
-	g_fireParams(0, position, direction);
-	can_kill_entity_from(position, direction, start_pick_distance());
+	m_combat_center_pick_distance = 0.f;
+	m_combat_center_can_kill_enemy = false;
+	if (!inventory().ActiveItem())
+		return;
+
+	// Match the existing shot origin/direction, including its shot effector.
+	// Do not sample g_fireParams a second time in the combat gate.
+	g_fireParams(0, m_combat_fire_position, m_combat_fire_direction);
+	can_kill_entity_from(m_combat_fire_position, m_combat_fire_direction, start_pick_distance());
 }
 
 bool CAI_Stalker::undetected_anomaly()
@@ -709,41 +727,172 @@ void CAI_Stalker::update_range_fov(float& new_range, float& new_fov, float start
 	return (inherited::update_range_fov(new_range, new_fov, range, fov));
 }
 
+bool CAI_Stalker::combat_target_position(Fvector& position, bool aim_point)
+{
+    const CEntityAlive* enemy = memory().enemy().selected();
+    if (!enemy)
+        return false;
+
+    const bool visible = memory().visual().visible_right_now(enemy);
+    if (visible)
+    {
+        position = enemy->Position();
+        Fvector center;
+        enemy->Center(center);
+        m_combat_target_offset.sub(center, position);
+        m_combat_target_offset_id = enemy->ID();
+    }
+    else
+    {
+        // A visual snapshot is the source for a covering burst. Never use the
+        // live coordinates of an occluded enemy to steer or approve that burst.
+        const MemorySpace::CVisibleObject* visual = memory().visual().visible_object(enemy);
+        if (visual && visual->m_enabled)
+            position = visual->m_object_params.m_position;
+        else
+        {
+            const CMemoryInfo known = memory().memory(enemy);
+            if (!known.m_object)
+                return false;
+            position = known.m_object_params.m_position;
+        }
+    }
+
+    if (aim_point)
+    {
+        if (m_combat_target_offset_id == enemy->ID())
+            position.add(m_combat_target_offset);
+        else
+            position.y += .9f;
+    }
+    return true;
+}
+
+LPCSTR CAI_Stalker::combat_fire_block_reason() const
+{
+    static LPCSTR names[] = {"none", "no_target", "no_weapon", "aiming", "world", "friendly",
+        "suppression_age", "suppression_ammo"};
+    const u32 count = sizeof(names) / sizeof(names[0]);
+    return m_combat_fire_block_reason < count ? names[m_combat_fire_block_reason] : "no_target";
+}
+
+u32 CAI_Stalker::combat_fire_blocked_time() const
+{
+    if (m_combat_fire_blocked_since == u32(-1))
+        return 0;
+    return Device.dwTimeGlobal - m_combat_fire_blocked_since;
+}
+
+u32 CAI_Stalker::combat_suppression_remaining() const
+{
+    const CEntityAlive* enemy = memory().enemy().selected();
+    if (!enemy || memory().visual().visible_right_now(enemy))
+        return u32(-1);
+    const CWeapon* weapon = smart_cast<const CWeapon*>(inventory().ActiveItem());
+    if (!weapon)
+        return 0;
+    return stalker_combat_fire_policy::suppression_remaining(m_combat_suppression_shots,
+        u32(_max(0, weapon->GetAmmoElapsed())), u32(_max(0, weapon->GetAmmoMagSize())));
+}
+
+bool CAI_Stalker::combat_fire_solution()
+{
+    const CEntityAlive* enemy = memory().enemy().selected();
+    CWeapon* weapon = smart_cast<CWeapon*>(inventory().ActiveItem());
+    const u16 enemy_id = enemy ? enemy->ID() : u16(-1);
+    const u16 weapon_id = weapon ? weapon->ID() : u16(-1);
+    const bool enemy_changed = enemy_id != m_combat_fire_enemy_id;
+    const bool weapon_changed = weapon_id != m_combat_fire_weapon_id;
+    if (!enemy_changed && !weapon_changed && m_combat_fire_gate_frame == Device.dwFrame)
+        return m_combat_fire_allowed;
+
+    if (enemy_changed || weapon_changed)
+    {
+        m_pick_frame_id = u32(-1);
+        m_combat_aim_locked = false;
+        m_combat_fire_blocked_since = u32(-1);
+    }
+    if (enemy_changed)
+    {
+        m_combat_suppression_shots = 0;
+        m_combat_last_visual_time = u32(-1);
+    }
+    m_combat_fire_enemy_id = enemy_id;
+    m_combat_fire_weapon_id = weapon_id;
+    m_combat_fire_gate_frame = Device.dwFrame;
+
+    const bool visible = enemy && memory().visual().visible_right_now(enemy);
+    // Relay and fictitious memory may provide a position, but only this NPC's
+    // direct sighting can authorize or replenish an occluded covering burst.
+    const u32 seen = enemy ? memory().visual().direct_visible_time(enemy) : u32(-1);
+    if (stalker_combat_fire_policy::reset_suppression_budget(enemy_changed, visible,
+        m_combat_last_visual_time, seen))
+        m_combat_suppression_shots = 0;
+    m_combat_last_visual_time = seen;
+
+    u8 reason = combat_fire_none;
+    Fvector target_position;
+    if (!enemy || !combat_target_position(target_position, true))
+        reason = combat_fire_no_target;
+    else if (!weapon)
+        reason = combat_fire_no_weapon;
+    else if (!visible)
+    {
+        if (weapon->ef_weapon_type() != 6 ||
+            !stalker_combat_fire_policy::suppression_fresh(Device.dwTimeGlobal, seen))
+            reason = combat_fire_suppression_age;
+        else if (!stalker_combat_fire_policy::suppression_has_ammo(m_combat_suppression_shots,
+            u32(_max(0, weapon->GetAmmoElapsed())), u32(_max(0, weapon->GetAmmoMagSize()))))
+            reason = combat_fire_suppression_ammo;
+    }
+
+    if (reason == combat_fire_none)
+    {
+        update_can_kill_info();
+        Fvector to_target;
+        to_target.sub(target_position, m_combat_fire_position);
+        const float target_distance = to_target.magnitude();
+        if (target_distance <= EPS_L)
+            reason = combat_fire_no_target;
+        else
+        {
+            to_target.div(target_distance);
+            Fvector direction = m_combat_fire_direction;
+            direction.normalize_safe();
+            m_combat_aim_locked = stalker_combat_fire_policy::aim_aligned(
+                direction.dotproduct(to_target), m_combat_aim_locked);
+            if (!m_combat_aim_locked)
+                reason = combat_fire_aiming;
+            else if (m_can_kill_member)
+                reason = combat_fire_friendly;
+            else if (!stalker_combat_fire_policy::line_reaches_target(m_combat_center_pick_distance,
+                target_distance, m_combat_center_can_kill_enemy))
+                reason = combat_fire_world;
+        }
+    }
+
+    const bool obstruction = reason == combat_fire_world || reason == combat_fire_friendly;
+    if (obstruction)
+    {
+        if (m_combat_fire_blocked_since == u32(-1))
+            m_combat_fire_blocked_since = Device.dwTimeGlobal;
+    }
+    else
+        m_combat_fire_blocked_since = u32(-1);
+    m_combat_fire_block_reason = reason;
+    m_combat_fire_allowed = reason == combat_fire_none;
+
+    if (stalker_combat_diagnostics::enabled(ID()))
+        stalker_combat_diagnostics::log(ID(), stalker_combat_diagnostics::fire, combat_fire_block_reason(),
+            "target=%u visible=%u age_ms=%u suppression_shots=%u center=%.2f blocked_ms=%u",
+            u32(enemy_id), u32(visible), seen == u32(-1) ? u32(-1) : Device.dwTimeGlobal - seen,
+            m_combat_suppression_shots, m_combat_center_pick_distance, combat_fire_blocked_time());
+    return m_combat_fire_allowed;
+}
+
 bool CAI_Stalker::fire_make_sense()
 {
-	// if we do not have an enemy
-	const CEntityAlive* enemy = memory().enemy().selected();
-	if (!enemy)
-		return (false);
-
-	if ((pick_distance() + PRECISE_DISTANCE) < Position().distance_to(enemy->Position()))
-		return (false);
-
-	if (_abs(Position().y - enemy->Position().y) > FLOOR_DISTANCE)
-		return (false);
-
-	if (pick_distance() < NEAR_DISTANCE)
-		return (false);
-
-	if (memory().visual().visible_right_now(enemy))
-		return (true);
-
-	u32 last_time_seen = memory().visual().visible_object_time_last_seen(enemy);
-	if (last_time_seen == u32(-1))
-		return (false);
-
-	if (Device.dwTimeGlobal > last_time_seen + FIRE_MAKE_SENSE_INTERVAL)
-		return (false);
-
-	// if we do not have a weapon
-	if (!best_weapon())
-		return (false);
-
-	// if we do not have automatic weapon
-	if (best_weapon()->object().ef_weapon_type() != 6)
-		return (false);
-
-	return (true);
+    return combat_fire_solution();
 }
 
 // shot effector stuff
@@ -751,6 +900,13 @@ void CAI_Stalker::on_weapon_shot_start(CWeapon* weapon)
 {
 	weapon_shot_effector().SetRndSeed(m_weapon_shot_random_seed);
 	weapon_shot_effector().Shot(weapon->camDispersion + weapon->camDispersionInc * float(weapon->ShotsFired()));
+	const CEntityAlive* enemy = memory().enemy().selected();
+	if (enemy && enemy->ID() == m_combat_fire_enemy_id && !memory().visual().visible_right_now(enemy))
+	{
+		if (m_combat_suppression_shots != u32(-1))
+			++m_combat_suppression_shots;
+		m_combat_fire_gate_frame = u32(-1);
+	}
 }
 
 void CAI_Stalker::on_weapon_shot_stop(CWeapon* weapon)

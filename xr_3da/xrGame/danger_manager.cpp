@@ -15,6 +15,10 @@
 #include "enemy_manager.h"
 #include "actor.h"
 #include "object_broker.h"
+#include "ai/stalker/ai_stalker.h"
+#include "missile.h"
+#include "stalker_combat_fire_policy.h"
+#include "stalker_combat_diagnostics.h"
 
 struct CDangerPredicate
 {
@@ -40,15 +44,24 @@ struct CDangerPredicate
 struct CFindPredicate
 {
 	const CDangerObject* m_object;
+	bool m_stalker;
 
-	IC CFindPredicate(const CDangerObject& object)
+	IC CFindPredicate(const CDangerObject& object, bool stalker)
 	{
 		m_object = &object;
+		m_stalker = stalker;
 	}
 
 	IC bool operator()(const CDangerObject& object) const
 	{
-		return (*m_object == object);
+		if (!(*m_object == object))
+			return false;
+		if (!m_stalker || object.type() != CDangerObject::eDangerTypeGrenade)
+			return true;
+		const CObject* left = m_object->dependent_object();
+		const CObject* right = object.dependent_object();
+		return stalker_combat_fire_policy::same_grenade(
+			left ? u32(left->ID()) : u32(-1), right ? u32(right->ID()) : u32(-1));
 	}
 };
 
@@ -130,6 +143,13 @@ void CDangerManager::update()
 		}
 	}
 
+	if (m_selected && m_selected->type() == CDangerObject::eDangerTypeGrenade &&
+		smart_cast<const CAI_Stalker*>(m_object) && stalker_combat_diagnostics::enabled(m_object->ID()))
+		stalker_combat_diagnostics::log(m_object->ID(), stalker_combat_diagnostics::grenade, "selected",
+			"grenade=%u distance=%.2f age_ms=%u score=%.1f",
+			m_selected->dependent_object() ? u32(m_selected->dependent_object()->ID()) : u32(-1),
+			m_object->Position().distance_to(m_selected->position()), Device.dwTimeGlobal - m_selected->time(), result);
+
 	STOP_PROFILE
 }
 
@@ -190,6 +210,30 @@ float CDangerManager::evaluate(const CDangerObject& object) const
 
 float CDangerManager::do_evaluate(const CDangerObject& object) const
 {
+	// Only stalkers opt in. The generic monster danger policy remains unchanged,
+	// and add() still applies is_useful()/Lua filtering before any event is kept.
+	if (object.type() == CDangerObject::eDangerTypeGrenade && object.dependent_object() &&
+		smart_cast<const CAI_Stalker*>(m_object))
+	{
+		const CGameObject* grenade = smart_cast<const CGameObject*>(object.dependent_object());
+		float radius = 10.f;
+		if (grenade)
+		{
+			if (pSettings->line_exist(grenade->cNameSect(), "blast_r"))
+				radius = pSettings->r_float(grenade->cNameSect(), "blast_r");
+			if (pSettings->line_exist(grenade->cNameSect(), "frags_r"))
+				radius = _max(radius, pSettings->r_float(grenade->cNameSect(), "frags_r"));
+			if (!_valid(radius) || radius < 1.f)
+				radius = 10.f;
+		}
+		u32 fuse = 2500;
+		const CMissile* missile = smart_cast<const CMissile*>(object.dependent_object());
+		if (missile && missile->destroy_time() != u32(-1))
+			fuse = stalker_combat_fire_policy::deadline_reached(Device.dwTimeGlobal, missile->destroy_time()) ?
+				0 : missile->destroy_time() - Device.dwTimeGlobal;
+		return stalker_combat_fire_policy::grenade_urgency(m_object->Position().distance_to(object.position()),
+			radius, fuse, Device.dwTimeGlobal - object.time());
+	}
 	float result = 0.f;
 	switch (object.type())
 	{
@@ -324,7 +368,7 @@ void CDangerManager::add(const CDangerObject& object)
 	if (!is_useful(object))
 		return;
 
-	OBJECTS::iterator I = std::find_if(m_objects.begin(), m_objects.end(), CFindPredicate(object));
+	OBJECTS::iterator I = std::find_if(m_objects.begin(), m_objects.end(), CFindPredicate(object, !!smart_cast<CAI_Stalker*>(m_object)));
 	if (I != m_objects.end())
 	{
 		*I = object;

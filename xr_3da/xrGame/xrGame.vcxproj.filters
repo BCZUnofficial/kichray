@@ -4062,6 +4062,21 @@
     <ClInclude Include="stalker_combat_action_base.h">
       <Filter>AI\AMonsters\humans\stalker\DecisionMaker\actions\combat\actions\base</Filter>
     </ClInclude>
+    <ClInclude Include="stalker_combat_diagnostics.h">
+      <Filter>AI\AMonsters\humans\stalker\DecisionMaker\actions\combat\actions\base</Filter>
+    </ClInclude>
+    <ClInclude Include="stalker_combat_memory_utils.h">
+      <Filter>AI\AMonsters\humans\stalker\DecisionMaker\actions\combat\actions\base</Filter>
+    </ClInclude>
+    <ClInclude Include="stalker_combat_cover_policy.h">
+      <Filter>AI\AMonsters\humans\stalker\DecisionMaker\actions\combat\actions\base</Filter>
+    </ClInclude>
+    <ClInclude Include="stalker_combat_fire_policy.h">
+      <Filter>AI\AMonsters\humans\stalker\DecisionMaker\actions\combat\actions\base</Filter>
+    </ClInclude>
+    <ClInclude Include="stalker_combat_trace_policy.h">
+      <Filter>AI\AMonsters\humans\stalker\DecisionMaker\actions\combat\actions\base</Filter>
+    </ClInclude>
     <ClInclude Include="stalker_kill_wounded_planner.h">
       <Filter>AI\AMonsters\humans\stalker\DecisionMaker\actions\combat\kill_wounded</Filter>
     </ClInclude>
@@ -7422,6 +7437,9 @@
       <Filter>AI\AMonsters\humans\stalker\DecisionMaker\actions\combat\actions</Filter>
     </ClCompile>
     <ClCompile Include="stalker_combat_action_base.cpp">
+      <Filter>AI\AMonsters\humans\stalker\DecisionMaker\actions\combat\actions\base</Filter>
+    </ClCompile>
+    <ClCompile Include="stalker_combat_diagnostics.cpp">
       <Filter>AI\AMonsters\humans\stalker\DecisionMaker\actions\combat\actions\base</Filter>
     </ClCompile>
     <ClCompile Include="stalker_kill_wounded_planner.cpp">

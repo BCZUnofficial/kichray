@@ -20,13 +20,26 @@
 #include "agent_member_manager.h"
 #include "agent_enemy_manager.h"
 #include "inventory_item.h"
+#include "inventory.h"
+#include "weaponmagazined.h"
+#include "sight_manager.h"
+#include "stalker_combat_fire_policy.h"
+#include "stalker_combat_diagnostics.h"
 
 using namespace StalkerSpace;
 
-const float start_fire_angle_difference = PI_DIV_8;
+namespace
+{
+float combat_known_distance(CAI_Stalker& object)
+{
+    Fvector position;
+    return object.combat_target_position(position) ? position.distance_to(object.Position()) : 30.f;
+}
+}
 
 CStalkerActionCombatBase::CStalkerActionCombatBase(CAI_Stalker* object, LPCSTR action_name)
-	: inherited(object, action_name)
+	: inherited(object, action_name), m_trace_action_name(action_name ? action_name : ""),
+      m_queue_distance_band(-1), m_queue_target_id(u16(-1))
 {
 }
 
@@ -34,6 +47,10 @@ void CStalkerActionCombatBase::initialize()
 {
 	inherited::initialize();
 	object().sound().remove_active_sounds(u32(eStalkerSoundMaskNoHumming));
+	if (stalker_combat_diagnostics::enabled(object().ID()))
+		stalker_combat_diagnostics::log(object().ID(), stalker_combat_diagnostics::action, "begin",
+			"name=%s target=%u", *m_trace_action_name,
+			object().memory().enemy().selected() ? u32(object().memory().enemy().selected()->ID()) : u32(-1));
 }
 
 void CStalkerActionCombatBase::finalize()
@@ -53,29 +70,51 @@ bool CStalkerActionCombatBase::fire_make_sense() const
 
 void CStalkerActionCombatBase::fire()
 {
-	Fvector enemy_position = object().memory().enemy().selected()->Position();
-	Fvector object_position = object().Position();
-	Fvector direction = Fvector().sub(enemy_position, object_position);
-	float yaw, pitch;
-	direction.getHP(yaw, pitch);
-	const MonsterSpace::SBoneRotation& current_angles = object().movement().head_orientation();
-	if (angle_difference(-yaw, current_angles.current.yaw) > start_fire_angle_difference)
-	{
-		aim_ready();
-		return;
-	}
+    Fvector enemy_position;
+    if (!object().combat_target_position(enemy_position, true))
+    {
+        aim_ready();
+        return;
+    }
+    object().sight().setup(CSightAction(SightManager::eSightTypePosition, enemy_position, true));
+    if (!object().combat_fire_solution())
+    {
+        aim_ready();
+        return;
+    }
 
-	u32 min_queue_size, max_queue_size, min_queue_interval, max_queue_interval;
-	float distance = enemy_position.distance_to(object_position);
-	select_queue_params(distance, min_queue_size, max_queue_size, min_queue_interval, max_queue_interval);
-	object().CObjectHandler::set_goal(eObjectActionFire1, object().best_weapon(), min_queue_size, max_queue_size,
-									  min_queue_interval, max_queue_interval);
+    u32 min_queue_size, max_queue_size, min_queue_interval, max_queue_interval;
+    select_queue_params(combat_known_distance(object()), min_queue_size, max_queue_size,
+        min_queue_interval, max_queue_interval);
+    const u32 remaining = object().combat_suppression_remaining();
+    if (remaining != u32(-1))
+    {
+        if (!remaining)
+        {
+            aim_ready();
+            return;
+        }
+        // Weapon queues count from the beginning of the current burst. The
+        // remaining suppression allowance counts only future shots.
+        u32 fired = 0;
+        CWeaponMagazined* weapon = smart_cast<CWeaponMagazined*>(object().inventory().ActiveItem());
+        if (weapon && object().best_weapon() && weapon->ID() == object().best_weapon()->object().ID() &&
+            stalker_combat_fire_policy::queue_in_progress(weapon->GetState() == CWeapon::eFire,
+                !!weapon->IsWorking(), weapon->StopedAfterQueueFired(),
+                u32(_max(0, weapon->ShotsFired())), weapon->GetQueueSize()))
+            fired = u32(_max(0, weapon->ShotsFired()));
+        max_queue_size = _min(max_queue_size,
+            stalker_combat_fire_policy::suppression_queue_limit(fired, remaining));
+        min_queue_size = _min(min_queue_size, max_queue_size);
+    }
+    object().CObjectHandler::set_goal(eObjectActionFire1, object().best_weapon(), min_queue_size, max_queue_size,
+        min_queue_interval, max_queue_interval);
 }
 
 void CStalkerActionCombatBase::aim_ready()
 {
 	u32 min_queue_size, max_queue_size, min_queue_interval, max_queue_interval;
-	float distance = object().memory().enemy().selected()->Position().distance_to(object().Position());
+	float distance = combat_known_distance(object());
 	select_queue_params(distance, min_queue_size, max_queue_size, min_queue_interval, max_queue_interval);
 	object().CObjectHandler::set_goal(eObjectActionAimReady1, object().best_weapon(), min_queue_size, max_queue_size,
 									  min_queue_interval, max_queue_interval);
@@ -84,7 +123,7 @@ void CStalkerActionCombatBase::aim_ready()
 void CStalkerActionCombatBase::aim_ready_force_full()
 {
 	u32 min_queue_size, max_queue_size, min_queue_interval, max_queue_interval;
-	float distance = object().memory().enemy().selected()->Position().distance_to(object().Position());
+	float distance = combat_known_distance(object());
 	select_queue_params(distance, min_queue_size, max_queue_size, min_queue_interval, max_queue_interval);
 	object().CObjectHandler::set_goal(eObjectActionAimForceFull1, object().best_weapon(), min_queue_size,
 									  max_queue_size, min_queue_interval, max_queue_interval);
@@ -93,7 +132,14 @@ void CStalkerActionCombatBase::aim_ready_force_full()
 void CStalkerActionCombatBase::select_queue_params(const float& distance, u32& min_queue_size, u32& max_queue_size,
 												   u32& min_queue_interval, u32& max_queue_interval) const
 {
-	/**/
+	const CEntityAlive* enemy = object().memory().enemy().selected();
+	const u16 target_id = enemy ? enemy->ID() : u16(-1);
+	if (target_id != m_queue_target_id)
+	{
+		m_queue_target_id = target_id;
+		m_queue_distance_band = -1;
+	}
+	m_queue_distance_band = stalker_combat_fire_policy::distance_band(distance, m_queue_distance_band);
 	int weapon_type = 6;
 	if (object().best_weapon())
 		weapon_type = object().best_weapon()->object().ef_weapon_type();
@@ -102,14 +148,14 @@ void CStalkerActionCombatBase::select_queue_params(const float& distance, u32& m
 	{
 	// pistols
 	case 5: {
-		if (distance > 30.f)
+		if (m_queue_distance_band == 2)
 		{
 			min_queue_size = 1;
 			max_queue_size = 1;
 			min_queue_interval = 1000;
 			max_queue_interval = 1250;
 		}
-		else if (distance > 15.f)
+		else if (m_queue_distance_band == 1)
 		{
 			min_queue_size = 2;
 			max_queue_size = 4;
@@ -128,14 +174,14 @@ void CStalkerActionCombatBase::select_queue_params(const float& distance, u32& m
 	}
 	// shotguns
 	case 7: {
-		if (distance > 30.f)
+		if (m_queue_distance_band == 2)
 		{
 			min_queue_size = 1;
 			max_queue_size = 1;
 			min_queue_interval = 1250;
 			max_queue_interval = 1500;
 		}
-		else if (distance > 15.f)
+		else if (m_queue_distance_band == 1)
 		{
 			min_queue_size = 1;
 			max_queue_size = 1;
@@ -154,14 +200,14 @@ void CStalkerActionCombatBase::select_queue_params(const float& distance, u32& m
 	}
 	// sniper rifles
 	case 8: {
-		if (distance > 30.f)
+		if (m_queue_distance_band == 2)
 		{
 			min_queue_size = 1;
 			max_queue_size = 1;
 			min_queue_interval = 3000;
 			max_queue_interval = 4000;
 		}
-		else if (distance > 15.f)
+		else if (m_queue_distance_band == 1)
 		{
 			min_queue_size = 1;
 			max_queue_size = 1;
@@ -179,14 +225,14 @@ void CStalkerActionCombatBase::select_queue_params(const float& distance, u32& m
 		break;
 	}
 	default: {
-		if (distance > 30.f)
+		if (m_queue_distance_band == 2)
 		{
 			min_queue_size = object().min_queue_size_far();
 			max_queue_size = object().max_queue_size_far();
 			min_queue_interval = object().min_queue_interval_far();
 			max_queue_interval = object().max_queue_interval_far();
 		}
-		else if (distance > 15.f)
+		else if (m_queue_distance_band == 1)
 		{
 			min_queue_size = object().min_queue_size_medium();
 			max_queue_size = object().max_queue_size_medium();
@@ -203,7 +249,7 @@ void CStalkerActionCombatBase::select_queue_params(const float& distance, u32& m
 	}
 	}
 	/**
-	if (distance > 30.f) {
+	if (m_queue_distance_band == 2) {
 		min_queue_size					= object().min_queue_size_far();
 		max_queue_size					= object().max_queue_size_far();
 		min_queue_interval				= object().min_queue_interval_far();

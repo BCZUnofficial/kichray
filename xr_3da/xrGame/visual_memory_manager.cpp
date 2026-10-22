@@ -27,6 +27,7 @@
 #include "client_spawn_manager.h"
 #include "client_spawn_manager.h"
 #include "memory_manager.h"
+#include "stalker_combat_memory_utils.h"
 
 #ifndef MASTER_GOLD
 #include "clsid_game.h"
@@ -135,6 +136,7 @@ void CVisualMemoryManager::reinit()
 
 	m_not_yet_visible_objects.clear();
 	//	m_not_yet_visible_objects.reserve	(100);
+	m_direct_sights.clear();
 
 	if (m_object)
 		m_object->feel_vision_clear();
@@ -178,6 +180,9 @@ bool CVisualMemoryManager::visible_right_now(const CGameObject* game_object) con
 	if (!(*I).visible(mask()))
 		return (false);
 
+	if (m_stalker)
+		return direct_visible_in_update(game_object);
+
 	if ((*I).m_level_time < m_last_update_time)
 		return (false);
 
@@ -186,8 +191,17 @@ bool CVisualMemoryManager::visible_right_now(const CGameObject* game_object) con
 
 bool CVisualMemoryManager::visible_now(const CGameObject* game_object) const
 {
+	if (m_stalker && !enabled())
+		return false;
 	VISIBLES::const_iterator I = std::find(objects().begin(), objects().end(), object_id(game_object));
-	return ((objects().end() != I) && (*I).visible(mask()));
+	const bool visible = (objects().end() != I) && (*I).visible(mask());
+	if (!m_stalker || !visible)
+		return visible;
+	if (direct_visible_in_update(game_object))
+		return true;
+	const u32 seen = direct_visible_time(game_object);
+	return seen != u32(-1) && seen <= Device.dwTimeGlobal && current_state().m_still_visible_time &&
+		Device.dwTimeGlobal - seen <= current_state().m_still_visible_time;
 }
 
 void CVisualMemoryManager::enable(const CObject* object, bool enable)
@@ -333,7 +347,11 @@ bool CVisualMemoryManager::visible(const CGameObject* game_object, float time_de
 	{
 		if (object)
 		{
-			object->m_value -= current_state().m_decrease_value;
+			if (m_stalker)
+				object->m_value = stalker_combat_memory::decay_suspicion(object->m_value,
+					current_state().m_visibility_threshold, time_delta, 1.5f);
+			else
+				object->m_value -= current_state().m_decrease_value;
 			if (object->m_value < 0.f)
 				object->m_value = 0.f;
 			else
@@ -383,6 +401,8 @@ void CVisualMemoryManager::add_visible_object(const CObject* object, float time_
 	if (!game_object || (!fictitious && !visible(game_object, time_delta)))
 		return;
 	//	STOP_PROFILE
+	if (!fictitious)
+		remember_direct_sight(game_object);
 
 	//	START_PROFILE("Memory Manager/visuals/update/add_visibles/find_object_by_id")
 	self = m_object;
@@ -424,6 +444,122 @@ void CVisualMemoryManager::add_visible_object(const CObject* object, float time_
 		}
 	}
 	//	STOP_PROFILE
+}
+
+u32 CVisualMemoryManager::direct_visible_time(const CObject* object) const
+{
+	if (!m_stalker || !object)
+		return u32(-1);
+	DIRECT_SIGHTS::const_iterator I = m_direct_sights.begin();
+	DIRECT_SIGHTS::const_iterator E = m_direct_sights.end();
+	for (; I != E; ++I)
+		if ((*I).m_object == object)
+			return (*I).m_time;
+	return u32(-1);
+}
+
+bool CVisualMemoryManager::direct_visible_in_update(const CObject* object) const
+{
+	if (!m_stalker || !enabled() || !object)
+		return false;
+	DIRECT_SIGHTS::const_iterator I = m_direct_sights.begin();
+	DIRECT_SIGHTS::const_iterator E = m_direct_sights.end();
+	for (; I != E; ++I)
+		if ((*I).m_object == object)
+			return (*I).m_current_update && (*I).m_time <= Device.dwTimeGlobal;
+	return false;
+}
+
+void CVisualMemoryManager::reset_direct_sight_update()
+{
+	if (!m_stalker)
+		return;
+	DIRECT_SIGHTS::iterator I = m_direct_sights.begin();
+	DIRECT_SIGHTS::iterator E = m_direct_sights.end();
+	for (; I != E; ++I)
+		(*I).m_current_update = false;
+}
+
+void CVisualMemoryManager::remember_direct_sight(const CObject* object)
+{
+	if (!m_stalker || !object || !m_max_object_count)
+		return;
+
+	DIRECT_SIGHTS::iterator oldest = m_direct_sights.end();
+	DIRECT_SIGHTS::iterator I = m_direct_sights.begin();
+	DIRECT_SIGHTS::iterator E = m_direct_sights.end();
+	for (; I != E; ++I)
+	{
+		if ((*I).m_object == object)
+		{
+			(*I).m_time = Device.dwTimeGlobal;
+			(*I).m_current_update = true;
+			return;
+		}
+		if (oldest == E || (*I).m_time < (*oldest).m_time)
+			oldest = I;
+	}
+
+	CDirectSight sight;
+	sight.m_object = object;
+	sight.m_time = Device.dwTimeGlobal;
+	sight.m_current_update = true;
+	const u32 capacity = m_max_object_count < 64 ? m_max_object_count : 64;
+	if (m_direct_sights.size() < capacity)
+		m_direct_sights.push_back(sight);
+	else
+	{
+		VERIFY(oldest != m_direct_sights.end());
+		*oldest = sight;
+	}
+}
+
+void CVisualMemoryManager::forget_direct_sight(const CObject* object)
+{
+	if (!m_stalker)
+		return;
+	DIRECT_SIGHTS::iterator I = m_direct_sights.begin();
+	DIRECT_SIGHTS::iterator E = m_direct_sights.end();
+	for (; I != E; ++I)
+		if ((*I).m_object == object)
+		{
+			m_direct_sights.erase(I);
+			return;
+		}
+}
+
+bool CVisualMemoryManager::add_shared_memory(const CVisibleObject& report)
+{
+	if (!m_stalker || !m_objects || !m_max_object_count || !report.m_object || !report.m_enabled)
+		return false;
+
+	const squad_mask_type recipient = mask();
+	CVisibleObject incoming = report;
+	incoming.m_visible.zero();
+	incoming.m_squad_mask.assign(recipient);
+	// Only the receiver's own position may be refreshed; retain the reported enemy position and age.
+	incoming.m_self_params.fill(m_object);
+	CVisibleObject* existing = visible_object(report.m_object);
+	if (existing)
+	{
+		if (stalker_combat_memory::relay_is_newer(existing->m_level_time, incoming.m_level_time,
+			existing->m_visible.get() != 0))
+		{
+			incoming.m_squad_mask.assign(existing->m_squad_mask.get() | recipient);
+			*existing = incoming;
+		}
+		else
+		{
+			// Repeated reports must not resurrect a contact disabled after an unsuccessful search.
+			if (!existing->m_enabled)
+				return false;
+			existing->m_squad_mask.set(recipient, TRUE);
+		}
+		return true;
+	}
+
+	add_visible_object(incoming);
+	return visible_object(report.m_object) != 0;
 }
 
 void CVisualMemoryManager::add_visible_object(const CVisibleObject visible_object)
@@ -536,6 +672,7 @@ struct CVisibleObjectPredicateEx
 
 void CVisualMemoryManager::remove_links(CObject* object)
 {
+	forget_direct_sight(object);
 	{
 		VERIFY(m_objects);
 		VISIBLES::iterator I = std::find_if(m_objects->begin(), m_objects->end(), CVisibleObjectPredicateEx(object));
@@ -576,6 +713,7 @@ void CVisualMemoryManager::update(float time_delta)
 		return;
 
 	m_last_update_time = Device.dwTimeGlobal;
+	reset_direct_sight_update();
 
 	squad_mask_type mask = this->mask();
 	VERIFY(m_objects);
@@ -596,8 +734,17 @@ void CVisualMemoryManager::update(float time_delta)
 		xr_vector<CVisibleObject>::iterator I = m_objects->begin();
 		xr_vector<CVisibleObject>::iterator E = m_objects->end();
 		for (; I != E; ++I)
-			if ((*I).m_level_time + current_state().m_still_visible_time < Device.dwTimeGlobal)
+		{
+			if (m_stalker)
+			{
+				const u32 seen = direct_visible_time((*I).m_object);
+				if (seen == u32(-1) || seen > Device.dwTimeGlobal || !current_state().m_still_visible_time ||
+					Device.dwTimeGlobal - seen > current_state().m_still_visible_time)
+					(*I).visible(mask, false);
+			}
+			else if ((*I).m_level_time + current_state().m_still_visible_time < Device.dwTimeGlobal)
 				(*I).visible(mask, false);
+		}
 	}
 	STOP_PROFILE
 
@@ -616,7 +763,13 @@ void CVisualMemoryManager::update(float time_delta)
 		xr_vector<CNotYetVisibleObject>::iterator E = m_not_yet_visible_objects.end();
 		for (; I != E; ++I)
 			if ((*I).m_update_time < Device.dwTimeGlobal)
-				(*I).m_value = 0.f;
+			{
+				if (m_stalker)
+					(*I).m_value = stalker_combat_memory::decay_suspicion((*I).m_value,
+						current_state().m_visibility_threshold, time_delta, 1.5f);
+				else
+					(*I).m_value = 0.f;
+			}
 	}
 	STOP_PROFILE
 
@@ -692,13 +845,15 @@ void CVisualMemoryManager::save(NET_Packet& packet) const
 		packet.w_float((*I).m_self_params.m_orientation.roll);
 #endif // USE_ORIENTATION
 #ifdef USE_LEVEL_TIME
-		packet.w_u32((Device.dwTimeGlobal >= (*I).m_level_time) ? (Device.dwTimeGlobal - (*I).m_level_time) : 0);
+		packet.w_u32(stalker_combat_memory::saved_age(Device.dwTimeGlobal, (*I).m_level_time));
 #endif // USE_LAST_LEVEL_TIME
 #ifdef USE_LEVEL_TIME
-		packet.w_u32((Device.dwTimeGlobal >= (*I).m_level_time) ? (Device.dwTimeGlobal - (*I).m_last_level_time) : 0);
+		packet.w_u32(m_stalker ? stalker_combat_memory::saved_age(Device.dwTimeGlobal, (*I).m_last_level_time)
+								  : ((Device.dwTimeGlobal >= (*I).m_level_time) ? (Device.dwTimeGlobal - (*I).m_last_level_time) : 0));
 #endif // USE_LAST_LEVEL_TIME
 #ifdef USE_FIRST_LEVEL_TIME
-		packet.w_u32((Device.dwTimeGlobal >= (*I).m_level_time) ? (Device.dwTimeGlobal - (*I).m_first_level_time) : 0);
+		packet.w_u32(m_stalker ? stalker_combat_memory::saved_age(Device.dwTimeGlobal, (*I).m_first_level_time)
+								  : ((Device.dwTimeGlobal >= (*I).m_level_time) ? (Device.dwTimeGlobal - (*I).m_first_level_time) : 0));
 #endif // USE_FIRST_LEVEL_TIME
 		packet.w_u32((*I).m_visible.flags);
 	}
@@ -706,6 +861,7 @@ void CVisualMemoryManager::save(NET_Packet& packet) const
 
 void CVisualMemoryManager::load(IReader& packet)
 {
+	m_direct_sights.clear();
 	if (m_client)
 		return;
 
@@ -741,19 +897,25 @@ void CVisualMemoryManager::load(IReader& packet)
 		packet.r_float(object.m_self_params.m_orientation.roll);
 #endif
 #ifdef USE_LEVEL_TIME
-		VERIFY(Device.dwTimeGlobal >= object.m_level_time);
+		if (!m_stalker)
+			VERIFY(Device.dwTimeGlobal >= object.m_level_time);
 		object.m_level_time = packet.r_u32();
-		object.m_level_time += Device.dwTimeGlobal;
+		object.m_level_time = m_stalker ? stalker_combat_memory::restored_timestamp(Device.dwTimeGlobal, object.m_level_time)
+								 : object.m_level_time + Device.dwTimeGlobal;
 #endif // USE_LEVEL_TIME
 #ifdef USE_LAST_LEVEL_TIME
-		VERIFY(Device.dwTimeGlobal >= object.m_last_level_time);
+		if (!m_stalker)
+			VERIFY(Device.dwTimeGlobal >= object.m_last_level_time);
 		object.m_last_level_time = packet.r_u32();
-		object.m_last_level_time += Device.dwTimeGlobal;
+		object.m_last_level_time = m_stalker ? stalker_combat_memory::restored_timestamp(Device.dwTimeGlobal, object.m_last_level_time)
+								 : object.m_last_level_time + Device.dwTimeGlobal;
 #endif // USE_LAST_LEVEL_TIME
 #ifdef USE_FIRST_LEVEL_TIME
-		VERIFY(Device.dwTimeGlobal >= (*I).m_first_level_time);
+		if (!m_stalker)
+			VERIFY(Device.dwTimeGlobal >= object.m_first_level_time);
 		object.m_first_level_time = packet.r_u32();
-		object.m_first_level_time += Device.dwTimeGlobal;
+		object.m_first_level_time = m_stalker ? stalker_combat_memory::restored_timestamp(Device.dwTimeGlobal, object.m_first_level_time)
+								 : object.m_first_level_time + Device.dwTimeGlobal;
 #endif // USE_FIRST_LEVEL_TIME
 		object.m_visible.assign(packet.r_u32());
 

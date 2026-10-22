@@ -368,7 +368,7 @@ void CStalkerCombatPlanner::add_actions()
 	add_condition(action, eWorldPropertyPlayerOnThePath, false);
 	add_effect(action, eWorldPropertyPureEnemy, false);
 	add_operator(eWorldOperatorSearchEnemy, action);
-	action->set_inertia_time(120000);
+	action->set_inertia_time(20000);
 
 	action = xr_new<CStalkerActionKillEnemy>(m_object, "kill_if_not_visible");
 	add_condition(action, eWorldPropertyCriticallyWounded, false);
@@ -436,6 +436,7 @@ void CStalkerCombatPlanner::add_actions()
 
 	action = xr_new<CStalkerActionKillEnemyIfPlayerOnThePath>(m_object, "kill enemy, if player is on my path");
 	add_condition(action, eWorldPropertyCriticallyWounded, false);
+	add_condition(action, eWorldPropertyDangerGrenade, false);
 	add_condition(action, eWorldPropertyUseSuddenness, false);
 	add_condition(action, eWorldPropertySeeEnemy, true);
 	add_condition(action, eWorldPropertyPanic, false);

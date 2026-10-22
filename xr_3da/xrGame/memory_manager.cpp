@@ -23,6 +23,8 @@
 #include "level_graph.h"
 #include "profiler.h"
 #include "agent_enemy_manager.h"
+#include "stalker_combat_memory_utils.h"
+#include "stalker_combat_diagnostics.h"
 
 CMemoryManager::CMemoryManager(CEntityAlive* entity_alive, CSound_UserDataVisitor* visitor)
 {
@@ -328,6 +330,31 @@ void CMemoryManager::on_restrictions_change()
 	//	danger().on_restrictions_change	();
 	//	enemy().on_restrictions_change	();
 	item().on_restrictions_change();
+}
+
+bool CMemoryManager::share_enemy_memory(const CMemoryInfo& information, u16 source_id)
+{
+	if (!m_stalker || !information.m_object || !information.m_enabled ||
+		!(information.m_visual_info || information.m_sound_info || information.m_hit_info))
+		return false;
+
+	const CEntityAlive* target = smart_cast<const CEntityAlive*>(information.m_object);
+	if (!target || !target->g_Alive() || target->getDestroy() ||
+		!m_object->is_relation_enemy(target) || information.m_level_time > Device.dwTimeGlobal)
+		return false;
+
+	if (!visual().add_shared_memory(information))
+		return false;
+
+	if (stalker_combat_diagnostics::enabled(m_object->ID()))
+		stalker_combat_diagnostics::log(m_object->ID(), stalker_combat_diagnostics::memory, "shared_contact",
+			"source=%u enemy=%u age_ms=%u known=(%.2f,%.2f,%.2f) sensory=%d%d%d",
+			unsigned(source_id), unsigned(target->ID()),
+			stalker_combat_memory::saved_age(Device.dwTimeGlobal, information.m_level_time),
+			information.m_object_params.m_position.x, information.m_object_params.m_position.y,
+			information.m_object_params.m_position.z, int(information.m_visual_info),
+			int(information.m_sound_info), int(information.m_hit_info));
+	return true;
 }
 
 void CMemoryManager::make_object_visible_somewhen(const CEntityAlive* enemy)

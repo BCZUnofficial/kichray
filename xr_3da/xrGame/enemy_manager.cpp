@@ -26,10 +26,15 @@
 #include "movement_manager.h"
 #include "agent_manager.h"
 #include "agent_enemy_manager.h"
+#include "stalker_combat_memory_utils.h"
+#include "stalker_combat_diagnostics.h"
 
 static const u32 ENEMY_INERTIA_TIME_TO_SOMEBODY = 3000;
 static const u32 ENEMY_INERTIA_TIME_TO_ACTOR = 0;
 static const u32 ENEMY_INERTIA_TIME_FROM_ACTOR = 6000;
+static const u32 STALKER_THREAT_RECHECK_INTERVAL = 500;
+static const float STALKER_THREAT_SWITCH_MARGIN = 250.f;
+static const float STALKER_CLOSE_THREAT_DISTANCE = 6.f;
 
 #ifdef _DEBUG
 bool g_enemy_manager_second_update = false;
@@ -46,6 +51,8 @@ CEnemyManager::CEnemyManager(CCustomMonster* object)
 	m_ready_to_save = true;
 	m_last_enemy_time = 0;
 	m_last_enemy_change = 0;
+	m_last_threat_check = 0;
+	m_last_threat_hit_revision = 0;
 	m_stalker = smart_cast<CAI_Stalker*>(object);
 	m_enable_enemy_change = true;
 }
@@ -93,19 +100,30 @@ float CEnemyManager::evaluate(const CEntityAlive* object) const
 
 	const CAI_Stalker* stalker = smart_cast<const CAI_Stalker*>(object);
 	bool wounded = stalker ? stalker->wounded(&m_object->movement().restrictions()) : false;
-	if (wounded)
-	{
-		if (m_stalker && m_stalker->agent_manager().enemy().assigned_wounded(object, m_stalker))
-			return (0.f);
+	if (wounded && m_stalker && m_stalker->agent_manager().enemy().assigned_wounded(object, m_stalker))
+		return (0.f);
 
-		float distance = m_object->Position().distance_to_sqr(object->Position());
-		return (distance);
+	const bool visible = m_stalker ? m_object->memory().visual().visible_right_now(object)
+								  : m_object->memory().visual().visible_now(object);
+	float distance;
+	if (m_stalker && !visible)
+	{
+		const MemorySpace::CMemoryInfo known = m_object->memory().memory(object);
+		if (!known.m_object)
+			return flt_max;
+		distance = m_object->Position().distance_to_sqr(known.m_object_params.m_position);
 	}
+	else
+		distance = m_object->Position().distance_to_sqr(object->Position());
+	if (wounded)
+		return (distance);
 
 	float penalty = 10000.f;
 
-	// if we are hit
-	if (object->ID() == m_object->memory().hit().last_hit_object_id())
+	// Real recent damage is a fading threat for stalkers. Keep legacy monster scoring.
+	if (m_stalker)
+		penalty -= (actor ? 1500.f : 500.f) * m_object->memory().hit().recent_hit_weight(object);
+	else if (object->ID() == m_object->memory().hit().last_hit_object_id())
 	{
 		if (actor)
 			penalty -= 1500.f;
@@ -113,9 +131,13 @@ float CEnemyManager::evaluate(const CEntityAlive* object) const
 			penalty -= 500.f;
 	}
 
-	// if we see object
-	if (m_object->memory().visual().visible_now(object))
+	// A close threat must be directly perceived; hearing is not a wallhack.
+	if (visible)
+	{
 		penalty -= 1000.f;
+		if (m_stalker && distance <= _sqr(STALKER_CLOSE_THREAT_DISTANCE))
+			penalty -= 600.f;
+	}
 
 		// if object is actor and he/she sees us
 		//	if (actor) {
@@ -135,10 +157,8 @@ float CEnemyManager::evaluate(const CEntityAlive* object) const
 	ai().ef_storage().non_alife().member() = m_object;
 	ai().ef_storage().non_alife().enemy() = object;
 
-	float distance = m_object->Position().distance_to_sqr(object->Position());
 	return (penalty + distance / 100.f + ai().ef_storage().m_pfVictoryProbability->ffGetValue() / 100.f);
 #else  // USE_EVALUATOR
-	float distance = m_object->Position().distance_to_sqr(object->Position());
 	return (1000.f * (visible ? 0.f : 1.f) + distance);
 #endif // USE_EVALUATOR
 }
@@ -164,6 +184,8 @@ void CEnemyManager::reload(LPCSTR section)
 	m_last_enemy_time = 0;
 	m_last_enemy = 0;
 	m_last_enemy_change = 0;
+	m_last_threat_check = 0;
+	m_last_threat_hit_revision = 0;
 	m_useful_callback.clear();
 	VERIFY(m_ready_to_save);
 }
@@ -355,12 +377,78 @@ bool CEnemyManager::need_update(const bool& only_wounded) const
 	return (false);
 }
 
+void CEnemyManager::try_change_stalker_enemy(const CEntityAlive* previous, const bool& only_wounded)
+{
+	// Candidates were already filtered through relation, script and squad checks.
+	// Do not call the Lua useful callback a second time or let inertia revive a rejected target.
+	const bool previous_valid = previous && previous->g_Alive() &&
+		std::find(m_objects.begin(), m_objects.end(), previous) != m_objects.end();
+	const bool previous_visible = previous_valid && m_object->memory().visual().visible_now(previous);
+	const bool previous_direct_visible = previous_valid && m_object->memory().visual().visible_right_now(previous);
+	const u32 hit_revision = m_object->memory().hit().recent_hit_revision();
+	const bool new_hit = hit_revision != m_last_threat_hit_revision;
+
+	if (previous_valid)
+	{
+		if (!enable_enemy_change() || only_wounded)
+			return;
+		if (previous_visible && !new_hit &&
+			!stalker_combat_memory::interval_elapsed(Device.dwTimeGlobal, m_last_threat_check, STALKER_THREAT_RECHECK_INTERVAL))
+			return;
+	}
+
+	m_last_threat_check = Device.dwTimeGlobal;
+	m_last_threat_hit_revision = hit_revision;
+	inherited::update();
+	const char* reason = previous_valid ? "better_threat" : (previous ? "invalid_target" : "target_acquired");
+
+	if (previous_valid && selected() && selected() != previous)
+	{
+		const bool candidate_visible = m_object->memory().visual().visible_right_now(selected());
+		const bool fresh_hit = new_hit && m_object->memory().hit().recent_hit_weight(selected()) >= .8f;
+		const bool close_threat = candidate_visible &&
+			m_object->Position().distance_to_sqr(selected()->Position()) <= _sqr(STALKER_CLOSE_THREAT_DISTANCE) &&
+			(!previous_direct_visible || m_object->Position().distance_to_sqr(previous->Position()) > _sqr(STALKER_CLOSE_THREAT_DISTANCE + 3.f));
+		const bool gained_sight = !previous_direct_visible && candidate_visible;
+		const bool urgent = fresh_hit || close_threat || gained_sight;
+
+		// Nearby scores must not cause aim/cover thrashing, even after the inertia expires.
+		if (previous_visible && !stalker_combat_memory::meaningful_threat_improvement(
+			do_evaluate(previous), do_evaluate(selected()), STALKER_THREAT_SWITCH_MARGIN))
+			m_selected = previous;
+		else if (!urgent && enemy_inertia(previous))
+			m_selected = previous;
+		else if (fresh_hit)
+			reason = "fresh_hit";
+		else if (close_threat)
+			reason = "close_threat";
+		else if (gained_sight)
+			reason = "visible_threat";
+	}
+
+	if (selected() == previous)
+		return;
+
+	m_last_enemy_change = Device.dwTimeGlobal;
+	m_object->on_enemy_change(previous);
+	if (stalker_combat_diagnostics::enabled(m_object->ID()))
+		stalker_combat_diagnostics::log(m_object->ID(), stalker_combat_diagnostics::target,
+			selected() ? reason : "target_lost", "old=%u new=%u old_valid=%d new_hit=%d",
+			previous ? unsigned(previous->ID()) : unsigned(u16(-1)),
+			selected() ? unsigned(selected()->ID()) : unsigned(u16(-1)), int(previous_valid), int(new_hit));
+}
+
 void CEnemyManager::try_change_enemy()
 {
 	const CEntityAlive* previous_selected = selected();
 
 	bool only_wounded;
 	process_wounded(only_wounded);
+	if (m_stalker)
+	{
+		try_change_stalker_enemy(previous_selected, only_wounded);
+		return;
+	}
 	if (!need_update(only_wounded))
 		return;
 
