@@ -20,6 +20,7 @@ public:
 class CRender:public IRender_interface,public pureFrame {
     struct Queued {IRender_Visual* visual;Fmatrix world;bool hud;float distance;};
     xr_vector<Queued> queue;
+    xr_vector<CFrustum> shadow_views;
     Fmatrix transform;
     IRenderable* object;
     bool invisible,loaded;

@@ -17,6 +17,32 @@ Varying VSStatic(StaticInput v){Varying o;o.p=mul(float4(v.p,1),mvp);o.uv=v.uv;o
     o.n=float4(mul(float4(v.n.xyz,0),normal_matrix).xyz,v.n.w);o.w=mul(float4(v.p,1),world).xyz;return o;}
 Varying VSModel(ModelInput v){Varying o;o.p=v.p;o.uv=v.uv;o.c=v.c;o.n=v.n;o.w=v.w;return o;}
 Varying VSModelShadow(ModelInput v){Varying o=VSModel(v);o.p=mul(float4(v.w,1),mvp);return o;}
+// G3b: immutable OGF geometry, a per-instance pose, and one palette for all passes.
+// SourceVertex is 32 bytes. Bone transforms keep the SoC row-vector convention.
+cbuffer ModelPose : register(b1) {row_major float4x4 model_bones[256];uint4 model_header;};
+struct NativeModelInput {float3 p:POSITION;float2 uv:TEXCOORD0;float weight:BLENDWEIGHT0;uint2 bones:BLENDINDICES0;uint packed_normal:NORMAL0;};
+float3 ModelNormal(uint bits){
+    if(bits==0)return 0;
+    float3 n=float3(bits&1023,(bits>>10)&1023,(bits>>20)&1023)*(2.0/1023.0)-1;
+    return dot(n,n)>1e-12?normalize(n):float3(0,0,0);
+}
+Varying VSModelGPU(NativeModelInput v){
+    Varying o=(Varying)0;float3 p=v.p,n=ModelNormal(v.packed_normal);
+    if(model_header.z!=0){
+        float3 a=mul(float4(p,1),model_bones[v.bones.x]).xyz;
+        float3 na=mul(float4(n,0),model_bones[v.bones.x]).xyz;
+        // Equal-bone 2W vertices ignore their unused weight, matching xrSkin2W.
+        if(v.bones.x==v.bones.y){p=a;n=na;}
+        else{float w=v.weight;
+            if(model_header.y==2)w=floor(saturate(w)*255+.5)/255;
+            p=a*(1-w)+mul(float4(p,1),model_bones[v.bones.y]).xyz*w;
+            n=na*(1-w)+mul(float4(n,0),model_bones[v.bones.y]).xyz*w;
+        }
+    }
+    n=mul(float4(n,0),normal_matrix).xyz;
+    o.n=float4(dot(n,n)>1e-12?normalize(n):float3(0,0,0),1);
+    o.p=mul(float4(p,1),mvp);o.w=mul(float4(p,1),world).xyz;o.uv=v.uv;o.c=1;return o;
+}
 Varying VSScreen(ScreenInput v){Varying o=(Varying)0;o.p=float4(v.p,1);o.uv=v.uv;o.c=1;return o;}
 // G3a: one copy of mesh vertices; per-instance 3x4 transform and sun/hemi.
 struct DetailInput {float3 p:POSITION;float4 misc:TEXCOORD0;
@@ -104,6 +130,17 @@ float4 PSDistortion(Varying v):SV_Target {float4 mask=Base(v);bool menu=alpha.w>
     // Match R2 distort.ps: the menu mask is alpha-blended over neutral 0.5.
     float2 offset=(mask.rg-.5)*(menu?.05:.015)*mask.a;
     return float4(image1.Sample(surface,saturate(v.p.xy/max(screen.xy,1)+offset)).rgb,menu?1:mask.a);
+}
+// G3b mapDistort equivalent. The source texture is a displacement field, not
+// a flame image: vertex RGB modulates strength only (X-Ray 1.6 particle_distort).
+float4 PSParticleDistortionMask(Varying v):SV_Target {
+    float4 field=image0.Sample(surface,v.uv);
+    return float4(field.rgb,saturate(field.a*dot(v.c.rgb,float3(.33,.33,.33))));
+}
+float4 PSDistortionComposite(Varying v):SV_Target {
+    // RGBA16F preserves neutral .5 exactly; the source engine used 127/255 in RGBA8.
+    float2 displacement=(image1.Sample(surface,v.uv).rg-.5)*.05;
+    return float4(image0.Sample(surface,saturate(v.uv+displacement)).rgb,1);
 }
 
 float4 PSPostprocess(Varying v):SV_Target {

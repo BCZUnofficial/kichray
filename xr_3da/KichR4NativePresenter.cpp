@@ -84,7 +84,7 @@ KichR4Handle OverrideTexture(void* context,const std::string& key,bool& handled)
 }
 void ConfigureContext(Context& c){c.frame.api=native.api.frame;c.level.bridge.resources=native.api.resources;c.level.bridge.api=native.api.geometry;
     c.level.api=native.api.level;c.level.files=native.files;c.level.log=native.log;c.stream.api=native.api.stream;c.deferred.api=native.api.deferred;c.deferred.native_mode=true;c.deferred.tools=native.api.tools;
-    c.deferred.details.api=native.api.details;c.deferred.details.source=&KichR4_DetailFrame();
+    c.deferred.native_models.api=native.api.models;c.deferred.details.api=native.api.details;c.deferred.details.source=&KichR4_DetailFrame();
     c.level.keep_going=[](void*)->bool{KichR4_NativePumpLoading();return true;};
     c.level.texture_override=OverrideTexture;c.level.texture_context=&c;
 }
@@ -134,6 +134,7 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
     struct SnapshotFailureGuard {bool complete;SnapshotFailureGuard():complete(false){}~SnapshotFailureGuard(){if(!complete && g_render_snapshot_active)RenderSnapshot_End("NATIVE_FRAME_FAILED");}} snapshot_guard;
     if(g_render_snapshot_active){RenderSnapshot_Text("MEMORY","registered_gpu_payload_bytes","NOT_AVAILABLE");RenderSnapshot_Text("MEMORY","resource_stats_status","NOT_QUERIED");
         RenderSnapshot_Text("MEMORY","registered_gpu_payload_scope","DEVICE_RESOURCE_REGISTRY_PAYLOAD; NOT_VRAM_RESIDENCY");RenderSnapshot_Text("MEMORY","cpu_capture_bytes","NOT_AVAILABLE");
+        RenderSnapshot_Text("MODEL_RENDERER","frame_status","NOT_SUBMITTED");
         context->deferred.details.SnapshotSummary(input.engine_frame,false);}
     try{if(context->name!=native.desired){if(!ResetContext())return false;context=native.context.get();}
         Context& c=*context;LARGE_INTEGER start,end,submitted,frequency;QueryPerformanceCounter(&start);const uint32_t shadows_before=c.deferred.shadow_passes;QueryPerformanceFrequency(&frequency);
@@ -165,6 +166,8 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
             RenderSnapshot_Value("MEMORY","cpu_capture_capacity_bytes",batch->vertices.capacity()*sizeof(kich_r4_capture::Vertex)+batch->indices.capacity()*4);
             RenderSnapshot_Value("MEMORY","cpu_level_geometry_payload_bytes",static_cast<double>(c.level.scene.cpu_bytes));
             c.deferred.details.SnapshotSummary(input.engine_frame,c.loaded && input.allowed);
+            c.deferred.native_models.SnapshotSummary();RenderSnapshot_Text("MODEL_RENDERER","frame_status",hr<0?"SUBMISSION_FAILED":"SUBMITTED");
+            RenderSnapshot_Value("MEMORY","cpu_model_pose_payload_bytes",static_cast<double>(batch->pose_bytes));
             KichR4ResourceStats memory={};const int32_t memory_result=native.api.resources.get_stats(c.frame.device,&memory,sizeof(memory));
             if(memory_result==0){RenderSnapshot_Value("MEMORY","registered_gpu_payload_bytes",static_cast<double>(memory.payload_bytes));RenderSnapshot_Text("MEMORY","resource_stats_status","AVAILABLE");RenderSnapshot_Value("MEMORY","registered_gpu_resources",memory.live_resources);}
             else{RenderSnapshot_Text("MEMORY","registered_gpu_payload_bytes","NOT_AVAILABLE");RenderSnapshot_Text("MEMORY","resource_stats_status","QUERY_FAILED");RenderSnapshot_Value("MEMORY","resource_stats_hresult",memory_result);}

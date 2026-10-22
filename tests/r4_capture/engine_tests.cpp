@@ -8,6 +8,7 @@ CaptureDevice Device;CaptureCache RCache;CaptureHardware HW;
 // r4_native; satisfy the native hooks added to the production adapter in B5.
 bool KichR4_NativeActive(){return false;}
 bool KichR4_NativeStyle(kich_r4_capture::Style&){return false;}
+void KichR4_NativeModelMaterial(kich_r4_capture::ModelInput&){}
 namespace {
 int checks=0;void Require(bool b,const char* why){++checks;if(!b)throw std::runtime_error(why);}
 IDirect3DDevice9 gpu;IDirect3DVertexDeclaration9 declaration;int vb,ib;

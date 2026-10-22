@@ -166,7 +166,7 @@ IC void CBackend::set_Element(ShaderElement* S, u32 pass)
 	set_VS(P.vs);
 	set_Constants(P.constants);
 	set_Textures(P.T);
-	if(KichR4_NativeActive())KichR4_NativeElement(S);
+	if(KichR4_NativeActive())KichR4_NativeElementPass(S,pass);
 #ifdef _EDITOR
 	set_Matrices(P.M);
 #endif

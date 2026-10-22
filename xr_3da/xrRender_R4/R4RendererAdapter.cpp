@@ -18,6 +18,7 @@ extern "C" int32_t KICH_R4_CALL KichR4_GetRendererAPI(uint32_t abi,KichR4Rendere
         KichR4_GetDeferredAPI(KICH_R4_DEFERRED_ABI,&a.deferred,sizeof(a.deferred))!=KICH_R4_OK ||
         KichR4_GetNativeToolsAPI(KICH_R4_NATIVE_TOOLS_ABI,&a.tools,sizeof(a.tools))!=KICH_R4_OK ||
         KichR4_GetDetailAPI(KICH_R4_DETAIL_ABI,&a.details,sizeof(a.details))!=KICH_R4_OK ||
+        KichR4_GetModelAPI(KICH_R4_MODEL_ABI,&a.models,sizeof(a.models))!=KICH_R4_OK ||
         KichR4_ValidateRendererAPI(&a))return KICH_R4_E_STATE;
     *out=a;
     return KICH_R4_OK;

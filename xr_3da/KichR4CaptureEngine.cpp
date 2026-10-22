@@ -46,6 +46,7 @@ void KichR4_CaptureModel(void* visual,void* parent,uint32_t vertices,uint32_t fi
     kich_r4_capture::ModelInput input={};input.visual=visual;input.count=vertices;input.first=first;input.triangles=triangles;
     input.skin_mode=skin_mode;
     if(!Snapshot(false,input.style))return;
+    if(KichR4_NativeActive())KichR4_NativeModelMaterial(input);
     if(input.style.max_z>=.1f && memcmp(RCache.get_xform_project().m,Device.mProject.m,sizeof(Fmatrix)))return;
     memcpy(input.world,RCache.get_xform_world().m,sizeof(input.world));Fmatrix vp;vp.mul(RCache.get_xform_project(),RCache.get_xform_view());memcpy(input.vp,vp.m,sizeof(input.vp));
     float bones[256][16];

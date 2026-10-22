@@ -56,6 +56,9 @@ extern "C" int32_t KICH_R4_CALL KichR4_GetNativeToolsAPI(uint32_t,KichR4NativeTo
 extern "C" int32_t KICH_R4_CALL KichR4_GetDetailAPI(uint32_t,KichR4DetailAPI* out,uint32_t){
     HEADER(KichR4DetailAPI,KICH_R4_DETAIL_ABI);BIND(create_pipeline);BIND(create_instances);BIND(upload_instances);BIND(draw);FINISH();
 }
+extern "C" int32_t KICH_R4_CALL KichR4_GetModelAPI(uint32_t,KichR4ModelAPI* out,uint32_t){
+    HEADER(KichR4ModelAPI,KICH_R4_MODEL_ABI);BIND(create_pipeline);BIND(create_pose);BIND(upload_pose);BIND(draw);FINISH();
+}
 #undef BIND
 #undef HEADER
 #undef FINISH
@@ -84,7 +87,7 @@ KichR4GetRendererAPIFn GetProcAddress(void*,const char* name){
 void Adapter(){
     KichR4RendererAPI a={};
     Require(KichR4_GetRendererAPI(KICH_R4_RENDERER_ABI,&a,sizeof(a))==0,"provider negotiates real service tables");
-    Require(!KichR4_ValidateRendererAPI(&a) && !device_creates && getter_calls==8,"negotiation creates no device");
+    Require(!KichR4_ValidateRendererAPI(&a) && !device_creates && getter_calls==9,"negotiation creates no device");
     const KichR4RendererAPI saved=a;
     Require(KichR4_GetRendererAPI(0,&a,sizeof(a))<0 && !memcmp(&a,&saved,sizeof(a)),"wrong version preserves output");
     Require(KichR4_GetRendererAPI(KICH_R4_RENDERER_ABI,&a,sizeof(a)-1)<0 && !memcmp(&a,&saved,sizeof(a)),"short output preserved");
@@ -96,7 +99,7 @@ void Adapter(){
     BAD(build.struct_size,0);BAD(build.pointer_size,1);BAD(build.dirty,3);BAD(build.source_id[0],'x');
     a=saved;memset(a.build.revision,'x',sizeof(a.build.revision));Require(KichR4_ValidateRendererAPI(&a)!=NULL,"unterminated identity rejected");
 #define TABLE(member) BAD(member.struct_size,0);BAD(member.abi_version,0);BAD(member.pointer_size,1);BAD(member.flags,1)
-    TABLE(frame);TABLE(resources);TABLE(geometry);TABLE(level);TABLE(stream);TABLE(deferred);TABLE(tools);TABLE(details);
+    TABLE(frame);TABLE(resources);TABLE(geometry);TABLE(level);TABLE(stream);TABLE(deferred);TABLE(tools);TABLE(details);TABLE(models);
 #undef TABLE
     BAD(frame.create_device,NULL);BAD(frame.destroy_device,NULL);BAD(frame.create_target,NULL);BAD(frame.destroy_target,NULL);
     BAD(frame.resize,NULL);BAD(frame.begin_frame,NULL);BAD(frame.clear,NULL);BAD(frame.present,NULL);BAD(frame.get_stats,NULL);
@@ -107,7 +110,7 @@ void Adapter(){
     BAD(level.create_texture_dds,NULL);BAD(level.create_pipeline,NULL);BAD(level.draw_textured,NULL);
     BAD(stream.create_pipeline,NULL);BAD(stream.draw,NULL);BAD(deferred.create_pipeline,NULL);BAD(deferred.begin_pass,NULL);BAD(deferred.draw,NULL);
     BAD(tools.read_pixels,NULL);BAD(tools.profile_mark,NULL);BAD(tools.get_profile,NULL);BAD(tools.reset_resources,NULL);
-    BAD(tools.set_snapshot_sink,NULL);BAD(details.create_pipeline,NULL);BAD(details.create_instances,NULL);BAD(details.upload_instances,NULL);BAD(details.draw,NULL);
+    BAD(tools.set_snapshot_sink,NULL);BAD(details.create_pipeline,NULL);BAD(details.create_instances,NULL);BAD(details.upload_instances,NULL);BAD(details.draw,NULL);BAD(models.create_pipeline,NULL);BAD(models.create_pose,NULL);BAD(models.upload_pose,NULL);BAD(models.draw,NULL);
 #undef BAD
     a=saved;
     KichR4Handle device=0;Require(a.frame.create_device(&device)==0 && device==77,"frame owns the single device");

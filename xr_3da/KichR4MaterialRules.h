@@ -1,0 +1,41 @@
+#ifndef KICH_R4_MATERIAL_RULES_H
+#define KICH_R4_MATERIAL_RULES_H
+#include <stdint.h>
+#include <string.h>
+
+namespace kich_r4_material {
+/* Adapted selection contract from X-Ray 1.6 r__dsgraph_build/render:
+ * E[4].bDistort is an independent special queue; a missing normal element
+ * means no ordinary draw, not reuse of the previously bound material. */
+struct Element {
+    uint32_t passes;bool distort;
+    Element(uint32_t n=0,bool d=false):passes(n),distort(d){}
+};
+struct Selection {uint32_t normal,distortion;Selection():normal(UINT32_MAX),distortion(UINT32_MAX){}};
+inline Selection Select(const Element (&elements)[6],bool distortion_enabled=true){
+    Selection result;
+    if(elements[0].passes && !elements[0].distort)result.normal=0;
+    else if(elements[1].passes && !elements[1].distort)result.normal=1;
+    if(distortion_enabled){
+        if(elements[4].passes && elements[4].distort)result.distortion=4;
+        else if(elements[0].passes && elements[0].distort)result.distortion=0;
+        else if(elements[1].passes && elements[1].distort)result.distortion=1;
+    }
+    return result;
+}
+inline bool Contains(const char* value,const char* part){return value && strstr(value,part)!=0;}
+inline uint32_t Effect(const char* pixel_shader,bool distortion,bool wallmark){
+    if(distortion)return 5;
+    if(wallmark)return 6;
+    if(Contains(pixel_shader,"sky"))return 2;
+    if(Contains(pixel_shader,"cloud"))return 3;
+    if(Contains(pixel_shader,"water"))return 4;
+    if(Contains(pixel_shader,"distort"))return 5;
+    if(Contains(pixel_shader,"wmark"))return 6;
+    if(Contains(pixel_shader,"particle") || Contains(pixel_shader,"flare") || Contains(pixel_shader,"font") ||
+        Contains(pixel_shader,"hud") || Contains(pixel_shader,"rain"))return 1;
+    return 0;
+}
+inline bool IsDistortion(uint32_t effect){return effect==5;}
+}
+#endif

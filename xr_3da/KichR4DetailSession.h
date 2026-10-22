@@ -3,32 +3,37 @@
 #include "KichR4DetailData.h"
 #include "KichR4LevelSession.h"
 #include "KichR4LightingMath.h"
+#include "KichR4Visibility.h"
 #include "RenderSnapshot.h"
 struct KichR4DetailSession {
     struct Mesh {KichR4Handle vb,ib,texture;uint32_t indices;Mesh():vb(0),ib(0),texture(0),indices(0){}};
     KichR4DetailAPI api;
     const kich_r4_detail::Frame* source;
     std::vector<Mesh> meshes;
-    KichR4Handle instance_buffer,vs,pipelines[2];
+    KichR4Handle instance_buffer,shadow_instance_buffer,vs,pipelines[2];
     uint64_t generation,vertex_bytes,index_bytes;
-    uint32_t capacity,uploaded_frame,draw_calls,shadow_draw_calls;
+    uint32_t capacity,shadow_capacity,uploaded_frame,draw_calls,shadow_draw_calls;
     uint32_t telemetry_frame,uploaded_instances;
     uint64_t submitted_instances,shadow_submitted_instances;
-    KichR4DetailSession():source(NULL),instance_buffer(0),vs(0),generation(UINT64_MAX),vertex_bytes(0),index_bytes(0),capacity(0),uploaded_frame(UINT32_MAX),draw_calls(0),shadow_draw_calls(0),telemetry_frame(UINT32_MAX),uploaded_instances(0),submitted_instances(0),shadow_submitted_instances(0){memset(&api,0,sizeof(api));pipelines[0]=pipelines[1]=0;}
+    uint64_t shadow_upload_bytes,shadow_candidates,shadow_culled;
+    std::vector<KichR4DetailInstance> selected_instances;
+    std::vector<kich_r4_detail::Group> selected_groups;
+    KichR4DetailSession():source(NULL),instance_buffer(0),shadow_instance_buffer(0),vs(0),generation(UINT64_MAX),vertex_bytes(0),index_bytes(0),capacity(0),shadow_capacity(0),uploaded_frame(UINT32_MAX),draw_calls(0),shadow_draw_calls(0),telemetry_frame(UINT32_MAX),uploaded_instances(0),submitted_instances(0),shadow_submitted_instances(0),shadow_upload_bytes(0),shadow_candidates(0),shadow_culled(0){memset(&api,0,sizeof(api));pipelines[0]=pipelines[1]=0;}
     static std::string MaterialKey(const std::string& identity){
         uint64_t hash=UINT64_C(14695981039346656037);for(size_t i=0;i<identity.size();++i){hash^=static_cast<unsigned char>(identity[i]);hash*=UINT64_C(1099511628211);}
         char key[64];snprintf(key,sizeof(key),"material/fnv1a64/%016llx",static_cast<unsigned long long>(hash));return key;
     }
-    void ResetFrame(uint32_t frame){telemetry_frame=frame;uploaded_instances=draw_calls=shadow_draw_calls=0;submitted_instances=shadow_submitted_instances=0;}
+    void ResetFrame(uint32_t frame){telemetry_frame=frame;uploaded_instances=draw_calls=shadow_draw_calls=0;submitted_instances=shadow_submitted_instances=shadow_upload_bytes=shadow_candidates=shadow_culled=0;}
     void SnapshotSummary(uint32_t frame,bool scene)const{
         if(!g_render_snapshot_active)return;
         try{
         const bool current=scene && source && source->engine_frame==frame;
         const bool attempted=scene && telemetry_frame==frame;
-        const char* status=!scene?"SCENE_NOT_SUBMITTED":!source?"UNAVAILABLE":!current?"UNPREPARED_FOR_FRAME":source->instances.empty()?"CURRENT_EMPTY":attempted && uploaded_frame==frame?"CURRENT_UPLOADED":"CURRENT_NOT_UPLOADED";
+        const char* status=!scene?"SCENE_NOT_SUBMITTED":!source?"UNAVAILABLE":!current?"UNPREPARED_FOR_FRAME":source->instances.empty()?(source->shadow_instances.empty()?"CURRENT_EMPTY":"CURRENT_SHADOW_ONLY"):attempted && uploaded_frame==frame?"CURRENT_UPLOADED":"CURRENT_NOT_UPLOADED";
         RenderSnapshot_Text("DETAIL_RENDERER","status",status);RenderSnapshot_Text("DETAIL_RENDERER","path","NATIVE_DX11");
         RenderSnapshot_Text("DETAIL_RENDERER","instance_scope","CAMERA_SELECTED_LIST; NOT_VISIBLE_PIXELS");
-        RenderSnapshot_Text("DETAIL_RENDERER","shadow_selection","REUSES_CAMERA_SELECTED_INSTANCES; NO_PER_SHADOW_INSTANCE_CULL");
+        RenderSnapshot_Text("DETAIL_RENDERER","shadow_selection","PER_SHADOW_FRUSTUM; READY_CACHE_WITHIN_DETAIL_RADIUS; WIND_EXPANDED_BOUNDS");
+        RenderSnapshot_Value("DETAIL_RENDERER","shadow_source_instances",current?source->shadow_instances.size():0);
         RenderSnapshot_Value("DETAIL_RENDERER","visible_instances",current?source->instances.size():0);
         RenderSnapshot_Value("DETAIL_RENDERER","still_instances",current?source->variants[0]:0);RenderSnapshot_Value("DETAIL_RENDERER","wind1_instances",current?source->variants[1]:0);RenderSnapshot_Value("DETAIL_RENDERER","wind2_instances",current?source->variants[2]:0);
         RenderSnapshot_Value("DETAIL_RENDERER","loaded_meshes",source?source->meshes.size():0);RenderSnapshot_Value("DETAIL_RENDERER","unique_meshes",source?source->meshes.size():0);
@@ -40,17 +45,50 @@ struct KichR4DetailSession {
         else{RenderSnapshot_Text("DETAIL_RENDERER","gpu_vertex_bytes","NOT_AVAILABLE");RenderSnapshot_Text("DETAIL_RENDERER","gpu_index_bytes","NOT_AVAILABLE");}
         RenderSnapshot_Value("DETAIL_RENDERER","instance_capacity",capacity);RenderSnapshot_Value("DETAIL_RENDERER","instance_allocated_bytes",uint64_t(capacity)*sizeof(KichR4DetailInstance));
         RenderSnapshot_Value("DETAIL_RENDERER","instance_upload_bytes",attempted?uint64_t(uploaded_instances)*sizeof(KichR4DetailInstance):0);
+        RenderSnapshot_Value("DETAIL_RENDERER","shadow_instance_capacity",shadow_capacity);RenderSnapshot_Value("DETAIL_RENDERER","shadow_instance_allocated_bytes",uint64_t(shadow_capacity)*sizeof(KichR4DetailInstance));
+        RenderSnapshot_Value("DETAIL_RENDERER","shadow_instance_upload_bytes",attempted?static_cast<double>(shadow_upload_bytes):0);
+        RenderSnapshot_Value("DETAIL_RENDERER","shadow_candidate_observations",attempted?static_cast<double>(shadow_candidates):0);RenderSnapshot_Value("DETAIL_RENDERER","shadow_culled_observations",attempted?static_cast<double>(shadow_culled):0);
         RenderSnapshot_Value("DETAIL_RENDERER","instanced_draw_calls",attempted?draw_calls:0);RenderSnapshot_Value("DETAIL_RENDERER","shadow_draw_calls",attempted?shadow_draw_calls:0);
         RenderSnapshot_Value("DETAIL_RENDERER","geometry_submitted_instances",attempted?static_cast<double>(submitted_instances):0);RenderSnapshot_Value("DETAIL_RENDERER","shadow_submitted_instances",attempted?static_cast<double>(shadow_submitted_instances):0);
         RenderSnapshot_Value("DETAIL_RENDERER","legacy_capture_vertices",source && source->engine_frame==frame?static_cast<double>(source->legacy_vertices):0);RenderSnapshot_Value("DETAIL_RENDERER","legacy_capture_indices",source && source->engine_frame==frame?static_cast<double>(source->legacy_indices):0);RenderSnapshot_Value("DETAIL_RENDERER","legacy_detail_draws",source && source->engine_frame==frame?source->legacy_draws:0);
         RenderSnapshot_Value("DETAIL_RENDERER","cpu_prepare_ms",current?source->prepare_ms:0);RenderSnapshot_Text("DETAIL_RENDERER","gpu_detail_ms","NOT_INSTRUMENTED");
         RenderSnapshot_Value("MEMORY","detail_cpu_instance_payload_bytes",source?source->instances.size()*sizeof(KichR4DetailInstance):0);
         RenderSnapshot_Value("MEMORY","detail_cpu_instance_capacity_bytes",source?source->instances.capacity()*sizeof(KichR4DetailInstance):0);
+        RenderSnapshot_Value("MEMORY","detail_cpu_shadow_candidate_payload_bytes",source?source->shadow_instances.size()*sizeof(KichR4DetailInstance):0);
+        RenderSnapshot_Value("MEMORY","detail_cpu_shadow_candidate_capacity_bytes",source?source->shadow_instances.capacity()*sizeof(KichR4DetailInstance):0);
+        RenderSnapshot_Value("MEMORY","detail_cpu_shadow_selected_payload_bytes",selected_instances.size()*sizeof(KichR4DetailInstance));
+        RenderSnapshot_Value("MEMORY","detail_cpu_shadow_selected_capacity_bytes",selected_instances.capacity()*sizeof(KichR4DetailInstance));
         uint64_t mesh_payload=0;if(source)for(size_t i=0;i<source->meshes.size();++i){const kich_r4_detail::Mesh& mesh=source->meshes[i];mesh_payload+=mesh.vertices.size()*sizeof(KichR4DetailVertex)+mesh.indices.size()*sizeof(uint16_t);}
         RenderSnapshot_Value("MEMORY","detail_cpu_mesh_payload_bytes",static_cast<double>(mesh_payload));
         RenderSnapshot_Value("MEMORY","detail_cpu_group_payload_bytes",source?source->groups.size()*sizeof(kich_r4_detail::Group):0);
+        RenderSnapshot_Value("MEMORY","detail_cpu_shadow_group_payload_bytes",source?source->shadow_groups.size()*sizeof(kich_r4_detail::Group):0);
         RenderSnapshot_Text("MEMORY","detail_cpu_instance_scope","RETAINED_FRONTEND_STORAGE; MAY_BE_FROM_PRIOR_FRAME");
         }catch(...){RenderSnapshot_Text("TELEMETRY_LOSS","r4_detail_summary","ALLOCATION_FAILED; PARTIAL_SUMMARY");}
+    }
+    bool ShadowVisible(const kich_r4_detail::Mesh& mesh,const KichR4DetailInstance& instance,uint32_t variant,const kich_r4_scene::Matrix& vp)const{
+        if(!mesh.bounds_known || !source || variant>2)return true;
+        float low[3]={},high[3]={};
+        for(unsigned corner=0;corner<8;++corner){const float p[3]={corner&1?mesh.maximum[0]:mesh.minimum[0],corner&2?mesh.maximum[1]:mesh.minimum[1],corner&4?mesh.maximum[2]:mesh.minimum[2]};
+            for(unsigned a=0;a<3;++a){const float value=instance.row[a][0]*p[0]+instance.row[a][1]*p[1]+instance.row[a][2]*p[2]+instance.row[a][3];
+                if(!kich_r4_detail::Finite(value))return true;
+                if(!corner || value<low[a])low[a]=value;
+                if(!corner || value>high[a])high[a]=value;}}
+        /* VSDetail cyclic wave lies in [-1,1]. Height is transformed Y minus
+         * the instance translation; misc.z is the source height factor. */
+        if(variant){const float height=std::max(std::fabs(low[1]-instance.row[1][3]),std::fabs(high[1]-instance.row[1][3]));
+            for(unsigned a=0;a<3;a+=2){const float pad=std::fabs(source->wind[variant][a])*height*mesh.height_factor;low[a]-=pad;high[a]+=pad;}}
+        return kich_r4_visibility::Visible(low,high,vp);
+    }
+    int32_t UploadShadow(KichR4FrameSession& s,KichR4LevelSession& l){
+        if(selected_instances.empty())return 0;
+        if(selected_instances.size()>KICH_R4_MAX_DETAIL_INSTANCES)return s.Record("G3b detail shadow instance budget",KICH_R4_E_MEMORY);
+        const uint32_t needed=static_cast<uint32_t>(selected_instances.size());
+        if(needed>shadow_capacity){uint32_t next=256;while(next<needed)next*=2;KichR4Handle handle=0;
+            if(l.Expect(s,"G3b shadow instance stream",api.create_instances(s.device,next,&handle))<0)return s.failure;
+            if(shadow_instance_buffer && l.Expect(s,"G3b replace shadow instance stream",l.bridge.resources.release_resource(s.device,shadow_instance_buffer))<0)return s.failure;
+            shadow_instance_buffer=handle;shadow_capacity=next;}
+        if(l.Expect(s,"G3b shadow instance WRITE_DISCARD",api.upload_instances(s.device,shadow_instance_buffer,selected_instances.data(),needed))<0)return s.failure;
+        shadow_upload_bytes+=uint64_t(needed)*sizeof(KichR4DetailInstance);return 0;
     }
     int32_t Upload(KichR4FrameSession& s,KichR4LevelSession& l,uint32_t frame){
         ResetFrame(frame);
@@ -93,14 +131,31 @@ struct KichR4DetailSession {
         return 0;
     }
     int32_t Draw(KichR4FrameSession& s,KichR4LevelSession& l,KichR4Handle cb,const kich_r4_lighting::Constants& base,bool shadow,uint32_t frame,const char* phase="unspecified",uint32_t pass_mask=0){
-        struct Summary {char section[64];uint32_t calls;uint64_t variants[3];bool enabled;
-            Summary(const char* name):calls(0),enabled(g_render_snapshot_active){section[0]=0;if(enabled)snprintf(section,sizeof(section),"DETAIL_PASS %s",name);variants[0]=variants[1]=variants[2]=0;}
+        struct Summary {char section[64];uint32_t calls,allocated_capacity;uint64_t variants[3],candidates,culled,selected,uploaded_bytes;bool enabled,shadow;
+            Summary(const char* name,bool is_shadow):calls(0),allocated_capacity(0),candidates(0),culled(0),selected(0),uploaded_bytes(0),enabled(g_render_snapshot_active),shadow(is_shadow){section[0]=0;if(enabled)snprintf(section,sizeof(section),"DETAIL_PASS %s",name);variants[0]=variants[1]=variants[2]=0;}
             ~Summary(){if(enabled){RenderSnapshot_Value(section,"draw_calls",calls);RenderSnapshot_Value(section,"submitted_instances",static_cast<double>(variants[0]+variants[1]+variants[2]));
+                RenderSnapshot_Text(section,"candidate_scope",shadow?"READY_CACHE_WITHIN_DETAIL_RADIUS":"CAMERA_SELECTED_LIST");RenderSnapshot_Value(section,"instance_capacity",allocated_capacity);RenderSnapshot_Value(section,"instance_allocated_bytes",uint64_t(allocated_capacity)*sizeof(KichR4DetailInstance));
+                RenderSnapshot_Value(section,"candidate_instances",static_cast<double>(candidates));RenderSnapshot_Value(section,"culled_instances",static_cast<double>(culled));RenderSnapshot_Value(section,"selected_instances",static_cast<double>(selected));RenderSnapshot_Value(section,"instance_upload_bytes",static_cast<double>(uploaded_bytes));
                 RenderSnapshot_Value(section,"still_submitted_instances",static_cast<double>(variants[0]));RenderSnapshot_Value(section,"wave1_submitted_instances",static_cast<double>(variants[1]));RenderSnapshot_Value(section,"wave2_submitted_instances",static_cast<double>(variants[2]));}}
-        } summary(phase);
-        if(!source || uploaded_frame!=frame || source->engine_frame!=frame || source->instances.empty())return 0;
-        for(size_t i=0;i<source->groups.size();++i){const kich_r4_detail::Group& g=source->groups[i];
-            if(g.mesh>=meshes.size() || g.variant>2 || g.first>source->instances.size() || g.count>source->instances.size()-g.first)return s.Record("G3a detail group range",KICH_R4_E_ARGUMENT);
+        } summary(phase,shadow);
+        summary.allocated_capacity=shadow?shadow_capacity:capacity;
+        if(!source || source->engine_frame!=frame || generation!=source->generation || telemetry_frame!=frame)return 0;
+        const std::vector<kich_r4_detail::Group>* groups=&source->groups;
+        if(shadow){selected_instances.clear();selected_groups.clear();
+            for(size_t i=0;i<source->shadow_groups.size();++i){const kich_r4_detail::Group& g=source->shadow_groups[i];
+                if(g.mesh>=meshes.size() || g.variant>2 || g.first>source->shadow_instances.size() || g.count>source->shadow_instances.size()-g.first)return s.Record("G3b detail shadow group range",KICH_R4_E_ARGUMENT);
+                kich_r4_detail::Group selected={g.mesh,g.variant,static_cast<uint32_t>(selected_instances.size()),0};
+                for(uint32_t j=0;j<g.count;++j){const KichR4DetailInstance& instance=source->shadow_instances[g.first+j];++summary.candidates;++shadow_candidates;
+                    if(!ShadowVisible(source->meshes[g.mesh],instance,g.variant,base.mvp)){++summary.culled;++shadow_culled;continue;}
+                    if(selected_instances.size()>=KICH_R4_MAX_DETAIL_INSTANCES)return s.Record("G3b selected detail budget",KICH_R4_E_MEMORY);
+                    selected_instances.push_back(instance);++selected.count;++summary.selected;}
+                if(selected.count)selected_groups.push_back(selected);}
+            if(UploadShadow(s,l)<0)return s.failure;
+            summary.allocated_capacity=shadow_capacity;summary.uploaded_bytes=uint64_t(selected_instances.size())*sizeof(KichR4DetailInstance);groups=&selected_groups;
+        }else{if(uploaded_frame!=frame || source->instances.empty())return 0;summary.candidates=summary.selected=source->instances.size();summary.uploaded_bytes=uint64_t(uploaded_instances)*sizeof(KichR4DetailInstance);}
+        for(size_t i=0;i<groups->size();++i){const kich_r4_detail::Group& g=(*groups)[i];
+            const size_t count=shadow?selected_instances.size():source->instances.size();
+            if(g.mesh>=meshes.size() || g.variant>2 || g.first>count || g.count>count-g.first)return s.Record("G3a detail group range",KICH_R4_E_ARGUMENT);
             const Mesh& mesh=meshes[g.mesh];kich_r4_lighting::Constants c=base;
             if(g_render_snapshot_active){try{const kich_r4_detail::Mesh& named=source->meshes[g.mesh];
                 const std::string material=MaterialKey(named.shader+"\n"+named.texture+"\ncutout=200/255;two_sided;depth_write");
@@ -118,7 +173,7 @@ struct KichR4DetailSession {
             KichR4StreamDrawDesc& state=d.surface.state;state.struct_size=sizeof(state);
             state.draw={sizeof(state.draw),pipelines[shadow?1:0],mesh.vb,mesh.ib,cb,mesh.indices,0,KICH_R4_CULL_NONE,KICH_R4_DEPTH_ON};
             state.source_blend=2;state.dest_blend=1;state.depth_write=1;state.max_depth=1;
-            d.surface.textures[0]=mesh.texture;d.instance_buffer=instance_buffer;d.first_instance=g.first;d.instance_count=g.count;
+            d.surface.textures[0]=mesh.texture;d.instance_buffer=shadow?shadow_instance_buffer:instance_buffer;d.first_instance=g.first;d.instance_count=g.count;
             if(l.Expect(s,shadow?"G3a detail shadow DrawIndexedInstanced":"G3a detail G-buffer DrawIndexedInstanced",api.draw(s.device,&d))<0)return s.failure;
             ++summary.calls;summary.variants[g.variant]+=g.count;
             if(shadow){++shadow_draw_calls;shadow_submitted_instances+=g.count;}else{++draw_calls;submitted_instances+=g.count;}

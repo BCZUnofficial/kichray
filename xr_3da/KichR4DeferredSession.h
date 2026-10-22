@@ -7,30 +7,43 @@
 #include "KichR4Game.h"
 #include "KichR4NativeTools.h"
 #include "KichR4DetailSession.h"
+#include "KichR4ModelSession.h"
+#include "KichR4Visibility.h"
 #include <set>
 /* EXE-side pass planner. Native resources remain owned by the R4 device;
  * destroying that device releases partial construction and all cached maps. */
 struct KichR4DeferredSession {
-    enum Pipeline {StaticGeometry,ModelGeometry,StaticShadow,ModelShadow,Sun,Local,ForwardSun,ForwardLocal,Plain,Combine,Sky,Clouds,Water,Distortion,StaticForward,StaticWater,Copy,Postprocess,StaticPlain,PipelineCount};
+    enum Pipeline {StaticGeometry,ModelGeometry,StaticShadow,ModelShadow,Sun,Local,ForwardSun,ForwardLocal,Plain,Combine,Sky,Clouds,Water,Distortion,StaticForward,StaticWater,Copy,Postprocess,StaticPlain,DistortionMask,DistortionComposite,PipelineCount};
     KichR4DeferredAPI api;
-    KichR4Handle pipelines[PipelineCount],shaders[17],cb,screen_vb,screen_ib,white;
-    KichR4Handle albedo,normal,depth,light,sun_map,local_maps[8][6],scene_color,final_color;
+    KichR4Handle pipelines[PipelineCount],shaders[19],cb,screen_vb,screen_ib,white;
+    KichR4Handle albedo,normal,depth,light,sun_map,local_maps[8][6],scene_color,final_color,distortion_map;
     uint32_t width,height,frames,shadow_passes,local_passes;
     kich_r4_lighting::Constants base;
     bool native_mode;KichR4NativeToolsAPI tools;
     std::set<uint32_t> simple_transparent;
     KichR4DetailSession details;
+    KichR4ModelSession native_models;
     uint32_t snapshot_pass_mask=0;
+    char snapshot_phase[64]={};
     void Mark(KichR4FrameSession& s,unsigned n){if(native_mode && tools.profile_mark)tools.profile_mark(s.device,n);}
     void SnapshotPass(const char* name,uint32_t mask,const char* phase="main"){
+        snapshot_pass_mask=mask;SnapshotPhase(phase);
         if(!g_render_snapshot_active)return;
-        snapshot_pass_mask=mask;RenderSnapshot_Pass(name);RenderSnapshot_Phase(phase);
+        RenderSnapshot_Pass(name);RenderSnapshot_Phase(phase);
     }
-    static void SnapshotLocalLight(const KichR4LocalLight& light_source,unsigned index,bool shadowed){
+    void SnapshotPhase(const char* phase){snprintf(snapshot_phase,sizeof(snapshot_phase),"%s",phase?phase:"main");if(g_render_snapshot_active)RenderSnapshot_Phase(snapshot_phase);}
+    static void SnapshotLocalLight(const KichR4LocalLight& light_source,const KichR4LightIdentity& source,unsigned index,bool shadowed){
         if(!g_render_snapshot_active)return;
-        char id[48],section[64],value[160];snprintf(id,sizeof(id),"local_%u",index);snprintf(section,sizeof(section),"LIGHT %s",id);
-        RenderSnapshot_Light(id,"FRAME_LOCAL_LIGHT_ARRAY_INDEX");
-        RenderSnapshot_Text(section,"id_scope","FRAME_LOCAL_LIGHT_ARRAY_INDEX");RenderSnapshot_Text(section,"type",light_source.type==2?"SPOT":"POINT");
+        char id[48],section[64],value[160];
+        if(source.serial)snprintf(id,sizeof(id),"source_%llu",static_cast<unsigned long long>(source.serial));else snprintf(id,sizeof(id),"local_%u",index);
+        snprintf(section,sizeof(section),"LIGHT %s",id);const char* scope=source.serial?"PROCESS_LIFETIME_SOURCE_SERIAL":"FRAME_LOCAL_LIGHT_ARRAY_INDEX";
+        RenderSnapshot_Light(id,scope);RenderSnapshot_Text(section,"id_scope",scope);
+        RenderSnapshot_Value(section,"frame_array_index",index);
+        snprintf(value,sizeof(value),"%llu",static_cast<unsigned long long>(source.serial));RenderSnapshot_Text(section,"source_serial",value);
+        snprintf(value,sizeof(value),"0x%llX",static_cast<unsigned long long>(source.process_handle));RenderSnapshot_Text(section,"source_handle_process_local",value);
+        RenderSnapshot_Text(section,"role",source.role==KICH_R4_LIGHT_ROLE_LEVEL?"LEVEL_RECORD":source.role==KICH_R4_LIGHT_ROLE_RUNTIME?"RUNTIME_REGISTERED":"UNKNOWN");
+        if(source.role==KICH_R4_LIGHT_ROLE_LEVEL)RenderSnapshot_Value(section,"level_record",source.level_record);else RenderSnapshot_Text(section,"level_record","NOT_AVAILABLE");
+        RenderSnapshot_Value(section,"controller",source.controller);RenderSnapshot_Text(section,"type",light_source.type==2?"SPOT":"POINT");
         snprintf(value,sizeof(value),"%.9g,%.9g,%.9g",light_source.position[0],light_source.position[1],light_source.position[2]);RenderSnapshot_Text(section,"position",value);
         snprintf(value,sizeof(value),"%.9g,%.9g,%.9g",light_source.direction[0],light_source.direction[1],light_source.direction[2]);RenderSnapshot_Text(section,"direction",value);
         snprintf(value,sizeof(value),"%.9g,%.9g,%.9g",light_source.color[0],light_source.color[1],light_source.color[2]);RenderSnapshot_Text(section,"color",value);
@@ -53,22 +66,27 @@ struct KichR4DeferredSession {
         RenderSnapshot_UV(uv,samples,"LEVEL_INDEXED_BASE_UV");
         }catch(...){RenderSnapshot_Context("STATIC","NOT_AVAILABLE","NOT_AVAILABLE");RenderSnapshot_Queue(queue);RenderSnapshot_PassMask(snapshot_pass_mask);RenderSnapshot_Text("TELEMETRY_LOSS","r4_static_provenance","ALLOCATION_FAILED");}
     }
+    static void SnapshotResolvedTexture(const KichR4LevelSession& level,unsigned stage,const char* source,KichR4Handle handle){
+        if(!g_render_snapshot_active)return;
+        if(handle==level.checker && handle){char label[160];snprintf(label,sizeof(label),"CHECKER_FALLBACK:%s",source?source:"");RenderSnapshot_Texture(stage,label);}
+        else RenderSnapshot_Texture(stage,source && *source?source:"$white");
+    }
     static void SnapshotVisibility(const char* status,const char* reason){
         RenderSnapshotProvenance p={};RenderSnapshot_GetProvenance(&p);RenderSnapshot_Note(status,p.semantic_type[0]?p.semantic_type:"UNKNOWN",p.mesh_id[0]?p.mesh_id:"NOT_AVAILABLE",reason);
     }
-    KichR4DeferredSession():cb(0),screen_vb(0),screen_ib(0),white(0),albedo(0),normal(0),depth(0),light(0),sun_map(0),scene_color(0),final_color(0),width(0),height(0),frames(0),shadow_passes(0),local_passes(0),native_mode(false){
+    KichR4DeferredSession():cb(0),screen_vb(0),screen_ib(0),white(0),albedo(0),normal(0),depth(0),light(0),sun_map(0),scene_color(0),final_color(0),distortion_map(0),width(0),height(0),frames(0),shadow_passes(0),local_passes(0),native_mode(false){
         memset(&tools,0,sizeof(tools));
         memset(&api,0,sizeof(api));memset(pipelines,0,sizeof(pipelines));memset(shaders,0,sizeof(shaders));memset(local_maps,0,sizeof(local_maps));memset(&base,0,sizeof(base));}
     static bool ValidAPI(const KichR4DeferredAPI& a){return a.struct_size==sizeof(a) && a.abi_version==KICH_R4_DEFERRED_ABI &&
         a.pointer_size==sizeof(void*) && !a.flags && a.create_pipeline && a.begin_pass && a.draw;}
     int32_t Start(KichR4FrameSession& s,KichR4LevelSession& level){
         if(!ValidAPI(api))return s.Record("B4.4 deferred ABI",KICH_R4_E_ARGUMENT);
-        const char* entries[]={"VSStatic","VSModel","VSModelShadow","VSScreen","PSGeometry","PSShadow","PSSun","PSLocal","PSForwardSun","PSForwardLocal","PSPlain","PSCombine","PSSky","PSClouds","PSWater","PSDistortion","PSPostprocess"};
+        const char* entries[]={"VSStatic","VSModel","VSModelShadow","VSScreen","PSGeometry","PSShadow","PSSun","PSLocal","PSForwardSun","PSForwardLocal","PSPlain","PSCombine","PSSky","PSClouds","PSWater","PSDistortion","PSPostprocess","PSParticleDistortionMask","PSDistortionComposite"};
         const char* source=KichR4DeferredShaderSource();
-        for(unsigned i=0;i<17;++i){level.Continue();KichR4ShaderDesc d={};d.struct_size=sizeof(d);d.kind=i<4?KICH_R4_VERTEX_SHADER:KICH_R4_PIXEL_SHADER;
+        for(unsigned i=0;i<19;++i){level.Continue();KichR4ShaderDesc d={};d.struct_size=sizeof(d);d.kind=i<4?KICH_R4_VERTEX_SHADER:KICH_R4_PIXEL_SHADER;
             memcpy(d.entry,entries[i],strlen(entries[i])+1);memcpy(d.name,"kich_b44_deferred",18);
             if(level.Expect(s,entries[i],level.bridge.resources.compile_shader(s.device,&d,source,static_cast<uint32_t>(strlen(source)),&shaders[i],level.bridge.shader_error,sizeof(level.bridge.shader_error)))<0)return s.failure;}
-        const unsigned vs[]={0,1,0,2,3,3,1,1,1,3,1,1,1,1,0,0,3,3,0},ps[]={4,4,5,5,6,7,8,9,10,11,12,13,14,15,8,14,10,16,10};
+        const unsigned vs[]={0,1,0,2,3,3,1,1,1,3,1,1,1,1,0,0,3,3,0,1,3},ps[]={4,4,5,5,6,7,8,9,10,11,12,13,14,15,8,14,10,16,10,17,18};
         for(unsigned i=0;i<PipelineCount;++i){KichR4PipelineDesc d={};d.struct_size=sizeof(d);d.vertex_shader=shaders[vs[i]];d.pixel_shader=shaders[ps[i]];
             const bool model=vs[i]==1 || vs[i]==2,screen=vs[i]==3;
             d.vertex_stride=model?sizeof(kich_r4_capture::Vertex):screen?20:sizeof(kich_r4_level::Vertex);
@@ -98,17 +116,17 @@ struct KichR4DeferredSession {
         return l.Expect(s,"B4.4 target allocation",l.bridge.resources.create_texture(s.device,&d,&h));}
     int32_t ScreenTargets(KichR4FrameSession& s,KichR4LevelSession& l,uint32_t w,uint32_t h){
         if(w==width && h==height)return 0;
-        if(uint64_t(w)*h*(native_mode?32u:24u)>(native_mode?384u:192u)*1024u*1024u)return s.Record("B4.4 screen target budget",KICH_R4_E_MEMORY);
-        KichR4Handle* old[]={&albedo,&normal,&depth,&light,&scene_color,&final_color};
-        for(unsigned i=0;i<6;++i)if(*old[i]){if(l.Expect(s,"B4.4 old screen target",l.bridge.resources.release_resource(s.device,*old[i]))<0)return s.failure;*old[i]=0;}
+        if(uint64_t(w)*h*(native_mode?40u:24u)>(native_mode?384u:192u)*1024u*1024u)return s.Record("B4.4 screen target budget",KICH_R4_E_MEMORY);
+        KichR4Handle* old[]={&albedo,&normal,&depth,&light,&scene_color,&final_color,&distortion_map};
+        for(unsigned i=0;i<7;++i)if(*old[i]){if(l.Expect(s,"B4.4 old screen target",l.bridge.resources.release_resource(s.device,*old[i]))<0)return s.failure;*old[i]=0;}
         if(Target(s,l,albedo,w,h,KICH_R4_RGBA8,false)<0 || Target(s,l,normal,w,h,KICH_R4_RGBA16F,false)<0 ||
             Target(s,l,depth,w,h,KICH_R4_DEPTH32F,true)<0 || Target(s,l,light,w,h,KICH_R4_RGBA16F,false)<0)return s.failure;
-        if(native_mode && (Target(s,l,scene_color,w,h,KICH_R4_RGBA8,false)<0 || Target(s,l,final_color,w,h,KICH_R4_RGBA8,false)<0))return s.failure;
+        if(native_mode && (Target(s,l,scene_color,w,h,KICH_R4_RGBA8,false)<0 || Target(s,l,final_color,w,h,KICH_R4_RGBA8,false)<0 || Target(s,l,distortion_map,w,h,KICH_R4_RGBA16F,false)<0))return s.failure;
         width=w;height=h;return 0;
     }
-    int32_t Pass(KichR4FrameSession& s,KichR4LevelSession& l,uint32_t w,uint32_t h,uint32_t count,KichR4Handle c0,KichR4Handle c1,KichR4Handle z,uint32_t clear){
+    int32_t Pass(KichR4FrameSession& s,KichR4LevelSession& l,uint32_t w,uint32_t h,uint32_t count,KichR4Handle c0,KichR4Handle c1,KichR4Handle z,uint32_t clear,const float* color=NULL){
         if(g_render_snapshot_active){for(unsigned i=0;i<8;++i)RenderSnapshot_Texture(i,"HANDLE_ONLY");}
-        KichR4PassDesc p={};p.struct_size=sizeof(p);p.color_count=count;p.colors[0]=c0;p.colors[1]=c1;p.depth=z;p.width=w;p.height=h;p.clear_flags=clear;p.depth_value=1;
+        KichR4PassDesc p={};p.struct_size=sizeof(p);p.color_count=count;p.colors[0]=c0;p.colors[1]=c1;p.depth=z;p.width=w;p.height=h;p.clear_flags=clear;p.depth_value=1;if(color)memcpy(p.color,color,sizeof(p.color));
         return l.Expect(s,"B4.4 begin pass",api.begin_pass(s.device,&p));}
     int32_t Constants(KichR4FrameSession& s,KichR4LevelSession& l,const kich_r4_lighting::Constants& c){
         return l.Expect(s,"B4.4 upload constants",l.bridge.api.update_buffer(s.device,cb,&c,sizeof(c)));}
@@ -144,6 +162,7 @@ struct KichR4DeferredSession {
                 if(Constants(s,l,c)<0)return s.failure;
                 d.textures[2]=l.Texture(s,m.texture+"_mask");
                 for(unsigned j=0;j<4;++j){d.textures[j+3]=l.Texture(s,m.layers[j]);}updated=false;}
+            SnapshotResolvedTexture(l,0,l.scene.materials[mesh.material].texture.c_str(),d.textures[0]);
             if(l.Expect(s,"B4.4 static draw",api.draw(s.device,&d))<0)return s.failure;
             if(!shadow){++l.visible;++l.submitted_draws;l.submitted_triangles+=mesh.count/3;}
         }if(!shadow)++l.frames;return 0;
@@ -158,6 +177,7 @@ struct KichR4DeferredSession {
             if(Constants(s,l,c)<0)return s.failure;
             kich_r4_capture::Style style;style.blend=m.blend;style.src=m.source;style.dst=m.destination;style.write=0;style.cull=KICH_R4_CULL_NONE;
             KichR4DeferredDrawDesc d=Description(pipelines[m.kind==2?StaticWater:StaticForward],l.vertex_buffers[mesh.vb],l.index_buffers[mesh.ib],cb,mesh.count,mesh.first,style);d.textures[0]=l.materials[mesh.material];d.textures[1]=scene_color;d.textures[2]=sun_map;
+            SnapshotResolvedTexture(l,0,m.texture.c_str(),d.textures[0]);
             const bool simple=simple_transparent.count(mesh.material)!=0;
             int32_t hr=KICH_R4_OK;
             if(!simple)hr=api.draw(s.device,&d);
@@ -172,21 +192,41 @@ struct KichR4DeferredSession {
             if(l.Expect(s,"B5 static transparent surface",hr)<0)return s.failure;
         }return 0;
     }
-    enum ModelPass {GeometryModels,ShadowModels,ForwardBase,ForwardAdd,HUD,Environment,MenuPP,MenuOverlay};
+    enum ModelPass {GeometryModels,ShadowModels,ForwardBase,ForwardAdd,HUD,Environment,MenuPP,MenuOverlay,DistortionModels};
     int32_t Models(KichR4FrameSession& s,KichR4LevelSession& l,KichR4StreamSession& stream,const kich_r4_capture::Batch* batch,
         ModelPass pass,const kich_r4_lighting::Constants& frame,const KichR4Handle* maps=NULL){
         if(!batch)return 0;
-        std::vector<size_t> order(batch->commands.size());for(size_t i=0;i<order.size();++i)order[i]=i;
-        if(native_mode && (pass==ForwardBase || pass==ForwardAdd))std::stable_sort(order.begin(),order.end(),[&](size_t a,size_t b){
-            const kich_r4_capture::Command& ca=batch->commands[a];const kich_r4_capture::Command& cbatch=batch->commands[b];
-            auto distance=[&](const kich_r4_capture::Command& c)->float{if(!c.count || c.first>=batch->indices.size())return 0;const uint32_t v=batch->indices[c.first];if(v>=batch->vertices.size())return 0;float d=0;for(unsigned j=0;j<3;++j){const float delta=batch->vertices[v].world[j]-frame.camera[j];d+=delta*delta;}return d;};
-            return distance(ca)>distance(cbatch);});
-        for(unsigned layer=0;layer<3;++layer)for(size_t sorted=0;sorted<order.size();++sorted){const kich_r4_capture::Command& c=batch->commands[order[sorted]];if(c.layer!=layer)continue;
+        KichR4ModelSession::Pass model_pass=KichR4ModelSession::PassCount;
+        if(pass==GeometryModels)model_pass=KichR4ModelSession::Geometry;
+        else if(pass==ShadowModels)model_pass=KichR4ModelSession::Shadow;
+        else if(pass==ForwardBase)model_pass=KichR4ModelSession::Forward;
+        else if(pass==ForwardAdd)model_pass=KichR4ModelSession::ForwardAdd;
+        else if(pass==DistortionModels)model_pass=KichR4ModelSession::Distortion;
+        const bool mixed=native_mode && (pass==ForwardBase || pass==ForwardAdd || pass==DistortionModels);
+        const size_t stream_count=batch->commands.size();
+        std::vector<size_t> order(stream_count+(mixed?batch->native_models.size():0));for(size_t i=0;i<order.size();++i)order[i]=i;
+        if(mixed)std::stable_sort(order.begin(),order.end(),[&](size_t a,size_t b){
+            auto distance=[&](size_t index)->double{
+                if(index>=stream_count)return KichR4ModelSession::Distance(batch->native_models[index-stream_count],frame);
+                const kich_r4_capture::Command& c=batch->commands[index];
+                if(!c.count || c.first>=batch->indices.size())return 0;
+                const uint32_t v=batch->indices[c.first];if(v>=batch->vertices.size())return 0;
+                double d=0;for(unsigned j=0;j<3;++j){const double delta=double(batch->vertices[v].world[j])-frame.camera[j];d+=delta*delta;}return d;};
+            return distance(a)>distance(b);});
+        struct ModelPhaseGuard {KichR4ModelSession* session;~ModelPhaseGuard(){if(session)session->EndPhase();}} phase_guard={mixed?&native_models:NULL};
+        if(mixed)native_models.BeginPhase(snapshot_phase);
+        for(unsigned layer=0;layer<3;++layer)for(size_t sorted=0;sorted<order.size();++sorted){
+            if(order[sorted]>=stream_count){const uint32_t index=static_cast<uint32_t>(order[sorted]-stream_count);
+                if(batch->native_models[index].layer==layer && native_models.Draw(s,l,cb,frame,*batch,model_pass,snapshot_pass_mask,snapshot_phase,maps,0,index)<0)return s.failure;
+                continue;}
+            const kich_r4_capture::Command& c=batch->commands[order[sorted]];if(c.layer!=layer)continue;
             if(pass==GeometryModels && !Opaque(c))continue;
             if(pass==ShadowModels && !Opaque(c))continue;
             if((pass==ForwardBase || pass==ForwardAdd) && (c.layer==2 || Opaque(c)))continue;
             if(pass==HUD && c.layer!=2)continue;
-            if(native_mode){if(pass==MenuPP){if(c.effect!=7)continue;}
+            if(native_mode){if(pass==DistortionModels){if(c.effect!=5)continue;}
+                else if(c.effect==5)continue;
+                if(pass==MenuPP){if(c.effect!=7)continue;}
                 else if(pass==MenuOverlay){if(c.effect!=8)continue;}
                 else if(c.effect==7 || c.effect==8)continue;
                 const bool env=c.effect==2 || c.effect==3;
@@ -202,6 +242,7 @@ struct KichR4DeferredSession {
             if(native_mode && pass==MenuPP)style.blend=0;
             unsigned pipeline=pass==GeometryModels?ModelGeometry:pass==ShadowModels?ModelShadow:pass==ForwardBase?ForwardSun:pass==ForwardAdd?ForwardLocal:Plain;
             if(native_mode && pass!=ShadowModels && pass!=GeometryModels){if(c.effect==2)pipeline=Sky;else if(c.effect==3)pipeline=Clouds;else if(c.effect==4)pipeline=Water;else if(c.effect==5 || c.effect==7)pipeline=Distortion;else if(c.effect==1)pipeline=Plain;}
+            if(pass==DistortionModels){pipeline=DistortionMask;style.depth=1;style.write=0;style.blend=1;style.src=5;style.dst=6;}
             if(pass==ShadowModels){style.depth=style.write=1;style.blend=style.clamp=0;style.scissor=false;style.min_z=0;style.max_z=1;}
             if(pass==ForwardAdd){style.blend=1;style.src=style.dst=2;style.write=0;}
             KichR4DeferredDrawDesc d=Description(pipelines[pipeline],stream.vb,stream.ib,cb,c.count,c.first,style);
@@ -209,7 +250,7 @@ struct KichR4DeferredSession {
             if(!native_mode && pass==HUD && d.textures[0]==l.checker)return s.Record("B4.4 HUD DDS unavailable",KICH_R4_E_UNSUPPORTED);
             if(maps)for(unsigned j=0;j<6;++j)d.textures[j+2]=maps[j];
             if(native_mode && c.effect){if(c.effect==2 || c.effect==3)d.textures[1]=c.secondary.empty()?d.textures[0]:l.Texture(s,c.secondary);
-                if(c.effect==4 || c.effect==5 || c.effect==7)d.textures[1]=scene_color;}
+                if(c.effect==4 || c.effect==7)d.textures[1]=scene_color;}
             if(g_render_snapshot_active){try{const char* category=c.console?"CONSOLE":c.layer==2?(c.effect==8?"MENU_OVERLAY":"UI"):c.layer==1?"HUD_MODEL":c.effect==1?"PARTICLE_OR_GLOW":c.effect==2 || c.effect==3?"ENVIRONMENT":"DYNAMIC_MODEL";
                 RenderSnapshot_Context(category,c.resource.empty()?"UNKNOWN":c.resource.c_str(),c.shader.empty()?"UNKNOWN":c.shader.c_str());
                 if(c.provenance)RenderSnapshot_SetProvenance(c.provenance.get());
@@ -224,9 +265,33 @@ struct KichR4DeferredSession {
                 RenderSnapshot_Queue(queue);RenderSnapshot_PassMask(snapshot_pass_mask);
                 RenderSnapshot_Texture(0,c.texture.c_str());RenderSnapshot_Texture(1,c.secondary.c_str());RenderSnapshot_Skin(c.skin.empty()?"CPU_CAPTURE":c.skin.c_str());
                 }catch(...){RenderSnapshot_Context("UNKNOWN","NOT_AVAILABLE","NOT_AVAILABLE");RenderSnapshot_PassMask(snapshot_pass_mask);RenderSnapshot_Text("TELEMETRY_LOSS","r4_model_provenance","ALLOCATION_FAILED");}}
+            SnapshotResolvedTexture(l,0,c.texture.c_str(),d.textures[0]);
             if(l.Expect(s,"B4.4 model/forward/UI draw",api.draw(s.device,&d))<0)return s.failure;
             if(pass==GeometryModels || pass==ForwardBase || pass==HUD)++stream.layer_draws[c.layer];
-        }return 0;
+        }
+        if(native_mode && !mixed && !batch->native_models.empty() && model_pass!=KichR4ModelSession::PassCount)
+            return native_models.Draw(s,l,cb,frame,*batch,model_pass,snapshot_pass_mask,snapshot_phase,maps);
+        return 0;
+    }
+    int32_t PrepareModels(KichR4FrameSession& s,KichR4LevelSession& l,const kich_r4_capture::Batch& batch){
+        if(!native_mode)return 0;
+        if(!batch.native_models.empty() && native_models.Start(s,l,KichR4DeferredShaderSource(),shaders[4],shaders[5],shaders[8],shaders[9],shaders[10],shaders[17],white)<0)return s.failure;
+        return native_models.Prepare(s,l,batch);
+    }
+    static bool HasDistortion(const kich_r4_capture::Batch* batch){
+        if(!batch)return false;
+        for(size_t i=0;i<batch->commands.size();++i)if(batch->commands[i].effect==5)return true;
+        for(size_t i=0;i<batch->native_models.size();++i)if(batch->native_models[i].effect==5)return true;
+        return false;
+    }
+    int32_t Distort(KichR4FrameSession& s,KichR4LevelSession& l,KichR4StreamSession& stream,const kich_r4_capture::Batch* batch){
+        if(!native_mode || !HasDistortion(batch))return 0;
+        SnapshotPass("DISTORTION",RENDER_SNAPSHOT_PASS_DISTORTION,"mask");
+        const float neutral[4]={.5f,.5f,0,0};
+        if(Pass(s,l,width,height,1,distortion_map,0,depth,KICH_R4_CLEAR_COLOR,neutral)<0 || Models(s,l,stream,batch,DistortionModels,base)<0)return s.failure;
+        SnapshotPhase("composite");kich_r4_lighting::Constants copy=base;copy.alpha[1]=8;copy.alpha[3]=0;
+        if(Pass(s,l,width,height,1,scene_color,0,0,0)<0 || Fullscreen(s,l,DistortionComposite,copy,final_color,distortion_map,NULL)<0)return s.failure;
+        std::swap(scene_color,final_color);return 0;
     }
     int32_t Fullscreen(KichR4FrameSession& s,KichR4LevelSession& l,Pipeline p,const kich_r4_lighting::Constants& c,KichR4Handle t0,KichR4Handle t1,const KichR4Handle* maps,bool add=false){
         if(g_render_snapshot_active){char material[64];snprintf(material,sizeof(material),"r4_deferred/pipeline_%u",static_cast<unsigned>(p));
@@ -241,7 +306,7 @@ struct KichR4DeferredSession {
         return l.Expect(s,"B4.4 fullscreen draw",api.draw(s.device,&d));
     }
     int32_t DrawMenu(KichR4FrameSession& s,KichR4LevelSession& l,KichR4StreamSession& stream,const KichR4GameFrame& input,const kich_r4_capture::Batch& batch){
-        details.ResetFrame(input.engine_frame);SnapshotPass("MENU_UI",RENDER_SNAPSHOT_PASS_MENU_UI,"menu");
+        native_models.ResetFrame();details.ResetFrame(input.engine_frame);SnapshotPass("MENU_UI",RENDER_SNAPSHOT_PASS_MENU_UI,"menu");
         base.screen[0]=static_cast<float>(input.width);base.screen[1]=static_cast<float>(input.height);
         if(!cb && Start(s,l)<0)return s.failure;
         if(ScreenTargets(s,l,input.width,input.height)<0 || stream.Upload(s,l,batch)<0)return s.failure;
@@ -271,7 +336,7 @@ struct KichR4DeferredSession {
         return c;
     }
     int32_t Draw(KichR4FrameSession& s,KichR4LevelSession& l,KichR4StreamSession& stream,const KichR4GameFrame& input,const kich_r4_capture::Batch* captured,uint32_t debug){
-        details.ResetFrame(input.engine_frame);
+        native_models.ResetFrame();details.ResetFrame(input.engine_frame);
         Mark(s,0);
         if(!input.lighting.valid || input.lighting.count>8)return s.Record("B4.4 weather snapshot",KICH_R4_E_ARGUMENT);
         const float* weather[]={input.lighting.sun_direction,input.lighting.sun_color,input.lighting.ambient,input.lighting.hemi,input.lighting.fog};
@@ -283,6 +348,7 @@ struct KichR4DeferredSession {
         if(native_mode && details.source){
             if(details.Start(s,l,KichR4DeferredShaderSource(),shaders[4],shaders[5])<0 || details.Upload(s,l,input.engine_frame)<0)return s.failure;}
         if(captured && stream.Upload(s,l,*captured)<0)return s.failure;
+        if(captured && PrepareModels(s,l,*captured)<0)return s.failure;
         memset(&base,0,sizeof(base));base.world=base.normal_matrix=kich_r4_scene::Identity();memcpy(base.mvp.m,input.view_projection,64);
         if(!kich_r4_lighting::Inverse(base.mvp,base.inverse_vp))return s.Record("B4.4 inverse camera",KICH_R4_E_ARGUMENT);
         memcpy(base.camera,input.position,12);base.camera[3]=150;base.light_position[3]=input.time;base.screen[0]=static_cast<float>(width);base.screen[1]=static_cast<float>(height);base.screen[2]=static_cast<float>(debug);base.screen[3]=2048;
@@ -302,12 +368,10 @@ struct KichR4DeferredSession {
             kich_r4_lighting::Constants c=base;c.mvp=base.shadow[0];
             if(Models(s,l,stream,captured,ShadowModels,c)<0 || details.Draw(s,l,cb,c,true,input.engine_frame,"sun_0",RENDER_SNAPSHOT_PASS_SUN_SHADOW)<0)return s.failure;
             ++shadow_passes;}
-        bool shadowed[8]={};unsigned slots=0;
-        for(unsigned i=0;i<input.lighting.count && slots<2;++i)if(input.lighting.lights[i].type==2 && (!native_mode || (input.lighting.shadow_mask&(1u<<i)))){shadowed[i]=true;++slots;}
-        if(slots<2)for(unsigned i=0;i<input.lighting.count;++i)if(input.lighting.lights[i].type==1 && (!native_mode || (input.lighting.shadow_mask&(1u<<i)))){shadowed[i]=true;break;}
+        bool shadowed[8]={};kich_r4_visibility::SelectShadowLights(input.lighting,native_mode,shadowed);
         for(unsigned i=0;i<input.lighting.count;++i){if(native_mode && !shadowed[i])continue;const KichR4LocalLight& light_source=input.lighting.lights[i];const kich_r4_lighting::Constants local=LocalConstants(light_source);
             for(unsigned face=0;face<(light_source.type==2?1u:6u);++face){
-                char phase[48];snprintf(phase,sizeof(phase),"local_%u_face_%u",i,face);SnapshotPass("LOCAL_SHADOW",RENDER_SNAPSHOT_PASS_LOCAL_SHADOW,phase);SnapshotLocalLight(light_source,i,true);
+                char phase[48];snprintf(phase,sizeof(phase),"local_%u_face_%u",i,face);SnapshotPass("LOCAL_SHADOW",RENDER_SNAPSHOT_PASS_LOCAL_SHADOW,phase);SnapshotLocalLight(light_source,input.lighting.sources[i],i,true);
                 if(!local_maps[i][face] && Target(s,l,local_maps[i][face],512,512,KICH_R4_DEPTH32F,true)<0)return s.failure;
                 if(Pass(s,l,512,512,0,0,0,local_maps[i][face],KICH_R4_CLEAR_DEPTH)<0 || Static(s,l,local.shadow[face],true)<0)return s.failure;
                 kich_r4_lighting::Constants c=local;c.mvp=local.shadow[face];
@@ -321,7 +385,7 @@ struct KichR4DeferredSession {
         SnapshotPass("LIGHT_ACCUMULATION",RENDER_SNAPSHOT_PASS_LIGHT_ACCUMULATION,"sun_lighting");if(g_render_snapshot_active)RenderSnapshot_Light("sun","SCENE_ENVIRONMENT");
         if(Pass(s,l,width,height,1,light,0,0,KICH_R4_CLEAR_COLOR)<0 || Fullscreen(s,l,Sun,base,normal,depth,sun_inputs)<0)return s.failure;
         for(unsigned i=0;i<input.lighting.count;++i){kich_r4_lighting::Constants c=LocalConstants(input.lighting.lights[i]);if(native_mode && !shadowed[i])c.alpha[3]=0;
-            if(g_render_snapshot_active){char phase[48];snprintf(phase,sizeof(phase),"local_%u_lighting",i);RenderSnapshot_Phase(phase);SnapshotLocalLight(input.lighting.lights[i],i,!native_mode || shadowed[i]);}
+            {char phase[48];snprintf(phase,sizeof(phase),"local_%u_lighting",i);SnapshotPhase(phase);SnapshotLocalLight(input.lighting.lights[i],input.lighting.sources[i],i,!native_mode || shadowed[i]);}
             KichR4Handle maps[6]={};for(unsigned face=0;face<(input.lighting.lights[i].type==2?1u:6u);++face)maps[face]=native_mode && !shadowed[i]?0:local_maps[i][face];
             if(Fullscreen(s,l,Local,c,normal,depth,maps,true)<0)return s.failure;
             ++local_passes;}
@@ -338,9 +402,18 @@ struct KichR4DeferredSession {
         if(!debug){if(native_mode && StaticTransparent(s,l,vp)<0)return s.failure;
             if(Models(s,l,stream,captured,ForwardBase,base,sun_inputs)<0)return s.failure;
             for(unsigned i=0;i<input.lighting.count;++i){kich_r4_lighting::Constants c=LocalConstants(input.lighting.lights[i]);if(native_mode && !shadowed[i])c.alpha[3]=0;KichR4Handle maps[6]={};
-                if(g_render_snapshot_active){char phase[48];snprintf(phase,sizeof(phase),"local_%u_forward_add",i);RenderSnapshot_Phase(phase);SnapshotLocalLight(input.lighting.lights[i],i,!native_mode || shadowed[i]);}
+                {char phase[48];snprintf(phase,sizeof(phase),"local_%u_forward_add",i);SnapshotPhase(phase);SnapshotLocalLight(input.lighting.lights[i],input.lighting.sources[i],i,!native_mode || shadowed[i]);}
                 for(unsigned face=0;face<(input.lighting.lights[i].type==2?1u:6u);++face)maps[face]=native_mode && !shadowed[i]?0:local_maps[i][face];
                 if(Models(s,l,stream,captured,ForwardAdd,c,maps)<0)return s.failure;}}
+        if(!debug && Distort(s,l,stream,captured)<0)return s.failure;
+        if(native_mode && !debug && captured && !captured->native_models.empty()){
+            SnapshotPass("HUD_UI",RENDER_SNAPSHOT_PASS_HUD_UI,"hud_models");
+            if(Pass(s,l,width,height,1,final_color,0,depth,KICH_R4_CLEAR_DEPTH)<0 || native_models.Draw(s,l,cb,base,*captured,KichR4ModelSession::HUD,snapshot_pass_mask,snapshot_phase,sun_inputs)<0)return s.failure;
+            for(unsigned i=0;i<input.lighting.count;++i){kich_r4_lighting::Constants c=LocalConstants(input.lighting.lights[i]);if(!shadowed[i])c.alpha[3]=0;KichR4Handle maps[6]={};
+                char phase[48];snprintf(phase,sizeof(phase),"local_%u_hud_add",i);SnapshotPhase(phase);SnapshotLocalLight(input.lighting.lights[i],input.lighting.sources[i],i,shadowed[i]);
+                for(unsigned face=0;face<(input.lighting.lights[i].type==2?1u:6u);++face)maps[face]=shadowed[i]?local_maps[i][face]:0;
+                if(native_models.Draw(s,l,cb,c,*captured,KichR4ModelSession::HUDAdd,snapshot_pass_mask,snapshot_phase,maps)<0)return s.failure;}
+        }
         Mark(s,5);
         if(native_mode && Process(s,l,input)<0)return s.failure;
         SnapshotPass("HUD_UI",RENDER_SNAPSHOT_PASS_HUD_UI,"hud_ui");

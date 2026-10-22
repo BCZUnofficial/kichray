@@ -29,12 +29,12 @@ def main():
             subprocess.run([*flags,"-c",str(ROOT/"xr_3da/xrRender_R4"/(source+".cpp")),"-o",str(obj)],check=True)
         subprocess.run([cxx,"-shared","-static-libgcc","-static-libstdc++",*native,str(ROOT/"xr_3da/xrRender_R4/xrRender_R4.def"),"-luuid","-luser32","-o",str(work/"xrRender_R4.dll")],check=True)
         exports = subprocess.check_output([objdump,"-p",str(work/"xrRender_R4.dll")],text=True)
-        for name in ("BridgeVersion","ProbeHardware","ProbeInfo","ResourceAPI","FrameAPI","GeometryAPI","LevelAPI","StreamAPI","DeferredAPI","NativeToolsAPI","RendererAPI","DetailAPI"):
+        for name in ("BridgeVersion","ProbeHardware","ProbeInfo","ResourceAPI","FrameAPI","GeometryAPI","LevelAPI","StreamAPI","DeferredAPI","NativeToolsAPI","RendererAPI","DetailAPI","ModelAPI"):
             symbol = "KichR4_"+("Get"+name if name!="ProbeHardware" else name)
             if not re.search(r"\b"+symbol+r"\b",exports): raise RuntimeError("missing DLL export: "+symbol)
         imports = re.findall(r"DLL Name:\s*(\S+)",exports)
         if any("d3d9" in name.lower() or "d3dx9" in name.lower() for name in imports): raise RuntimeError("R4 unexpectedly imports legacy graphics: "+str(imports))
-        subprocess.run([*flags,"-c",str(ROOT/"xr_3da/KichR4NativePresenter.cpp"),"-o",str(work/"native_presenter.o")],check=True)
+        subprocess.run([*flags,"-DENGINE_BUILD","-c",str(ROOT/"xr_3da/KichR4NativePresenter.cpp"),"-o",str(work/"native_presenter.o")],check=True)
         engine=work/"engine.cpp";engine.write_text(engine_source());adapter=work/"engine.o"
         seam=["-DENGINE_BUILD","-DKICH_R4_REAL_SDK","-I"+str(HERE),"-I"+str(ROOT/"xr_3da")]
         subprocess.run([*flags,"-fno-exceptions",*seam,"-c",str(engine),"-o",str(adapter)],check=True)
@@ -42,12 +42,12 @@ def main():
         for name in ("KichR4Probe", "KichR4ResourceProbe", "KichR4FrameProbe", "KichR4Game", "KichR4Capture", "RenderSnapshot"):
             obj=work/(name+".o");host.append(str(obj))
             subprocess.run([*flags,"-DENGINE_BUILD","-c",str(ROOT/"xr_3da"/(name+".cpp")),"-o",str(obj)],check=True)
-        main=work/"main.cpp";main.write_text('#include "fake_engine.h"\nCaptureDevice Device;CaptureCache RCache;CaptureHardware HW;bool KichR4_NativeActive(){return false;}namespace kich_r4_capture{struct Style;}bool KichR4_NativeStyle(kich_r4_capture::Style&){return false;}int main(){return 0;}\n')
+        main=work/"main.cpp";main.write_text('#include "fake_engine.h"\nCaptureDevice Device;CaptureCache RCache;CaptureHardware HW;bool KichR4_NativeActive(){return false;}namespace kich_r4_capture{struct Style;struct ModelInput;}bool KichR4_NativeStyle(kich_r4_capture::Style&){return false;}void KichR4_NativeModelMaterial(kich_r4_capture::ModelInput&){}int main(){return 0;}\n')
         lib=work/"XR_3DA.dll.a"
         subprocess.run([*flags,*seam,str(main),*host,"-static-libgcc","-static-libstdc++","-luser32","-lgdi32","-Wl,--out-implib,"+str(lib),"-o",str(work/"XR_3DA.exe")],check=True)
         client=work/"client.cpp";client.write_text('#include "KichR4Capture.h"\n#include "KichR4Game.h"\nextern "C" __declspec(dllexport) void CheckImports(){KichR4_CaptureActive();KichR4_CaptureHUD(true);KichR4_CaptureModel(0,0,0,0,0);KichR4_CaptureModel(0,0,0,0,0,KICH_R4_SKIN_HARDWARE);KichR4_CaptureUIDraw(0,0,0,0,0,0,0,0,0,0,false);KichR4_GameSetModal(false);KichR4LocalLight l={};KichR4_CaptureLight(0,l,false);}\n')
         subprocess.run([*flags,"-shared","-I"+str(ROOT/"xr_3da"),str(client),str(lib),"-o",str(work/"client.dll")],check=True)
-        abi=work/"abi.c";abi.write_text('#include "KichR4Renderer.h"\nint main(void){return sizeof(KichR4RendererAPI)!=596 || sizeof(KichR4BuildInfo)!=288 || sizeof(KichR4StreamDrawDesc)!=112 || sizeof(KichR4StreamAPI)!=24 || sizeof(KichR4PassDesc)!=84 || sizeof(KichR4DeferredDrawDesc)!=180 || sizeof(KichR4DeferredAPI)!=28 || sizeof(KichR4DetailAPI)!=32;}\n')
+        abi=work/"abi.c";abi.write_text('#include "KichR4Renderer.h"\nint main(void){return sizeof(KichR4RendererAPI)!=628 || sizeof(KichR4BuildInfo)!=288 || sizeof(KichR4StreamDrawDesc)!=112 || sizeof(KichR4StreamAPI)!=24 || sizeof(KichR4PassDesc)!=84 || sizeof(KichR4DeferredDrawDesc)!=180 || sizeof(KichR4DeferredAPI)!=28 || sizeof(KichR4DetailAPI)!=32 || sizeof(KichR4ModelAPI)!=32 || sizeof(KichR4ModelPose)!=16400 || sizeof(KichR4ModelVertex)!=32 || sizeof(KichR4ModelDrawDesc)!=192;}\n')
         subprocess.run([cc,"-std=c11","-Wall","-Wextra","-Werror","-I"+str(ROOT/"xr_3da"),"-c",str(abi),"-o",str(work/"abi.o")],check=True)
         for debug in ([],["-DDEBUG"]):
             subprocess.run([*flags,"-Wno-unknown-pragmas",*debug,"-DENGINE_BUILD","-I"+str(ROOT/"tests/r4_device/win32_sdk"),"-c",str(ROOT/"tests/r4_device/win32_compile.cpp"),"-o",str(work/"dx9.o")],check=True)

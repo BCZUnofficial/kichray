@@ -2,20 +2,22 @@
 #include "../../xr_3da/KichR4DetailData.h"
 #include <limits>
 DetailDevice Device={};
+float ps_r__Detail_radius=50.f,r_ssaDISCARD=1.e-6f;
 #include "frontend_under_test.cpp"
 static unsigned checks=0;
 void Require(bool good){++checks;if(!good)throw std::runtime_error("detail frontend check failed");}
 int main(){try{
     CDetail::fvfVertexIn vertices[3]={{{0,0,0},-.1f,0},{{1,2,0},1,1},{{0,1,1},0,.5f}};uint16_t indices[3]={0,1,2};
     Texture texture={"grass\\test"};VS vs={"deffer_detail_w_flat"};STextureList textures={{0,&texture}};SPass pass={&vs,&textures};Element e;e.passes.push_back(&pass);Shader shader={{&e,&e}};
-    CDetail mesh={vertices,indices,3,3,{{0,0,0},{1,2,1}},&shader};CDetailManager manager;manager.objects.push_back(&mesh);
+    CDetail mesh={vertices,indices,3,3,{{0,0,0},{1,2,1}},&shader,{2}};CDetailManager manager;manager.objects.push_back(&mesh);
     for(unsigned i=0;i<3;++i)manager.m_visibles[i].resize(1);
     manager.swing_current={10,20,.1f,.2f,1};KichR4_DetailLoad(manager);auto& frame=KichR4_DetailFrame();
     Require(frame.meshes.size()==1 && frame.meshes[0].vertices.size()==3 && frame.meshes[0].indices.size()==3);
     Require(frame.meshes[0].texture==texture.cName && frame.meshes[0].shader==vs.cName);
     Require(frame.meshes[0].vertices[0].misc[0]==std::floor(-.1f*16384.f)/16384.f);
     Require(frame.meshes[0].vertices[1].misc[2]==1);
-    CDetailManager::SlotItem item={2,{1,0,0,0,0,1,0,0,0,0,1,0,4,5,6,1},.25f,.75f};
+    Require(frame.meshes[0].bounds_known && frame.meshes[0].maximum[1]==2 && frame.meshes[0].height_factor==1);
+    CDetailManager::SlotItem item={2,{1,0,0,0,0,1,0,0,0,0,1,0,4,5,6,1},.25f,.75f,3,2};
     CDetailManager::SlotItemVec items;items.push_back(&item);
     for(unsigned i=0;i<3;++i)manager.m_visibles[i][0].push_back(&items);
     Device.dwFrame=123;Device.fTimeGlobal=17;KichR4_DetailPrepare(manager);
@@ -29,9 +31,21 @@ int main(){try{
     Require(std::fabs(frame.wind[1][0]-std::sin(PI_MUL_2*17/10)*.1f)<1.e-7f);
     Require(std::fabs(frame.wind[2][2]-std::cos(PI_MUL_2*17/20)*.2f)<1.e-7f);
     KichR4_DetailPrepare(manager);Require(frame.instances.empty() && frame.groups.empty());
+    // Original cache items behind the camera remain eligible for a light even
+    // when the camera lists are empty. Pending and out-of-radius cells do not.
+    for(unsigned cell=0;cell<3;++cell){auto& slot=manager.cache_pool[cell];slot.empty=false;slot.G[0].id=0;slot.G[0].items.push_back(&item);slot.vis.sphere.P={0,0,-5};}
+    manager.cache_pool[1].type=CDetailManager::stPending;manager.cache_pool[2].vis.sphere.P.z=-51;
+    KichR4_DetailPrepare(manager);
+    Require(frame.instances.empty() && frame.shadow_instances.size()==1 && frame.shadow_groups.size()==1);
+    Require(frame.shadow_groups[0].variant==2 && frame.shadow_groups[0].mesh==0);
+    Require(std::fabs(frame.shadow_instances[0].row[0][0]-3.f*(1.f-24.f/2499.f))<1.e-6f);
+    Require(item.scale_calculated==2 && item.scale==3 && manager.cache_pool[0].G[0].items.size()==1);
+    manager.cache_pool[0].G[0].items[0]=&item;manager.cache_pool[0].vis.sphere.P={0,0,0};
+    KichR4_DetailPrepare(manager);Require(frame.shadow_instances.size()==1 && frame.shadow_instances[0].row[0][0]==3);
+    manager.cache_pool[0].empty=true;KichR4_DetailPrepare(manager);Require(frame.shadow_instances.empty() && frame.shadow_groups.empty());
     bool rejected=false;try{auto bad=item;bad.mRotY._11=std::numeric_limits<float>::quiet_NaN();items[0]=&bad;manager.m_visibles[0][0].push_back(&items);KichR4_DetailPrepare(manager);}catch(const std::exception&){rejected=true;}Require(rejected);
     const auto generation=frame.generation;KichR4_DetailUnload();Require(frame.meshes.empty() && frame.instances.empty() && frame.generation==generation+1);
     mesh.bv_bb.max.y=0;mesh.bv_bb.min.y=0;KichR4_DetailLoad(manager);Require(frame.meshes[0].vertices[2].misc[2]==0);
     indices[2]=99;rejected=false;try{KichR4_DetailLoad(manager);}catch(const std::exception&){rejected=true;}Require(rejected);
-    printf("G3a real frontend: %u checks passed\n",checks);return 0;
+    printf("G3b real detail frontend: %u checks passed\n",checks);return 0;
 }catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

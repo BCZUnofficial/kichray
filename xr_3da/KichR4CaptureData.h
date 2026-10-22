@@ -16,6 +16,12 @@ struct Vertex {float p[4],uv[2];uint32_t color;float normal[4],world[3];};
 static_assert(sizeof(Vertex)==56,"B4.4 native vertex stride");
 struct SourceVertex {float p[3],uv[2],weight;uint16_t bone[2];uint32_t normal;};
 static_assert(sizeof(SourceVertex)==32,"B4.4 compact CPU source vertex");
+struct Bounds {
+    float min[3],max[3];bool valid;
+    Bounds():valid(false){for(unsigned i=0;i<3;++i)min[i]=max[i]=0;}
+    void Add(const float* p){if(!valid){for(unsigned i=0;i<3;++i)min[i]=max[i]=p[i];valid=true;return;}
+        for(unsigned i=0;i<3;++i){min[i]=std::min(min[i],p[i]);max[i]=std::max(max[i],p[i]);}}
+};
 inline uint32_t PackNormal(float x,float y,float z){
     if(!Finite(x) || !Finite(y) || !Finite(z))return 0;
     const kich_r4_scene::Vec3 n=kich_r4_scene::Normalize(kich_r4_scene::Vec3{x,y,z});
@@ -27,11 +33,12 @@ inline uint32_t PackNormal(float x,float y,float z){
 inline kich_r4_scene::Vec3 UnpackNormal(uint32_t bits){if(!bits)return kich_r4_scene::Vec3{0,0,0};
     return kich_r4_scene::Normalize(kich_r4_scene::Vec3{(bits&1023)*(2.f/1023)-1,((bits>>10)&1023)*(2.f/1023)-1,((bits>>20)&1023)*(2.f/1023)-1});}
 struct Mesh {
-    std::vector<SourceVertex> vertices;std::vector<uint16_t> indices;std::string texture;
-    uint32_t bones,ignored_weights,outside_weights,diagnostic_modes;bool skinned,two_weights;
+    std::vector<SourceVertex> vertices;std::vector<uint16_t> indices;std::string texture,shader;
+    Bounds source_bounds;std::vector<Bounds> bone_bounds;
+    uint32_t bones,ignored_weights,outside_weights,diagnostic_modes;bool skinned,two_weights,hardware_weights_safe;
     std::string first_weight_detail;
     mutable uint64_t snapshot_hash;mutable bool snapshot_hashed;
-    Mesh():bones(0),ignored_weights(0),outside_weights(0),diagnostic_modes(0),skinned(false),two_weights(false),snapshot_hash(0),snapshot_hashed(false){}
+    Mesh():bones(0),ignored_weights(0),outside_weights(0),diagnostic_modes(0),skinned(false),two_weights(false),hardware_weights_safe(true),snapshot_hash(0),snapshot_hashed(false){}
     uint64_t Bytes()const{return uint64_t(vertices.size())*sizeof(SourceVertex)+uint64_t(indices.size())*2;}
 };
 inline std::string WeightDetail(uint32_t vertex,uint32_t b0,uint32_t b1,uint32_t bits,const char* why){
@@ -59,6 +66,7 @@ inline std::shared_ptr<Mesh> Decode(Span source) {
     if(Chunk(source,21,false).p || Chunk(source,7,false).p)return std::shared_ptr<Mesh>();
     std::shared_ptr<Mesh> mesh(new Mesh());mesh->skinned=type==4 || type==5;
     Reader texture(Chunk(source,2));mesh->texture=kich_r4_level::Lower(texture.Z());
+    if(texture.Left())mesh->shader=texture.Z();
     const size_t comma=mesh->texture.find(',');if(comma!=std::string::npos)mesh->texture.resize(comma);
     if(mesh->texture.size()>4 && mesh->texture.substr(mesh->texture.size()-4)==".dds")mesh->texture.resize(mesh->texture.size()-4);
     Check(mesh->texture.empty() || (kich_r4_level::SafeName(mesh->texture) && mesh->texture[0]!='$'),"model texture name");
@@ -93,6 +101,7 @@ inline std::shared_ptr<Mesh> Decode(Span source) {
                     v.weight=0;
                 }else {
                     if(!ieee_finite || !Finite(v.weight))Check(false,WeightDetail(i,v.bone[0],v.bone[1],bits,"invalid active 2W weight").c_str());
+                    if(v.weight<-8388607.f || v.weight>8388607.f)mesh->hardware_weights_safe=false;
                     if(v.weight<0 || v.weight>1){++mesh->outside_weights;
                         if(mesh->first_weight_detail.empty())mesh->first_weight_detail=WeightDetail(i,v.bone[0],v.bone[1],bits,"active weight outside 0..1");}
                 }}
@@ -100,18 +109,50 @@ inline std::shared_ptr<Mesh> Decode(Span source) {
     }
     Reader indices(Chunk(source,4));const uint32_t n=indices.U32();Check(n && n%3==0 && n<=3u*1024u*1024u && n<=indices.Left()/2,"model index limit");
     mesh->indices.resize(n);for(uint32_t i=0;i<n;++i){mesh->indices[i]=indices.U16();Check(mesh->indices[i]<count,"model index range");}
+    if(mesh->skinned)mesh->bone_bounds.resize(mesh->bones);
+    for(uint32_t i=0;i<count;++i){const SourceVertex& v=mesh->vertices[i];mesh->source_bounds.Add(v.p);
+        if(mesh->skinned){mesh->bone_bounds[v.bone[0]].Add(v.p);mesh->bone_bounds[v.bone[1]].Add(v.p);}}
     Check(mesh->Bytes()<=8u*1024u*1024u,"single model CPU budget");return mesh;
 }
 inline void Transform(const float* p,const Matrix& m,float* out) {
     for(unsigned c=0;c<4;++c)out[c]=p[0]*m.m[c]+p[1]*m.m[4+c]+p[2]*m.m[8+c]+m.m[12+c];
 }
 inline uint32_t RGBA(uint32_t argb){return (argb&0xff00ff00u)|((argb&0xffu)<<16)|((argb>>16)&0xffu);}
-struct Command {uint32_t first,count,layer;std::string texture;Style style;uint32_t effect;std::string secondary,resource,shader,skin;
+struct Command {uint32_t first,count,layer;std::string texture;Style style;uint32_t effect,shader_element,shader_pass;std::string secondary,resource,shader,skin;
     /* Allocated only for a requested diagnostic frame; never crosses the DLL ABI. */
     std::shared_ptr<RenderSnapshotProvenance> provenance;
     bool console;
-    Command(uint32_t f,uint32_t n,uint32_t l,const std::string& t,const Style& s):first(f),count(n),layer(l),texture(t),style(s),effect(0),console(false){}
+    Command(uint32_t f,uint32_t n,uint32_t l,const std::string& t,const Style& s):first(f),count(n),layer(l),texture(t),style(s),effect(0),shader_element(UINT32_MAX),shader_pass(0),console(false){}
 };
+/* Immutable shared geometry is owned separately from each animated instance.
+ * An instance borrows no engine pointer after submission. Only its palette,
+ * transforms and material/range descriptor change between frames. */
+struct NativeModelCommand {
+    std::shared_ptr<const Mesh> mesh;Matrix world,vp;std::vector<Matrix> bones;
+    uint32_t vertex_count,first,count,layer,skin_mode,effect,shader_element,shader_pass;Style style;
+    std::string resource,shader,texture,secondary;
+    std::shared_ptr<RenderSnapshotProvenance> provenance;
+    Bounds bounds;bool bounds_known;
+    NativeModelCommand():vertex_count(0),first(0),count(0),layer(0),skin_mode(KICH_R4_SKIN_UNKNOWN),effect(0),shader_element(UINT32_MAX),shader_pass(UINT32_MAX),bounds_known(false){}
+};
+inline void ValidateModelMatrix(const Matrix& matrix){for(unsigned i=0;i<16;++i)Check(Finite(matrix.m[i]),"nonfinite native model matrix");}
+inline bool AddTransformedBounds(Bounds& out,const Bounds& source,const Matrix& matrix){
+    if(!source.valid)return true;
+    if(matrix.m[3]!=0 || matrix.m[7]!=0 || matrix.m[11]!=0 || matrix.m[15]!=1)return false;
+    for(unsigned corner=0;corner<8;++corner){float p[3],q[4];for(unsigned i=0;i<3;++i)p[i]=(corner&(1u<<i))?source.max[i]:source.min[i];
+        Transform(p,matrix,q);for(unsigned i=0;i<3;++i)if(!Finite(q[i]))return false;out.Add(q);}
+    return true;
+}
+inline bool NativeModelBounds(NativeModelCommand& cmd){
+    const Mesh& mesh=*cmd.mesh;
+    /* The convex union of transformed per-bone bounds contains 1W and bounded
+     * 2W results. Raw software extrapolation has no such guarantee. */
+    if(mesh.two_weights && mesh.outside_weights && cmd.skin_mode==KICH_R4_SKIN_SOFTWARE)return false;
+    if(!mesh.skinned)return AddTransformedBounds(cmd.bounds,mesh.source_bounds,cmd.world) && cmd.bounds.valid;
+    Bounds local;
+    for(size_t i=0;i<mesh.bone_bounds.size();++i)if(!AddTransformedBounds(local,mesh.bone_bounds[i],cmd.bones[i]))return false;
+    return AddTransformedBounds(cmd.bounds,local,cmd.world) && cmd.bounds.valid;
+}
 inline uint64_t SnapshotHash(uint64_t h,const void* bytes,size_t n){
     const unsigned char* p=static_cast<const unsigned char*>(bytes);
     for(size_t i=0;i<n;++i){h^=p[i];h*=UINT64_C(1099511628211);}return h;
@@ -154,10 +195,11 @@ inline void SnapshotCommand(Command& cmd,const std::vector<Vertex>& vertices,con
 struct Batch {
     uint32_t width,height,engine_frame,models,hands,ui;bool renderer_seen,ui_seen;unsigned ui_scope;
     std::vector<Vertex> vertices;std::vector<uint32_t> indices;std::vector<Command> commands;std::string error;
+    std::vector<NativeModelCommand> native_models;uint64_t pose_bytes;
     std::set<std::string> model_keys;
-    Batch():width(0),height(0),engine_frame(0),models(0),hands(0),ui(0),renderer_seen(false),ui_seen(false),ui_scope(0){}
+    Batch():width(0),height(0),engine_frame(0),models(0),hands(0),ui(0),renderer_seen(false),ui_seen(false),ui_scope(0),pose_bytes(0){}
     void Begin(uint32_t w,uint32_t h,uint32_t f){width=w;height=h;engine_frame=f;models=hands=ui=0;renderer_seen=ui_seen=false;ui_scope=0;
-        vertices.clear();indices.clear();commands.clear();error.clear();model_keys.clear();}
+        vertices.clear();indices.clear();commands.clear();native_models.clear();pose_bytes=0;error.clear();model_keys.clear();}
     bool Ready()const{return width && height && renderer_seen && ui_seen && !ui_scope && error.empty();}
     void Fail(const char* why){if(error.empty())error=why;}
     void Reserve(uint32_t v,uint32_t i,const char* source="<unspecified>",uint32_t layer=UINT32_MAX){
@@ -213,6 +255,48 @@ struct Batch {
         if(diagnostic)SnapshotCommand(cmd,vertices,indices,mesh.skinned?"SKINNED_MODEL":"RIGID_MODEL",&mesh,first);
         commands.push_back(cmd);if(layer)++hands;else ++models;
     }
+    void NativeModel(const void* identity,const std::shared_ptr<Mesh>& mesh,const Matrix& world,const Matrix& vp,
+        const Matrix* bones,uint32_t bone_count,uint32_t count,uint32_t first,uint32_t tris,const Style& style,
+        uint32_t skin_mode,const char* name,const char* shader=NULL,const char* texture=NULL,const char* secondary=NULL,uint32_t effect=0,
+        uint32_t shader_element=UINT32_MAX,uint32_t shader_pass=UINT32_MAX){
+        Check(mesh.get()!=NULL,"native model geometry missing");
+        Check(count && count<=mesh->vertices.size() && tris && uint64_t(first)+uint64_t(tris)*3<=mesh->indices.size(),"native model draw range");
+        Check(bone_count<=256 && (!mesh->skinned || (bones && mesh->bones<=bone_count)),"native model bone pose range");
+        Check(!mesh->two_weights || skin_mode==KICH_R4_SKIN_SOFTWARE || skin_mode==KICH_R4_SKIN_HARDWARE,"2W skin mode handshake missing; rebuild R1/R2");
+        ValidateModelMatrix(world);ValidateModelMatrix(vp);
+        if(mesh->skinned)for(uint32_t i=0;i<mesh->bones;++i)ValidateModelMatrix(bones[i]);
+        for(uint32_t i=0;i<tris*3;++i)Check(mesh->indices[first+i]<count,"native progressive model vertex range");
+        Check(!mesh->two_weights || skin_mode!=KICH_R4_SKIN_HARDWARE || mesh->hardware_weights_safe,"2W hardware weight exceeds safe quantization range");
+        NativeModelCommand cmd;cmd.mesh=mesh;cmd.world=world;cmd.vp=vp;cmd.vertex_count=count;cmd.first=first;cmd.count=tris*3;
+        cmd.layer=style.max_z<.1f?1:0;cmd.style=style;cmd.skin_mode=skin_mode;cmd.effect=effect;
+        cmd.shader_element=shader_element;cmd.shader_pass=shader_pass;
+        cmd.resource=name?name:"<unnamed model>";cmd.shader=shader?shader:mesh->shader;cmd.texture=texture?texture:mesh->texture;cmd.secondary=secondary?secondary:"";
+        std::string key(reinterpret_cast<const char*>(&identity),sizeof(identity));const Mesh* source=mesh.get();key.append(reinterpret_cast<const char*>(&source),sizeof(source));
+        key.append(reinterpret_cast<const char*>(&world),sizeof(world));key.append(reinterpret_cast<const char*>(&vp),sizeof(vp));
+        const uint32_t words[]={first,tris,count,skin_mode,cmd.layer,effect,shader_element,shader_pass,style.blend,style.src,style.dst,style.clamp,style.cull,style.depth,style.write,style.alpha_func};
+        key.append(reinterpret_cast<const char*>(words),sizeof(words));key.append(reinterpret_cast<const char*>(&style.alpha_ref),sizeof(style.alpha_ref));
+        const float depth_range[]={style.min_z,style.max_z};key.append(reinterpret_cast<const char*>(depth_range),sizeof(depth_range));
+        key.append(reinterpret_cast<const char*>(&style.scissor),sizeof(style.scissor));if(style.scissor)key.append(reinterpret_cast<const char*>(style.rect),sizeof(style.rect));
+        if(mesh->skinned)key.append(reinterpret_cast<const char*>(bones),mesh->bones*sizeof(Matrix));
+        key.append(cmd.shader);key.push_back('\0');key.append(cmd.texture);key.push_back('\0');key.append(cmd.secondary);
+        if(model_keys.find(key)!=model_keys.end())return;
+        const uint64_t bytes=mesh->skinned?uint64_t(mesh->bones)*sizeof(Matrix):0;
+        Check(native_models.size()+commands.size()<16384,"native model frame draw limit");Check(pose_bytes+bytes<=16u*1024u*1024u,"native model frame palette budget");
+        if(mesh->skinned)cmd.bones.assign(bones,bones+mesh->bones);
+        cmd.bounds_known=NativeModelBounds(cmd);
+        if(g_render_snapshot_active){try{cmd.provenance.reset(new RenderSnapshotProvenance());RenderSnapshotProvenance& p=*cmd.provenance;RenderSnapshot_GetProvenance(&p);
+            snprintf(p.semantic_type,sizeof(p.semantic_type),"%s",mesh->skinned?"SKINNED_MODEL":"RIGID_MODEL");
+            snprintf(p.evidence,sizeof(p.evidence),"OGF_SHARED_GPU_MODEL");SnapshotModelID(*mesh,p.mesh_id,sizeof(p.mesh_id),first,cmd.count);
+            uint64_t hash=SnapshotStringHash(UINT64_C(14695981039346656037),cmd.shader);hash=SnapshotStringHash(hash,cmd.texture);hash=SnapshotStringHash(hash,cmd.secondary);hash=SnapshotHash(hash,words+5,sizeof(words)-5*sizeof(uint32_t));hash=SnapshotHash(hash,&style.alpha_ref,sizeof(style.alpha_ref));
+            snprintf(p.material_id,sizeof(p.material_id),"MODEL_DESCRIPTOR_FNV64:%016llx",static_cast<unsigned long long>(hash));
+            p.flags=0;p.uv_count=0;uint32_t sample[4]={};for(uint32_t i=0;i<cmd.count && i<32 && p.uv_count<4;++i){const uint32_t at=mesh->indices[first+i];bool used=false;
+                for(uint32_t j=0;j<p.uv_count;++j)if(sample[j]==at)used=true;
+                if(used)continue;
+                sample[p.uv_count]=at;p.uv[p.uv_count*2]=mesh->vertices[at].uv[0];p.uv[p.uv_count*2+1]=mesh->vertices[at].uv[1];++p.uv_count;}
+            snprintf(p.uv_source,sizeof(p.uv_source),"OGF_SOURCE_BASE_UV");
+        }catch(...){RenderSnapshot_Text("TELEMETRY_LOSS","native_model_provenance","ALLOCATION_FAILED");}}
+        native_models.push_back(cmd);model_keys.insert(key);pose_bytes+=bytes;if(cmd.layer)++hands;else ++models;
+    }
     Vertex Screen(float x,float y,float z,float rhw,float u,float v,uint32_t argb)const{
         Check(Finite(x) && Finite(y) && Finite(z) && Finite(rhw) && rhw>0 && Finite(u) && Finite(v),"HUD vertex coordinates");
         const float w=1.f/rhw;Check(Finite(w),"HUD reciprocal RHW");Vertex out={};out.p[0]=((x+.5f)*2.f/width-1.f)*w;
@@ -236,25 +320,28 @@ struct Buffer {
 struct State {
     Batch frame;std::map<const void*,Entry> models;std::map<void*,Buffer> buffers;
     std::map<const void*,KichR4LocalLight> lights;std::set<const void*> unshadowed_lights;
-    uint64_t stream_bytes;
+    std::map<const void*,KichR4LightIdentity> light_sources;
+    uint64_t stream_bytes;bool native_models;
     uint32_t diagnostics;void (*log)(const char*);
-    State():stream_bytes(0),diagnostics(0),log(NULL){}
+    State():stream_bytes(0),native_models(false),diagnostics(0),log(NULL){}
     void Light(const void* id,const KichR4LocalLight& light,bool active){
         if(!id)return;
         if(!active || !kich_r4_lighting::ValidLight(light)){lights.erase(id);return;}
         if(lights.size()<4096 || lights.find(id)!=lights.end())lights[id]=light;
     }
     void SelectLights(const float* camera,KichR4LightingFrame& out)const {
-        struct Choice {float score;KichR4LocalLight light;bool shadow;};std::vector<Choice> choices;out.count=0;out.shadow_mask=0;
+        struct Choice {float score;KichR4LocalLight light;bool shadow;const void* source;};std::vector<Choice> choices;out.count=0;out.shadow_mask=0;memset(out.sources,0,sizeof(out.sources));
         for(std::map<const void*,KichR4LocalLight>::const_iterator it=lights.begin();it!=lights.end();++it){
             const KichR4LocalLight& l=it->second;float distance=0;
             for(unsigned a=0;a<3;++a){const float d=l.position[a]-camera[a];distance+=d*d;}
             const float brightness=std::max(l.color[0],std::max(l.color[1],l.color[2]));
             if(distance>(150+l.range)*(150+l.range) || brightness<=0)continue;
-            Choice c={brightness*l.range*l.range/(distance+1)+(l.type==2 && distance<4?1.e10f:0),l,unshadowed_lights.count(it->first)==0};choices.push_back(c);
+            Choice c={brightness*l.range*l.range/(distance+1)+(l.type==2 && distance<4?1.e10f:0),l,unshadowed_lights.count(it->first)==0,it->first};choices.push_back(c);
         }
         std::stable_sort(choices.begin(),choices.end(),[](const Choice& a,const Choice& b){return a.score>b.score;});
-        out.count=static_cast<uint32_t>(std::min(size_t(8),choices.size()));for(unsigned i=0;i<out.count;++i){out.lights[i]=choices[i].light;if(choices[i].shadow)out.shadow_mask|=1u<<i;}
+        out.count=static_cast<uint32_t>(std::min(size_t(8),choices.size()));for(unsigned i=0;i<out.count;++i){out.lights[i]=choices[i].light;if(choices[i].shadow)out.shadow_mask|=1u<<i;
+            const auto source=light_sources.find(choices[i].source);if(source!=light_sources.end())out.sources[i]=source->second;
+            else out.sources[i].process_handle=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(choices[i].source));}
     }
     void Diagnostic(const std::string& message){if(log && diagnostics<64){++diagnostics;log(("[R4 bridge B4.3b.1] "+message).c_str());}}
     void Begin(uint32_t w,uint32_t h,uint32_t f){frame.Begin(w,h,f);stream_bytes=0;

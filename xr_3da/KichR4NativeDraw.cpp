@@ -6,19 +6,21 @@
 #include "ResourceManager.h"
 #include "KichR4LevelOption.h"
 #include "KichR4DetailData.h"
+#include "KichR4MaterialRules.h"
 #include "RenderSnapshot.h"
 #include <map>
 #include <string>
 #include <chrono>
 
 namespace {
-bool selected=false,menu_pp=false,menu_overlay=false;
+bool selected=false,menu_pp=false,menu_overlay=false,distortion_enabled=true;
 std::chrono::steady_clock::time_point queue_begin;
 uint32_t states[256]={};
 kich_r4_capture::Style style;
 CTexture* textures[16]={};
 uint32_t effect=0;
-std::string active_shader;
+uint32_t source_element=UINT32_MAX,source_pass=0;
+std::string active_shader,model_texture,model_secondary;
 float Float(const unsigned char* p){float v;memcpy(&v,p,4);kich_r4_level::Check(kich_r4_level::Finite(v),"native nonfinite vertex");return v;}
 uint32_t Word(const unsigned char* p){uint32_t v;memcpy(&v,p,4);return v;}
 bool Has(const char* value,const char* part){return value && strstr(value,part)!=NULL;}
@@ -27,7 +29,9 @@ std::string TextureName(unsigned stage){if(stage>=16 || !textures[stage])return 
 }
 bool KichR4_NativeActive(){return selected;}
 bool KichR4_NativeInlineGeometry(void* visual){const kich_r4_capture::State* s=KichR4_CaptureState();if(!s)return false;const auto i=s->models.find(visual);return i!=s->models.end() && i->second.mesh.get()!=NULL;}
-bool KichR4_NativeSelect(const char* params){if(selected)return true;char token[512];int read=0;while((read=KichR4_NextToken(params,token,sizeof(token)))!=0)if(read>0 && !strcmp(token,"-kich_r4_game")){selected=true;return true;}return false;}
+bool KichR4_NativeSelect(const char* params){if(selected)return true;char token[512];int read=0;while((read=KichR4_NextToken(params,token,sizeof(token)))!=0)if(read>0){
+    if(!strcmp(token,"-kich_r4_game"))selected=true;else if(!strcmp(token,"-nodistort"))distortion_enabled=false;}return selected;}
+bool KichR4_NativeDistortionEnabled(){return distortion_enabled;}
 void KichR4_NativeSetState(uint32_t key,uint32_t value){if(key<256)states[key]=value;}
 uint32_t KichR4_NativeGetState(uint32_t key){return key<256?states[key]:0;}
 void KichR4_NativeMenuPP(bool enabled){if(menu_pp && !enabled)menu_overlay=true;menu_pp=enabled;}
@@ -37,17 +41,28 @@ bool KichR4_NativeStyle(kich_r4_capture::Style& out){out=style;out.blend=states[
     out.depth=states[D3DRS_ZENABLE]!=0;out.write=states[D3DRS_ZWRITEENABLE]!=0;out.alpha_func=states[D3DRS_ALPHATESTENABLE]?states[D3DRS_ALPHAFUNC]:8;
     out.alpha_ref=float(states[D3DRS_ALPHAREF]&255)/255.f;out.clamp=states[255]==D3DTADDRESS_CLAMP;
     out.cull=states[D3DRS_CULLMODE]==D3DCULL_CW?KICH_R4_CULL_FRONT:states[D3DRS_CULLMODE]==D3DCULL_CCW?KICH_R4_CULL_BACK:KICH_R4_CULL_NONE;return true;}
-void KichR4_NativeElement(ShaderElement* e){active_shader.clear();effect=0;if(e && !e->passes.empty() && e->passes[0]->ps)active_shader=e->passes[0]->ps->cName.c_str();
-    const char* n=active_shader.c_str();if(Has(n,"sky"))effect=2;else if(Has(n,"cloud"))effect=3;else if(Has(n,"water"))effect=4;else if(Has(n,"distort"))effect=5;
-    else if(Has(n,"wmark"))effect=6;else if(Has(n,"particle") || Has(n,"flare") || Has(n,"font") || Has(n,"hud") || Has(n,"rain"))effect=1;
+void KichR4_NativeElement(ShaderElement* e){KichR4_NativeElementPass(e,0);}
+void KichR4_NativeElementSource(uint32_t element){source_element=element;}
+void KichR4_NativeElementPass(ShaderElement* e,uint32_t pass){
+    active_shader.clear();effect=0;source_element=UINT32_MAX;source_pass=pass;
+    if(!e || pass>=e->passes.size())return;
+    const SPass* selected_pass=e->passes[pass]._get();
+    if(selected_pass && selected_pass->ps)active_shader=selected_pass->ps->cName.c_str();
+    effect=kich_r4_material::Effect(active_shader.c_str(),e->flags.bDistort!=0,e->flags.bWmark!=0);
 }
 void KichR4_NativeTexture(uint32_t stage,CTexture* t){if(stage<16){textures[stage]=t;if(t)t->bind(stage);}}
+void KichR4_NativeModelMaterial(kich_r4_capture::ModelInput& input){
+    try{model_texture=TextureName(0);model_secondary=TextureName(1);
+        input.shader=active_shader.c_str();input.texture=model_texture.c_str();input.secondary=model_secondary.c_str();
+        input.effect=effect;input.shader_element=source_element;input.shader_pass=source_pass;
+    }catch(...){KichR4_CaptureFail("G3b model material snapshot failed");}
+}
 double KichR4_NativeQueueTime(){return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-queue_begin).count();}
 void KichR4_NativeBegin(uint32_t width,uint32_t height,uint32_t frame){menu_pp=menu_overlay=false;queue_begin=std::chrono::steady_clock::now();memset(states,0,sizeof(states));style=kich_r4_capture::Style();states[D3DRS_ZENABLE]=states[D3DRS_ZWRITEENABLE]=1;
     KichR4_DetailFrame().ClearFrame(frame);
     states[D3DRS_CULLMODE]=D3DCULL_CCW;states[D3DRS_SRCBLEND]=D3DBLEND_SRCALPHA;states[D3DRS_DESTBLEND]=D3DBLEND_INVSRCALPHA;states[D3DRS_ALPHAFUNC]=D3DCMP_GREATER;
-    states[D3DRS_COLORWRITEENABLE]=15;states[255]=D3DTADDRESS_WRAP;effect=0;active_shader.clear();memset(textures,0,sizeof(textures));
-    KichR4_CaptureBeginFrame(width,height,frame);kich_r4_capture::State* s=KichR4_CaptureState();if(s){s->frame.renderer_seen=true;s->frame.ui_seen=true;}
+    states[D3DRS_COLORWRITEENABLE]=15;states[255]=D3DTADDRESS_WRAP;effect=0;source_element=UINT32_MAX;source_pass=0;active_shader.clear();model_texture.clear();model_secondary.clear();memset(textures,0,sizeof(textures));
+    KichR4_CaptureBeginFrame(width,height,frame);kich_r4_capture::State* s=KichR4_CaptureState();if(s){s->native_models=true;s->frame.renderer_seen=true;s->frame.ui_seen=true;}
 }
 void KichR4_NativeFillRect(int32_t left,int32_t top,int32_t right,int32_t bottom,uint32_t color){
     using namespace kich_r4_capture;State* s=KichR4_CaptureState();if(!s || left>=right || top>=bottom)return;
@@ -113,7 +128,8 @@ void KichR4_NativeDraw(void* declaration,void* vb,void* ib,uint32_t stride,uint3
                 Vertex quad[4]={va,va,vbv,vbv};for(unsigned j=0;j<4;++j){const float sign=j&1?1.f:-1.f;quad[j].p[0]+=sign*x*quad[j].p[3];quad[j].p[1]+=sign*y*quad[j].p[3];batch.vertices.push_back(quad[j]);}
                 const uint32_t ix[]={0,1,2,2,1,3};for(unsigned j=0;j<6;++j)batch.indices.push_back(q+ix[j]);}}
         Command cmd={ibase,static_cast<uint32_t>(batch.indices.size())-ibase,layer,texture,draw};cmd.effect=screen && menu_pp?7:screen && menu_overlay?8:effect;cmd.secondary=secondary;
-        if(g_render_snapshot_active){cmd.shader=active_shader;cmd.resource=texture;cmd.skin="CPU_CAPTURE_STREAM";}
+        cmd.shader=active_shader;cmd.shader_element=source_element;cmd.shader_pass=source_pass;
+        if(g_render_snapshot_active){cmd.resource=texture;cmd.skin="CPU_CAPTURE_STREAM";}
         cmd.console=g_render_snapshot_console;
         if(effect==2){cmd.style.depth=1;cmd.style.write=0;cmd.style.cull=KICH_R4_CULL_NONE;}
         SnapshotCommand(cmd,batch.vertices,batch.indices,screen?"UI_GEOMETRY":"UNKNOWN",NULL,0,uv!=NULL);

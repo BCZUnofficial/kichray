@@ -24,14 +24,23 @@ struct CDetail {
     fvfVertexIn* vertices;uint16_t* indices;uint32_t number_vertices,number_indices;
     struct Box {Fvector min,max;}bv_bb;
     Shader* shader;
+    struct Sphere {float R;}bv_sphere;
 };
+const unsigned dm_cache_size=4,dm_obj_in_slot=4;
+const float dm_fade=63.5f;
+struct DetailSlot {enum {ID_Empty=0xffff};};
 class CDetailManager {
 public:
     struct SSwingValue {float rot1,rot2,amp1,amp2,speed;}swing_current;
-    struct SlotItem {float scale_calculated;Fmatrix mRotY;float c_sun,c_hemi;};
+    struct SlotItem {float scale_calculated;Fmatrix mRotY;float c_sun,c_hemi;float scale;u32 vis_ID;};
     typedef Items<SlotItem*> SlotItemVec;
+    struct SlotPart {u32 id;SlotItemVec items;SlotPart():id(DetailSlot::ID_Empty){}};
+    enum SlotType {stReady=0,stPending};
+    struct Slot {bool empty;SlotType type;struct Vis {struct Sphere {Fvector P;}sphere;}vis;SlotPart G[dm_obj_in_slot];Slot():empty(true),type(stReady),vis(){}};
     typedef std::vector<Items<SlotItemVec*> > vis_list;
     std::vector<CDetail*> objects;vis_list m_visibles[3];
+    Slot cache_pool[dm_cache_size];
 };
-struct DetailDevice {uint32_t dwFrame;float fTimeGlobal;};
+struct DetailDevice {uint32_t dwFrame;float fTimeGlobal;Fvector vCameraPosition;};
 extern DetailDevice Device;
+extern float ps_r__Detail_radius,r_ssaDISCARD;

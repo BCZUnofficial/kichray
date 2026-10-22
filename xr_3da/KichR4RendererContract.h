@@ -38,6 +38,7 @@ static inline const char* KichR4_ValidateRendererAPI(const KichR4RendererAPI* a)
     KICH_R4_TABLE_HEADER(deferred,KICH_R4_DEFERRED_ABI);
     KICH_R4_TABLE_HEADER(tools,KICH_R4_NATIVE_TOOLS_ABI);
     KICH_R4_TABLE_HEADER(details,KICH_R4_DETAIL_ABI);
+    KICH_R4_TABLE_HEADER(models,KICH_R4_MODEL_ABI);
 #undef KICH_R4_TABLE_HEADER
     if(!a->frame.create_device || !a->frame.destroy_device || !a->frame.create_target || !a->frame.destroy_target ||
         !a->frame.resize || !a->frame.begin_frame || !a->frame.clear || !a->frame.present || !a->frame.get_stats)return "frame callbacks";
@@ -51,6 +52,7 @@ static inline const char* KichR4_ValidateRendererAPI(const KichR4RendererAPI* a)
     if(!a->deferred.create_pipeline || !a->deferred.begin_pass || !a->deferred.draw)return "deferred callbacks";
     if(!a->tools.read_pixels || !a->tools.profile_mark || !a->tools.get_profile || !a->tools.reset_resources || !a->tools.set_snapshot_sink)return "tools callbacks";
     if(!a->details.create_pipeline || !a->details.create_instances || !a->details.upload_instances || !a->details.draw)return "detail callbacks";
+    if(!a->models.create_pipeline || !a->models.create_pose || !a->models.upload_pose || !a->models.draw)return "model callbacks";
     return NULL;
 }
 #endif

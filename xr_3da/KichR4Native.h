@@ -12,11 +12,11 @@
 #endif
 class IRender_interface;
 class IKichRenderDevice;
-class ShaderElement;
+struct ShaderElement;
 class CTexture;
 struct KichR4GameFrame;
 struct KichR4LevelFiles;
-namespace kich_r4_capture {struct Style;struct Batch;}
+namespace kich_r4_capture {struct Style;struct Batch;struct ModelInput;}
 
 /* Process selection is fixed before the first renderer or GPU is created. */
 KICH_NATIVE_API bool KichR4_NativeActive();
@@ -29,6 +29,10 @@ KICH_NATIVE_API uint32_t KichR4_NativeGetState(uint32_t state);
 KICH_NATIVE_API void KichR4_NativeViewport(float near_depth,float far_depth);
 KICH_NATIVE_API void KichR4_NativeScissor(const int* rect);
 KICH_NATIVE_API void KichR4_NativeElement(ShaderElement* element);
+KICH_NATIVE_API void KichR4_NativeElementPass(ShaderElement* element,uint32_t pass);
+void KichR4_NativeElementSource(uint32_t element);
+bool KichR4_NativeDistortionEnabled();
+void KichR4_NativeModelMaterial(kich_r4_capture::ModelInput& input);
 KICH_NATIVE_API void KichR4_NativeTexture(uint32_t stage,CTexture* texture);
 KICH_NATIVE_API void KichR4_NativeDraw(void* declaration,void* vertices,void* indices,
     uint32_t stride,uint32_t topology,uint32_t base,uint32_t start,

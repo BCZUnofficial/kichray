@@ -14,6 +14,8 @@ struct Style {
 struct ModelInput {
     void* visual;uint32_t count,first,triangles,bone_count,skin_mode;
     float world[16],vp[16];const float* bones;Style style;
+    /* Borrowed only until CaptureSubmitModel returns. Null uses source OGF metadata. */
+    const char* shader;const char* texture;const char* secondary;uint32_t effect,shader_element,shader_pass;
 };
 struct UIInput {
     void* vb;void* ib;
