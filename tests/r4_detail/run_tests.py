@@ -12,11 +12,19 @@ with tempfile.TemporaryDirectory(prefix="kich-g3a-") as directory:
     frontend=(ROOT/"xr_3da/R4DetailRenderer.cpp").read_text().replace('#include "KichR4NativePrelude.h"','#include "detail_engine.h"')
     (work/"frontend_under_test.cpp").write_text(frontend)
     adapter=(ROOT/"xr_3da/RenderSnapshotEngine.cpp").read_text()
-    (work/"snapshot_engine_under_test.cpp").write_text("\n".join(line for line in adapter.splitlines() if not line.startswith("#include")))
+    # Keep production includes and compile the adapter separately. Stripping
+    # includes hid its missing Render.h dependency in the Windows build.
+    (work/"snapshot_engine_under_test.cpp").write_text(adapter)
+    (work/"stdafx.h").write_text('#include "snapshot_engine_fake.h"\n')
+    (work/"Render.h").write_text('#include "snapshot_render_fake.h"\n')
+    for header in ("KichR4Native.h","IGame_Level.h","IGame_Persistent.h",
+                   "Environment.h","XR_IOConsole.h","CustomHUD.h","ResourceManager.h"):
+        (work/header).write_text('// Engine types are provided by snapshot_engine_fake.h.\n')
     for name in ("frontend","session","snapshot","snapshot_engine"):
         binary=work/name
+        extra=[str(work/"snapshot_engine_under_test.cpp")] if name=="snapshot_engine" else []
         subprocess.run([os.environ.get("CXX","g++"),"-std=c++11","-O2","-Wall","-Wextra","-Werror",
-            "-I"+str(HERE),"-I"+str(work),"-I"+str(ROOT/"xr_3da"),"-I"+str(ROOT/"tests/r4_native"),str(HERE/(name+"_tests.cpp")),str(ROOT/"xr_3da/RenderSnapshot.cpp"),"-o",str(binary)],check=True)
+            "-I"+str(HERE),"-I"+str(work),"-I"+str(ROOT/"xr_3da"),"-I"+str(ROOT/"tests/r4_native"),str(HERE/(name+"_tests.cpp")),*extra,str(ROOT/"xr_3da/RenderSnapshot.cpp"),"-o",str(binary)],check=True)
         subprocess.run([str(binary),str(work)],check=True)
     editor=work/"editor.cpp"
     editor.write_text('#include "RenderSnapshot.h"\nint main(){RenderSnapshotInfo i={};RenderSnapshot_Begin(i);return RenderSnapshot_Request() || g_render_snapshot_active || g_render_snapshot_console;}\n')

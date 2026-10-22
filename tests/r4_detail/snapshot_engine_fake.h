@@ -14,7 +14,7 @@
 typedef int HRESULT;
 typedef unsigned long DWORD;
 template<size_t N>int strcpy_s(char (&out)[N],const char* in){return snprintf(out,N,"%s",in);}
-template<size_t N>int strncpy_s(char (&out)[N],const char* in,int){return snprintf(out,N,"%s",in);}
+template<size_t N>int strncpy_s(char (&out)[N],const char* in,int){const size_t length=strlen(in),count=length<N?length:N-1;memcpy(out,in,count);out[count]=0;return length<N?0:1;}
 inline void Msg(const char*,...){}
 enum D3DRENDERSTATETYPE {D3DRS_ZENABLE=1,D3DRS_ZWRITEENABLE,D3DRS_ZFUNC,D3DRS_ALPHATESTENABLE,D3DRS_ALPHAFUNC,D3DRS_ALPHAREF,
     D3DRS_ALPHABLENDENABLE,D3DRS_SRCBLEND,D3DRS_DESTBLEND,D3DRS_BLENDOP,D3DRS_CULLMODE,D3DRS_STENCILENABLE,D3DRS_STENCILFUNC,
@@ -42,18 +42,18 @@ struct Fvector {float x,y,z;};
 struct SnapshotDevice {uint32_t dwFrame=7,dwWidth=1920,dwHeight=1080,dwPrecacheFrame=0;float fFOV=75,fTimeGlobal=8;Fvector vCameraPosition={1,2,3},vCameraDirection={0,0,1};CResourceManager* Resources;bool Paused(){return false;}};
 struct SnapshotFlags {bool test(unsigned){return true;}};
 struct SnapshotConsole {bool bVisible=true;float GetFloat(const char* name,float& value,float& low,float& high){low=0;high=100;value=strstr(name,"radius")?60:.3f;return value;}};
-struct IRender_interface {enum {GENERATION_R2=90};int get_generation(){return GENERATION_R2;}};
 struct CEnvironment {std::string CurrentWeatherName="clear";float wind_strength_factor=.25f;struct Env {Fvector sun_dir={0,-1,0};}CurrentEnv;float SnapshotGameTime()const{return 32000;}};
 struct SnapshotPersistent {CEnvironment env;bool menu=false;bool OnRenderPPUI_query(){return menu;}CEnvironment& Environment(){return env;}};
 struct SnapshotLevel {bool bReady=true;std::string name()const{return "l01_escape";}};
 struct CTexture {std::string cName="grass";};
 struct SnapshotCache {CTexture texture;CTexture* get_ActiveTexture(unsigned i){return i==0?&texture:NULL;}};
-struct SnapshotFS {std::string directory;void update_path(char* out,const char*,const char*){strcpy(out,directory.c_str());}};
+// CLocatorAPI takes a reference to the exact engine array type, not char*.
+typedef char string_path[2 * 260];
+struct SnapshotFS {std::string directory;const char* update_path(string_path& out,const char*,const char*){strcpy(out,directory.c_str());return out;}};
 extern SnapshotDevice Device;
 extern SnapshotHW HW;
 extern SnapshotFlags psHUD_Flags,psDeviceFlags;
 extern SnapshotConsole* Console;
-extern IRender_interface* Render;
 extern SnapshotPersistent* g_pGamePersistent;
 extern SnapshotLevel* g_pGameLevel;
 extern SnapshotCache RCache;

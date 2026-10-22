@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "RenderSnapshot.h"
 #if !defined(_EDITOR)
+#include "Render.h"
 #include "KichR4Native.h"
 #include "KichR4BuildIdentity.h"
 #include "IGame_Level.h"
@@ -28,7 +29,9 @@ void RenderSnapshot_EngineBegin(){
         strncpy_s(info.weather,env.CurrentWeatherName.size()?env.CurrentWeatherName.c_str():"UNKNOWN",_TRUNCATE);
         info.wind=env.wind_strength_factor;info.game_time=env.SnapshotGameTime();CopyMemory(info.sun,&env.CurrentEnv.sun_dir.x,12);}
     const KichR4BuildInfo build=KichR4_LocalBuildInfo();strcpy_s(info.build,build.revision);strcpy_s(info.source_id,build.source_id);strcpy_s(info.shader_id,build.shader_id);
-    FS.update_path(info.directory,"$logs$","");
+    string_path directory;
+    FS.update_path(directory,"$logs$","");
+    strncpy_s(info.directory,directory,_TRUNCATE);
     strcpy_s(info.adapter,"NOT_AVAILABLE");
     if(!native && HW.pD3D){D3DADAPTER_IDENTIFIER9 adapter={};if(SUCCEEDED(HW.pD3D->GetAdapterIdentifier(HW.DevAdapter,0,&adapter)))strncpy_s(info.adapter,adapter.Description,_TRUNCATE);}
     RenderSnapshot_Begin(info);
