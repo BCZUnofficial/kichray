@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ui/RenderSnapshotUI.h"
 #include "MainMenu.h"
 #include "UI/UIDialogWnd.h"
 #include "ui/UIMessageBoxEx.h"
@@ -133,18 +134,19 @@ extern bool IsGameTypeSingle();
 
 void CMainMenu::Activate(bool bActivate)
 {
+    RenderSnapshot_Event("MENU","MAIN_MENU",bActivate?"OPEN":"CLOSE","REQUESTED");
 	if (!!m_Flags.test(flActive) == bActivate)
-		return;
+    {RenderSnapshot_Event("MENU","MAIN_MENU",bActivate?"OPEN":"CLOSE","NO_STATE_CHANGE");return;}
 	if (m_Flags.test(flGameSaveScreenshot))
-		return;
+    {RenderSnapshot_Event("MENU","MAIN_MENU",bActivate?"OPEN":"CLOSE","REJECTED_SCREENSHOT");return;}
 	if ((m_screenshotFrame == Device.dwFrame) || (m_screenshotFrame == Device.dwFrame - 1) ||
 		(m_screenshotFrame == Device.dwFrame + 1))
-		return;
+    {RenderSnapshot_Event("MENU","MAIN_MENU",bActivate?"OPEN":"CLOSE","REJECTED_SCREENSHOT_FRAME");return;}
 
 	bool b_is_single = IsGameTypeSingle();
 
 	if (g_dedicated_server && bActivate)
-		return;
+    {RenderSnapshot_Event("MENU","MAIN_MENU","OPEN","REJECTED_DEDICATED_SERVER");return;}
 
 	if (bActivate)
 	{
@@ -157,6 +159,7 @@ void CMainMenu::Activate(bool bActivate)
 			if (!dlg)
 			{
 				m_Flags.set(flActive | flNeedChangeCapture, FALSE);
+                RenderSnapshot_Event("MENU","MAIN_MENU","OPEN","REJECTED_DIALOG_FACTORY");
 				return;
 			}
 			xr_delete(m_startDialog);
@@ -247,6 +250,9 @@ void CMainMenu::Activate(bool bActivate)
 			Console->Execute("vid_restart");
 		}
 	}
+    char id[64];snapshot_ui::Handle(m_startDialog,id,sizeof(id));
+    RenderSnapshot_UIWindow("MENU",id,IsActive());
+    RenderSnapshot_Event("MENU",id,bActivate?"OPEN":"CLOSE",IsActive()==bActivate?"APPLIED":"NOT_APPLIED");
 }
 
 bool CMainMenu::IsActive()
@@ -346,6 +352,23 @@ bool CMainMenu::OnRenderPPUI_query()
 extern void draw_wnds_rects();
 void CMainMenu::OnRender()
 {
+    RenderSnapshot_Text("MENU_COMPOSITION","background_render_entrypoint","RENDER_RENDER_CALLBACK");
+    RenderSnapshot_Text("MENU_COMPOSITION","background_source","NOT_INSTRUMENTED;SEE_ACTUAL_PASS_INPUT_OUTPUT_RESOURCES");
+    RenderSnapshot_Text("MENU_COMPOSITION","background_source_frame_age","NOT_INSTRUMENTED");
+    RenderSnapshot_U64("MENU_COMPOSITION","level_exists",g_pGameLevel?1:0);
+    if(RenderSnapshot_Detailed()){
+        unsigned level_render=0,menu_render=0,level_frame=0;
+        for(size_t i=0;i<Device.seqRender.R.size();++i){const _REG_INFO& entry=Device.seqRender.R[i];if(entry.Prio==(int)REG_PRIORITY_INVALID)continue;
+            if(entry.Object==static_cast<pureRender*>(this))++menu_render;
+            if(g_pGameLevel && entry.Object==static_cast<pureRender*>(g_pGameLevel))++level_render;}
+        for(size_t i=0;i<Device.seqFrame.R.size();++i){const _REG_INFO& entry=Device.seqFrame.R[i];
+            if(entry.Prio!=(int)REG_PRIORITY_INVALID && g_pGameLevel && entry.Object==static_cast<pureFrame*>(g_pGameLevel))++level_frame;}
+        RenderSnapshot_U64("MENU_COMPOSITION","level_render_subscriptions",level_render);RenderSnapshot_U64("MENU_COMPOSITION","menu_render_subscriptions",menu_render);
+        RenderSnapshot_U64("MENU_COMPOSITION","level_frame_subscriptions",level_frame);
+    }
+    RenderSnapshot_U64("MENU_COMPOSITION","level_calculate_called",g_pGameLevel && !m_Flags.test(flGameSaveScreenshot)?1:0);
+    RenderSnapshot_U64("MENU_COMPOSITION","postprocess_ui_requested",OnRenderPPUI_query()?1:0);
+    RenderSnapshot_Text("MENU_COMPOSITION","world_visible_pixels","NOT_INSTRUMENTED");
 	if (m_Flags.test(flGameSaveScreenshot))
 		return;
 
@@ -363,6 +386,7 @@ void CMainMenu::OnRender()
 
 void CMainMenu::OnRenderPPUI_main()
 {
+    RenderSnapshot_U64("MENU_COMPOSITION","ppui_main_callback",1);
 	if (!IsActive())
 		return;
 

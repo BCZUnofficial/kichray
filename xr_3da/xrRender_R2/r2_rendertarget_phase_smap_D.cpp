@@ -1,26 +1,28 @@
 #include "stdafx.h"
 #include "../RenderSnapshot.h"
+#include "../xrRender/R2LightSnapshot.h"
 
 extern int ps_r2_sun_shadow_cull;
 
 static void snapshot_smap_direct(light* L, u32 sub_phase, bool transparent)
 {
-	if (!g_render_snapshot_active)
+	if (!RenderSnapshot_Detailed())
 		return;
 	RenderSnapshot_Pass(transparent ? "SUN_SHADOW_TRANSPARENT" : "SUN_SHADOW");
-	char light_id[64], phase_id[96], description[384];
-	// This address identifies the live engine light only; it is not a persistent asset ID.
-	sprintf_s(light_id, "r2.light@%p", static_cast<void*>(L));
-	sprintf_s(phase_id, "SUN_%s_%s/subphase=%u",
-		SE_SUN_NEAR == sub_phase ? "NEAR" : (SE_SUN_FAR == sub_phase ? "FAR" : "UNKNOWN"),
-		transparent ? "TRANSPARENT" : "OPAQUE", sub_phase);
-	RenderSnapshot_Light(light_id, "PROCESS_HANDLE");
-	RenderSnapshot_Phase(phase_id);
-	sprintf_s(description, "type=%u; position=%g,%g,%g; direction=%g,%g,%g; range=%g; cone=%g; static=%u; shadow=%u",
-		u32(L->flags.type), L->position.x, L->position.y, L->position.z,
-		L->direction.x, L->direction.y, L->direction.z, L->range, L->cone,
-		u32(L->flags.bStatic), u32(L->flags.bShadow));
-	RenderSnapshot_Text("LIGHT_DESCRIPTOR", light_id, description);
+	char light_id[64],phase_id[96],viewport[96];
+	const char* cascade=SE_SUN_NEAR==sub_phase?"SUN_NEAR":"SUN_FAR";
+	kich_r2_light_snapshot::SourceID(light_id,sizeof(light_id),L);
+	snprintf(phase_id,sizeof(phase_id),"%s_%s/subphase=%u",cascade,transparent?"TRANSPARENT":"OPAQUE",sub_phase);
+	RenderSnapshot_Light(light_id,"RENDERER_PROCESS_LIFETIME_SERIAL");RenderSnapshot_Phase(phase_id);
+	kich_r2_light_snapshot::Record(L,"shadow_pass","SELECTED",phase_id);
+	kich_r2_light_snapshot::Shadow(L,cascade,&L->X.D.combine._11);
+	snprintf(viewport,sizeof(viewport),"0,0,%u,%u;z=0,1",u32(RImplementation.o.smapsize),u32(RImplementation.o.smapsize));
+	kich_r2_light_snapshot::ShadowText(L,cascade,"target_extent",viewport);
+	kich_r2_light_snapshot::ShadowText(L,cascade,"viewport","SEE_ACTUAL_DRAW_STATE; TARGET_EXTENT_IS_NOT_VIEWPORT_PROOF");
+	kich_r2_light_snapshot::ShadowText(L,cascade,"format","SEE_DRAW_TARGET_RESOURCE; NOT_INFERRED_FROM_ROLE");
+	kich_r2_light_snapshot::ShadowText(L,cascade,"candidate_source","render_sun/near caster volume; category evidence in draw groups");
+	kich_r2_light_snapshot::ShadowText(L,cascade,"slope_bias_filtering","SEE_ACTUAL_DRAW_STATES_AND_SAMPLER");
+	kich_r2_light_snapshot::ShadowText(L,cascade,"intersection_tests_and_visible_shadow_pixels","NOT_MEASURED");
 }
 
 void CRenderTarget::phase_smap_direct(light* L, u32 sub_phase)
@@ -63,6 +65,13 @@ void CRenderTarget::phase_smap_direct(light* L, u32 sub_phase)
     else if (ps_r2_sun_shadow_cull == 2)
         shadowCull = CULL_CCW;
     RCache.set_CullMode(shadowCull);
+    if(RenderSnapshot_Detailed()){const char* cascade=SE_SUN_NEAR==sub_phase?"SUN_NEAR":"SUN_FAR";char rectangle[96];
+        snprintf(rectangle,sizeof(rectangle),"%d,%d,%d,%d",L->X.D.minX,L->X.D.minY,L->X.D.maxX,L->X.D.maxY);
+        kich_r2_light_snapshot::ShadowFloat(L,cascade,"caster_cull_applied",float(shadowCull));
+        kich_r2_light_snapshot::ShadowText(L,cascade,"depth_clear_region",SE_SUN_NEAR==sub_phase&&!volumeActive?rectangle:"FULL_TARGET");
+        kich_r2_light_snapshot::ShadowText(L,cascade,"stencil_producer","DISABLED_FOR_SHADOW_CASTER_PASS; LIGHT_ACCUMULATION_WRITES_ITS_OWN_MASK");
+        kich_r2_light_snapshot::ShadowText(L,cascade,"sunfilter_selected",RImplementation.o.sunfilter?"1":"0");
+    }
 
     // A marker for each cascade when the selected mode changes.
     static int loggedMode[2] = {-1, -1};

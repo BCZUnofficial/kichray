@@ -9,6 +9,7 @@
 #include "KichR4Capture.h"
 #include "KichR4Native.h"
 #include "RenderSnapshot.h"
+#include "RenderSnapshotMaterial.h"
 
 IC void R_xforms::set_c_w(R_constant* C)
 {
@@ -167,6 +168,7 @@ IC void CBackend::set_Element(ShaderElement* S, u32 pass)
 	set_Constants(P.constants);
 	set_Textures(P.T);
 	if(KichR4_NativeActive())KichR4_NativeElementPass(S,pass);
+	if(RenderSnapshot_Detailed())RenderSnapshot_MaterialElement(S,pass);
 #ifdef _EDITOR
 	set_Matrices(P.M);
 #endif

@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "RenderSnapshot.h"
 #pragma hdrstop
 
 #include "GameFont.h"
@@ -172,8 +173,17 @@ u32 CGameFont::smart_strlen(const char* S)
 	return (IsMultibyte() ? mbhMulti2Wide(NULL, NULL, 0, S) : xr_strlen(S));
 }
 
+namespace {
+struct SnapshotFontScope {
+    RenderSnapshotProvenance previous;bool active;
+    SnapshotFontScope():active(RenderSnapshot_Detailed()){if(active){RenderSnapshot_GetProvenance(&previous);RenderSnapshot_UIProvenance("FONT_BATCH","LOST_WIDGET_LINK_DURING_FONT_BATCHING");}}
+    ~SnapshotFontScope(){if(active)RenderSnapshot_SetProvenance(&previous);}
+};
+}
 void CGameFont::OnRender()
 {
+    SnapshotFontScope snapshot_font_scope;
+    uint64_t snapshot_font_vertices=0,snapshot_font_batches=0;
 	VERIFY(g_bRendering);
 	if (pShader)
 		RCache.set_Shader(pShader);
@@ -186,6 +196,21 @@ void CGameFont::OnRender()
 		uFlags |= fsValid;
 	}
 
+    if(RenderSnapshot_Detailed()){
+        CTexture* atlas=RCache.get_ActiveTexture(0);char id[192];snprintf(id,sizeof(id),"FONT:%s",atlas?atlas->cName.c_str():"NOT_AVAILABLE");
+        RenderSnapshot_UIProvenance(id,"LOST_WIDGET_LINK_DURING_FONT_BATCHING");
+        RenderSnapshot_Object("UI",id,"UNKNOWN","FONT_BATCH_SUBMISSION",0);RenderSnapshot_Queue("UI_FONT_BATCH");
+        RenderSnapshot_Record("UI",id,"widget_type","FONT_BATCH");RenderSnapshot_Record("UI",id,"atlas",atlas?atlas->cName.c_str():"NOT_AVAILABLE");
+        RenderSnapshot_RecordU64("UI",id,"queued_string_count",strings.size());
+        if(!strings.empty()){float minimum=strings[0].height,maximum=minimum;
+            for(size_t i=1;i<strings.size();++i){if(strings[i].height<minimum)minimum=strings[i].height;if(strings[i].height>maximum)maximum=strings[i].height;}
+            char range[96];snprintf(range,sizeof(range),"%.9g,%.9g",minimum,maximum);RenderSnapshot_Record("UI",id,"queued_font_height_min_max",range);}
+        RenderSnapshot_Record("UI",id,"font_height_source","STORED_STRING_HEIGHT_BEFORE_CURRENT_FONT_SCALE");
+        char scale[96];snprintf(scale,sizeof(scale),"%.9g,%.9g",g_current_font_scale.x,g_current_font_scale.y);RenderSnapshot_Record("UI",id,"font_current_scale",scale);
+        RenderSnapshot_RecordU64("UI",id,"atlas_width",vTS.x);RenderSnapshot_RecordU64("UI",id,"atlas_height",vTS.y);
+        RenderSnapshot_Record("UI",id,"text_content","OMITTED_BY_POLICY");
+        RenderSnapshot_Record("UI",id,"widget_link","LOST_DURING_FONT_BATCHING");
+    }
 	for (u32 i = 0; i < strings.size();)
 	{
 		// calculate first-fit
@@ -295,8 +320,15 @@ void CGameFont::OnRender()
 		{
 			RCache.set_Geometry(pGeom);
 			RCache.Render(D3DPT_TRIANGLELIST, vOffset, 0, vCount, 0, vCount / 2);
+            if(RenderSnapshot_Detailed()){snapshot_font_vertices+=vCount;++snapshot_font_batches;}
 		}
 	}
+    if(RenderSnapshot_Detailed()){
+        RenderSnapshotProvenance font;RenderSnapshot_GetProvenance(&font);
+        RenderSnapshot_RecordU64("UI",font.ui_widget,"submitted_font_batches",snapshot_font_batches);
+        RenderSnapshot_RecordU64("UI",font.ui_widget,"submitted_font_vertices",snapshot_font_vertices);
+        RenderSnapshot_RecordU64("UI",font.ui_widget,"submitted_glyph_quads",snapshot_font_vertices/4);
+    }
 	strings.clear_not_free();
 }
 

@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "RenderSnapshotEngine.h"
 
 #include "render.h"
 #include "IGame_Persistent.h"
@@ -22,6 +23,7 @@ void CRenderDevice::_Destroy(BOOL bKeepTextures)
 
 void CRenderDevice::Destroy(void)
 {
+    RenderSnapshot_EngineDeviceEvent("DEVICE_SHUTDOWN");
 	if (!b_is_Ready)
 		return;
 
@@ -55,6 +57,7 @@ void CRenderDevice::Destroy(void)
 extern BOOL bNeed_re_create_env;
 void CRenderDevice::Reset(bool precache)
 {
+    RenderSnapshot_EngineDeviceEvent("DEVICE_RESET");
 	KichRenderDevice().TraceResetReferences(true);
 	bool b_16_before = (float)dwWidth / (float)dwHeight > (1024.0f / 768.0f + 0.01f);
 

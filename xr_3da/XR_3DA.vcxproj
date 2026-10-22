@@ -911,6 +911,8 @@
     <ClCompile Include="RenderSnapshot.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader><ExceptionHandling>Async</ExceptionHandling></ClCompile>
     <ClCompile Include="RenderSnapshotEngine.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader><AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories></ClCompile>
     <ClCompile Include="R4DetailRenderer.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader><ExceptionHandling>Sync</ExceptionHandling><PreprocessorDefinitions>KICH_R4_NATIVE_EH;%(PreprocessorDefinitions)</PreprocessorDefinitions><ForcedIncludeFiles>$(ProjectDir)KichR4NativePrelude.h;%(ForcedIncludeFiles)</ForcedIncludeFiles><AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)xrRender_R1;$(ProjectDir)xrRender;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories></ClCompile>
+    <ClCompile Include="RenderSnapshotD3D9.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClInclude Include="RenderSnapshotD3D9.h" />
     <ClInclude Include="RenderSnapshot.h" />
     <ClInclude Include="KichR4Detail.h" />
     <ClInclude Include="KichR4DetailData.h" />

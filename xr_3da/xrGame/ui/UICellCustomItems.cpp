@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "RenderSnapshotUI.h"
 #include "UICellCustomItems.h"
 #include "UIInventoryUtilities.h"
 #include "../Weapon.h"
@@ -20,6 +21,18 @@ CUIInventoryCellItem::CUIInventoryCellItem(CInventoryItem* itm)
 
 	inherited::SetOriginalRect(rect);
 	inherited::SetStretchTexture(true);
+}
+
+void CUIInventoryCellItem::Draw()
+{
+    snapshot_ui::Scope snapshot_scope(this,"INVENTORY_ITEM");
+    if(RenderSnapshot_Detailed() && object()){
+        RenderSnapshot_Record("UI",snapshot_scope.id,"item_section",object()->object().cNameSect().c_str());
+        RenderSnapshot_RecordU64("UI",snapshot_scope.id,"item_object_id",object()->object().ID());
+        snapshot_ui::Number(snapshot_scope.id,"item_condition",object()->GetCondition());
+        RenderSnapshot_Record("UI",snapshot_scope.id,"item_draw_status","ROOT_CELL_DRAW_CALLED_NOT_VISIBLE_PIXEL_PROOF");
+    }
+    inherited::Draw();
 }
 
 bool CUIInventoryCellItem::EqualTo(CUICellItem* itm)

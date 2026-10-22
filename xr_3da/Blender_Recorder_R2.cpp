@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "RenderSnapshotMaterial.h"
 #include "KichR4Native.h"
 #include "KichR4NativeCPU.h"
 #pragma hdrstop
@@ -12,6 +13,7 @@ void fix_texture_name(LPSTR fn);
 void CBlender_Compile::r_Pass(LPCSTR _vs, LPCSTR _ps, bool bFog, BOOL bZtest, BOOL bZwrite, BOOL bABlend,
 							  D3DBLEND abSRC, D3DBLEND abDST, BOOL aTest, u32 aRef)
 {
+	RenderSnapshot_CompilerBegin(this);
 	RS.Invalidate();
 	ctable.clear();
 	passTextures.clear();
@@ -131,6 +133,7 @@ u32 CBlender_Compile::r_Sampler(LPCSTR _name, LPCSTR texture, bool b_ps1x_Projec
 		if (dwStage < 4)
 			i_Projective(dwStage, b_ps1x_ProjectiveDivide);
 	}
+	RenderSnapshot_CompilerSampler(this, _name, texture, dwStage, address, fmin, fmip, fmag);
 	return dwStage;
 }
 
@@ -164,4 +167,5 @@ void CBlender_Compile::r_End()
 	SH->passes.push_back(
 		Device.Resources->_CreatePass(dest.state, dest.ps, dest.vs, dest.constants, dest.T, temp, dest.C));
 #endif
+	RenderSnapshot_CompilerEnd(this, SH->passes.back()._get());
 }

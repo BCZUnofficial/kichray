@@ -36,7 +36,9 @@ struct Weather {CEnvDescriptor CurrentEnv;} weather={{{0,-1,0},{0,0,0}}};
 struct Persistent {Weather& Environment(){return weather;}} persistent;Persistent* g_pGamePersistent=&persistent;
 struct DeviceState {Fmatrix mFullTransform;Fvector vCameraPosition;} Device;
 struct Flags {bool enabled;bool test(unsigned){return enabled;}} psDeviceFlags={true};
+Flags ps_r2_ls_flags={false};enum{R2FLAG_R1LIGHTS=1u<<10};u32 native_level_light_records=0,native_level_directional_skips=0;
 KichR4LightingFrame lights={};
+void KichR4_CaptureLightingDiagnostics(const float*,const KichR4LightingFrame&){}
 void KichR4_CaptureLighting(const float*,KichR4LightingFrame& out){out=lights;}
 class CRender {
 public:

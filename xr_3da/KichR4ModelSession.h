@@ -5,6 +5,7 @@
 #include "KichR4LevelSession.h"
 #include "KichR4Visibility.h"
 #include <stddef.h>
+#include "KichR4TelemetryText.h"
 /* EXE-owned immutable-source cache. Device destruction remains the final owner
  * of every successfully created handle, including partial construction. Weak
  * source ownership lets visual deletion retire GPU storage without retaining
@@ -22,10 +23,13 @@ struct KichR4ModelSession {
     const kich_r4_capture::Batch* prepared;bool rigid_ready;
     uint32_t frame,commands,pose_uploads,mesh_uploads,draw_calls[PassCount];
     uint64_t vertex_bytes,index_bytes,pose_upload_bytes,pose_logical_bytes,candidates[PassCount],culled[PassCount],selected[PassCount];
+    std::vector<uint32_t> command_uses;std::map<std::string,uint64_t> pose_use_counts;bool model_telemetry_complete;
+    uint64_t unique_skeletons,unique_parts,unique_poses,unknown_skeleton_commands,repeated_pose_uploads,max_pose_upload_multiplicity,pose_uses;
+    uint64_t peak_pose_bytes,group_id,group_peak_pose_bytes;
     bool phase_active;char phase_section[96];uint64_t phase_candidates,phase_culled,phase_selected;uint32_t phase_draws;
-    KichR4ModelSession():vs(0),rigid_pose(0),white(0),plain_pipeline(0),prepared(NULL),rigid_ready(false),frame(UINT32_MAX),commands(0),pose_uploads(0),mesh_uploads(0),vertex_bytes(0),index_bytes(0),pose_upload_bytes(0),pose_logical_bytes(0){
+    KichR4ModelSession():vs(0),rigid_pose(0),white(0),plain_pipeline(0),prepared(NULL),rigid_ready(false),frame(UINT32_MAX),commands(0),pose_uploads(0),mesh_uploads(0),vertex_bytes(0),index_bytes(0),pose_upload_bytes(0),pose_logical_bytes(0),peak_pose_bytes(0),group_id(0),group_peak_pose_bytes(0){
         memset(&api,0,sizeof(api));memset(pipelines,0,sizeof(pipelines));ResetFrame();}
-    void ResetFrame(){phase_active=false;phase_section[0]=0;phase_candidates=phase_culled=phase_selected=phase_draws=0;prepared=NULL;frame=UINT32_MAX;commands=pose_uploads=mesh_uploads=0;pose_upload_bytes=pose_logical_bytes=0;
+    void ResetFrame(){model_telemetry_complete=true;command_uses.clear();pose_use_counts.clear();unique_skeletons=unique_parts=unique_poses=unknown_skeleton_commands=repeated_pose_uploads=max_pose_upload_multiplicity=pose_uses=0;phase_active=false;phase_section[0]=0;phase_candidates=phase_culled=phase_selected=phase_draws=0;prepared=NULL;frame=UINT32_MAX;commands=pose_uploads=mesh_uploads=0;pose_upload_bytes=pose_logical_bytes=0;
         memset(draw_calls,0,sizeof(draw_calls));memset(candidates,0,sizeof(candidates));memset(culled,0,sizeof(culled));memset(selected,0,sizeof(selected));}
     static bool Finite(float value){uint32_t bits;memcpy(&bits,&value,4);return (bits&0x7f800000u)!=0x7f800000u;}
     static bool ValidMatrix(const kich_r4_scene::Matrix& m){for(unsigned i=0;i<16;++i)if(!Finite(m.m[i]))return false;return true;}
@@ -81,6 +85,8 @@ struct KichR4ModelSession {
                 if(ReleaseMesh(s,l,i->second)<0)return s.failure;
                 i=meshes.erase(i);}else ++i;}
         command_poses.clear();command_poses.reserve(batch.native_models.size());size_t pose_index=0;
+        if(g_render_snapshot_active)try{command_uses.resize(batch.native_models.size(),0);}catch(...){model_telemetry_complete=false;RenderSnapshot_Text("TELEMETRY_LOSS","model_pass_uses","ALLOCATION_FAILED");}
+        std::set<uint64_t> skeleton_ids,part_ids;std::map<std::string,uint64_t> pose_counts;
         for(size_t i=0;i<batch.native_models.size();++i){const Command& c=batch.native_models[i];
             if(!ValidCommand(c))return s.Record("G3b model range or pose",KICH_R4_E_ARGUMENT);
             Mesh& gpu=meshes[c.mesh.get()];
@@ -99,12 +105,23 @@ struct KichR4ModelSession {
                 pose=poses[pose_index++];KichR4ModelPose p={};p.bone_count=static_cast<uint32_t>(c.bones.size());p.skin_mode=c.skin_mode;p.skinned=1;
                 for(size_t j=0;j<c.bones.size();++j)memcpy(p.bones[j],c.bones[j].m,64);
                 if(l.Expect(s,"G3b skeletal pose WRITE_DISCARD",api.upload_pose(s.device,pose,&p))<0)return s.failure;
-                ++pose_uploads;pose_upload_bytes+=sizeof(p);pose_logical_bytes+=c.bones.size()*64;}
+                ++pose_uploads;pose_upload_bytes+=sizeof(p);pose_logical_bytes+=c.bones.size()*64;
+                if(g_render_snapshot_active && model_telemetry_complete)try{if(c.identity_measured && c.skeleton_id){skeleton_ids.insert(c.skeleton_id);if(c.pose_hash_valid){char id[128];PoseID(c,id,sizeof(id));const uint64_t multiplicity=++pose_counts[id];max_pose_upload_multiplicity=std::max(max_pose_upload_multiplicity,multiplicity);if(multiplicity>1)++repeated_pose_uploads;}}else ++unknown_skeleton_commands;}
+                    catch(...){model_telemetry_complete=false;RenderSnapshot_Text("TELEMETRY_LOSS","model_identity_counts","ALLOCATION_FAILED");}}
+            if(g_render_snapshot_active && model_telemetry_complete && c.identity_measured && c.visual_id)try{part_ids.insert(c.visual_id);}catch(...){model_telemetry_complete=false;RenderSnapshot_Text("TELEMETRY_LOSS","model_part_counts","ALLOCATION_FAILED");}
             command_poses.push_back(pose);
+            if(g_render_snapshot_active)SnapshotCommandDetails(c,i,frame);
         }
         /* Keep warm-frame palette capacity. Empty frames still retire geometry
          * through weak ownership and can never replay an earlier command. */
-        commands=static_cast<uint32_t>(batch.native_models.size());prepared=&batch;return 0;
+        commands=static_cast<uint32_t>(batch.native_models.size());prepared=&batch;
+        unique_skeletons=skeleton_ids.size();unique_parts=part_ids.size();unique_poses=pose_counts.size();
+        if(g_render_snapshot_active)for(auto it=pose_counts.begin();it!=pose_counts.end();++it){kich_r4_telemetry::U64("MODEL_POSE",it->first.c_str(),"uploads_this_frame",it->second);
+            kich_r4_telemetry::U64("MODEL_POSE",it->first.c_str(),"uploaded_bytes",it->second*sizeof(KichR4ModelPose));kich_r4_telemetry::U64("MODEL_POSE",it->first.c_str(),"allocated_bytes_for_commands",it->second*sizeof(KichR4ModelPose));
+            kich_r4_telemetry::Text("MODEL_POSE",it->first.c_str(),"duplicate_upload_reason",it->second>1?"CURRENT_PER_COMMAND_PALETTE_OWNERSHIP; NO_PART_POSE_DEDUP":"NOT_DUPLICATED");}
+        const uint64_t allocated=(poses.size()+(rigid_pose?1:0))*sizeof(KichR4ModelPose);peak_pose_bytes=std::max(peak_pose_bytes,allocated);
+        const uint64_t current_group=RenderSnapshot_GroupID();if(current_group!=group_id){group_id=current_group;group_peak_pose_bytes=0;}if(group_id)group_peak_pose_bytes=std::max(group_peak_pose_bytes,allocated);
+        return 0;
     }
     static bool Opaque(const Command& c){return !c.layer && !c.style.blend && c.style.depth && c.style.write && !c.effect;}
     static bool Routes(const Command& c,Pass pass){
@@ -126,6 +143,42 @@ struct KichR4ModelSession {
     }
     static double Distance(const Command& c,const kich_r4_lighting::Constants& frame){double distance=0;
         for(unsigned i=0;i<3;++i){const double center=c.bounds_known?(double(c.bounds.min[i])+c.bounds.max[i])*.5:c.world.m[12+i];const double d=center-frame.camera[i];distance+=d*d;}return distance;}
+    static void PoseID(const Command& c,char* id,size_t size){snprintf(id,size,"frame_%u_skeleton_%llu_pose_%016llx_bones_%u",c.source_frame,static_cast<unsigned long long>(c.skeleton_id),static_cast<unsigned long long>(c.pose_hash),static_cast<unsigned>(c.bones.size()));}
+    static void SnapshotCommandDetails(const Command& c,size_t index,uint32_t current_frame){
+        using namespace kich_r4_telemetry;if(!g_render_snapshot_active || !RenderSnapshot_Detailed())return;
+        char id[96],mesh[160],pose[128];snprintf(id,sizeof(id),"frame_%u_command_%u",current_frame,static_cast<unsigned>(index));PoseID(c,pose,sizeof(pose));
+        kich_r4_capture::SnapshotModelID(*c.mesh,mesh,sizeof(mesh),0,static_cast<uint32_t>(c.mesh->indices.size()));
+        Text("MODEL_COMMAND",id,"mesh_resource_id",mesh);Text("MODEL_COMMAND",id,"resource",c.resource.c_str());
+        Text("MODEL_COMMAND",id,"identity_scope",c.identity_measured?"FRAME_SCOPED_PROCESS_POINTER; NOT_NPC_ID":"NOT_INSTRUMENTED");
+        U64("MODEL_COMMAND",id,"visual_part_handle",c.visual_id);U64("MODEL_COMMAND",id,"skeleton_handle",c.skeleton_id);
+        U64("MODEL_COMMAND",id,"source_frame",c.source_frame);U64("MODEL_COMMAND",id,"source_age_frames",c.identity_measured?uint32_t(current_frame-c.source_frame):0);
+        Text("MODEL_COMMAND",id,"source_age_valid",c.identity_measured?"1":"0");Text("MODEL_COMMAND",id,"pose_id",c.mesh->skinned?(c.pose_hash_valid?pose:"NOT_MEASURED"):"NOT_APPLICABLE");
+        U64("MODEL_COMMAND",id,"vertex_prefix",c.vertex_count);U64("MODEL_COMMAND",id,"first_index",c.first);U64("MODEL_COMMAND",id,"index_count",c.count);
+        Text("MODEL_COMMAND",id,"lod_range_source","VISUAL_RENDER_ARGUMENTS; SWI_INDEX_NOT_EXPOSED");
+        Text("MODEL_COMMAND",id,"bounds_method",c.mesh->skinned?"UNION_OF_TRANSFORMED_PER_BONE_SOURCE_AABBS":"TRANSFORMED_SOURCE_AABB");
+        Text("MODEL_COMMAND",id,"bounds_valid",c.bounds_known && c.bounds.valid?"1":"0");
+        Text("MODEL_COMMAND",id,"bounds_unknown_reason",c.bounds_known?"NOT_APPLICABLE":c.mesh->two_weights && c.mesh->outside_weights && c.skin_mode==KICH_R4_SKIN_SOFTWARE?"RAW_2W_EXTRAPOLATION":"MISSING_OR_NONAFFINE_BOUNDS");
+        Text("MODEL_COMMAND",id,"unknown_bounds_policy","CONSERVATIVE_NO_CULL");Vector("MODEL_COMMAND",id,"world",c.world.m,16);Vector("MODEL_COMMAND",id,"projection_view",c.vp.m,16);
+        if(c.bounds_known){Vector("MODEL_COMMAND",id,"bounds_min",c.bounds.min,3);Vector("MODEL_COMMAND",id,"bounds_max",c.bounds.max,3);}
+        Text("MODEL_COMMAND",id,"candidate_source","CAMERA_OR_SELECTED_SHADOW_SPATIAL_UNION; PER_OBJECT_QUERY_MASK_NOT_RETAINED");
+        Text("MODEL_COMMAND",id,"sectors_portals_hom","NOT_USED_BY_NATIVE_MODEL_SELECTOR; FRUSTUM_ONLY");
+        if(c.mesh->skinned && c.pose_hash_valid){Text("MODEL_POSE",pose,"version_source","FNV64_OF_COPIED_MATRIX_BYTES; NOT_ENGINE_ANIMATION_GENERATION");U64("MODEL_POSE",pose,"source_frame",c.source_frame);
+            U64("MODEL_POSE",pose,"skeleton_process_handle",c.skeleton_id);U64("MODEL_POSE",pose,"matrix_count",c.bones.size());U64("MODEL_POSE",pose,"logical_bytes",c.bones.size()*64);
+            Text("MODEL_POSE",pose,"weight_mode",c.mesh->two_weights?(c.skin_mode==KICH_R4_SKIN_HARDWARE?"2W_CLAMP_U8":"2W_RAW"):"1W");
+            Text("MODEL_POSE",pose,"upload_reuse_policy","ONE_BUFFER_UPLOAD_PER_CAPTURE_COMMAND; REUSED_ACROSS_PASSES; NOT_DEDUPLICATED_ACROSS_PARTS");}
+        const kich_r4_scene::Matrix normal=kich_r4_lighting::NormalMatrix(c.world);Vector("NORMAL_MAPPING",id,"normal_matrix",normal.m,16);
+        const float* w=c.world.m;const float determinant=w[0]*(w[5]*w[10]-w[6]*w[9])-w[1]*(w[4]*w[10]-w[6]*w[8])+w[2]*(w[4]*w[9]-w[5]*w[8]);
+        const float scale2[]={w[0]*w[0]+w[1]*w[1]+w[2]*w[2],w[4]*w[4]+w[5]*w[5]+w[6]*w[6],w[8]*w[8]+w[9]*w[9]+w[10]*w[10]};
+        Float("NORMAL_MAPPING",id,"world_determinant3x3",determinant);U64("NORMAL_MAPPING",id,"negative_orientation",determinant<0?1:0);Vector("NORMAL_MAPPING",id,"world_axis_length_squared",scale2,3);
+        const float largest=std::max(scale2[0],std::max(scale2[1],scale2[2])),smallest=std::min(scale2[0],std::min(scale2[1],scale2[2]));
+        U64("NORMAL_MAPPING",id,"nonuniform_axis_scale",largest-smallest>1.e-5f*std::max(1.f,largest)?1:0);
+        kich_r4_scene::Matrix inverse;Text("NORMAL_MAPPING",id,"normal_matrix_source",kich_r4_lighting::Inverse(c.world,inverse)?"WORLD_INVERSE_TRANSPOSE":"IDENTITY_FALLBACK_NONINVERTIBLE_WORLD");
+        Text("NORMAL_MAPPING",id,"geometry_layout","POSITION_FLOAT3; UV_FLOAT2; WEIGHT_FLOAT; BONE_UINT16X2; NORMAL_UNORM10X3");U64("NORMAL_MAPPING",id,"vertex_stride",sizeof(kich_r4_capture::SourceVertex));
+        Text("NORMAL_MAPPING",id,"tangent_basis","NOT_RETAINED_IN_NATIVE_MODEL_LAYOUT");Text("NORMAL_MAPPING",id,"texture_normal_branch","NOT_SUPPORTED_BY_NATIVE_DIFFUSE_MODEL_SHADERS");
+        Text("NORMAL_MAPPING",id,"normal_transform","BONE_DIRECTION_BLEND_THEN_WORLD_INVERSE_TRANSPOSE; WORLD_SPACE");Text("NORMAL_MAPPING",id,"pixel_contribution","NOT_MEASURED");
+        const size_t checked=std::min(size_t(128),c.mesh->vertices.size());size_t zero=0;for(size_t i=0;i<checked;++i)if(!c.mesh->vertices[i].normal)++zero;
+        U64("NORMAL_MAPPING",id,"normal_sample_vertices",checked);U64("NORMAL_MAPPING",id,"zero_packed_normal_samples",zero);Text("NORMAL_MAPPING",id,"normal_check_scope",checked==c.mesh->vertices.size()?"ALL_SOURCE_VERTICES":"FIRST_128_SOURCE_VERTICES");
+    }
     static void Snapshot(const Command& c,uint32_t pass_mask){
         const char* semantic=c.layer?"HUD_MODEL":"DYNAMIC_MODEL";
         RenderSnapshot_Context(semantic,c.resource.empty()?"UNKNOWN":c.resource.c_str(),c.shader.empty()?"UNKNOWN":c.shader.c_str());
@@ -140,9 +193,9 @@ struct KichR4ModelSession {
     void BeginPhase(const char* phase){phase_active=true;phase_candidates=phase_culled=phase_selected=phase_draws=0;
         snprintf(phase_section,sizeof(phase_section),"MODEL_PASS %s",phase?phase:"unspecified");}
     void EndPhase(){if(!phase_active)return;
-        if(g_render_snapshot_active){RenderSnapshot_Value(phase_section,"candidate_observations",static_cast<double>(phase_candidates));
-            RenderSnapshot_Value(phase_section,"culled_observations",static_cast<double>(phase_culled));
-            RenderSnapshot_Value(phase_section,"selected_observations",static_cast<double>(phase_selected));RenderSnapshot_Value(phase_section,"draw_calls",phase_draws);}
+        if(g_render_snapshot_active){RenderSnapshot_U64(phase_section,"candidate_observations",phase_candidates);
+            RenderSnapshot_U64(phase_section,"culled_observations",phase_culled);
+            RenderSnapshot_U64(phase_section,"selected_observations",phase_selected);RenderSnapshot_U64(phase_section,"draw_calls",phase_draws);}
         phase_active=false;}
     int32_t Draw(KichR4FrameSession& s,KichR4LevelSession& l,KichR4Handle cb,const kich_r4_lighting::Constants& base,
                  const kich_r4_capture::Batch& batch,Pass pass,uint32_t pass_mask,const char* phase,const KichR4Handle* maps=NULL,KichR4Handle scene_color=0,uint32_t only_index=UINT32_MAX){
@@ -182,18 +235,31 @@ struct KichR4ModelSession {
             if(pass==Distortion)d.surface.textures[1]=scene_color;
             d.pose_buffer=command_poses[index];if(l.Expect(s,"G3b native model DrawIndexed",api.draw(s.device,&d))<0)return s.failure;
             ++draw_calls[pass];++phase_draws;
+            if(g_render_snapshot_active && index<command_uses.size()){++command_uses[index];if(c.mesh->skinned)++pose_uses;
+                char id[96];snprintf(id,sizeof(id),"frame_%u_command_%u",frame,static_cast<unsigned>(index));kich_r4_telemetry::U64("MODEL_COMMAND",id,"successful_pass_uses",command_uses[index]);
+                if(c.mesh->skinned && c.identity_measured && c.skeleton_id && c.pose_hash_valid)try{char pose_id[128];PoseID(c,pose_id,sizeof(pose_id));const uint64_t uses=++pose_use_counts[pose_id];kich_r4_telemetry::U64("MODEL_POSE",pose_id,"successful_draw_uses",uses);}
+                    catch(...){model_telemetry_complete=false;RenderSnapshot_Text("TELEMETRY_LOSS","pose_use_counts","ALLOCATION_FAILED");}}
         }
         return 0;
     }
     void SnapshotSummary()const{if(!g_render_snapshot_active)return;
         RenderSnapshot_Text("MODEL_RENDERER","path","NATIVE_DX11_GPU_SKINNING");RenderSnapshot_Text("MODEL_RENDERER","selection_scope","PER_PASS_CONSERVATIVE_BOUNDS; NOT_VISIBLE_PIXELS");
-        RenderSnapshot_Value("MODEL_RENDERER","commands",commands);RenderSnapshot_Value("MODEL_RENDERER","unique_cached_meshes",meshes.size());
-        RenderSnapshot_Value("MODEL_RENDERER","mesh_uploads",mesh_uploads);RenderSnapshot_Value("MODEL_RENDERER","pose_uploads",pose_uploads);
-        RenderSnapshot_Value("MODEL_RENDERER","gpu_vertex_bytes",static_cast<double>(vertex_bytes));RenderSnapshot_Value("MODEL_RENDERER","gpu_index_bytes",static_cast<double>(index_bytes));
-        RenderSnapshot_Value("MODEL_RENDERER","pose_logical_bytes",static_cast<double>(pose_logical_bytes));RenderSnapshot_Value("MODEL_RENDERER","pose_budget_bytes",KICH_R4_MODEL_POSE_BUDGET_BYTES);
-        RenderSnapshot_Value("MODEL_RENDERER","pose_upload_bytes",static_cast<double>(pose_upload_bytes));RenderSnapshot_Value("MODEL_RENDERER","pose_allocated_bytes",static_cast<double>((poses.size()+(rigid_pose?1:0))*sizeof(KichR4ModelPose)));
-        RenderSnapshot_Value("MODEL_RENDERER","cpu_expanded_model_vertex_bytes",0);RenderSnapshot_Value("MODEL_RENDERER","cpu_expanded_model_index_bytes",0);
-        uint64_t draws=0;for(unsigned i=0;i<PassCount;++i)draws+=draw_calls[i];RenderSnapshot_Value("MODEL_RENDERER","draw_calls",static_cast<double>(draws));
+        RenderSnapshot_U64("MODEL_RENDERER","commands",commands);RenderSnapshot_U64("MODEL_RENDERER","unique_cached_meshes",meshes.size());
+        RenderSnapshot_U64("MODEL_RENDERER","mesh_uploads",mesh_uploads);RenderSnapshot_U64("MODEL_RENDERER","pose_uploads",pose_uploads);
+        RenderSnapshot_U64("MODEL_RENDERER","gpu_vertex_bytes",vertex_bytes);RenderSnapshot_U64("MODEL_RENDERER","gpu_index_bytes",index_bytes);
+        RenderSnapshot_U64("MODEL_RENDERER","pose_logical_bytes",pose_logical_bytes);RenderSnapshot_U64("MODEL_RENDERER","pose_budget_bytes",KICH_R4_MODEL_POSE_BUDGET_BYTES);
+        RenderSnapshot_U64("MODEL_RENDERER","pose_upload_bytes",pose_upload_bytes);RenderSnapshot_U64("MODEL_RENDERER","pose_allocated_bytes",(poses.size()+(rigid_pose?1:0))*sizeof(KichR4ModelPose));
+        RenderSnapshot_U64("MODEL_RENDERER","cpu_expanded_model_vertex_bytes",0);RenderSnapshot_U64("MODEL_RENDERER","cpu_expanded_model_index_bytes",0);
+        uint64_t draws=0;for(unsigned i=0;i<PassCount;++i)draws+=draw_calls[i];RenderSnapshot_U64("MODEL_RENDERER","draw_calls",draws);
+        RenderSnapshot_U64("MODEL_RENDERER","identity_counts_complete",model_telemetry_complete?1:0);
+        RenderSnapshot_U64("MODEL_RENDERER","unique_skeleton_instances",unique_skeletons);RenderSnapshot_U64("MODEL_RENDERER","unique_visual_parts",unique_parts);if(RenderSnapshot_Detailed())RenderSnapshot_U64("MODEL_RENDERER","unique_pose_contents",unique_poses);else RenderSnapshot_Text("MODEL_RENDERER","unique_pose_contents","NOT_MEASURED_COUNTERS_ONLY");
+        RenderSnapshot_U64("MODEL_RENDERER","unknown_skeleton_identity_commands",unknown_skeleton_commands);RenderSnapshot_Text("MODEL_RENDERER","npc_count","NOT_MEASURED");
+        if(RenderSnapshot_Detailed()){RenderSnapshot_U64("MODEL_RENDERER","duplicate_pose_uploads",repeated_pose_uploads);RenderSnapshot_U64("MODEL_RENDERER","max_uploads_per_pose",max_pose_upload_multiplicity);}
+        else{RenderSnapshot_Text("MODEL_RENDERER","duplicate_pose_uploads","NOT_MEASURED_COUNTERS_ONLY");RenderSnapshot_Text("MODEL_RENDERER","max_uploads_per_pose","NOT_MEASURED_COUNTERS_ONLY");}RenderSnapshot_U64("MODEL_RENDERER","pose_pass_uses",pose_uses);
+        RenderSnapshot_U64("MODEL_RENDERER","pose_capacity_peak_session_bytes",peak_pose_bytes);RenderSnapshot_U64("MODEL_RENDERER","capture_group_id",group_id);
+        if(group_id)RenderSnapshot_U64("MODEL_RENDERER","pose_capacity_peak_group_bytes",group_peak_pose_bytes);else RenderSnapshot_Text("MODEL_RENDERER","pose_capacity_peak_group_bytes","NOT_APPLICABLE");
+        RenderSnapshot_Text("MODEL_RENDERER","reuse_not_performed_reason","SEPARATE_CAPTURE_COMMAND_PALETTES; CROSS_PART_DEDUP_NOT_IMPLEMENTED");
+        RenderSnapshot_Text("MODEL_RENDERER","identity_scope","ACTUAL_CKINEMATICS_PARENT_POINTER_WITHIN_FRAME; NOT_NPC_COUNT");
         RenderSnapshot_Text("MODEL_RENDERER","gpu_model_ms","NOT_INSTRUMENTED");
     }
 };

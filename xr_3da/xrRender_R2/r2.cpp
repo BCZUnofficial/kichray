@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "../RenderSnapshotMaterial.h"
 #include "r2.h"
 #include "..\fbasicvisual.h"
 #include "..\xr_object.h"
@@ -804,6 +805,7 @@ HRESULT CRender::shader_compile(LPCSTR name, LPCSTR pSrcData, UINT SrcDataLen, v
 	LPD3DXBUFFER* ppErrorMsgs = (LPD3DXBUFFER*)_ppErrorMsgs;
 	LPD3DXCONSTANTTABLE* ppConstantTable = (LPD3DXCONSTANTTABLE*)_ppConstantTable;
 
+	RenderSnapshot_ShaderIncludesBegin();
 #ifdef D3DXSHADER_USE_LEGACY_D3DX9_31_DLL //	December 2006 and later
 	HRESULT _result =
 		D3DXCompileShader(pSrcData, SrcDataLen, defines, pInclude, pFunctionName, pTarget,
@@ -812,6 +814,13 @@ HRESULT CRender::shader_compile(LPCSTR name, LPCSTR pSrcData, UINT SrcDataLen, v
 	HRESULT _result = D3DXCompileShader(pSrcData, SrcDataLen, defines, pInclude, pFunctionName, pTarget, Flags,
 										ppShader, ppErrorMsgs, ppConstantTable);
 #endif
+	if (SUCCEEDED(_result) && ppShader && *ppShader) {
+		const char* names[128]; const char* values[128];
+		const u32 count = u32(def_it > 0 ? def_it - 1 : 0);
+		for (u32 i = 0; i < count && i < 128; ++i) { names[i] = defines[i].Name; values[i] = defines[i].Definition; }
+		RenderSnapshot_RegisterShaderVariant(name, pTarget, pSrcData, SrcDataLen, (*ppShader)->GetBufferPointer(),
+			(*ppShader)->GetBufferSize(), names, values, count);
+	}
 	if (SUCCEEDED(_result) && o.disasm)
 	{
 		ID3DXBuffer* code = *((LPD3DXBUFFER*)_ppShader);

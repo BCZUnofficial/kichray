@@ -8,6 +8,7 @@ class CUIInventoryCellItem : public CUICellItem
 
   public:
 	CUIInventoryCellItem(CInventoryItem* itm);
+	virtual void Draw();
 	virtual bool EqualTo(CUICellItem* itm);
 	CInventoryItem* object()
 	{

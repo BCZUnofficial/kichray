@@ -17,11 +17,15 @@ void KichR4_CaptureLightIdentity(const void* id,const KichR4LightIdentity& sourc
     if(!capture || !id)return;
     try{if(capture->light_sources.size()<4096 || capture->light_sources.find(id)!=capture->light_sources.end())capture->light_sources[id]=source;}catch(...){}
 }
-void KichR4_CaptureLightForget(const void* id){if(!capture)return;capture->lights.erase(id);capture->light_sources.erase(id);capture->unshadowed_lights.erase(id);}
+void KichR4_CaptureLightForget(const void* id){if(!capture)return;capture->lights.erase(id);capture->light_sources.erase(id);capture->unshadowed_lights.erase(id);capture->light_observations.erase(id);}
 void KichR4_CaptureLightShadow(const void* id,bool shadow){if(!capture)return;if(shadow)capture->unshadowed_lights.erase(id);else capture->unshadowed_lights.insert(id);}
 void KichR4_CaptureLighting(const float* camera,KichR4LightingFrame& frame){
     frame.count=0;if(!capture || !camera)return;
     try{capture->SelectLights(camera,frame);}catch(...){frame.count=0;}
+}
+void KichR4_CaptureLightingDiagnostics(const float* camera,const KichR4LightingFrame& frame){
+    if(!g_render_snapshot_active || !capture)return;
+    try{capture->SnapshotLights(camera,frame);}catch(...){RenderSnapshot_Text("TELEMETRY_LOSS","light_registry","ALLOCATION_FAILED");}
 }
 const kich_r4_capture::Batch* KichR4_CapturedFrame(){return capture?&capture->frame:NULL;}
 void KichR4_CaptureEnable(bool enabled,void (*log)(const char*)){if(enabled){if(!capture)try{capture=new kich_r4_capture::State();}catch(...) {}if(capture)capture->log=log;}
@@ -62,7 +66,7 @@ void KichR4_CaptureSubmitModel(const kich_r4_capture::ModelInput& input){GuardCa
         const uint32_t bit=1u<<input.skin_mode;if(!(mesh.diagnostic_modes&bit)){mesh.diagnostic_modes|=bit;
             c.Diagnostic("2W skin path: model="+found->second.name+"; mode="+(input.skin_mode==KICH_R4_SKIN_HARDWARE?"hardware clamp/u8":"software raw")+"; "+mesh.first_weight_detail);}}
     try{if(c.native_models)c.frame.NativeModel(input.visual,found->second.mesh,world,vp,bones,input.bone_count,input.count,input.first,input.triangles,input.style,input.skin_mode,
-            found->second.name.c_str(),input.shader,input.texture,input.secondary,input.effect,input.shader_element,input.shader_pass);
+            found->second.name.c_str(),input.shader,input.texture,input.secondary,input.effect,input.shader_element,input.shader_pass,input.skeleton);
         else c.frame.Model(input.visual,mesh,world,vp,bones,input.bone_count,input.count,input.first,input.triangles,input.style,input.skin_mode,found->second.name.c_str(),g_render_snapshot_active);}
     catch(const std::exception& e){c.frame.Fail(ModelError(found->second,e.what()).c_str());}
 });}
@@ -93,7 +97,7 @@ void KichR4_CaptureSubmitUI(const kich_r4_capture::UIInput& input) {
             Check(uint64_t(first)+required<=UINT32_MAX/2,"HUD index offset overflow");}
         for(uint32_t i=0;i<required;++i){uint32_t at=i;if(indexed){uint16_t value;memcpy(&value,indices->Read((first+i)*2,2),2);Check(value>=start,"HUD min vertex index");at=value-start;}
             Check(at<count,"HUD vertex index range");order.push_back(at);}
-        const uint32_t vertex_base=static_cast<uint32_t>(frame.vertices.size());Command cmd={static_cast<uint32_t>(frame.indices.size()),0,2,texture,style};
+        const uint32_t vertex_base=static_cast<uint32_t>(frame.vertices.size());Command cmd={static_cast<uint32_t>(frame.indices.size()),0,2,texture,style};cmd.semantic=CAPTURE_UI;
         if(topology>=4){frame.vertices.insert(frame.vertices.end(),data.begin(),data.end());
             for(uint32_t i=0;i<primitives;++i){uint32_t a,b,d;
                 if(topology==4){a=order[i*3];b=order[i*3+1];d=order[i*3+2];}
@@ -107,7 +111,7 @@ void KichR4_CaptureSubmitUI(const kich_r4_capture::UIInput& input) {
                 for(unsigned j=0;j<4;++j){const float sign=(j&1)?-1.f:1.f;line[j].p[0]+=sign*ox*line[j].p[3];line[j].p[1]+=sign*oy*line[j].p[3];}
                 const uint32_t at=static_cast<uint32_t>(frame.vertices.size());frame.vertices.insert(frame.vertices.end(),line,line+4);
                 const uint32_t ix[]={0,1,2,2,1,3};for(unsigned j=0;j<6;++j)frame.indices.push_back(at+ix[j]);}}
-        cmd.count=static_cast<uint32_t>(frame.indices.size())-cmd.first;if(cmd.count){
+        cmd.count=static_cast<uint32_t>(frame.indices.size())-cmd.first;cmd.captured_vertices=static_cast<uint32_t>(frame.vertices.size())-vertex_base;if(cmd.count){
             SnapshotCommand(cmd,frame.vertices,frame.indices,"UI_GEOMETRY",NULL,0,uv!=UINT32_MAX);
             frame.commands.push_back(cmd);++frame.ui;}
     });

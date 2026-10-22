@@ -58,7 +58,7 @@ def unit(old):
         bodies.extend(method(content, name) for name in names)
     # Snapshot internals have their own production tests. This seam isolates
     # and compares device/GPU ownership traces with capture disabled.
-    return '#include "fake_engine.h"\ninline void RenderSnapshot_EngineBegin(){}\ninline void RenderSnapshot_EngineEnd(){}\n' + ("" if old else '#include "'+str(ROOT/'xr_3da/KichRenderDevice_DX9.cpp')+'"\n') + "\n\n".join(bodies)
+    return '#include "fake_engine.h"\ninline void RenderSnapshot_EngineBegin(){}\ninline void RenderSnapshot_EngineEnd(){}\ninline void RenderSnapshot_EngineDeviceEvent(const char*){}\ninline void RenderSnapshot_Abort(const char*){}\n' + ("" if old else '#include "'+str(ROOT/'xr_3da/KichRenderDevice_DX9.cpp')+'"\n') + "\n\n".join(bodies)
 
 
 def main():

@@ -117,6 +117,9 @@ class CMapLocation : public IPureDestroyableObject
 		--m_refCount;
 		return m_refCount;
 	}
+    // Read-only telemetry accessors: do not refresh map/ALife state during Draw.
+    LPCSTR SnapshotCachedLevelName() const {return m_cached.m_LevelName.c_str();}
+    u32 SnapshotCachedFrame() const {return m_cached.m_updatedFrame;}
 	u16 ObjectID()
 	{
 		return m_objectID;

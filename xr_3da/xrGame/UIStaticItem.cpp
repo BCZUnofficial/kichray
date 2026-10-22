@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ui/RenderSnapshotUI.h"
 #include "../KichR4Native.h"
 #include "uistaticitem.h"
 #include "hudmanager.h"
@@ -68,6 +69,15 @@ void CUIStaticItem::Render()
 	// установить обязательно перед вызовом CustomItem::Render() !!!
 	VERIFY(hShader);
 	RCache.set_Shader(hShader);
+    if(RenderSnapshot_Detailed()){
+        RenderSnapshotProvenance provenance;RenderSnapshot_GetProvenance(&provenance);
+        char fallback[64];snapshot_ui::Handle(this,fallback,sizeof(fallback));const char* id=provenance.ui_widget[0]?provenance.ui_widget:fallback;
+        CTexture* texture=RCache.get_ActiveTexture(0);RenderSnapshot_Record("UI",id,"atlas",texture?texture->cName.c_str():"NOT_AVAILABLE");
+        snapshot_ui::Rect(id,"atlas_region_texels",GetOriginalRect());snapshot_ui::Rect(id,"visible_rect_ui_units",iVisRect);
+        RenderSnapshot_RecordU64("UI",id,"vertex_color_argb",dwColor);RenderSnapshot_RecordI64("UI",id,"alpha_reference_override",alpha_ref);
+        snapshot_ui::Number(id,"scale_x",UI()->ClientToScreenScaledX(1.0f));snapshot_ui::Number(id,"scale_y",UI()->ClientToScreenScaledY(1.0f));
+        RenderSnapshot_Record("UI",id,"glyph_text","OMITTED_BY_POLICY");
+    }
 	if (alpha_ref != -1)
 		if(KichR4_NativeActive())KichR4_NativeSetState(D3DRS_ALPHAREF,alpha_ref);else CHK_DX(HW.pDevice->SetRenderState(D3DRS_ALPHAREF, alpha_ref));
 	// convert&set pos
@@ -119,6 +129,15 @@ void CUIStaticItem::Render(float angle)
 	// установить обязательно перед вызовом CustomItem::Render() !!!
 	VERIFY(hShader);
 	RCache.set_Shader(hShader);
+    if(RenderSnapshot_Detailed()){
+        RenderSnapshotProvenance provenance;RenderSnapshot_GetProvenance(&provenance);
+        char fallback[64];snapshot_ui::Handle(this,fallback,sizeof(fallback));const char* id=provenance.ui_widget[0]?provenance.ui_widget:fallback;
+        CTexture* texture=RCache.get_ActiveTexture(0);RenderSnapshot_Record("UI",id,"atlas",texture?texture->cName.c_str():"NOT_AVAILABLE");
+        snapshot_ui::Rect(id,"atlas_region_texels",GetOriginalRect());snapshot_ui::Rect(id,"visible_rect_ui_units",iVisRect);
+        RenderSnapshot_RecordU64("UI",id,"vertex_color_argb",dwColor);RenderSnapshot_RecordI64("UI",id,"alpha_reference_override",alpha_ref);
+        snapshot_ui::Number(id,"scale_x",UI()->ClientToScreenScaledX(1.0f));snapshot_ui::Number(id,"scale_y",UI()->ClientToScreenScaledY(1.0f));
+        RenderSnapshot_Record("UI",id,"glyph_text","OMITTED_BY_POLICY");
+    }
 	if (alpha_ref != -1)
 		if(KichR4_NativeActive())KichR4_NativeSetState(D3DRS_ALPHAREF,alpha_ref);else CHK_DX(HW.pDevice->SetRenderState(D3DRS_ALPHAREF, alpha_ref));
 	// convert&set pos

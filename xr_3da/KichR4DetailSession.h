@@ -27,41 +27,51 @@ struct KichR4DetailSession {
     void SnapshotSummary(uint32_t frame,bool scene)const{
         if(!g_render_snapshot_active)return;
         try{
-        const bool current=scene && source && source->engine_frame==frame;
+        const bool current=scene && source && source->source_frame_known && source->engine_frame==frame;
         const bool attempted=scene && telemetry_frame==frame;
         const char* status=!scene?"SCENE_NOT_SUBMITTED":!source?"UNAVAILABLE":!current?"UNPREPARED_FOR_FRAME":source->instances.empty()?(source->shadow_instances.empty()?"CURRENT_EMPTY":"CURRENT_SHADOW_ONLY"):attempted && uploaded_frame==frame?"CURRENT_UPLOADED":"CURRENT_NOT_UPLOADED";
         RenderSnapshot_Text("DETAIL_RENDERER","status",status);RenderSnapshot_Text("DETAIL_RENDERER","path","NATIVE_DX11");
         RenderSnapshot_Text("DETAIL_RENDERER","instance_scope","CAMERA_SELECTED_LIST; NOT_VISIBLE_PIXELS");
         RenderSnapshot_Text("DETAIL_RENDERER","shadow_selection","PER_SHADOW_FRUSTUM; READY_CACHE_WITHIN_DETAIL_RADIUS; WIND_EXPANDED_BOUNDS");
-        RenderSnapshot_Value("DETAIL_RENDERER","shadow_source_instances",current?source->shadow_instances.size():0);
-        RenderSnapshot_Value("DETAIL_RENDERER","visible_instances",current?source->instances.size():0);
-        RenderSnapshot_Value("DETAIL_RENDERER","still_instances",current?source->variants[0]:0);RenderSnapshot_Value("DETAIL_RENDERER","wind1_instances",current?source->variants[1]:0);RenderSnapshot_Value("DETAIL_RENDERER","wind2_instances",current?source->variants[2]:0);
-        RenderSnapshot_Value("DETAIL_RENDERER","loaded_meshes",source?source->meshes.size():0);RenderSnapshot_Value("DETAIL_RENDERER","unique_meshes",source?source->meshes.size():0);
-        size_t active=0;if(current){std::vector<bool> seen(source->meshes.size(),false);for(size_t i=0;i<source->groups.size();++i){const kich_r4_detail::Group& g=source->groups[i];if(g.count && g.mesh<seen.size() && !seen[g.mesh]){seen[g.mesh]=true;++active;}}}
-        RenderSnapshot_Value("DETAIL_RENDERER","active_meshes",active);RenderSnapshot_Value("DETAIL_RENDERER","groups",current?source->groups.size():0);
+        const bool source_frame_known=source && source->source_frame_known;
+        RenderSnapshot_U64("DETAIL_RENDERER","source_frame_valid",source_frame_known?1:0);
+        if(source_frame_known){RenderSnapshot_U64("DETAIL_RENDERER","source_engine_frame",source->engine_frame);
+            if(frame>=source->engine_frame)RenderSnapshot_U64("DETAIL_RENDERER","source_age_engine_frames",uint64_t(frame)-source->engine_frame);
+            else RenderSnapshot_Text("DETAIL_RENDERER","source_age_engine_frames","FRAME_COUNTER_WRAP_OR_RESET");}
+        else{RenderSnapshot_Text("DETAIL_RENDERER","source_engine_frame","NOT_AVAILABLE");RenderSnapshot_Text("DETAIL_RENDERER","source_age_engine_frames","NOT_AVAILABLE");}
+        if(source)RenderSnapshot_U64("DETAIL_RENDERER","source_generation",source->generation);
+        RenderSnapshot_Text("DETAIL_RENDERER","visibility_pixels","NOT_MEASURED");
+        RenderSnapshot_Text("DETAIL_RENDERER","source_bound_method","DECODED_LOCAL_MESH_AABB; INSTANCE_TRANSFORM; WIND_ENVELOPE");
+        RenderSnapshot_Text("DETAIL_RENDERER","shadow_portal_hom","NOT_USED; READY_CACHE_AND_FRUSTUM_ONLY");
+        RenderSnapshot_U64("DETAIL_RENDERER","shadow_source_instances",current?source->shadow_instances.size():0);
+        RenderSnapshot_U64("DETAIL_RENDERER","visible_instances",current?source->instances.size():0);
+        RenderSnapshot_U64("DETAIL_RENDERER","still_instances",current?source->variants[0]:0);RenderSnapshot_U64("DETAIL_RENDERER","wind1_instances",current?source->variants[1]:0);RenderSnapshot_U64("DETAIL_RENDERER","wind2_instances",current?source->variants[2]:0);
+        RenderSnapshot_U64("DETAIL_RENDERER","loaded_meshes",source?source->meshes.size():0);RenderSnapshot_U64("DETAIL_RENDERER","unique_meshes",source?source->meshes.size():0);
+        size_t active=0;if(current && RenderSnapshot_Detailed()){std::vector<bool> seen(source->meshes.size(),false);for(size_t i=0;i<source->groups.size();++i){const kich_r4_detail::Group& g=source->groups[i];if(g.count && g.mesh<seen.size() && !seen[g.mesh]){seen[g.mesh]=true;++active;}}}
+        if(RenderSnapshot_Detailed())RenderSnapshot_U64("DETAIL_RENDERER","active_meshes",active);else RenderSnapshot_Text("DETAIL_RENDERER","active_meshes","NOT_MEASURED_COUNTER_MODE");RenderSnapshot_U64("DETAIL_RENDERER","groups",current?source->groups.size():0);
         const bool mesh_memory_known=!source || generation==source->generation || (!vertex_bytes && !index_bytes);
         RenderSnapshot_Text("DETAIL_RENDERER","mesh_memory_status",mesh_memory_known?"TRACKED_ALLOCATION":"GENERATION_UPLOAD_INCOMPLETE");
-        if(mesh_memory_known){RenderSnapshot_Value("DETAIL_RENDERER","gpu_vertex_bytes",static_cast<double>(vertex_bytes));RenderSnapshot_Value("DETAIL_RENDERER","gpu_index_bytes",static_cast<double>(index_bytes));}
+        if(mesh_memory_known){RenderSnapshot_U64("DETAIL_RENDERER","gpu_vertex_bytes",vertex_bytes);RenderSnapshot_U64("DETAIL_RENDERER","gpu_index_bytes",index_bytes);}
         else{RenderSnapshot_Text("DETAIL_RENDERER","gpu_vertex_bytes","NOT_AVAILABLE");RenderSnapshot_Text("DETAIL_RENDERER","gpu_index_bytes","NOT_AVAILABLE");}
-        RenderSnapshot_Value("DETAIL_RENDERER","instance_capacity",capacity);RenderSnapshot_Value("DETAIL_RENDERER","instance_allocated_bytes",uint64_t(capacity)*sizeof(KichR4DetailInstance));
-        RenderSnapshot_Value("DETAIL_RENDERER","instance_upload_bytes",attempted?uint64_t(uploaded_instances)*sizeof(KichR4DetailInstance):0);
-        RenderSnapshot_Value("DETAIL_RENDERER","shadow_instance_capacity",shadow_capacity);RenderSnapshot_Value("DETAIL_RENDERER","shadow_instance_allocated_bytes",uint64_t(shadow_capacity)*sizeof(KichR4DetailInstance));
-        RenderSnapshot_Value("DETAIL_RENDERER","shadow_instance_upload_bytes",attempted?static_cast<double>(shadow_upload_bytes):0);
-        RenderSnapshot_Value("DETAIL_RENDERER","shadow_candidate_observations",attempted?static_cast<double>(shadow_candidates):0);RenderSnapshot_Value("DETAIL_RENDERER","shadow_culled_observations",attempted?static_cast<double>(shadow_culled):0);
-        RenderSnapshot_Value("DETAIL_RENDERER","instanced_draw_calls",attempted?draw_calls:0);RenderSnapshot_Value("DETAIL_RENDERER","shadow_draw_calls",attempted?shadow_draw_calls:0);
-        RenderSnapshot_Value("DETAIL_RENDERER","geometry_submitted_instances",attempted?static_cast<double>(submitted_instances):0);RenderSnapshot_Value("DETAIL_RENDERER","shadow_submitted_instances",attempted?static_cast<double>(shadow_submitted_instances):0);
-        RenderSnapshot_Value("DETAIL_RENDERER","legacy_capture_vertices",source && source->engine_frame==frame?static_cast<double>(source->legacy_vertices):0);RenderSnapshot_Value("DETAIL_RENDERER","legacy_capture_indices",source && source->engine_frame==frame?static_cast<double>(source->legacy_indices):0);RenderSnapshot_Value("DETAIL_RENDERER","legacy_detail_draws",source && source->engine_frame==frame?source->legacy_draws:0);
+        RenderSnapshot_U64("DETAIL_RENDERER","instance_capacity",capacity);RenderSnapshot_U64("DETAIL_RENDERER","instance_allocated_bytes",uint64_t(capacity)*sizeof(KichR4DetailInstance));
+        RenderSnapshot_U64("DETAIL_RENDERER","instance_upload_bytes",attempted?uint64_t(uploaded_instances)*sizeof(KichR4DetailInstance):0);
+        RenderSnapshot_U64("DETAIL_RENDERER","shadow_instance_capacity",shadow_capacity);RenderSnapshot_U64("DETAIL_RENDERER","shadow_instance_allocated_bytes",uint64_t(shadow_capacity)*sizeof(KichR4DetailInstance));
+        RenderSnapshot_U64("DETAIL_RENDERER","shadow_instance_upload_bytes",attempted?shadow_upload_bytes:0);
+        RenderSnapshot_U64("DETAIL_RENDERER","shadow_candidate_observations",attempted?shadow_candidates:0);RenderSnapshot_U64("DETAIL_RENDERER","shadow_culled_observations",attempted?shadow_culled:0);
+        RenderSnapshot_U64("DETAIL_RENDERER","instanced_draw_calls",attempted?draw_calls:0);RenderSnapshot_U64("DETAIL_RENDERER","shadow_draw_calls",attempted?shadow_draw_calls:0);
+        RenderSnapshot_U64("DETAIL_RENDERER","geometry_submitted_instances",attempted?submitted_instances:0);RenderSnapshot_U64("DETAIL_RENDERER","shadow_submitted_instances",attempted?shadow_submitted_instances:0);
+        RenderSnapshot_U64("DETAIL_RENDERER","legacy_capture_vertices",source && source->engine_frame==frame?source->legacy_vertices:0);RenderSnapshot_U64("DETAIL_RENDERER","legacy_capture_indices",source && source->engine_frame==frame?source->legacy_indices:0);RenderSnapshot_U64("DETAIL_RENDERER","legacy_detail_draws",source && source->engine_frame==frame?source->legacy_draws:0);
         RenderSnapshot_Value("DETAIL_RENDERER","cpu_prepare_ms",current?source->prepare_ms:0);RenderSnapshot_Text("DETAIL_RENDERER","gpu_detail_ms","NOT_INSTRUMENTED");
-        RenderSnapshot_Value("MEMORY","detail_cpu_instance_payload_bytes",source?source->instances.size()*sizeof(KichR4DetailInstance):0);
-        RenderSnapshot_Value("MEMORY","detail_cpu_instance_capacity_bytes",source?source->instances.capacity()*sizeof(KichR4DetailInstance):0);
-        RenderSnapshot_Value("MEMORY","detail_cpu_shadow_candidate_payload_bytes",source?source->shadow_instances.size()*sizeof(KichR4DetailInstance):0);
-        RenderSnapshot_Value("MEMORY","detail_cpu_shadow_candidate_capacity_bytes",source?source->shadow_instances.capacity()*sizeof(KichR4DetailInstance):0);
-        RenderSnapshot_Value("MEMORY","detail_cpu_shadow_selected_payload_bytes",selected_instances.size()*sizeof(KichR4DetailInstance));
-        RenderSnapshot_Value("MEMORY","detail_cpu_shadow_selected_capacity_bytes",selected_instances.capacity()*sizeof(KichR4DetailInstance));
+        RenderSnapshot_U64("MEMORY","detail_cpu_instance_payload_bytes",source?source->instances.size()*sizeof(KichR4DetailInstance):0);
+        RenderSnapshot_U64("MEMORY","detail_cpu_instance_capacity_bytes",source?source->instances.capacity()*sizeof(KichR4DetailInstance):0);
+        RenderSnapshot_U64("MEMORY","detail_cpu_shadow_candidate_payload_bytes",source?source->shadow_instances.size()*sizeof(KichR4DetailInstance):0);
+        RenderSnapshot_U64("MEMORY","detail_cpu_shadow_candidate_capacity_bytes",source?source->shadow_instances.capacity()*sizeof(KichR4DetailInstance):0);
+        RenderSnapshot_U64("MEMORY","detail_cpu_shadow_selected_payload_bytes",selected_instances.size()*sizeof(KichR4DetailInstance));
+        RenderSnapshot_U64("MEMORY","detail_cpu_shadow_selected_capacity_bytes",selected_instances.capacity()*sizeof(KichR4DetailInstance));
         uint64_t mesh_payload=0;if(source)for(size_t i=0;i<source->meshes.size();++i){const kich_r4_detail::Mesh& mesh=source->meshes[i];mesh_payload+=mesh.vertices.size()*sizeof(KichR4DetailVertex)+mesh.indices.size()*sizeof(uint16_t);}
-        RenderSnapshot_Value("MEMORY","detail_cpu_mesh_payload_bytes",static_cast<double>(mesh_payload));
-        RenderSnapshot_Value("MEMORY","detail_cpu_group_payload_bytes",source?source->groups.size()*sizeof(kich_r4_detail::Group):0);
-        RenderSnapshot_Value("MEMORY","detail_cpu_shadow_group_payload_bytes",source?source->shadow_groups.size()*sizeof(kich_r4_detail::Group):0);
+        RenderSnapshot_U64("MEMORY","detail_cpu_mesh_payload_bytes",mesh_payload);
+        RenderSnapshot_U64("MEMORY","detail_cpu_group_payload_bytes",source?source->groups.size()*sizeof(kich_r4_detail::Group):0);
+        RenderSnapshot_U64("MEMORY","detail_cpu_shadow_group_payload_bytes",source?source->shadow_groups.size()*sizeof(kich_r4_detail::Group):0);
         RenderSnapshot_Text("MEMORY","detail_cpu_instance_scope","RETAINED_FRONTEND_STORAGE; MAY_BE_FROM_PRIOR_FRAME");
         }catch(...){RenderSnapshot_Text("TELEMETRY_LOSS","r4_detail_summary","ALLOCATION_FAILED; PARTIAL_SUMMARY");}
     }
@@ -133,10 +143,10 @@ struct KichR4DetailSession {
     int32_t Draw(KichR4FrameSession& s,KichR4LevelSession& l,KichR4Handle cb,const kich_r4_lighting::Constants& base,bool shadow,uint32_t frame,const char* phase="unspecified",uint32_t pass_mask=0){
         struct Summary {char section[64];uint32_t calls,allocated_capacity;uint64_t variants[3],candidates,culled,selected,uploaded_bytes;bool enabled,shadow;
             Summary(const char* name,bool is_shadow):calls(0),allocated_capacity(0),candidates(0),culled(0),selected(0),uploaded_bytes(0),enabled(g_render_snapshot_active),shadow(is_shadow){section[0]=0;if(enabled)snprintf(section,sizeof(section),"DETAIL_PASS %s",name);variants[0]=variants[1]=variants[2]=0;}
-            ~Summary(){if(enabled){RenderSnapshot_Value(section,"draw_calls",calls);RenderSnapshot_Value(section,"submitted_instances",static_cast<double>(variants[0]+variants[1]+variants[2]));
-                RenderSnapshot_Text(section,"candidate_scope",shadow?"READY_CACHE_WITHIN_DETAIL_RADIUS":"CAMERA_SELECTED_LIST");RenderSnapshot_Value(section,"instance_capacity",allocated_capacity);RenderSnapshot_Value(section,"instance_allocated_bytes",uint64_t(allocated_capacity)*sizeof(KichR4DetailInstance));
-                RenderSnapshot_Value(section,"candidate_instances",static_cast<double>(candidates));RenderSnapshot_Value(section,"culled_instances",static_cast<double>(culled));RenderSnapshot_Value(section,"selected_instances",static_cast<double>(selected));RenderSnapshot_Value(section,"instance_upload_bytes",static_cast<double>(uploaded_bytes));
-                RenderSnapshot_Value(section,"still_submitted_instances",static_cast<double>(variants[0]));RenderSnapshot_Value(section,"wave1_submitted_instances",static_cast<double>(variants[1]));RenderSnapshot_Value(section,"wave2_submitted_instances",static_cast<double>(variants[2]));}}
+            ~Summary(){if(enabled){RenderSnapshot_U64(section,"draw_calls",calls);RenderSnapshot_U64(section,"submitted_instances",variants[0]+variants[1]+variants[2]);
+                RenderSnapshot_Text(section,"candidate_scope",shadow?"READY_CACHE_WITHIN_DETAIL_RADIUS":"CAMERA_SELECTED_LIST");RenderSnapshot_U64(section,"instance_capacity",allocated_capacity);RenderSnapshot_U64(section,"instance_allocated_bytes",uint64_t(allocated_capacity)*sizeof(KichR4DetailInstance));
+                RenderSnapshot_U64(section,"candidate_instances",candidates);RenderSnapshot_U64(section,"culled_instances",culled);RenderSnapshot_U64(section,"selected_instances",selected);RenderSnapshot_U64(section,"instance_upload_bytes",uploaded_bytes);
+                RenderSnapshot_U64(section,"still_submitted_instances",variants[0]);RenderSnapshot_U64(section,"wave1_submitted_instances",variants[1]);RenderSnapshot_U64(section,"wave2_submitted_instances",variants[2]);}}
         } summary(phase,shadow);
         summary.allocated_capacity=shadow?shadow_capacity:capacity;
         if(!source || source->engine_frame!=frame || generation!=source->generation || telemetry_frame!=frame)return 0;
@@ -157,12 +167,23 @@ struct KichR4DetailSession {
             const size_t count=shadow?selected_instances.size():source->instances.size();
             if(g.mesh>=meshes.size() || g.variant>2 || g.first>count || g.count>count-g.first)return s.Record("G3a detail group range",KICH_R4_E_ARGUMENT);
             const Mesh& mesh=meshes[g.mesh];kich_r4_lighting::Constants c=base;
-            if(g_render_snapshot_active){try{const kich_r4_detail::Mesh& named=source->meshes[g.mesh];
+            if(RenderSnapshot_Detailed()){try{const kich_r4_detail::Mesh& named=source->meshes[g.mesh];
                 const std::string material=MaterialKey(named.shader+"\n"+named.texture+"\ncutout=200/255;two_sided;depth_write");
                 RenderSnapshot_Context("DETAIL",named.name.c_str(),named.shader.c_str());RenderSnapshot_Object("DETAIL",named.name.c_str(),material.c_str(),"LEVEL_DETAILS_INSTANCE_GROUP",0);
                 RenderSnapshot_Queue("R4_DETAIL_INSTANCED");RenderSnapshot_PassMask(pass_mask);RenderSnapshot_DetailVariant(g.variant);
                 float uv[8]={};uint32_t samples=0;for(size_t j=0;j<named.indices.size() && samples<4;++j){const uint16_t index=named.indices[j];if(index<named.vertices.size()){uv[samples*2]=named.vertices[index].misc[0];uv[samples*2+1]=named.vertices[index].misc[1];++samples;}}
                 RenderSnapshot_UV(uv,samples,"DETAIL_INDEXED_MESH_QUANTIZED_BASE_UV");RenderSnapshot_Texture(0,named.texture.c_str());RenderSnapshot_Skin("NONE_INSTANCED_DETAIL");
+                const std::string normal_id="detail/"+named.name;
+                RenderSnapshot_Record("NORMAL_MAPPING",normal_id.c_str(),"geometry_normal_source","VSDetail: NORMALIZE(WORLD_POSITION - INSTANCE_BASE_MINUS_0.75_Y)");
+                RenderSnapshot_Record("NORMAL_MAPPING",normal_id.c_str(),"normal_texture_variant","NOT_SUPPORTED_BY_VSDetail_PSGeometry");
+                RenderSnapshot_Record("NORMAL_MAPPING",normal_id.c_str(),"tangent_basis","NOT_PRESENT_IN_DETAIL_LAYOUT");
+                RenderSnapshot_Record("NORMAL_MAPPING",normal_id.c_str(),"normal_buffer_value","NOT_READ_BACK; PSGeometry NORMALIZATION_AND_FACE_SIGN");
+                RenderSnapshot_Record("NORMAL_MAPPING",normal_id.c_str(),"uv_measurement","FIRST_FOUR_INDEXED_SAMPLES; NOT_FULL_RANGE");
+                char wave[192];snprintf(wave,sizeof(wave),"%.9g,%.9g,%.9g,%.9g",source->wave[g.variant][0],source->wave[g.variant][1],source->wave[g.variant][2],source->wave[g.variant][3]);
+                RenderSnapshot_Record("DETAIL_GEOMETRY",normal_id.c_str(),"wave_constants",wave);
+                snprintf(wave,sizeof(wave),"%.9g,%.9g,%.9g,%.9g",source->wind[g.variant][0],source->wind[g.variant][1],source->wind[g.variant][2],source->wind[g.variant][3]);
+                RenderSnapshot_Record("DETAIL_GEOMETRY",normal_id.c_str(),"wind_constants",wave);
+                RenderSnapshot_RecordU64("DETAIL_GEOMETRY",normal_id.c_str(),"variant",g.variant);
                 }catch(...){RenderSnapshot_Context("DETAIL","NOT_AVAILABLE","NOT_AVAILABLE");RenderSnapshot_DetailVariant(g.variant);RenderSnapshot_Text("TELEMETRY_LOSS","r4_detail_provenance","ALLOCATION_FAILED");}}
             /* VSDetail owns world rows: wave, wind, variant. Other shaders keep
              * their ordinary matrix meaning; the 816-byte frame ABI is intact. */

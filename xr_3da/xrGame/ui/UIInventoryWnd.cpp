@@ -1,4 +1,5 @@
 #include "pch_script.h"
+#include "RenderSnapshotUI.h"
 #include "UIInventoryWnd.h"
 
 #include "xrUIXmlParser.h"
@@ -248,6 +249,21 @@ bool CUIInventoryWnd::OnMouse(float x, float y, EUIMessages mouse_action)
 
 void CUIInventoryWnd::Draw()
 {
+	snapshot_ui::Scope snapshot_scope(this,"INVENTORY");
+    if(RenderSnapshot_Detailed()){
+        if(m_pInv){RenderSnapshot_RecordU64("UI",snapshot_scope.id,"logical_inventory_items",m_pInv->m_all.size());
+            RenderSnapshot_RecordU64("UI",snapshot_scope.id,"logical_ruck_items",m_pInv->m_ruck.size());
+            RenderSnapshot_RecordU64("UI",snapshot_scope.id,"logical_belt_items",m_pInv->m_belt.size());}
+        RenderSnapshot_RecordU64("UI",snapshot_scope.id,"bag_root_cells",m_pUIBagList->ItemsCount());
+        RenderSnapshot_RecordU64("UI",snapshot_scope.id,"belt_root_cells",m_pUIBeltList->ItemsCount());
+        RenderSnapshot_RecordU64("UI",snapshot_scope.id,"pistol_root_cells",m_pUIPistolList->ItemsCount());
+        RenderSnapshot_RecordU64("UI",snapshot_scope.id,"automatic_root_cells",m_pUIAutomaticList->ItemsCount());
+        RenderSnapshot_RecordU64("UI",snapshot_scope.id,"outfit_root_cells",m_pUIOutfitList->ItemsCount());
+        RenderSnapshot_Record("UI",snapshot_scope.id,"cell_counts_semantics","ROOT_CELLS_MAY_CONTAIN_STACKED_CHILD_ITEMS_NOT_DRAW_COUNTS");
+        RenderSnapshot_Record("UI",snapshot_scope.id,"properties_visible",UIPropertiesBox.IsShown()?"YES":"NO");
+        RenderSnapshot_Record("UI",snapshot_scope.id,"item_info_visible",UIItemInfo.IsShown()?"YES":"NO");
+        char selected[64];snapshot_ui::Handle(m_pCurrentCellItem,selected,sizeof(selected));RenderSnapshot_Record("UI",snapshot_scope.id,"selected_cell",selected);
+    }
 	CUIWindow::Draw();
 }
 
@@ -304,6 +320,7 @@ void CUIInventoryWnd::Show()
 {
 	InitInventory();
 	inherited::Show();
+	snapshot_ui::WindowState(this,"INVENTORY",IsShown());
 
 	if (!IsGameTypeSingle())
 	{
@@ -341,6 +358,7 @@ void CUIInventoryWnd::Hide()
 {
 	PlaySnd(eInvSndClose);
 	inherited::Hide();
+	snapshot_ui::WindowState(this,"INVENTORY",IsShown());
 
 	SendInfoToActor("ui_inventory_hide");
 	ClearAllLists();

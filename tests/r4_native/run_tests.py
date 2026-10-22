@@ -13,7 +13,18 @@ def main():
     with tempfile.TemporaryDirectory(prefix="kich-g01-") as directory:
         work = Path(directory)
         presenter = (ROOT/"xr_3da/KichR4NativePresenter.cpp").read_text()
-        loader = presenter[presenter.index("void LogBuild("):presenter.index("\nvoid StopContext()")]
+        # Compile the two handshake functions, not unrelated neighboring
+        # optional diagnostic services that may be inserted in this file.
+        def function(signature):
+            start = presenter.index(signature)
+            opening = presenter.index("{", start)
+            depth = 1
+            end = opening + 1
+            while depth:
+                depth += (presenter[end] == "{") - (presenter[end] == "}")
+                end += 1
+            return presenter[start:end]
+        loader = function("void LogBuild(") + "\n" + function("bool ReadAPIs()")
         (work/"loader_under_test.h").write_text(loader)
         flags = [os.environ.get("CXX", "g++"), "-std=c++11", "-Wall", "-Wextra", "-Werror", "-I"+str(HERE), "-I"+str(work)]
         for name, extra in [

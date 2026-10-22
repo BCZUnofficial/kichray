@@ -1,4 +1,5 @@
 #include "KichR4NativePrelude.h"
+#include "xrRender/WallmarkSnapshot.h"
 #include "KichR4Native.h"
 #include "KichR4NativeCPU.h"
 #include "KichR4Capture.h"
@@ -6,6 +7,8 @@
 #include "KichR4Visibility.h"
 #include "KichR4MaterialRules.h"
 #include "RenderSnapshot.h"
+#include "KichR4TelemetryText.h"
+#include "RenderSnapshotMaterial.h"
 #include "IGame_Persistent.h"
 #include "Environment.h"
 #include "CustomHUD.h"
@@ -14,6 +17,7 @@
 #include "SkeletonCustom.h"
 #include "FHierrarhyVisual.h"
 #include "xrRender/DetailModel.h"
+#include "xrRender/xrRender_console.h"
 #include "xrRender/FSkinned.h"
 #include "xrLevel.h"
 #include "_d3d_extensions.h"
@@ -45,6 +49,7 @@ public:
     float get_luminocity_hemi(){Update();return sky;}
 };
 xr_vector<ref_light> static_lights;
+u32 native_level_light_records=0,native_level_directional_skips=0;
 class R4Light:public IRender_Light {
     KichR4LocalLight value;KichR4LightIdentity identity;bool active,shadow;
     void Update(){KichR4_CaptureLightIdentity(this,identity);KichR4_CaptureLight(this,value,active);KichR4_CaptureLightShadow(this,shadow);}
@@ -107,7 +112,8 @@ void CRender::level_Load(IReader* f){R_ASSERT(!loaded);IReader* c=f->open_chunk(
     for(u32 i=0;i<ns;++i){string_path entry;c->r_stringZ(entry,sizeof(entry));char* sep=strchr(entry,'/');if(sep){*sep++=0;shaders[i].create(entry,sep);}}c->close();
     c=f->open_chunk(fsL_VISUALS);R_ASSERT(c);for(u32 i=0;;++i){IReader* v=c->open_chunk(i);if(!v)break;ogf_header header;v->r_chunk_safe(OGF_HEADER,&header,sizeof(header));IRender_Visual* visual=Models->Instance_Create(header.type);visual->Load(NULL,v,0);visuals.push_back(visual);v->close();}c->close();
     c=f->open_chunk(fsL_SECTORS);if(c){for(u32 i=0;;++i){IReader* s=c->open_chunk(i);if(!s)break;sectors.push_back(xr_new<R4Sector>());s->close();}c->close();}if(sectors.empty())sectors.push_back(xr_new<R4Sector>());
-    c=f->open_chunk(fsL_LIGHT_DYNAMIC);if(c){u32 record=0;while(c->elapsed()>=sizeof(Flight)+4){const u32 ordinal=record++,controller=c->r_u32();Flight source;c->r(&source,sizeof(source));if(source.type==D3DLIGHT_DIRECTIONAL)continue;
+    native_level_light_records=native_level_directional_skips=0;
+    c=f->open_chunk(fsL_LIGHT_DYNAMIC);if(c){u32 record=0;while(c->elapsed()>=sizeof(Flight)+4){const u32 ordinal=record++,controller=c->r_u32();Flight source;c->r(&source,sizeof(source));++native_level_light_records;if(source.type==D3DLIGHT_DIRECTIONAL){++native_level_directional_skips;continue;}
         R4Light* source_light=xr_new<R4Light>();source_light->SetLevelIdentity(ordinal,controller);ref_light l=source_light;
         l->set_shadow(true);l->set_type(source.type==D3DLIGHT_SPOT?IRender_Light::SPOT:IRender_Light::POINT);l->set_position(source.position);Fvector right;right.set(1,0,0);l->set_rotation(source.direction,right);l->set_range(source.range);l->set_color(source.diffuse);l->set_active(true);static_lights.push_back(l);}c->close();}
     c=f->open_chunk(fsL_GLOWS);if(c){while(c->elapsed()>=18){Fvector p;c->r(&p,sizeof(p));const float r=c->r_float();const u16 shader=c->r_u16();R4Glow* g=xr_new<R4Glow>();g->position=p;g->radius=r;if(shader<shaders.size())g->shader=shaders[shader];g->active=true;ref_glow owner=g;static_glows.push_back(owner);}c->close();}
@@ -155,14 +161,24 @@ void CRender::Submit(IRender_Visual* v,CKinematics* parent){if(!v)return;CKinema
         if(!ViewBase.testSphere_dirty(center,v->vis.sphere.R*scale) &&
             !ViewBase.testSphere_dirty(v->vis.sphere.P,v->vis.sphere.R))return;
     }
+    uint32_t available_elements=0;
+    for(u32 i=0;i<6;++i)if(v->shader->E[i] && !v->shader->E[i]->passes.empty())available_elements|=1u<<i;
     kich_r4_material::Element elements[6];
     for(u32 i=0;i<6;++i){ShaderElement* e=v->shader->E[i]._get();if(e)elements[i]=kich_r4_material::Element(e->passes.size(),e->flags.bDistort!=0);}
     const kich_r4_material::Selection selected=kich_r4_material::Select(elements,KichR4_NativeDistortionEnabled());
+    if(RenderSnapshot_Detailed()){
+        if(selected.normal==UINT32_MAX)RenderSnapshot_MaterialSelection(NULL,UINT32_MAX,UINT32_MAX,available_elements,"NORMAL_E0_E1_ABSENT_OR_DISTORT_NO_NORMAL_DRAW");
+        if(!KichR4_NativeDistortionEnabled()){
+            const uint32_t candidates[3]={4,0,1};for(unsigned i=0;i<3;++i){const uint32_t index=candidates[i];if(elements[index].passes && elements[index].distort){RenderSnapshot_MaterialSelection(v->shader->E[index]._get(),UINT32_MAX,index,available_elements,"SPECIAL_DISTORTION_DISABLED_BY_SETTING");break;}}
+        }
+    }
     const uint32_t indices[2]={selected.normal,selected.distortion};
     for(u32 route=0;route<2;++route){const uint32_t index=indices[route];if(index==UINT32_MAX)continue;
         ShaderElement* element=v->shader->E[index]._get();
         for(u32 pass=0;pass<element->passes.size();++pass){
             RCache.set_xform_world(original);RCache.set_Element(element,pass);KichR4_NativeElementSource(index);
+            if(RenderSnapshot_Detailed())RenderSnapshot_MaterialSelection(element,pass,index,available_elements,
+                route?(index==4?"SPECIAL_E4_FLAGGED_DISTORTION_ENABLED":index==0?"SPECIAL_E4_UNAVAILABLE_FLAGGED_E0_FALLBACK":"SPECIAL_E4_E0_UNAVAILABLE_FLAGGED_E1_FALLBACK"):index==1?"NORMAL_E0_UNAVAILABLE_OR_DISTORT_FALLBACK_E1":"NORMAL_E0_AVAILABLE");
             v->Render(1.f);
         }
     }
@@ -170,6 +186,9 @@ void CRender::Submit(IRender_Visual* v,CKinematics* parent){if(!v)return;CKinema
 }
 void CRender::flush(){const Fmatrix original=Device.mProject;Fmatrix hands=original;extern ENGINE_API float psHUD_FOV;
     if(g_pGamePersistent)hands.build_projection(deg2rad(psHUD_FOV*Device.fFOV),Device.fASPECT,VIEWPORT_NEAR,g_pGamePersistent->Environment().CurrentEnv.far_plane);
+    if(g_render_snapshot_active){kich_r4_telemetry::Vector("HUD","projection","world_projection",&original._11,16);kich_r4_telemetry::Vector("HUD","projection","hands_projection",&hands._11,16);
+        kich_r4_telemetry::Float("HUD","projection","psHUD_FOV_multiplier",psHUD_FOV);kich_r4_telemetry::Float("HUD","projection","camera_fov_degrees",Device.fFOV);
+        kich_r4_telemetry::Text("HUD","projection","usage","hands_projection_BOUND_FOR_hud_QUEUE_ONLY; WORLD_PROJECTION_RESTORED_AFTER_FLUSH");}
     for(u32 i=0;i<queue.size();++i){const Queued& q=queue[i];val_bHUD=q.hud;RCache.set_xform_world(q.world);if(q.hud){rmNear();RCache.set_xform_project(hands);}else{rmNormal();RCache.set_xform_project(original);}Submit(q.visual,NULL);}
     queue.clear();val_bHUD=FALSE;rmNormal();RCache.set_xform_project(original);
 }
@@ -178,6 +197,12 @@ void CRender::Calculate(){queue.clear();shadow_views.clear();if(!loaded || !g_pG
     // native path gathers their conservative union, then culls immutable model
     // commands against the actual pass matrix in the backend.
     KichR4LightingFrame lighting={};KichR4_CaptureLighting(&Device.vCameraPosition.x,lighting);
+    KichR4_CaptureLightingDiagnostics(&Device.vCameraPosition.x,lighting);
+    if(g_render_snapshot_active){RenderSnapshot_U64("LIGHT_POLICY","R2FLAG_R1LIGHTS_requested",ps_r2_ls_flags.test(R2FLAG_R1LIGHTS)?1:0);
+        RenderSnapshot_Text("LIGHT_POLICY","R2FLAG_R1LIGHTS_applied","NOT_USED_BY_NATIVE_R4");
+        RenderSnapshot_U64("LIGHT_POLICY","level_file_records",native_level_light_records);RenderSnapshot_U64("LIGHT_POLICY","level_directional_records_skipped",native_level_directional_skips);
+        RenderSnapshot_Text("LIGHT_POLICY","level_directional_skip_reason","NATIVE_LOADER_USES_ENVIRONMENT_SUN; EXISTING_POLICY");
+        RenderSnapshot_Text("LIGHT_POLICY","native_level_light_policy","REGISTER_ALL_NONDIRECTIONAL_LEVEL_RECORDS; DISTANCE_COLOR_SCORE_TOP_8; NO_DEDUP");}
     if(g_pGamePersistent){const CEnvDescriptor& e=g_pGamePersistent->Environment().CurrentEnv;
         CopyMemory(lighting.sun_direction,&e.sun_dir.x,12);CopyMemory(lighting.sun_color,&e.sun_color.x,12);}
     if(kich_r4_visibility::SunEnabled(lighting)){const kich_r4_scene::Matrix vp=kich_r4_lighting::SunShadow(&Device.vCameraPosition.x,lighting.sun_direction);
@@ -194,8 +219,8 @@ void CRender::Calculate(){queue.clear();shadow_views.clear();if(!loaded || !g_pG
                 if(pass)++shadow_sources;else ++camera_sources;objects[i]->spatial_updatesector();set_Object(r);r->renderable_Render();}}
         set_Object(NULL);
         if(g_render_snapshot_active){RenderSnapshot_Text("MODEL_CANDIDATES","scope","SPATIAL_CAMERA_UNION_SELECTED_SHADOW_FRUSTUMS; UNIQUE_RENDERABLE_SOURCE");
-            RenderSnapshot_Value("MODEL_CANDIDATES","camera_sources",camera_sources);RenderSnapshot_Value("MODEL_CANDIDATES","additional_shadow_sources",shadow_sources);
-            RenderSnapshot_Value("MODEL_CANDIDATES","shadow_frustums",static_cast<double>(shadow_views.size()));}}
+            RenderSnapshot_U64("MODEL_CANDIDATES","camera_sources",camera_sources);RenderSnapshot_U64("MODEL_CANDIDATES","additional_shadow_sources",shadow_sources);
+            RenderSnapshot_U64("MODEL_CANDIDATES","shadow_frustums",shadow_views.size());}}
 }
 void CRender::Render(){if(!g_pGamePersistent)return;
     // The main menu asks the renderer to invoke its PP-UI callback even without a level.
@@ -209,10 +234,10 @@ BOOL CRender::occ_visible(vis_data& v){if(ViewBase.testSphere_dirty(v.sphere.P,v
 BOOL CRender::occ_visible(Fbox& b){u32 mask=ViewBase.getMask();if(ViewBase.testAABB(&b.min.x,mask)!=fcvNone)return TRUE;
     for(u32 i=0;i<shadow_views.size();++i){mask=shadow_views[i].getMask();if(shadow_views[i].testAABB(&b.min.x,mask)!=fcvNone)return TRUE;}return FALSE;}
 BOOL CRender::occ_visible(sPoly& p){if(p.empty())return FALSE;Fbox b;b.invalidate();for(u32 i=0;i<p.size();++i)b.modify(p[i]);return occ_visible(b);}
-void CRender::add_StaticWallmark(ref_shader& s,const Fvector& p,float size,CDB::TRI* t,Fvector* v){if(Wallmarks && t && !t->suppress_wm)Wallmarks->AddStaticWallmark(t,v,p,s,size);}
+void CRender::add_StaticWallmark(ref_shader& s,const Fvector& p,float size,CDB::TRI* t,Fvector* v){if(Wallmarks && t && !t->suppress_wm)Wallmarks->AddStaticWallmark(t,v,p,s,size);else kich_wallmark_snapshot::Event("STATIC_REQUEST",t,"REJECTED",!Wallmarks?"NO_WALLMARK_ENGINE":!t?"NO_RECEIVER":"RECEIVER_SUPPRESS_WM");}
 void CRender::clear_static_wallmarks(){if(Wallmarks)Wallmarks->clear();}
 void CRender::add_SkeletonWallmark(intrusive_ptr<CSkeletonWallmark> w){if(Wallmarks)Wallmarks->AddSkeletonWallmark(w);}
-void CRender::add_SkeletonWallmark(const Fmatrix* m,CKinematics* k,ref_shader& s,const Fvector& p,const Fvector& d,float size){if(Wallmarks)Wallmarks->AddSkeletonWallmark(m,k,s,p,d,size);}
+void CRender::add_SkeletonWallmark(const Fmatrix* m,CKinematics* k,ref_shader& s,const Fvector& p,const Fvector& d,float size){if(Wallmarks)Wallmarks->AddSkeletonWallmark(m,k,s,p,d,size);else kich_wallmark_snapshot::Event("SKELETAL_REQUEST",k,"REJECTED","NO_WALLMARK_ENGINE");}
 IRender_ObjectSpecific* CRender::ros_create(IRenderable* p){return xr_new<R4ROS>(p);}void CRender::ros_destroy(IRender_ObjectSpecific*& p){xr_delete(p);}
 IRender_Light* CRender::light_create(){return xr_new<R4Light>();}IRender_Glow* CRender::glow_create(){return xr_new<R4Glow>();}
 IRender_Visual* CRender::model_CreatePE(LPCSTR name){PS::CPEDef* d=PSLibrary.FindPED(name);R_ASSERT(d);return Models->CreatePE(d);}

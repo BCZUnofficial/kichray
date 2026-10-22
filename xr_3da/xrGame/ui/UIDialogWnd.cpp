@@ -3,6 +3,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "stdafx.h"
+#include "RenderSnapshotUI.h"
 #include "uidialogwnd.h"
 #include "../hudmanager.h"
 #include "../xr_level_controller.h"
@@ -25,6 +26,7 @@ void CUIDialogWnd::Show()
 {
 	inherited::Enable(true);
 	inherited::Show(true);
+	snapshot_ui::WindowState(this,"DIALOG",IsShown());
 
 	ResetAll();
 }
@@ -34,6 +36,7 @@ void CUIDialogWnd::Hide()
 
 	inherited::Enable(false);
 	inherited::Show(false);
+	snapshot_ui::WindowState(this,"DIALOG",IsShown());
 }
 
 bool CUIDialogWnd::IR_OnKeyboardHold(int dik)
@@ -59,8 +62,10 @@ bool CUIDialogWnd::IR_OnKeyboardHold(int dik)
 
 bool CUIDialogWnd::IR_OnKeyboardPress(int dik)
 {
+    const char* snapshot_action=dik==DIK_ESCAPE?"ESC":dik==MOUSE_1?"MOUSE_LEFT":dik==MOUSE_2?"MOUSE_RIGHT":dik==MOUSE_3?"MOUSE_MIDDLE":"OTHER_UI_KEY";
+    snapshot_ui::Event(this,snapshot_action,"REQUESTED");
 	if (!IR_process())
-		return false;
+	{ snapshot_ui::Event(this,snapshot_action,"REJECTED_DISABLED_OR_PAUSED"); return false; }
 	// mouse click
 	if (dik == MOUSE_1 || dik == MOUSE_2 || dik == MOUSE_3)
 	{
@@ -69,11 +74,11 @@ bool CUIDialogWnd::IR_OnKeyboardPress(int dik)
 							 : (dik == MOUSE_2) ? WINDOW_RBUTTON_DOWN
 												: WINDOW_CBUTTON_DOWN;
 		if (OnMouse(cp.x, cp.y, action))
-			return true;
+		{ snapshot_ui::Event(this,snapshot_action,"HANDLED_MOUSE"); return true; }
 	}
 
 	if (OnKeyboard(dik, WINDOW_KEY_PRESSED))
-		return true;
+	{ snapshot_ui::Event(this,snapshot_action,"HANDLED_KEYBOARD"); return true; }
 
 	if (!StopAnyMove() && g_pGameLevel)
 	{
@@ -84,8 +89,10 @@ bool CUIDialogWnd::IR_OnKeyboardPress(int dik)
 			if (!IR)
 				return (false);
 			IR->IR_OnKeyboardPress(get_binded_action(dik));
+            snapshot_ui::Event(this,snapshot_action,"FORWARDED_GAME");
 		}
 	}
+    snapshot_ui::Event(this,snapshot_action,"NOT_HANDLED_BY_DIALOG");
 	return false;
 }
 

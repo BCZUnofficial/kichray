@@ -3,6 +3,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "stdafx.h"
+#include "RenderSnapshotMaterial.h"
 #include "KichR4Native.h"
 #include "KichR4NativeCPU.h"
 #pragma hdrstop
@@ -151,6 +152,7 @@ void CResourceManager::_DeleteElement(const ShaderElement* S)
 {
 	if (0 == (S->dwFlags & xr_resource_flagged::RF_REGISTERED))
 		return;
+	RenderSnapshot_ForgetMaterialElement(S);
 	if (reclaim(v_elements, S))
 		return;
 	Msg("! ERROR: Failed to find compiled 'shader-element'");
@@ -237,6 +239,17 @@ Shader* CResourceManager::_cpp_Create(IBlender* B, LPCSTR s_shader, LPCSTR s_tex
 		ShaderElement E;
 		C._cpp_Compile(&E);
 		S.E[5] = _CreateElement(E);
+	}
+
+	// Bounded diagnostic source sidecar; source descriptors are not backend bindings.
+	if (!C.L_textures.empty()) {
+		LPCSTR detail = NULL; R_constant_setup* scaler = NULL; BOOL diffuse = FALSE, bump_usage = FALSE;
+		const shared_str bump = m_textures_description.GetBumpName(C.L_textures[0]);
+		m_textures_description.GetDetailTexture(C.L_textures[0], detail, scaler);
+		m_textures_description.GetTextureUsage(C.L_textures[0], diffuse, bump_usage);
+		for (u32 element = 0; element < 6; ++element)
+			RenderSnapshot_RegisterMaterialElement(S.E[element]._get(), element, s_shader, s_textures,
+				"CPP_BLENDER", bump.c_str(), detail, (diffuse ? 1u : 0u) | (bump_usage ? 2u : 0u), B ? static_cast<uint64_t>(B->getDescription().CLS) : UINT64_MAX);
 	}
 
 	// Search equal in shaders array

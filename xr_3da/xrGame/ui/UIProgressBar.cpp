@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "RenderSnapshotUI.h"
 #include "uiprogressbar.h"
 
 CUIProgressBar::CUIProgressBar(void)
@@ -88,6 +89,13 @@ void CUIProgressBar::Update()
 
 void CUIProgressBar::Draw()
 {
+	snapshot_ui::Scope snapshot_scope(this,"PROGRESS_BAR");
+    if(RenderSnapshot_Detailed()){
+        snapshot_ui::Number(snapshot_scope.id,"range_min",m_MinPos);snapshot_ui::Number(snapshot_scope.id,"range_max",m_MaxPos);
+        snapshot_ui::Number(snapshot_scope.id,"fill_current",m_ProgressPos.x);snapshot_ui::Number(snapshot_scope.id,"fill_target",m_ProgressPos.y);
+        snapshot_ui::Number(snapshot_scope.id,"fill_length_ui_units",m_CurrentLength);
+        RenderSnapshot_Record("UI",snapshot_scope.id,"orientation",m_bIsHorizontal?"HORIZONTAL":"VERTICAL");
+    }
 	Frect rect;
 	GetAbsoluteRect(rect);
 

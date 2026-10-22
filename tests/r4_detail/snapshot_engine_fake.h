@@ -29,17 +29,18 @@ struct D3DADAPTER_IDENTIFIER9 {char Description[256];};
 struct FakeD3D {int GetAdapterIdentifier(unsigned,unsigned,D3DADAPTER_IDENTIFIER9* out){strcpy(out->Description,"test GPU");return 0;}};
 struct SnapshotGPU {
     IDirect3DVertexShader9 vs;IDirect3DPixelShader9 ps;IDirect3DBaseTexture9 texture;
-    bool fail=false;
-    int GetVertexShader(IDirect3DVertexShader9** out){*out=&vs;++vs.refs;return 0;}
-    int GetPixelShader(IDirect3DPixelShader9** out){*out=&ps;++ps.refs;return 0;}
-    int GetTexture(unsigned i,IDirect3DBaseTexture9** out){*out=i==0?&texture:NULL;if(*out)++texture.refs;return 0;}
-    int GetRenderState(D3DRENDERSTATETYPE key,DWORD* out){*out=key==D3DRS_ALPHAREF?200:1;return fail && key==D3DRS_ZENABLE?-1:0;}
-    int GetSamplerState(unsigned i,D3DSAMPLERSTATETYPE,DWORD* out){*out=1;return fail && i==1?-1:0;}
+    bool fail=false;unsigned query_count=0;
+    int GetVertexShader(IDirect3DVertexShader9** out){++query_count;*out=&vs;++vs.refs;return 0;}
+    int GetPixelShader(IDirect3DPixelShader9** out){++query_count;*out=&ps;++ps.refs;return 0;}
+    int GetTexture(unsigned i,IDirect3DBaseTexture9** out){++query_count;*out=i==0?&texture:NULL;if(*out)++texture.refs;return 0;}
+    int GetRenderState(D3DRENDERSTATETYPE key,DWORD* out){++query_count;*out=key==D3DRS_ALPHAREF?200:1;return fail && key==D3DRS_ZENABLE?-1:0;}
+    int GetSamplerState(unsigned i,D3DSAMPLERSTATETYPE,DWORD* out){++query_count;*out=1;return fail && i==1?-1:0;}
 };
 struct SnapshotHW {FakeD3D* pD3D;SnapshotGPU* pDevice;unsigned DevAdapter;};
-struct CResourceManager {const char* SnapshotVSName(IDirect3DVertexShader9*)const{return "bound_vs";}const char* SnapshotPSName(IDirect3DPixelShader9*)const{return "bound_ps";}};
+struct CResourceManager {const char* SnapshotVSName(IDirect3DVertexShader9*)const{return "bound_vs";}const char* SnapshotPSName(IDirect3DPixelShader9*)const{return "bound_ps";}const char* SnapshotTextureName(IDirect3DBaseTexture9* p)const{return p?"grass":"NULL";}};
 struct Fvector {float x,y,z;};
-struct SnapshotDevice {uint32_t dwFrame=7,dwWidth=1920,dwHeight=1080,dwPrecacheFrame=0;float fFOV=75,fTimeGlobal=8;Fvector vCameraPosition={1,2,3},vCameraDirection={0,0,1};CResourceManager* Resources;bool Paused(){return false;}};
+struct Fmatrix {float m[4][4]={{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}};};
+struct SnapshotDevice {uint32_t dwTimeGlobal=8000;float fASPECT=16.0f/9,fTimeDelta=.016f;bool b_is_Ready=true,b_is_Active=true,paused=false;Fmatrix mView,mProject,mFullTransform;uint32_t dwFrame=7,dwWidth=1920,dwHeight=1080,dwPrecacheFrame=0;float fFOV=75,fTimeGlobal=8;Fvector vCameraPosition={1,2,3},vCameraDirection={0,0,1};CResourceManager* Resources;bool Paused(){return paused;}};
 struct SnapshotFlags {bool test(unsigned){return true;}};
 struct SnapshotConsole {bool bVisible=true;float GetFloat(const char* name,float& value,float& low,float& high){low=0;high=100;value=strstr(name,"radius")?60:.3f;return value;}};
 struct CEnvironment {std::string CurrentWeatherName="clear";float wind_strength_factor=.25f;struct Env {Fvector sun_dir={0,-1,0};}CurrentEnv;float SnapshotGameTime()const{return 32000;}};

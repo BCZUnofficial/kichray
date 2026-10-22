@@ -130,6 +130,8 @@ class CUILevelMap : public CUICustomMap
 {
 	typedef CUICustomMap inherited;
 	CUIMapWnd* m_mapWnd;
+    u32 m_snapshot_update_frame,m_snapshot_considered,m_snapshot_updated;
+    const char* m_snapshot_selection;
 	Frect m_GlobalRect; // virtual map size (meters)
 	//	CUIStatic*					m_anomalies_map;
   private:

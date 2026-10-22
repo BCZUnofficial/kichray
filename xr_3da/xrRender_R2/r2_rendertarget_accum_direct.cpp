@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "../xrRender/R2LightSnapshot.h"
 #include "..\igame_persistent.h"
 #include "..\environment.h"
 
@@ -14,6 +15,7 @@ void CRenderTarget::accum_direct(u32 sub_phase)
 
 	// *** assume accumulator setted up ***
 	light* fuckingsun = (light*)RImplementation.Lights.sun_adapted._get();
+	kich_r2_light_snapshot::Bind(fuckingsun,SE_SUN_NEAR==sub_phase?"SUN_NEAR_ACCUMULATION":"SUN_FAR_ACCUMULATION");
 
 	// Common calc for quad-rendering
 	u32 Offset;
@@ -84,6 +86,8 @@ void CRenderTarget::accum_direct(u32 sub_phase)
 		float fTexelOffs = (.5f / float(RImplementation.o.smapsize));
 		float fRange = (SE_SUN_NEAR == sub_phase) ? ps_r2_sun_depth_near_scale : ps_r2_sun_depth_far_scale;
 		float fBias = (SE_SUN_NEAR == sub_phase) ? ps_r2_sun_depth_near_bias : ps_r2_sun_depth_far_bias;
+		kich_r2_light_snapshot::ShadowFloat(fuckingsun,SE_SUN_NEAR==sub_phase?"SUN_NEAR":"SUN_FAR","receiver_depth_scale",fRange);
+		kich_r2_light_snapshot::ShadowFloat(fuckingsun,SE_SUN_NEAR==sub_phase?"SUN_NEAR":"SUN_FAR","receiver_depth_bias",fBias);
 		Fmatrix m_TexelAdjust = {0.5f,
 								 0.0f,
 								 0.0f,
@@ -292,6 +296,7 @@ void CRenderTarget::accum_direct_f(u32 sub_phase)
 
 	// *** assume accumulator setted up ***
 	light* fuckingsun = (light*)RImplementation.Lights.sun_adapted._get();
+	kich_r2_light_snapshot::Bind(fuckingsun,SE_SUN_NEAR==sub_phase?"SUN_NEAR_ACCUMULATION":"SUN_FAR_ACCUMULATION");
 
 	// Common calc for quad-rendering
 	u32 Offset;
@@ -365,6 +370,8 @@ void CRenderTarget::accum_direct_f(u32 sub_phase)
 		float fTexelOffs = (.5f / float(RImplementation.o.smapsize));
 		float fRange = (SE_SUN_NEAR == sub_phase) ? ps_r2_sun_depth_near_scale : ps_r2_sun_depth_far_scale;
 		float fBias = (SE_SUN_NEAR == sub_phase) ? ps_r2_sun_depth_near_bias : ps_r2_sun_depth_far_bias;
+		kich_r2_light_snapshot::ShadowFloat(fuckingsun,SE_SUN_NEAR==sub_phase?"SUN_NEAR":"SUN_FAR","receiver_depth_scale",fRange);
+		kich_r2_light_snapshot::ShadowFloat(fuckingsun,SE_SUN_NEAR==sub_phase?"SUN_NEAR":"SUN_FAR","receiver_depth_bias",fBias);
 		Fmatrix m_TexelAdjust = {0.5f,
 								 0.0f,
 								 0.0f,
@@ -444,6 +451,7 @@ void CRenderTarget::accum_direct_lum()
 
 	// *** assume accumulator setted up ***
 	light* fuckingsun = (light*)RImplementation.Lights.sun_adapted._get();
+	kich_r2_light_snapshot::Bind(fuckingsun,"SUN_LUMINANCE");
 
 	// Common calc for quad-rendering
 	u32 Offset;

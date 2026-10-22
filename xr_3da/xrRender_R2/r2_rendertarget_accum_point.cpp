@@ -1,8 +1,11 @@
 #include "stdafx.h"
+#include "../xrRender/R2LightSnapshot.h"
 
 void CRenderTarget::accum_point(light* L)
 {
 	phase_accumulator();
+	kich_r2_light_snapshot::Bind(L,"POINT_ACCUMULATION");
+	kich_r2_light_snapshot::Record(L,"accumulation","SELECTED","ACTUAL_accum_point_CALL; SEE_DRAW_SUBMITTED_RESULT");
 	RImplementation.stats.l_visible++;
 
 	ref_shader shader = L->s_point;

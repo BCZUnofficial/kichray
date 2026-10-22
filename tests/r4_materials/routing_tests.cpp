@@ -6,6 +6,7 @@ uint32_t effect=0,source_element=UINT32_MAX,source_pass=0;
 bool distortion_enabled=true,bound_clamp=false;
 Backend RCache;
 std::vector<Draw> draws;
+std::vector<SelectionObservation> selections;
 
 int main(){
     CRender renderer;
@@ -20,6 +21,7 @@ int main(){
     assert(draws.size()==2);const Draw& distortion=draws.back();
     assert(distortion.texture=="pfx\\pfx_distortion" && distortion.shader=="particle_distort");
     assert(distortion.effect==5 && distortion.element==4 && distortion.pass==0);
+    assert(selections.back().element==4 && selections.back().pass==0 && selections.back().available==16 && selections.back().reason=="SPECIAL_E4_FLAGGED_DISTORTION_ENABLED");
     assert(!distortion.clamp); // No material-wide clamp workaround for valid source UVs.
     for(unsigned i=0;i<8;++i)assert(distortion.uv[i]==fire_distort.uv[i]);
 
@@ -44,10 +46,12 @@ int main(){
     // A normal LQ-only material remains usable, while empty materials emit nothing.
     Shader low,empty;low.E[1]=&fire;IRender_Visual lod;lod.shader=&low;
     draws.clear();renderer.Submit(&lod,NULL);assert(draws.size()==1 && draws[0].element==1);
+    assert(selections.back().reason=="NORMAL_E0_UNAVAILABLE_OR_DISTORT_FALLBACK_E1");
     lod.shader=&empty;draws.clear();renderer.Submit(&lod,NULL);assert(draws.empty());
 
     // Distortion flags on a normal slot still emit a single special draw.
     Shader unusual;unusual.E[0]=&warp;lod.shader=&unusual;draws.clear();renderer.Submit(&lod,NULL);
+    assert(selections.back().reason=="SPECIAL_E4_UNAVAILABLE_FLAGGED_E0_FALLBACK");
     assert(draws.size()==2);for(const Draw& d:draws)assert(d.effect==5 && d.element==0);
 
     // A generated particle outside the camera never enters the shadow union path;

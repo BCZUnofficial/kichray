@@ -54,7 +54,7 @@ int main(int argc,char** argv){try{Require(argc==2,"output directory");
     RenderSnapshot_Context("STATIC","survivor","material");RenderSnapshot_Draw(&draw);
     RenderSnapshot_Value("DETAIL_RENDERER","visible_instances",1234);RenderSnapshot_Value("MEMORY","cpu_capture_bytes",4567);RenderSnapshot_End("COMPLETE");
     const std::string flood=Read(RenderSnapshot_LastPath()),flood_group=Section(flood,"PASS_LIGHT"),flood_loss=Section(flood,"TRACE_LOSS");
-    Require(flood.find("schema=2")!=std::string::npos && flood.find("[VISIBILITY_EVENT]")==std::string::npos,"schema two aggregates visibility rather than consuming draw quota");
+    Require(Section(flood,"SNAPSHOT").find("\nschema=3\n")!=std::string::npos && Section(flood,"SNAPSHOT").find("\ncomparable_schema=2\n")!=std::string::npos && flood.find("[VISIBILITY_EVENT]")==std::string::npos,"schema three retains comparable schema two visibility aggregation");
     Require(Number(Section(flood,"VISIBILITY_TOTALS"),"source_note_events")==80000 && Number(flood_group,"candidates")==40000 && Number(flood_group,"culled")==40000,"source counters remain exact through visibility flood");
     Require(Number(flood_group,"submitted_draw_calls")==1 && flood_group.find("selected=NOT_INSTRUMENTED")!=std::string::npos,"submission callback is distinct from unspecified selection observations");
     Require(Number(flood_loss,"draw_records_retained")==1 && Number(flood_loss,"draw_records_dropped")==0 && flood.find("status=COMPLETE")!=std::string::npos,"deliberate resource sampling never marks trace overflow");

@@ -2,6 +2,7 @@
 //
 //////////////////////////////////////////////////////////////////////
 #include "stdafx.h"
+#include "RenderSnapshotUI.h"
 #include "UIWindow.h"
 #include "../UICursor.h"
 #include "../MainMenu.h"
@@ -138,6 +139,7 @@ CUIWindow::CUIWindow()
 
 CUIWindow::~CUIWindow()
 {
+    snapshot_ui::WindowState(this,"DESTROYED",false);
 	VERIFY(!(GetParent() && IsAutoDelete()));
 
 	CUIWindow* parent = GetParent();
@@ -180,6 +182,7 @@ void CUIWindow::Init(Frect* pRect)
 
 void CUIWindow::Draw()
 {
+	snapshot_ui::Scope snapshot_scope(this,"WINDOW");
 	for (WINDOW_LIST_it it = m_ChildWndList.begin(); m_ChildWndList.end() != it; ++it)
 	{
 		if (!(*it)->IsShown())
@@ -473,6 +476,7 @@ void CUIWindow::SetCapture(CUIWindow* pChildWindow, bool capture_status)
 	{
 		m_pMouseCapturer = NULL;
 	}
+    snapshot_ui::Event(this,capture_status?"MOUSE_CAPTURE_SET":"MOUSE_CAPTURE_RELEASED",m_pMouseCapturer==pChildWindow || !capture_status?"APPLIED":"NOT_APPLIED");
 }
 
 //реакция на клавиатуру
@@ -548,6 +552,7 @@ void CUIWindow::SetKeyboardCapture(CUIWindow* pChildWindow, bool capture_status)
 	}
 	else
 		m_pKeyboardCapturer = NULL;
+    snapshot_ui::Event(this,capture_status?"KEYBOARD_CAPTURE_SET":"KEYBOARD_CAPTURE_RELEASED",m_pKeyboardCapturer==pChildWindow || !capture_status?"APPLIED":"NOT_APPLIED");
 }
 
 //обработка сообщений

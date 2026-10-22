@@ -34,6 +34,7 @@ struct RenderSnapshotDraw {
 /* EXE-side provenance only: RenderSnapshotDraw and the renderer DLL ABI stay unchanged. */
 struct RenderSnapshotProvenance {
     char semantic_type[32],queue[48],mesh_id[160],material_id[160],evidence[64],uv_source[48];
+    char material_route_id[64],geometry_id[64],ui_widget[192],ui_origin[64];
     uint32_t flags,pass_mask,pass_mask_known,uv_count;
     float uv[8];
 };
@@ -53,6 +54,39 @@ typedef void (SNAPSHOT_CALL *RenderSnapshotSink)(const RenderSnapshotDraw*);
 static const bool g_render_snapshot_active=false;
 static bool g_render_snapshot_console=false;
 inline bool RenderSnapshot_Request(){return false;}
+inline bool RenderSnapshot_RequestReason(const char*){return false;}
+inline bool RenderSnapshot_DiagnosticActive(){return false;}
+inline bool RenderSnapshot_Detailed(){return false;}
+inline bool RenderSnapshot_ProfileRequest(uint32_t){return false;}
+inline uint64_t RenderSnapshot_CaptureID(){return 0;}
+inline uint64_t RenderSnapshot_RenderFrameID(){return 0;}
+inline uint64_t RenderSnapshot_GroupID(){return 0;}
+inline void RenderSnapshot_SetHotkey(uint32_t){}
+inline uint32_t RenderSnapshot_GetHotkey(){return 0;}
+inline void RenderSnapshot_UIProvenance(const char*,const char*){}
+inline void RenderSnapshot_UIWidget(const char*,const char*){}
+inline bool RenderSnapshot_GPUTiming(uint64_t,uint64_t,uint64_t,const char*,const double*,uint32_t=127){return false;}
+
+inline bool RenderSnapshot_UICycleRequest(const char*,uint32_t=1800){return false;}
+inline void RenderSnapshot_UICycleCancel(const char*){}
+inline void RenderSnapshot_Abort(const char*){}
+inline void RenderSnapshot_UIState(const char*,const char*,const char*,bool,bool,bool){}
+inline void RenderSnapshot_UIWindow(const char*,const char*,bool){}
+inline const char* RenderSnapshot_UIScreen(){return "GAME";}
+inline const char* RenderSnapshot_UIRoot(){return "NONE";}
+inline void RenderSnapshot_UIInput(const char*){}
+inline const char* RenderSnapshot_UIInputOwner(){return "NOT_INSTRUMENTED";}
+inline void RenderSnapshot_PresentID(uint64_t,bool){}
+inline void RenderSnapshot_FrameIDs(uint64_t,uint64_t,uint64_t,uint64_t){}
+inline void RenderSnapshot_U64(const char*,const char*,uint64_t){}
+inline void RenderSnapshot_I64(const char*,const char*,int64_t){}
+inline void RenderSnapshot_Record(const char*,const char*,const char*,const char*){}
+inline void RenderSnapshot_RecordU64(const char*,const char*,const char*,uint64_t){}
+inline void RenderSnapshot_RecordI64(const char*,const char*,const char*,int64_t){}
+inline void RenderSnapshot_Event(const char*,const char*,const char*,const char*){}
+inline void RenderSnapshot_MaterialRoute(const char*){}
+inline void RenderSnapshot_GeometrySource(const char*){}
+
 inline bool RenderSnapshot_Wanted(){return false;}
 inline void RenderSnapshot_Begin(const RenderSnapshotInfo&){g_render_snapshot_console=false;}
 inline void RenderSnapshot_End(const char*){}
@@ -81,10 +115,51 @@ inline void RenderSnapshot_EngineEnd(){}
 inline void RenderSnapshot_D3D9Draw(void*,void*,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,bool,int32_t){}
 #else
 /* Cheap data flag is false on all ordinary frames. Only the render thread may
- * record events; background HOM/cache work is explicitly NOT_INSTRUMENTED. */
+ * mutate capture state. DiagnosticActive and bounded Event are thread-safe;
+ * background HOM/cache draw recording remains NOT_INSTRUMENTED. */
 extern SNAPSHOT_API bool g_render_snapshot_active;
 extern SNAPSHOT_API bool g_render_snapshot_console;
 SNAPSHOT_API bool RenderSnapshot_Request();
+SNAPSHOT_API bool RenderSnapshot_RequestReason(const char* reason);
+SNAPSHOT_API bool RenderSnapshot_DiagnosticActive();
+SNAPSHOT_API bool RenderSnapshot_Detailed();
+SNAPSHOT_API bool RenderSnapshot_ProfileRequest(uint32_t frames);
+SNAPSHOT_API uint64_t RenderSnapshot_CaptureID();
+SNAPSHOT_API uint64_t RenderSnapshot_RenderFrameID();
+SNAPSHOT_API uint64_t RenderSnapshot_GroupID();
+SNAPSHOT_API void RenderSnapshot_SetHotkey(uint32_t dik);
+SNAPSHOT_API uint32_t RenderSnapshot_GetHotkey();
+SNAPSHOT_API void RenderSnapshot_UIProvenance(const char* widget,const char* origin);
+SNAPSHOT_API void RenderSnapshot_UIWidget(const char* widget,const char* origin);
+/* Late timing completion appends only timing to the exact captured frame file.
+ * At most 16 file identities are retained; false means no matching writable file. */
+SNAPSHOT_API bool RenderSnapshot_GPUTiming(uint64_t capture_id,uint64_t engine_frame,uint64_t render_frame,const char* status,const double* milliseconds7,uint32_t valid_mask=127);
+
+SNAPSHOT_API bool RenderSnapshot_UICycleRequest(const char* target,uint32_t max_render_frames=1800);
+SNAPSHOT_API void RenderSnapshot_UICycleCancel(const char* reason);
+SNAPSHOT_API void RenderSnapshot_Abort(const char* reason);
+/* UIState is called once at each render boundary, including paused UI frames. */
+SNAPSHOT_API void RenderSnapshot_UIState(const char* screen,const char* root,const char* input_owner,bool level_loaded,bool console_visible,bool paused);
+SNAPSHOT_API void RenderSnapshot_UIWindow(const char* kind,const char* id,bool shown);
+SNAPSHOT_API const char* RenderSnapshot_UIScreen();
+SNAPSHOT_API const char* RenderSnapshot_UIRoot();
+SNAPSHOT_API void RenderSnapshot_UIInput(const char* owner);
+SNAPSHOT_API const char* RenderSnapshot_UIInputOwner();
+/* Actual presentation result; successful ordinal is not the engine/render ordinal. */
+SNAPSHOT_API void RenderSnapshot_PresentID(uint64_t successful_present_ordinal,bool submitted);
+/* UINT64_MAX preserves an individual existing frame/generation value. */
+SNAPSHOT_API void RenderSnapshot_FrameIDs(uint64_t render_frame,uint64_t present_frame,uint64_t level_generation,uint64_t device_generation);
+SNAPSHOT_API void RenderSnapshot_U64(const char* section,const char* key,uint64_t value);
+SNAPSHOT_API void RenderSnapshot_I64(const char* section,const char* key,int64_t value);
+/* Bounded per-category dictionaries: first admitted IDs, last value per field.
+ * Record is frame-only; Event spans an explicitly active UI diagnostic cycle. */
+SNAPSHOT_API void RenderSnapshot_Record(const char* category,const char* id,const char* key,const char* value);
+SNAPSHOT_API void RenderSnapshot_RecordU64(const char* category,const char* id,const char* key,uint64_t value);
+SNAPSHOT_API void RenderSnapshot_RecordI64(const char* category,const char* id,const char* key,int64_t value);
+SNAPSHOT_API void RenderSnapshot_Event(const char* kind,const char* subject,const char* action,const char* result);
+SNAPSHOT_API void RenderSnapshot_MaterialRoute(const char* id);
+SNAPSHOT_API void RenderSnapshot_GeometrySource(const char* id);
+
 SNAPSHOT_API bool RenderSnapshot_Wanted();
 SNAPSHOT_API void RenderSnapshot_Begin(const RenderSnapshotInfo&);
 SNAPSHOT_API void RenderSnapshot_End(const char* status);

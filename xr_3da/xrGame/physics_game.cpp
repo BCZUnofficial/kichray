@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "../xrRender/WallmarkSnapshot.h"
 #include "ParticlesObject.h"
 #include "gamemtllib.h"
 #include "level.h"
@@ -70,6 +71,7 @@ class CPHWallMarksCall : public CPHAction
 	virtual void run()
 	{
 		//добавить отметку на материале
+		kich_wallmark_snapshot::Event("STATIC_REQUEST",T,"ORIGIN","PHYSICS_CONTACT; CPHWallMarksCall::run");
 		::Render->add_StaticWallmark(pWallmarkShader, pos, 0.09f, T, Level().ObjectSpace.GetStaticVerts());
 	};
 	virtual bool obsolete() const

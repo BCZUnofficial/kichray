@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "../xrRender/R2LightSnapshot.h"
 #include "kich_sun_stability.h"
 #include "..\igame_persistent.h"
 #include "..\irenderable.h"
@@ -502,6 +503,8 @@ void CRender::render_sun()
 	Fmatrix ex_project, ex_full, ex_full_inverse;
 	{
 		float _far_ = far_plane;
+		kich_r2_light_snapshot::ShadowFloat(fuckingsun,"SUN_FAR","receiver_frustum_near",ps_r2_sun_near);
+		kich_r2_light_snapshot::ShadowFloat(fuckingsun,"SUN_FAR","receiver_frustum_far",_far_);
 		ex_project.build_projection(deg2rad(Device.fFOV /* *Device.fASPECT*/), Device.fASPECT, ps_r2_sun_near, _far_);
 		ex_full.mul(ex_project, Device.mView);
 		D3DXMatrixInverse((D3DXMATRIX*)&ex_full_inverse, 0, (D3DXMATRIX*)&ex_full);
@@ -988,6 +991,8 @@ void CRender::render_sun()
 void CRender::render_sun_near()
 {
 	light* fuckingsun = (light*)Lights.sun_adapted._get();
+	kich_r2_light_snapshot::ShadowFloat(fuckingsun,"SUN_NEAR","receiver_frustum_near",VIEWPORT_NEAR);
+	kich_r2_light_snapshot::ShadowFloat(fuckingsun,"SUN_NEAR","receiver_frustum_far",ps_r2_sun_near);
 	D3DXMATRIX m_LightViewProj;
 
 	// calculate view-frustum bounds in world space

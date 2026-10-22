@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "RenderSnapshotEngine.h"
 #include "frustum.h"
 #include "KichRenderDevice.h"
 #include "KichR4Game.h"
@@ -30,6 +31,7 @@ BOOL CRenderDevice::Begin()
 	const KichRenderDeviceState state = backend.GetDeviceState();
 	if (state == KichDeviceLost)
 	{
+        RenderSnapshot_Abort("DEVICE_LOST");
 		Sleep(33);
 		return FALSE;
 	}

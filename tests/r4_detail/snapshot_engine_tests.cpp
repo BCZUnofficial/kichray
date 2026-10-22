@@ -8,6 +8,7 @@ SnapshotGPU gpu;FakeD3D d3d;SnapshotHW HW={&d3d,&gpu,0};CResourceManager resourc
 SnapshotFlags psHUD_Flags,psDeviceFlags;SnapshotConsole console;SnapshotConsole* Console=&console;
 IRender_interface renderer;IRender_interface* Render=&renderer;SnapshotPersistent persistent;SnapshotPersistent* g_pGamePersistent=&persistent;
 SnapshotLevel level;SnapshotLevel* g_pGameLevel=&level;SnapshotCache RCache;SnapshotFS FS;std::vector<int> g_loading_events;bool native=false;
+void RenderSnapshot_D3D9Resources(void*,uint32_t){}
 unsigned checks=0;
 void Require(bool value,const char* why){++checks;if(!value)throw std::runtime_error(why);}
 std::string Read(){std::ifstream in(RenderSnapshot_LastPath());std::ostringstream out;out<<in.rdbuf();return out.str();}
@@ -27,5 +28,18 @@ int main(int argc,char** argv){try{Require(argc==2,"directory");FS.directory=arg
     Require(Read().find("renderer=R1")!=std::string::npos,"absent legacy renderer is not dereferenced");
     native=true;persistent.menu=true;++Device.dwFrame;RenderSnapshot_Request();RenderSnapshot_EngineBegin();RenderSnapshot_EngineEnd();
     Require(Read().find("renderer=R4")!=std::string::npos && Read().find("scene=MENU")!=std::string::npos,"native/menu metadata uses same recorder");
-    printf("G3a-S production engine/D3D9 adapter: %u checks passed\n",checks);return 0;
+    persistent.menu=false;console.bVisible=false;Device.paused=true;Device.mProject.m[3][2]=42;
+    RenderSnapshot_UIWindow("PDA","test_pda",true);RenderSnapshot_RequestReason("HOTKEY");RenderSnapshot_EngineBegin();const uint64_t paused_render=RenderSnapshot_RenderFrameID();RenderSnapshot_EngineEnd();
+    const auto paused=Read();Require(paused.find("observed_screen=PDA")!=std::string::npos && paused.find("paused=1")!=std::string::npos,"manual snapshot works in paused actual PDA");
+    Require(paused.find("world_projection=1,0,0,0,0,1,0,0,0,0,1,0,0,0,42,1")!=std::string::npos,"all sixteen actual world projection elements recorded");
+    RenderSnapshot_RequestReason("HOTKEY");RenderSnapshot_EngineBegin();Require(RenderSnapshot_RenderFrameID()>paused_render,"graphical frame advances even with unchanged engine frame");RenderSnapshot_EngineEnd();
+    RenderSnapshot_UIWindow("PDA","test_pda",false);Device.paused=false;
+    Require(RenderSnapshot_UICycleRequest("INVENTORY"),"arm actual UI cycle at engine boundary");RenderSnapshot_EngineBegin();Require(g_render_snapshot_active,"graphics pump schedules baseline before Wanted check");RenderSnapshot_EngineEnd();
+    RenderSnapshot_UIWindow("INVENTORY","inventory",true);Device.paused=true;RenderSnapshot_EngineBegin();Require(g_render_snapshot_active,"paused UI graphical pump schedules opened snapshot");RenderSnapshot_EngineEnd();
+    RenderSnapshot_UIWindow("INVENTORY","inventory",false);Device.paused=false;RenderSnapshot_EngineBegin();Require(g_render_snapshot_active,"actual game state schedules recovery");RenderSnapshot_EngineEnd();
+    Require(!RenderSnapshot_Wanted(),"one-shot cycle leaves no ongoing capture");
+    native=false;RenderSnapshot_ProfileRequest(1);RenderSnapshot_EngineBegin();const unsigned before_queries=gpu.query_count;
+    RenderSnapshot_D3D9Draw(NULL,NULL,20,4,3,0,1,true,0);RenderSnapshot_EngineEnd();
+    Require(gpu.query_count==before_queries,"counter-only D3D9 profile does not query shader/resource/state objects");
+    printf("G3b.1 production engine/D3D9 adapter: %u checks passed\n",checks);return 0;
 }catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

@@ -127,6 +127,23 @@ void ResolvedTextureTelemetry(const char* directory){Harness h;Require(h.Start()
     std::ifstream file(RenderSnapshot_LastPath());std::ostringstream text;text<<file.rdbuf();
     Require(text.str().find("texture0=CHECKER_FALLBACK:missing/model")!=std::string::npos && text.str().find("texture0=$white")!=std::string::npos,"draw telemetry reports resolved fallback and white texture names");
 }
+void IdentityAndPoseTelemetry(const char* directory){Harness h;Require(h.Start()==0,"telemetry model setup");auto mesh=Source();kich_r4_capture::Batch batch;batch.engine_frame=51;
+    auto a=Command(mesh),b=a,c=a,d=a;
+    a.identity_measured=b.identity_measured=c.identity_measured=d.identity_measured=true;
+    a.visual_id=1;b.visual_id=2;c.visual_id=3;d.visual_id=4;
+    a.skeleton_id=b.skeleton_id=100;c.skeleton_id=200;d.skeleton_id=0;
+    a.source_frame=b.source_frame=c.source_frame=d.source_frame=51;a.pose_hash=b.pose_hash=c.pose_hash=77;a.pose_hash_valid=b.pose_hash_valid=c.pose_hash_valid=true;
+    batch.native_models={a,b,c,d};RenderSnapshotInfo info={};strcpy(info.renderer,"R4");strcpy(info.api,"D3D11");strncpy(info.directory,directory,sizeof(info.directory)-1);
+    Require(RenderSnapshot_Request(),"identity snapshot request");RenderSnapshot_Begin(info);
+    Require(h.models.Prepare(h.frame,h.level,batch)==0,"identity telemetry prepares existing four uploads");
+    Require(h.models.pose_uploads==4 && h.models.unique_skeletons==2 && h.models.unique_parts==4 && h.models.unknown_skeleton_commands==1,"commands and visual parts do not become four NPCs or skeletons");
+    Require(h.models.unique_poses==2 && h.models.repeated_pose_uploads==1 && h.models.max_pose_upload_multiplicity==2,"shared skeleton pose parts counted as one identity with two uploads; identical unrelated pose remains distinct");
+    const unsigned before=uploads;Require(h.Draw(batch,KichR4ModelSession::Geometry)==0 && h.Draw(batch,KichR4ModelSession::Shadow)==0,"two phases use recorded palettes");
+    Require(uploads==before && h.models.pose_uses==8 && h.models.command_uses[0]==2,"pass reuse is measured without adding dedup or changing uploads");
+    h.models.SnapshotSummary();RenderSnapshot_End("COMPLETE");std::ifstream file(RenderSnapshot_LastPath());std::ostringstream text;text<<file.rdbuf();
+    Require(text.str().find("unique_skeleton_instances=2")!=std::string::npos && text.str().find("uploads_this_frame=2")!=std::string::npos,"schema records exact unique instance count and per-pose upload multiplicity");
+    Require(text.str().find("successful_draw_uses=4")!=std::string::npos && text.str().find("NOT_NPC_ID")!=std::string::npos,"shared pose used by two parts in two phases remains explicitly not an NPC id");
+}
 void Rules(){KichR4ModelPose pose={};Require(ValidModelPose(pose),"rigid pose has empty palette");pose.skinned=1;Require(!ValidModelPose(pose),"skinned requires initialized nonempty palette");
     pose.bone_count=256;pose.skin_mode=2;Require(ValidModelPose(pose),"maximum palette accepted");pose.bone_count=257;Require(!ValidModelPose(pose),"palette overflow rejected");pose.bone_count=1;
     pose.bones[0][0]=std::numeric_limits<float>::quiet_NaN();Require(!ValidModelPose(pose),"nonfinite bone rejected");pose.bones[0][0]=1;pose.reserved=1;Require(!ValidModelPose(pose),"reserved ABI fields zero");
@@ -137,6 +154,6 @@ void Rules(){KichR4ModelPose pose={};Require(ValidModelPose(pose),"rigid pose ha
     cmd=Command(mesh);mesh->hardware_weights_safe=false;Require(!KichR4ModelSession::ValidCommand(cmd),"unsafe hardware quantization rejected");cmd.skin_mode=KICH_R4_SKIN_SOFTWARE;Require(KichR4ModelSession::ValidCommand(cmd),"raw software mode retains extrapolating compatibility");
 }
 }
-int main(int argc,char** argv){try{(void)&Scenario;Require(argc==2,"snapshot output directory");Rules();const int positions=FailureScenario(0);for(int i=1;i<=positions;++i)FailureScenario(i);ReuseAndRouting();PointerReuse();AdmissionAndMaterial();RetirementFailure();OrderedSingleSubmission();ResolvedTextureTelemetry(argv[1]);
+int main(int argc,char** argv){try{(void)&Scenario;Require(argc==2,"snapshot output directory");Rules();const int positions=FailureScenario(0);for(int i=1;i<=positions;++i)FailureScenario(i);ReuseAndRouting();PointerReuse();AdmissionAndMaterial();RetirementFailure();OrderedSingleSubmission();ResolvedTextureTelemetry(argv[1]);IdentityAndPoseTelemetry(argv[1]);
     printf("G3b GPU model session: %d checks; %d injected failure positions passed\n",checks,positions);return 0;
 }catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

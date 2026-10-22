@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "RenderSnapshot.h"
 #pragma hdrstop
 
 #include "xr_input.h"
@@ -180,6 +181,8 @@ void CInput::KeyUpdate()
 	{
 		key = od[i].dwOfs;
 		KBState[key] = od[i].dwData & 0x80;
+        // Observe the assigned physical key before UI routing; do not consume it.
+        if(KBState[key] && key && key==RenderSnapshot_GetHotkey())RenderSnapshot_RequestReason("HOTKEY");
 		if (KBState[key])
 			cbStack.back()->IR_OnKeyboardPress(key);
 		if (!KBState[key])
@@ -420,6 +423,8 @@ void CInput::iCapture(IInputReceiver* p)
 		cbStack.back()->IR_OnDeactivate();
 	cbStack.push_back(p);
 	cbStack.back()->IR_OnActivate();
+    char owner[64];snprintf(owner,sizeof(owner),"PROCESS_HANDLE:%llX",(unsigned long long)(uintptr_t)CurrentIR());
+    RenderSnapshot_UIInput(owner);RenderSnapshot_Event("INPUT",owner,"CAPTURE","APPLIED");
 
 	// prepare for _new_ controller
 	ZeroMemory(timeStamp, sizeof(timeStamp));
@@ -448,6 +453,8 @@ void CInput::iRelease(IInputReceiver* p)
 				break;
 			}
 	}
+    char owner[64];snprintf(owner,sizeof(owner),"PROCESS_HANDLE:%llX",(unsigned long long)(uintptr_t)CurrentIR());
+    RenderSnapshot_UIInput(owner);RenderSnapshot_Event("INPUT",owner,"RELEASE","APPLIED");
 }
 
 void CInput::OnAppActivate(void)

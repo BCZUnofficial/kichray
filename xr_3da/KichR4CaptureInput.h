@@ -12,7 +12,7 @@ struct Style {
     Style():blend(0),src(5),dst(6),clamp(0),cull(KICH_R4_CULL_BACK),depth(1),write(1),alpha_func(8),alpha_ref(0),min_z(0),max_z(1),scissor(false){memset(rect,0,sizeof(rect));}
 };
 struct ModelInput {
-    void* visual;uint32_t count,first,triangles,bone_count,skin_mode;
+    void* visual;const void* skeleton;uint32_t count,first,triangles,bone_count,skin_mode;
     float world[16],vp[16];const float* bones;Style style;
     /* Borrowed only until CaptureSubmitModel returns. Null uses source OGF metadata. */
     const char* shader;const char* texture;const char* secondary;uint32_t effect,shader_element,shader_pass;

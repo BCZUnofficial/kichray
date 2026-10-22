@@ -29,6 +29,7 @@ struct Group {uint32_t mesh,variant,first,count;};
 struct Frame {
     uint64_t generation;
     uint32_t engine_frame;
+    bool source_frame_known; // Diagnostic validity, independent of frame zero and wrap.
     std::vector<Mesh> meshes;
     std::vector<Group> groups;
     std::vector<KichR4DetailInstance> instances;
@@ -41,11 +42,11 @@ struct Frame {
     uint32_t legacy_draws;
     uint64_t legacy_vertices,legacy_indices;
     double prepare_ms;
-    Frame():generation(0),engine_frame(0),legacy_draws(0),legacy_vertices(0),legacy_indices(0),prepare_ms(0){ClearFrame(0);}
+    Frame():generation(0),engine_frame(0),legacy_draws(0),legacy_vertices(0),legacy_indices(0),prepare_ms(0){ClearFrame(0);source_frame_known=false;}
     void ClearFrame(uint32_t frame){if(engine_frame!=frame){legacy_draws=0;legacy_vertices=legacy_indices=0;}
-        engine_frame=frame;groups.clear();instances.clear();shadow_groups.clear();shadow_instances.clear();prepare_ms=0;
+        engine_frame=frame;source_frame_known=true;groups.clear();instances.clear();shadow_groups.clear();shadow_instances.clear();prepare_ms=0;
         for(unsigned i=0;i<3;++i){variants[i]=0;for(unsigned j=0;j<4;++j)wave[i][j]=wind[i][j]=0;}}
-    void Reset(){meshes.clear();ClearFrame(0);legacy_draws=0;legacy_vertices=legacy_indices=0;++generation;}
+    void Reset(){meshes.clear();ClearFrame(0);legacy_draws=0;legacy_vertices=legacy_indices=0;++generation;source_frame_known=false;}
     static void Validate(const KichR4DetailInstance& v){
         for(unsigned r=0;r<3;++r)for(unsigned c=0;c<4;++c)if(!Finite(v.row[r][c]))throw std::runtime_error("nonfinite detail transform");
         for(unsigned c=0;c<4;++c)if(!Finite(v.lighting[c]))throw std::runtime_error("nonfinite detail lighting");}

@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "../xrRender/R2LightSnapshot.h"
 
 IC bool pred_area(light* _1, light* _2)
 {
@@ -19,6 +20,7 @@ void CRender::render_lights(light_Package& LP)
 		{
 			light* L = source[it];
 			L->vis_update();
+			kich_r2_light_snapshot::Record(L,"visibility",L->vis.visible?"ACCEPTED":"REJECTED",L->vis.pending?"VIS_QUERY_PENDING_USING_CACHED_RESULT":"VIS_QUERY_RESULT");
 			if (!L->vis.visible)
 			{
 				source.erase(source.begin() + it);
@@ -109,6 +111,7 @@ void CRender::render_lights(light_Package& LP)
 			r_dsgraph_render_subspace(L->spatial.sector, L->X.S.combine, L->position, TRUE);
 			bool bNormal = mapNormal[0].size() || mapMatrix[0].size();
 			bool bSpecial = mapNormal[1].size() || mapMatrix[1].size() || mapSorted.size();
+			kich_r2_light_snapshot::Record(L,"shadow_graph",(bNormal||bSpecial)?"SELECTED":"REJECTED",(bNormal||bSpecial)?"CASTER_GRAPH_NONEMPTY":"CASTER_GRAPH_EMPTY");
 			if (bNormal || bSpecial)
 			{
 				stats.s_merged++;
@@ -145,6 +148,7 @@ void CRender::render_lights(light_Package& LP)
 			light* L = LP.v_point.back();
 			LP.v_point.pop_back();
 			L->vis_update();
+			kich_r2_light_snapshot::Record(L,"visibility",L->vis.visible?"ACCEPTED":"REJECTED",L->vis.pending?"VIS_QUERY_PENDING_USING_CACHED_RESULT":"VIS_QUERY_RESULT");
 			if (L->vis.visible)
 			{
 				Target->accum_point(L);
@@ -158,6 +162,7 @@ void CRender::render_lights(light_Package& LP)
 			light* L = LP.v_spot.back();
 			LP.v_spot.pop_back();
 			L->vis_update();
+			kich_r2_light_snapshot::Record(L,"visibility",L->vis.visible?"ACCEPTED":"REJECTED",L->vis.pending?"VIS_QUERY_PENDING_USING_CACHED_RESULT":"VIS_QUERY_RESULT");
 			if (L->vis.visible)
 			{
 				LR.compute_xf_spot(L);
@@ -185,6 +190,7 @@ void CRender::render_lights(light_Package& LP)
 		for (u32 pid = 0; pid < Lvec.size(); pid++)
 		{
 			Lvec[pid]->vis_update();
+			kich_r2_light_snapshot::Record(Lvec[pid],"visibility",Lvec[pid]->vis.visible?"ACCEPTED":"REJECTED",Lvec[pid]->vis.pending?"VIS_QUERY_PENDING_USING_CACHED_RESULT":"VIS_QUERY_RESULT");
 			if (Lvec[pid]->vis.visible)
 			{
 				render_indirect(Lvec[pid]);
@@ -201,6 +207,7 @@ void CRender::render_lights(light_Package& LP)
 		for (u32 pid = 0; pid < Lvec.size(); pid++)
 		{
 			Lvec[pid]->vis_update();
+			kich_r2_light_snapshot::Record(Lvec[pid],"visibility",Lvec[pid]->vis.visible?"ACCEPTED":"REJECTED",Lvec[pid]->vis.pending?"VIS_QUERY_PENDING_USING_CACHED_RESULT":"VIS_QUERY_RESULT");
 			if (Lvec[pid]->vis.visible)
 			{
 				LR.compute_xf_spot(Lvec[pid]);

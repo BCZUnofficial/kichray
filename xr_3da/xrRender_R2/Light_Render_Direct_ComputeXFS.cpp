@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "../xrRender/R2LightSnapshot.h"
 #include "light_render_direct.h"
 
 void CLight_Compute_XFORM_and_VIS::compute_xf_spot(light* L)
@@ -87,4 +88,7 @@ void CLight_Compute_XFORM_and_VIS::compute_xf_spot(light* L)
 	// Msg				("x(%f) : a(%f), b(%f)",x,g_alpha,g_beta);
 	L->X.S.project.build_projection(L->cone + deg2rad(3.5f), 1.f, SMAP_near_plane, L->range + EPS_S);
 	L->X.S.combine.mul(L->X.S.project, L->X.S.view);
+	kich_r2_light_snapshot::ShadowFloat(L,"LOCAL","projection_near",SMAP_near_plane);
+	kich_r2_light_snapshot::ShadowFloat(L,"LOCAL","projection_far",L->range+EPS_S);
+	kich_r2_light_snapshot::ShadowFloat(L,"LOCAL","projection_fov_radians",L->cone+deg2rad(3.5f));
 }

@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "RenderSnapshotUI.h"
 #include "UICellItem.h"
 #include "../xr_level_controller.h"
 #include "../../xr_input.h"
@@ -26,6 +27,13 @@ CUICellItem::~CUICellItem()
 
 void CUICellItem::Draw()
 {
+    snapshot_ui::Scope snapshot_scope(this,"INVENTORY_CELL");
+    if(RenderSnapshot_Detailed()){
+        RenderSnapshot_RecordU64("UI",snapshot_scope.id,"stack_children",ChildsCount());
+        RenderSnapshot_RecordU64("UI",snapshot_scope.id,"grid_width",GetGridSize().x);
+        RenderSnapshot_RecordU64("UI",snapshot_scope.id,"grid_height",GetGridSize().y);
+        char handle[64];snapshot_ui::Handle(this,handle,sizeof(handle));RenderSnapshot_Record("UI",snapshot_scope.id,"cell_handle",handle);
+    }
 	m_b_already_drawn = true;
 	inherited::Draw();
 	if (m_custom_draw)
@@ -190,6 +198,10 @@ void CUIDragItem::OnFrame()
 
 void CUIDragItem::Draw()
 {
+    snapshot_ui::Scope snapshot_scope(this,"DRAGGED_INVENTORY_CELL");
+    if(RenderSnapshot_Detailed()){
+        char parent[64];snapshot_ui::Handle(ParentItem(),parent,sizeof(parent));RenderSnapshot_Record("UI",snapshot_scope.id,"drag_source_cell",parent);
+    }
 	Fvector2 tmp;
 	tmp.sub(GetWndPos(), GetUICursor()->GetCursorPosition());
 	tmp.sub(m_pos_offset);

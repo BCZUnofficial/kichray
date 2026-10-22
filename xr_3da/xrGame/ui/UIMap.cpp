@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "RenderSnapshotUI.h"
 #include "../level.h"
 //.#include "../LevelFogOfWar.h"
 #include "../map_location.h"
@@ -342,6 +343,7 @@ float CUIGlobalMap::CalcOpenRect(const Fvector2& center_point, Frect& map_desire
 CUILevelMap::CUILevelMap(CUIMapWnd* p)
 {
 	m_mapWnd = p;
+    m_snapshot_update_frame=0;m_snapshot_considered=m_snapshot_updated=0;m_snapshot_selection="NOT_YET_UPDATED";
 	//	m_anomalies_map		= NULL;
 	Show(false);
 }
@@ -353,6 +355,19 @@ CUILevelMap::~CUILevelMap()
 
 void CUILevelMap::Draw()
 {
+    snapshot_ui::Scope snapshot_scope(this,"PDA_LEVEL_MAP");
+    if(RenderSnapshot_Detailed()){
+        RenderSnapshot_Record("UI",snapshot_scope.id,"map_resource",MapName().c_str());
+        RenderSnapshot_RecordU64("UI",snapshot_scope.id,"all_logical_locations",Level().MapManager().Locations().size());
+        RenderSnapshot_RecordU64("UI",snapshot_scope.id,"attached_map_children",GetChildNum());
+        RenderSnapshot_Record("UI",snapshot_scope.id,"count_semantics","LOGICAL_GLOBAL_REGISTRY_VS_ATTACHED_CACHED_WIDGETS_NOT_SUBMITTED_DRAWS");
+        snapshot_ui::Number(snapshot_scope.id,"map_zoom",GetCurrentZoom());snapshot_ui::Rect(snapshot_scope.id,"map_bound_world_rect",BoundRect());
+        RenderSnapshot_RecordU64("UI",snapshot_scope.id,"spot_update_engine_frame",m_snapshot_update_frame);
+        RenderSnapshot_RecordU64("UI",snapshot_scope.id,"spot_update_age_engine_frames",Device.dwFrame-m_snapshot_update_frame);
+        RenderSnapshot_RecordU64("UI",snapshot_scope.id,"spot_update_considered",m_snapshot_considered);
+        RenderSnapshot_RecordU64("UI",snapshot_scope.id,"spot_update_eligible",m_snapshot_updated);
+        RenderSnapshot_Record("UI",snapshot_scope.id,"spot_selection_status",m_snapshot_selection);
+    }
 	if (MapWnd())
 	{
 		for (WINDOW_LIST_it it = m_ChildWndList.begin(); m_ChildWndList.end() != it; ++it)
@@ -403,13 +418,14 @@ void CUILevelMap::Init(shared_str name, CInifile& gameLtx, LPCSTR sh_name)
 
 void CUILevelMap::UpdateSpots()
 {
+    m_snapshot_update_frame=Device.dwFrame;m_snapshot_considered=m_snapshot_updated=0;m_snapshot_selection="NO_ELIGIBLE_LOCATIONS";
 	DetachAll();
 	if (fsimilar(MapWnd()->GlobalMap()->GetCurrentZoom(), MapWnd()->GlobalMap()->GetMinZoom(), EPS_L))
-		return;
+    {m_snapshot_selection="REJECTED_MINIMUM_ZOOM";return;}
 	Frect _r;
 	GetAbsoluteRect(_r);
 	if (FALSE == MapWnd()->ActiveMapRect().intersected(_r))
-		return;
+    {m_snapshot_selection="REJECTED_MAP_OUTSIDE_VIEWPORT";return;}
 	/*
 		if(m_anomalies_map){
 			m_anomalies_map->SetWndPos	(0.0f,0.0f);
@@ -423,8 +439,11 @@ void CUILevelMap::UpdateSpots()
 	Locations& ls = Level().MapManager().Locations();
 	for (Locations_it it = ls.begin(); it != ls.end(); ++it)
 	{
-		if ((*it).location->Update())
+        ++m_snapshot_considered;
+		if ((*it).location->Update()){
+            ++m_snapshot_updated;m_snapshot_selection="ELIGIBLE_LOCATIONS_PROCESSED";
 			(*it).location->UpdateLevelMap(this);
+        }
 	}
 }
 

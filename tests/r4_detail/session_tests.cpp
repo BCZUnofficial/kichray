@@ -102,6 +102,17 @@ int ScenarioDetail(int fail=0){Fixture fixture;f=&fixture;f->fail=fail;ResetDefe
     KichR4GeometryReport report={};if(game.Stop(report)<0)game.Stop(report);
     Require(!f->live && f->objects.empty() && f->created==f->released,"partial details and streams released by one owner");return positions;
 }
+void DetailSourceIdentity(){
+    KichR4DetailSession detail;kich_r4_detail::Frame source;detail.source=&source;
+    BeginSnapshot(100);detail.SnapshotSummary(100,true);std::string report=EndSnapshot();
+    Require(Has(report,"source_frame_valid=0") && Has(report,"source_engine_frame=NOT_AVAILABLE"),"unknown detail source frame is not converted to a sentinel ID");
+    source.ClearFrame(97);source.generation=42;detail.generation=42;detail.vertex_bytes=UINT64_C(9007199254740993);
+    BeginSnapshot(100);detail.SnapshotSummary(100,true);report=EndSnapshot();
+    Require(Has(report,"source_age_engine_frames=3") && Has(report,"source_engine_frame=97"),"stale source retains real source frame and age");
+    Require(Has(report,"gpu_vertex_bytes=9007199254740993"),"detail allocation counters stay exact above binary64 integer range");
+    BeginSnapshot(90);detail.SnapshotSummary(90,true);report=EndSnapshot();
+    Require(Has(report,"source_age_engine_frames=FRAME_COUNTER_WRAP_OR_RESET"),"source reset cannot underflow into a giant age");
+}
 void IndependentShadowLists(){Fixture fixture;f=&fixture;ResetDeferredRecorder();detail_pipelines.clear();uploaded.clear();instance_uploads=detail_draws=0;
     const KichR4LevelFiles files={Open,Close};kich_r4_game::Session game(DeferredAPIs(),files,"l01_escape",NULL);
     auto source=Source();auto& details=game.deferred.details;details.source=&source;details.api={sizeof(details.api),KICH_R4_DETAIL_ABI,sizeof(void*),0,DetailPipeline,Instances,UploadInstances,DetailDraw};game.deferred.native_mode=true;
@@ -133,6 +144,6 @@ void IndependentShadowLists(){Fixture fixture;f=&fixture;ResetDeferredRecorder()
 int main(int argc,char** argv){try{(void)&Scenario;(void)&DDraw;Require(argc==2,"snapshot output directory");snapshot_directory=argv[1];
     Require(!ValidDetailCapacity(0) && !ValidDetailCapacity(UINT32_MAX) && ValidDetailCapacity(KICH_R4_MAX_DETAIL_INSTANCES),"instance budget boundaries");
     Require(!ValidDetailRange(UINT32_MAX,1,16) && !ValidDetailRange(1,UINT32_MAX,16) && !ValidDetailRange(0,0,16) && ValidDetailRange(16,1,17),"overflow-safe instance ranges");
-    DetailBounds();IndependentShadowLists();const int positions=ScenarioDetail();for(int i=1;i<=positions;++i)ScenarioDetail(i);
+    DetailBounds();DetailSourceIdentity();IndependentShadowLists();const int positions=ScenarioDetail();for(int i=1;i<=positions;++i)ScenarioDetail(i);
     printf("G3b native detail submission: %d checks; %d failure positions passed\n",checks,positions);return 0;
 }catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

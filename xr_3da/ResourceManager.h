@@ -55,12 +55,19 @@ class ENGINE_API CResourceManager
   public:
 	// Diagnostic-only lookup; called only during a requested frame snapshot.
 	LPCSTR SnapshotVSName(IDirect3DVertexShader9* shader) const {
+		if(!shader)return "NONE";
 		for(map_VS::const_iterator i=m_vs.begin();i!=m_vs.end();++i)if(i->second->vs==shader)return i->second->cName.c_str();
 		return shader?"UNKNOWN":"NONE";
 	}
 	LPCSTR SnapshotPSName(IDirect3DPixelShader9* shader) const {
+		if(!shader)return "NONE";
 		for(map_PS::const_iterator i=m_ps.begin();i!=m_ps.end();++i)if(i->second->ps==shader)return i->second->cName.c_str();
 		return shader?"UNKNOWN":"NONE";
+	}
+	LPCSTR SnapshotTextureName(IDirect3DBaseTexture9* texture) const {
+		if(!texture)return "NONE";
+		for(map_Texture::const_iterator i=m_textures.begin();i!=m_textures.end();++i)if(i->second->pSurface==texture)return i->second->cName.c_str();
+		return texture?"UNKNOWN":"NONE";
 	}
   private:
 

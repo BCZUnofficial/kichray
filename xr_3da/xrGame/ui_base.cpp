@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ui/RenderSnapshotUI.h"
 #include "ui_base.h"
 #include "GamePersistent.h"
 #include "UICursor.h"
@@ -182,6 +183,13 @@ void ui_core::PushScissor(const Frect& r_tgt, bool overlapped)
 	r.x2 = iFloor(result.x2 + 0.5f);
 	r.y1 = iFloor(result.y1);
 	r.y2 = iFloor(result.y2 + 0.5f);
+    if(RenderSnapshot_Detailed()){
+        RenderSnapshotProvenance provenance;RenderSnapshot_GetProvenance(&provenance);const char* id=provenance.ui_widget[0]?provenance.ui_widget:"UNATTRIBUTED_SCISSOR";
+        snapshot_ui::Rect(id,"clip_requested_ui_units",r_tgt);snapshot_ui::Rect(id,"clip_effective_pixels_before_rounding",result);
+        char pixels[96];snprintf(pixels,sizeof(pixels),"%d,%d,%d,%d",r.x1,r.y1,r.x2,r.y2);RenderSnapshot_Record("UI",id,"clip_effective_pixels",pixels);
+        RenderSnapshot_RecordU64("UI",id,"clip_stack_depth",m_Scissors.size());
+        RenderSnapshot_Record("UI",id,"clip_source","UI_CORE_PUSH_SCISSOR;BOUND_RECT_IN_DRAW_BACKEND_STATE");
+    }
 	RCache.set_Scissor(&r);
 }
 

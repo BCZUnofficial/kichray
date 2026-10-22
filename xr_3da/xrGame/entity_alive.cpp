@@ -1,4 +1,5 @@
 #include "pch_script.h"
+#include "../xrRender/WallmarkSnapshot.h"
 #include "entity_alive.h"
 #include "inventoryowner.h"
 #include "inventory.h"
@@ -423,6 +424,7 @@ void CEntityAlive::PlaceBloodWallmark(const Fvector& dir, const Fvector& start_p
 
 			{
 				//добавить отметку на материале
+				kich_wallmark_snapshot::Event("STATIC_REQUEST",pTri,"ORIGIN","BLOOD; CEntityAlive::PlaceBloodWallmark");
 				::Render->add_StaticWallmark(wallmarkShader, end_point, wallmark_size, pTri, pVerts);
 			}
 		}

@@ -1,10 +1,13 @@
 #include "stdafx.h"
+#include "../xrRender/R2LightSnapshot.h"
 
 extern Fvector du_cone_vertices[DU_CONE_NUMVERTEX];
 
 void CRenderTarget::accum_spot(light* L)
 {
 	phase_accumulator();
+	kich_r2_light_snapshot::Bind(L,"SPOT_ACCUMULATION");
+	kich_r2_light_snapshot::Record(L,"accumulation","SELECTED","ACTUAL_accum_spot_CALL; SEE_DRAW_SUBMITTED_RESULT");
 	RImplementation.stats.l_visible++;
 
 	// *** assume accumulator setted up ***
@@ -77,6 +80,8 @@ void CRenderTarget::accum_spot(light* L)
 		float view_sy = float(L->X.S.posY + 1) / smapsize;
 		float fRange = float(1.f) * ps_r2_ls_depth_scale;
 		float fBias = ps_r2_ls_depth_bias;
+		kich_r2_light_snapshot::ShadowFloat(L,"LOCAL","receiver_depth_scale",fRange);
+		kich_r2_light_snapshot::ShadowFloat(L,"LOCAL","receiver_depth_bias",fBias);
 		Fmatrix m_TexelAdjust = {view_dim / 2.f,
 								 0.0f,
 								 0.0f,
@@ -135,6 +140,7 @@ void CRenderTarget::accum_spot(light* L)
 	float L_spec;
 	L_clr.set(L->color.r, L->color.g, L->color.b);
 	L_clr.mul(L->get_LOD());
+	if(RenderSnapshot_Detailed()){char id[64],rgb[128];kich_r2_light_snapshot::NodeID(id,sizeof(id),L);snprintf(rgb,sizeof(rgb),"%.9g,%.9g,%.9g",L_clr.x,L_clr.y,L_clr.z);RenderSnapshot_Record("LIGHT",id,"accumulation_color_after_LOD",rgb);}
 	L_spec = u_diffuse2s(L_clr);
 	Device.mView.transform_tiny(L_pos, L->position);
 	Device.mView.transform_dir(L_dir, L->direction);

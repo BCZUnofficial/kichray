@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ui/RenderSnapshotUI.h"
 #include "uicursor.h"
 
 #include "../CustomHUD.h"
@@ -42,6 +43,10 @@ void CUICursor::InitInternal()
 u32 last_render_frame = 0;
 void CUICursor::OnRender()
 {
+    RenderSnapshot_Text("UI_STATE","cursor_status","OBSERVED_IN_UI_CURSOR_RENDER_CALLBACK");
+    RenderSnapshot_U64("UI_STATE","cursor_visible",IsVisible()?1:0);
+    RenderSnapshot_Value("UI_STATE","cursor_x_ui_units",vPos.x);RenderSnapshot_Value("UI_STATE","cursor_y_ui_units",vPos.y);
+    RenderSnapshot_U64("UI_STATE","cursor_sample_engine_frame",Device.dwFrame);
 	if (!IsVisible())
 		return;
 #ifdef DEBUG

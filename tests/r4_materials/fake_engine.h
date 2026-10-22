@@ -25,6 +25,10 @@ struct ShaderElement {
     struct Flags {bool bDistort,bWmark;Flags():bDistort(false),bWmark(false){}}flags;
     std::vector<Ref<SPass> > passes;
 };
+struct SelectionObservation {uint32_t pass,element,available;std::string reason;};
+extern std::vector<SelectionObservation> selections;
+inline bool RenderSnapshot_Detailed(){return true;}
+inline void RenderSnapshot_MaterialSelection(ShaderElement*,uint32_t pass,uint32_t element,uint32_t available,const char* reason){selections.push_back(SelectionObservation{pass,element,available,reason});}
 struct Shader {Ref<ShaderElement> E[6];};
 struct Fvector {
     float x,y,z;

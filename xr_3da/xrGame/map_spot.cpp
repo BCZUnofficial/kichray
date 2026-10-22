@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ui/RenderSnapshotUI.h"
 #include "map_spot.h"
 #include "map_location.h"
 
@@ -32,6 +33,19 @@ LPCSTR CMapSpot::GetHint()
 {
 	return MapLocation()->GetHint();
 };
+
+void CMapSpot::Draw()
+{
+    snapshot_ui::Scope snapshot_scope(this,"MAP_MARKER");
+    if(RenderSnapshot_Detailed() && MapLocation()){
+        RenderSnapshot_RecordU64("UI",snapshot_scope.id,"marker_object_id",MapLocation()->ObjectID());
+        RenderSnapshot_Record("UI",snapshot_scope.id,"marker_spot_enabled",MapLocation()->SpotEnabled()?"YES":"NO");
+        RenderSnapshot_Record("UI",snapshot_scope.id,"marker_selection_stage","ATTACHED_WIDGET_DRAW_CALLED_NOT_VISIBLE_PIXEL_PROOF");
+        RenderSnapshot_Record("UI",snapshot_scope.id,"marker_level",MapLocation()->SnapshotCachedLevelName());
+        RenderSnapshot_RecordU64("UI",snapshot_scope.id,"marker_cached_engine_frame",MapLocation()->SnapshotCachedFrame());
+    }
+    inherited::Draw();
+}
 
 void CMapSpot::Update()
 {

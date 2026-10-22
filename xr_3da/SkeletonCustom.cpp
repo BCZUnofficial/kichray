@@ -1,5 +1,6 @@
 //---------------------------------------------------------------------------
 #include "stdafx.h"
+#include "xrRender/WallmarkSnapshot.h"
 #pragma hdrstop
 
 #include "SkeletonCustom.h"
@@ -689,7 +690,7 @@ void CKinematics::AddWallmark(const Fmatrix* parent_xform, const Fvector3& start
 		}
 	}
 	if (!picked)
-		return;
+	{kich_wallmark_snapshot::Event("SKELETAL_REQUEST",this,"REJECTED","NO_PICKABLE_BONE_INTERSECTION");return;}
 
 	// calculate contact point
 	Fvector cp;
@@ -750,6 +751,7 @@ void CKinematics::AddWallmark(const Fmatrix* parent_xform, const Fvector3& start
 	}
 
 	wallmarks.push_back(wm);
+	kich_wallmark_snapshot::Event("skeletal",wm.get(),"GEOMETRY_CREATED",wm->m_Faces.empty()?"EMPTY_GEOMETRY_STORED":"STORED_ON_SKELETON");
 }
 
 static const float LIFE_TIME = 30.f;
@@ -771,15 +773,20 @@ void CKinematics::CalculateWallmarks()
 		{
 			intrusive_ptr<CSkeletonWallmark>& wm = *it;
 			float w = (Device.fTimeGlobal - wm->TimeStart()) / LIFE_TIME;
+			char snapshot_id[96]={};if(RenderSnapshot_Detailed()){kich_wallmark_snapshot::ID(snapshot_id,sizeof(snapshot_id),"skeletal",wm.get());
+				RenderSnapshot_Record("DECALS",snapshot_id,"upstream_owner","CKinematics::CalculateWallmarks");
+				kich_wallmark_snapshot::Float(snapshot_id,"ttl_fraction_before_selection",w);}
 			if (w < 1.f)
 			{
 				// append wm to WallmarkEngine
 				if (::Render->ViewBase.testSphere_dirty(wm->m_Bounds.P, wm->m_Bounds.R))
-					::Render->add_SkeletonWallmark(wm);
+				{if(g_render_snapshot_active)RenderSnapshot_Record("DECALS",snapshot_id,"upstream_selection","SELECTED_CAMERA_SPHERE");::Render->add_SkeletonWallmark(wm);}
+				else if(g_render_snapshot_active)RenderSnapshot_Record("DECALS",snapshot_id,"upstream_selection","REJECTED_CAMERA_SPHERE");
 			}
 			else
 			{
 				// remove wallmark
+				if(g_render_snapshot_active)RenderSnapshot_Record("DECALS",snapshot_id,"upstream_selection","REJECTED_TTL");
 				need_remove = true;
 			}
 		}

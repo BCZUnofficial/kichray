@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "RenderSnapshotUI.h"
 #include "uistatic.h"
 #include "UIXmlInit.h"
 #include "UITextureMaster.h"
@@ -148,6 +149,7 @@ void CUIStatic::InitTextureEx(LPCSTR tex_name, LPCSTR sh_name)
 
 void CUIStatic::Draw()
 {
+	snapshot_ui::Scope snapshot_scope(this,"STATIC");
 	if (m_bClipper)
 	{
 		Frect clip_rect;

@@ -1,4 +1,5 @@
 // Level_Bullet_Manager.cpp:	для обеспечения полета пули по траектории
+#include "../xrRender/WallmarkSnapshot.h"
 //								все пули и осколки передаются сюда
 //								(для просчета столкновений и их визуализации)
 //////////////////////////////////////////////////////////////////////
@@ -237,6 +238,7 @@ void CBulletManager::FireShotmark(SBullet* bullet, const Fvector& vDir, const Fv
 			//добавить отметку на материале
 			Fvector p;
 			p.mad(bullet->pos, bullet->dir, R.range - 0.01f);
+			kich_wallmark_snapshot::Event("SKELETAL_REQUEST",PKinematics(R.O->Visual()),"ORIGIN","BULLET_HIT; CBulletManager::FireShotmark");
 			::Render->add_SkeletonWallmark(&R.O->renderable.xform, PKinematics(R.O->Visual()), *pWallmarkShader, p,
 										   bullet->dir, bullet->wallmark_size);
 		}
@@ -256,6 +258,7 @@ void CBulletManager::FireShotmark(SBullet* bullet, const Fvector& vDir, const Fv
 		if (pWallmarkShader && ShowMark)
 		{
 			//добавить отметку на материале
+			kich_wallmark_snapshot::Event("STATIC_REQUEST",pTri,"ORIGIN","BULLET_HIT; CBulletManager::FireShotmark");
 			::Render->add_StaticWallmark(*pWallmarkShader, vEnd, bullet->wallmark_size, pTri, pVerts);
 		}
 	}

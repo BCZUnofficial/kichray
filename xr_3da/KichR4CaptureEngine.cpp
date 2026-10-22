@@ -43,7 +43,7 @@ void KichR4_CaptureModel(void* visual,void* parent,uint32_t vertices,uint32_t fi
 #if !defined(_EDITOR) && !defined(DEDICATED_SERVER)
     uint32_t count=0;if(!KichR4_CaptureActive() || !KichR4_CaptureModelNeeded(visual,count))return;
     if(memcmp(RCache.get_xform_view().m,Device.mView.m,sizeof(Fmatrix)))return;
-    kich_r4_capture::ModelInput input={};input.visual=visual;input.count=vertices;input.first=first;input.triangles=triangles;
+    kich_r4_capture::ModelInput input={};input.visual=visual;input.skeleton=parent;input.count=vertices;input.first=first;input.triangles=triangles;
     input.skin_mode=skin_mode;
     if(!Snapshot(false,input.style))return;
     if(KichR4_NativeActive())KichR4_NativeModelMaterial(input);

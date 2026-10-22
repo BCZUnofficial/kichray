@@ -15,6 +15,8 @@ with tempfile.TemporaryDirectory(prefix="kich-g3a-") as directory:
     # Keep production includes and compile the adapter separately. Stripping
     # includes hid its missing Render.h dependency in the Windows build.
     (work/"snapshot_engine_under_test.cpp").write_text(adapter)
+    for header in ("RenderSnapshotEngine.h","RenderSnapshotD3D9.h"):
+        (work/header).write_bytes((ROOT/"xr_3da"/header).read_bytes())
     (work/"stdafx.h").write_text('#include "snapshot_engine_fake.h"\n')
     (work/"Render.h").write_text('#include "snapshot_render_fake.h"\n')
     for header in ("KichR4Native.h","IGame_Level.h","IGame_Persistent.h",

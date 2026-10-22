@@ -14,6 +14,9 @@
 #include "R4DeferredRules.h"
 #include "R4DetailRules.h"
 #include "R4ModelRules.h"
+#include "R4TelemetryRules.h"
+#include <set>
+#include <string>
 #include "../KichR4NativeTools.h"
 #include "../KichR4Detail.h"
 #include "../RenderSnapshot.h"
@@ -62,6 +65,7 @@ typedef HRESULT (WINAPI *ReflectFn)(const void*, SIZE_T, REFIID, void**);
 
 struct Resource {
     KichR4ResourceInfo info;
+    KichR4Handle handle;
     ID3D11Texture2D* texture;
     ID3D11Buffer* buffer;
     ID3D11ShaderResourceView* srv;
@@ -74,7 +78,11 @@ struct Resource {
     bool initialized;
     bool dynamic_instances,model_pose;
     uint32_t instance_count,model_bones,model_skin_mode;
-    char shader_entry[96],pixel_entry[96];
+    char shader_entry[96],pixel_entry[96],shader_name[64];
+    KichR4Handle vertex_shader,pixel_shader;
+    KichR4PipelineDesc input_layout;
+    uint64_t source_hash,bytecode_hash,created_frame,last_write_frame,last_write_pass,last_clear_frame,write_generation,emitted_epoch;
+    uint32_t last_clear_flags,last_write_kind;float last_clear_color[4],last_clear_depth;
     float alpha[4];
     std::unique_ptr<PipelineDX11> pipeline;
     uint32_t* pipeline_released;
@@ -82,7 +90,9 @@ struct Resource {
     std::vector<KichR4ShaderVariable> variables;
     Resource() : texture(NULL), buffer(NULL), srv(NULL), rtv(NULL), dsv(NULL),
         vs(NULL), ps(NULL), bytecode(NULL),buffer_stride(0),initialized(false),dynamic_instances(false),model_pose(false),instance_count(0),model_bones(0),model_skin_mode(0),pipeline_released(NULL)
-        { memset(&info,0,sizeof(info)); info.struct_size=sizeof(info);memset(shader_entry,0,sizeof(shader_entry));memset(pixel_entry,0,sizeof(pixel_entry));memset(alpha,0,sizeof(alpha)); }
+        { handle=0;vertex_shader=pixel_shader=source_hash=bytecode_hash=write_generation=emitted_epoch=last_write_pass=0;
+          created_frame=last_write_frame=last_clear_frame=UINT64_MAX;last_clear_flags=last_write_kind=0;last_clear_depth=1;
+          memset(&input_layout,0,sizeof(input_layout));memset(last_clear_color,0,sizeof(last_clear_color)); memset(&info,0,sizeof(info)); info.struct_size=sizeof(info);memset(shader_name,0,sizeof(shader_name));memset(shader_entry,0,sizeof(shader_entry));memset(pixel_entry,0,sizeof(pixel_entry));memset(alpha,0,sizeof(alpha)); }
     ~Resource() {
         if(pipeline_released)++*pipeline_released;
         Release(dsv); Release(rtv); Release(srv); Release(texture); Release(buffer);
@@ -111,22 +121,33 @@ struct Device {
     KichR4PassDesc pass;
     bool pass_active;
     KichR4SnapshotSink snapshot_sink;
+    KichR4TelemetryContext telemetry;KichR4TelemetrySink telemetry_sink;
+    uint64_t telemetry_epoch,pass_ordinal,draw_ordinal,created_total,released_total,uploads_total,uploaded_bytes_total;
+    uint64_t resource_records,resource_records_dropped,route_observations,route_records,route_records_dropped,callback_failures;
+    uint64_t backbuffer_write,backbuffer_generation;std::set<uint64_t> pass_routes;
+    KichR4Handle bound_textures[8];
+    uint32_t profile_failure;bool capture_query_requested;
+    KichR4TelemetryTiming timing_results[8];uint32_t timing_count;
     struct ProfileSlot {ID3D11Query* disjoint;ID3D11Query* stamp[8];bool pending;
-        ProfileSlot():disjoint(NULL),pending(false){memset(stamp,0,sizeof(stamp));}
-        void Reset(){Release(disjoint);for(unsigned i=0;i<8;++i)Release(stamp[i]);pending=false;}
+        KichR4TelemetryContext origin;uint32_t valid_mask,status;uint64_t poll_count;
+        ProfileSlot():disjoint(NULL),pending(false),valid_mask(127),status(KICH_R4_TIMING_NONE),poll_count(0){memset(stamp,0,sizeof(stamp));memset(&origin,0,sizeof(origin));}
+        void Reset(){Release(disjoint);for(unsigned i=0;i<8;++i)Release(stamp[i]);pending=false;memset(&origin,0,sizeof(origin));status=0;poll_count=0;}
         ~ProfileSlot(){Reset();}} profile[4];
     uint32_t profile_write;bool profile_open;
     Device() : runtime(NULL), compiler(NULL), hw(NULL), context(NULL), compile(NULL),
         reflect(NULL), thread(GetCurrentThreadId()), resources(ids),frame_driver(hw,context),frame(frame_driver),pass_active(false),snapshot_sink(NULL),profile_write(0),profile_open(false) {
+        memset(bound_textures,0,sizeof(bound_textures));telemetry_sink=NULL;telemetry_epoch=pass_ordinal=draw_ordinal=created_total=released_total=uploads_total=uploaded_bytes_total=0;
+        resource_records=resource_records_dropped=route_observations=route_records=route_records_dropped=callback_failures=0;
+        backbuffer_write=UINT64_MAX;backbuffer_generation=0;profile_failure=0;capture_query_requested=false;timing_count=0;memset(timing_results,0,sizeof(timing_results));memset(&telemetry,0,sizeof(telemetry));
         memset(&pass,0,sizeof(pass));
         memset(&stats,0,sizeof(stats)); stats.struct_size=sizeof(stats);
         memset(&geometry_stats,0,sizeof(geometry_stats));geometry_stats.struct_size=sizeof(geometry_stats);
     }
     void ClearResources() {
-        pass_active=false;
+        pass_active=false;memset(bound_textures,0,sizeof(bound_textures));
         snapshot_sink=NULL;
         if (context) { context->ClearState(); context->Flush(); }
-        stats.released += resources.Size();
+        released_total+=resources.Size();stats.released += resources.Size();
         resources.Clear();
         stats.live_resources=0; stats.payload_bytes=0;
     }
@@ -161,10 +182,42 @@ struct Device {
         reflect=reinterpret_cast<ReflectFn>(GetProcAddress(compiler,"D3DReflect"));
         return compile && reflect ? S_OK : HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);
     }
+    void Emit(const char* category,const char* id,const char* key,const char* value){
+        if(!telemetry_sink || !(telemetry.flags&KICH_R4_TELEMETRY_DETAILED))return;
+        KichR4TelemetryRecord record={};record.struct_size=sizeof(record);
+        snprintf(record.category,sizeof(record.category),"%s",category);snprintf(record.id,sizeof(record.id),"%s",id);
+        snprintf(record.key,sizeof(record.key),"%s",key);snprintf(record.value,sizeof(record.value),"%s",value?value:"NOT_MEASURED");
+        try{telemetry_sink(&record);}catch(...){++callback_failures;}
+    }
+    void Number(const char* category,const char* id,const char* key,uint64_t value){char text[32];snprintf(text,sizeof(text),"%llu",static_cast<unsigned long long>(value));Emit(category,id,key,text);}
+    void Write(Resource* r,uint32_t kind=2){if(!r)return;r->initialized=true;++r->write_generation;r->last_write_kind=kind;r->last_write_pass=kind==1?0:pass_ordinal;if(telemetry.struct_size)r->last_write_frame=telemetry.engine_frame;}
+    void Upload(Resource* r,uint32_t bytes){++uploads_total;uploaded_bytes_total+=bytes;Write(r,1);}
+    void Outputs(bool depth_write){for(unsigned i=0;i<pass.color_count;++i){if(pass.colors[i])Write(resources.Find(pass.colors[i]));else{backbuffer_write=telemetry.struct_size?telemetry.engine_frame:UINT64_MAX;++backbuffer_generation;}}if(depth_write && pass.depth)Write(resources.Find(pass.depth));}
+    void Counters(){
+        Number("BACKEND_COUNTERS","registry","created_total",created_total);Number("BACKEND_COUNTERS","registry","released_total",released_total);
+        Number("BACKEND_COUNTERS","registry","live_resources",resources.Size());Number("BACKEND_COUNTERS","registry","payload_bytes",stats.payload_bytes);
+        Number("BACKEND_COUNTERS","registry","buffer_uploads_total",uploads_total);Number("BACKEND_COUNTERS","registry","buffer_uploaded_bytes_total",uploaded_bytes_total);
+        Number("BACKEND_COUNTERS","capture","resource_records",resource_records);Number("BACKEND_COUNTERS","capture","resource_records_dropped",resource_records_dropped);
+        Number("BACKEND_COUNTERS","capture","binding_route_observations",route_observations);Number("BACKEND_COUNTERS","capture","binding_route_records",route_records);
+        Number("BACKEND_COUNTERS","capture","binding_route_records_dropped",route_records_dropped);Number("BACKEND_COUNTERS","capture","callback_failures",callback_failures);
+        Emit("BACKEND_COUNTERS","registry","payload_scope","REGISTERED_LOGICAL_GPU_PAYLOAD; NOT_RESIDENCY; EXCLUDES_COM_STATE_BYTECODE_SWAPCHAIN_AND_QUERIES");
+        uint64_t queries=0;for(unsigned p=0;p<4;++p){if(profile[p].disjoint)++queries;for(unsigned i=0;i<8;++i)if(profile[p].stamp[i])++queries;}
+        Number("BACKEND_COUNTERS","diagnostic","timestamp_query_objects",queries);Number("BACKEND_COUNTERS","diagnostic","pending_completion_records",timing_count);
+        Emit("BACKEND_COUNTERS","diagnostic","query_gpu_bytes","NOT_MEASURED");Emit("BACKEND_COUNTERS","registry","deferred_driver_release_bytes","NOT_MEASURED; RELEASE_CALL_IS_NOT_GPU_RESIDENCY_EVIDENCE");
+    }
+    void TimingResult(const KichR4TelemetryContext& origin,uint32_t status,uint32_t mask,const double* ms=NULL){
+        if(!origin.capture_id)return;
+        if(timing_count>=8){++callback_failures;return;}
+        KichR4TelemetryTiming& result=timing_results[timing_count++];memset(&result,0,sizeof(result));result.struct_size=sizeof(result);
+        result.status=status;result.valid_mask=mask;result.capture_id=origin.capture_id;result.engine_frame=origin.engine_frame;result.render_frame=origin.render_frame;
+        if(ms)memcpy(result.milliseconds,ms,sizeof(result.milliseconds));
+    }
     KichR4Handle Add(std::unique_ptr<Resource> r) {
         const uint32_t bytes=r->info.byte_size;
         KichR4Handle h=resources.Insert(std::move(r));
-        ++stats.created; ++stats.live_resources; stats.payload_bytes+=bytes;
+        ++created_total;++stats.created; ++stats.live_resources; stats.payload_bytes+=bytes;
+        Resource* added=resources.Find(h);if(added)added->handle=h;if(added && telemetry.struct_size){added->created_frame=telemetry.engine_frame;if(added->initialized){added->last_write_frame=telemetry.engine_frame;added->last_write_kind=4;++added->write_generation;}}
+        if(telemetry_sink){char id[64];snprintf(id,sizeof(id),"resource_%llu",static_cast<unsigned long long>(h));Emit("RESOURCE_EVENT",id,"action","CREATED");}
         return h;
     }
 };
@@ -385,8 +438,8 @@ int32_t KICH_R4_CALL CompileShader(KichR4Handle device, const KichR4ShaderDesc* 
             hr=d->hw->CreateVertexShader(r->bytecode->GetBufferPointer(),r->bytecode->GetBufferSize(),NULL,&r->vs);
         else hr=d->hw->CreatePixelShader(r->bytecode->GetBufferPointer(),r->bytecode->GetBufferSize(),NULL,&r->ps);
         if (FAILED(hr)) return hr;
-        r->info.kind=desc->kind;
-        CopyName(r->shader_entry,sizeof(r->shader_entry),desc->entry);
+        r->info.kind=desc->kind;r->source_hash=TelemetryHash(source,length);r->bytecode_hash=TelemetryHash(r->bytecode->GetBufferPointer(),r->bytecode->GetBufferSize());
+        CopyName(r->shader_entry,sizeof(r->shader_entry),desc->entry);CopyName(r->shader_name,sizeof(r->shader_name),desc->name);
         *out=d->Add(std::move(r)); return KICH_R4_OK;
     });
 }
@@ -428,7 +481,8 @@ int32_t KICH_R4_CALL ReleaseResource(KichR4Handle device, KichR4Handle handle)
         int32_t hr; Device* d=FindDevice(device,hr); if (!d) return hr;
         Resource* r=d->resources.Find(handle); if (!r) return KICH_R4_E_HANDLE;
         const uint32_t bytes=r->info.byte_size;
-        d->resources.Erase(handle); --d->stats.live_resources; ++d->stats.released;
+        char id[64];snprintf(id,sizeof(id),"resource_%llu",static_cast<unsigned long long>(handle));d->Emit("RESOURCE_EVENT",id,"action","RELEASED");
+        ++d->released_total;d->resources.Erase(handle); --d->stats.live_resources; ++d->stats.released;
         d->stats.payload_bytes-=bytes; return KICH_R4_OK;
     });
 }
@@ -473,7 +527,10 @@ int32_t KICH_R4_CALL ClearFrame(KichR4Handle device,const KichR4FrameColor* colo
 {
     if(!color)return KICH_R4_E_ARGUMENT;
     return Protect([&]() -> int32_t {
-        int32_t hr;Device* d=FindDevice(device,hr);return d?d->frame.Clear(*color):hr;
+        int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;hr=d->frame.Clear(*color);
+        if(hr==KICH_R4_OK){d->backbuffer_write=d->telemetry.struct_size?d->telemetry.engine_frame:UINT64_MAX;++d->backbuffer_generation;
+            char value[128];snprintf(value,sizeof(value),"rgba=[%.9g,%.9g,%.9g,%.9g]",color->rgba[0],color->rgba[1],color->rgba[2],color->rgba[3]);d->Emit("GPU_BACKBUFFER","swapchain","clear",value);}
+        return hr;
     });
 }
 int32_t KICH_R4_CALL PresentFrame(KichR4Handle device,uint32_t interval)
@@ -533,6 +590,7 @@ int32_t CreatePipelineImpl(KichR4Handle device,const KichR4PipelineDesc* desc,Ki
         hr=r->pipeline->Create(d->hw,*desc,vs->vs,ps->ps,vs->bytecode,texture,stream,advanced,instanced,model);if(hr<0)return hr;
         r->pipeline->constant_bytes=vs_bytes>ps_bytes?vs_bytes:ps_bytes;r->info.kind=KICH_R4_GRAPHICS_PIPELINE;
         CopyName(r->shader_entry,sizeof(r->shader_entry),vs->shader_entry);CopyName(r->pixel_entry,sizeof(r->pixel_entry),ps->shader_entry);
+        r->vertex_shader=desc->vertex_shader;r->pixel_shader=desc->pixel_shader;r->input_layout=*desc;
         Resource* saved=r.get();*out=d->Add(std::move(r));
         saved->pipeline_released=&d->geometry_stats.pipelines_released;++d->geometry_stats.pipelines_created;
         return KICH_R4_OK;
@@ -577,7 +635,7 @@ int32_t KICH_R4_CALL UploadModelPose(KichR4Handle device,KichR4Handle handle,con
         if(!r->model_pose || r->info.byte_size!=sizeof(*pose))return KICH_R4_E_ARGUMENT;
         D3D11_MAPPED_SUBRESOURCE mapped={};hr=d->context->Map(r->buffer,0,D3D11_MAP_WRITE_DISCARD,0,&mapped);if(hr<0)return hr;
         memcpy(mapped.pData,pose,sizeof(*pose));d->context->Unmap(r->buffer,0);r->initialized=true;
-        r->model_bones=pose->bone_count;r->model_skin_mode=pose->skin_mode;++d->geometry_stats.buffer_updates;return KICH_R4_OK;});
+        r->model_bones=pose->bone_count;r->model_skin_mode=pose->skin_mode;d->Upload(r,sizeof(*pose));++d->geometry_stats.buffer_updates;return KICH_R4_OK;});
 }
 int32_t KICH_R4_CALL CreateDetailInstances(KichR4Handle device,uint32_t capacity,KichR4Handle* out){
     if(!out)return KICH_R4_E_ARGUMENT;
@@ -597,7 +655,7 @@ int32_t KICH_R4_CALL UploadDetailInstances(KichR4Handle device,KichR4Handle hand
         if(!r->dynamic_instances || uint64_t(count)*sizeof(*data)>r->info.byte_size)return KICH_R4_E_ARGUMENT;
         D3D11_MAPPED_SUBRESOURCE mapped={};hr=d->context->Map(r->buffer,0,D3D11_MAP_WRITE_DISCARD,0,&mapped);if(hr<0)return hr;
         memcpy(mapped.pData,data,size_t(count)*sizeof(*data));d->context->Unmap(r->buffer,0);
-        r->initialized=true;r->instance_count=count;++d->geometry_stats.buffer_updates;return KICH_R4_OK;});
+        r->initialized=true;r->instance_count=count;d->Upload(r,count*sizeof(*data));++d->geometry_stats.buffer_updates;return KICH_R4_OK;});
 }
 int32_t KICH_R4_CALL UpdateBuffer(KichR4Handle device,KichR4Handle buffer,const void* data,uint32_t bytes)
 {
@@ -609,20 +667,115 @@ int32_t KICH_R4_CALL UpdateBuffer(KichR4Handle device,KichR4Handle buffer,const 
             bytes!=r->info.byte_size)return KICH_R4_E_ARGUMENT;
         d->context->UpdateSubresource(r->buffer,0,NULL,data,0,0);r->initialized=true;
         if(r->info.kind==KICH_R4_CONSTANT_BUFFER && bytes==816)memcpy(r->alpha,static_cast<const unsigned char*>(data)+800,16);
-        ++d->geometry_stats.buffer_updates;return KICH_R4_OK;
+        d->Upload(r,bytes);++d->geometry_stats.buffer_updates;return KICH_R4_OK;
     });
 }
-void SnapshotDraw(Device* d,const KichR4DrawIndexedDesc& desc,Resource* pipeline,Resource* vb,Resource* cb,const KichR4StreamDrawDesc* state,const KichR4Handle* textures,const KichR4DetailDrawDesc* detail=NULL){
+
+void ResourceIdentity(char* id,size_t bytes,KichR4Handle handle){snprintf(id,bytes,"resource_%llu",static_cast<unsigned long long>(handle));}
+void SnapshotResource(Device* d,KichR4Handle handle){
+    if(!d->telemetry_sink || !(d->telemetry.flags&KICH_R4_TELEMETRY_DETAILED) || !handle)return;
+    Resource* r=d->resources.Find(handle);if(!r || r->emitted_epoch==d->telemetry_epoch)return;
+    r->emitted_epoch=d->telemetry_epoch;
+    if(d->resource_records>=1024){++d->resource_records_dropped;return;}++d->resource_records;
+    char id[96],value[384];ResourceIdentity(id,sizeof(id),handle);
+    d->Number("GPU_RESOURCE",id,"handle",handle);d->Number("GPU_RESOURCE",id,"kind",r->info.kind);
+    d->Number("GPU_RESOURCE",id,"payload_bytes",r->info.byte_size);d->Number("GPU_RESOURCE",id,"device_generation",d->telemetry.device_generation);
+    d->Number("GPU_RESOURCE",id,"level_generation",d->telemetry.level_generation);d->Emit("GPU_RESOURCE",id,"owner","R4_DEVICE_REGISTRY");
+    d->Emit("GPU_RESOURCE",id,"storage_role",r->model_pose?"MODEL_PALETTE_BUFFER":r->dynamic_instances?"DETAIL_INSTANCE_BUFFER":r->pipeline?"GRAPHICS_PIPELINE_CACHE":r->bytecode?"SHADER_BYTECODE_REFLECTION_CACHE":r->rtv || r->dsv?"SCENE_RENDER_TARGET":r->texture?"TEXTURE_CACHE_OR_DYNAMIC_UPLOAD":r->info.kind==KICH_R4_CONSTANT_BUFFER?"PASS_CONSTANT_BUFFER":"GEOMETRY_BUFFER");
+    d->Emit("GPU_RESOURCE",id,"semantic_owner","SEE_SOURCE_RESOURCE_DICTIONARY; NOT_INFERRED_FROM_HANDLE");
+    if(r->created_frame==UINT64_MAX)d->Emit("GPU_RESOURCE",id,"created_engine_frame","PRE_INSTRUMENTATION");else d->Number("GPU_RESOURCE",id,"created_engine_frame",r->created_frame);
+    d->Emit("GPU_RESOURCE",id,"initialization",r->initialized?"WRITTEN_OR_INITIAL_DATA":"UNINITIALIZED");
+    if(r->texture){D3D11_TEXTURE2D_DESC t={};r->texture->GetDesc(&t);
+        snprintf(value,sizeof(value),"width=%u;height=%u;mips=%u;array_size=%u;samples=%u;quality=%u;dxgi_format=%u;usage=%u;bind_flags=%u;cpu_access=%u;misc=%u",
+            t.Width,t.Height,t.MipLevels,t.ArraySize,t.SampleDesc.Count,t.SampleDesc.Quality,t.Format,t.Usage,t.BindFlags,t.CPUAccessFlags,t.MiscFlags);
+        d->Emit("GPU_RESOURCE",id,"texture_description",value);
+        const bool srgb=t.Format==DXGI_FORMAT_R8G8B8A8_UNORM_SRGB || t.Format==DXGI_FORMAT_B8G8R8A8_UNORM_SRGB || t.Format==DXGI_FORMAT_BC1_UNORM_SRGB || t.Format==DXGI_FORMAT_BC2_UNORM_SRGB || t.Format==DXGI_FORMAT_BC3_UNORM_SRGB || t.Format==DXGI_FORMAT_BC7_UNORM_SRGB;
+        d->Emit("GPU_RESOURCE",id,"format_color_space",srgb?"SRGB_VIEW_DECODE":"NO_SRGB_VIEW_DECODE; AUTHORING_COLOR_SPACE_UNKNOWN");
+        if(r->srv){D3D11_SHADER_RESOURCE_VIEW_DESC v={};r->srv->GetDesc(&v);snprintf(value,sizeof(value),"dxgi_format=%u;dimension=%u;first_mip=0;mip_count=%u;first_slice=0;slice_count=%u",v.Format,v.ViewDimension,t.MipLevels,t.ArraySize);d->Emit("GPU_RESOURCE",id,"srv_subresources",value);}
+        if(r->rtv){D3D11_RENDER_TARGET_VIEW_DESC v={};r->rtv->GetDesc(&v);snprintf(value,sizeof(value),"dxgi_format=%u;dimension=%u;first_mip=0;mip_count=1;first_slice=0;slice_count=1",v.Format,v.ViewDimension);d->Emit("GPU_RESOURCE",id,"rtv_subresources",value);}
+        if(r->dsv){D3D11_DEPTH_STENCIL_VIEW_DESC v={};r->dsv->GetDesc(&v);snprintf(value,sizeof(value),"dxgi_format=%u;dimension=%u;first_mip=0;mip_count=1;first_slice=0;slice_count=1;flags=%u",v.Format,v.ViewDimension,v.Flags);d->Emit("GPU_RESOURCE",id,"dsv_subresources",value);}
+    }
+    if(r->buffer){D3D11_BUFFER_DESC b={};r->buffer->GetDesc(&b);snprintf(value,sizeof(value),"bytes=%u;stride=%u;usage=%u;bind_flags=%u;cpu_access=%u",b.ByteWidth,r->buffer_stride,b.Usage,b.BindFlags,b.CPUAccessFlags);d->Emit("GPU_RESOURCE",id,"buffer_description",value);}
+    if(r->bytecode){
+        d->Emit("SHADER",id,"source_name",r->shader_name);d->Emit("SHADER",id,"compile_flags","D3DCOMPILE_ENABLE_STRICTNESS");d->Emit("SHADER",id,"entry",r->shader_entry);d->Emit("SHADER",id,"target",r->vs?"vs_5_0":"ps_5_0");
+        d->Emit("SHADER",id,"defines","NONE; COMPILED_SOURCE_ALREADY_EXPANDED");d->Emit("SHADER",id,"hash_algorithm","FNV1A_64_CONTENT_ID_NOT_CRYPTOGRAPHIC");
+        snprintf(value,sizeof(value),"%016llx",static_cast<unsigned long long>(r->source_hash));d->Emit("SHADER",id,"source_hash",value);
+        snprintf(value,sizeof(value),"%016llx",static_cast<unsigned long long>(r->bytecode_hash));d->Emit("SHADER",id,"bytecode_hash",value);
+        d->Emit("SHADER",id,"reflection_semantics","COMPILED_RESOURCE_DECLARATIONS; NOT_PROOF_OF_EXECUTED_PIXEL_BRANCH");
+        for(size_t i=0;i<r->bindings.size();++i){const KichR4ShaderBinding& b=r->bindings[i];char binding_id[96];snprintf(binding_id,sizeof(binding_id),"shader_%llu_binding_%u",static_cast<unsigned long long>(handle),static_cast<unsigned>(i));
+            snprintf(value,sizeof(value),"name=%s;kind=%u;slot=%u;count=%u;bytes=%u;stage=%s",b.name,b.kind,b.slot,b.count,b.byte_size,r->vs?"VS":"PS");d->Emit("SHADER_DECLARATION",binding_id,"reflection",value);}
+        for(size_t i=0;i<r->variables.size();++i){const KichR4ShaderVariable& v=r->variables[i];char variable_id[96];snprintf(variable_id,sizeof(variable_id),"shader_%llu_variable_%u",static_cast<unsigned long long>(handle),static_cast<unsigned>(i));
+            snprintf(value,sizeof(value),"name=%s;binding_index=%u;offset=%u;bytes=%u;scalar_type=%u;rows=%u;columns=%u;elements=%u;matrix_layout=%u",v.name,v.binding_index,v.byte_offset,v.byte_size,v.scalar_type,v.rows,v.columns,v.elements,v.matrix_layout);d->Emit("SHADER_VARIABLE",variable_id,"reflection",value);}
+    }
+    if(r->pipeline){
+        d->Number("PIPELINE",id,"vertex_shader_handle",r->vertex_shader);d->Number("PIPELINE",id,"pixel_shader_handle",r->pixel_shader);
+        d->Number("PIPELINE",id,"vertex_stride",r->input_layout.vertex_stride);d->Emit("PIPELINE",id,"position_normal_space",r->pipeline->model?"GPU_MODEL_SKINNING; SEE_MODEL_METADATA":r->pipeline->instanced?"DETAIL_INSTANCE_TRANSFORM":"SEE_SOURCE_GEOMETRY_METADATA");
+        for(uint32_t i=0;i<r->input_layout.element_count;++i){const KichR4VertexElement& e=r->input_layout.elements[i];char key[32];snprintf(key,sizeof(key),"input_element_%u",i);snprintf(value,sizeof(value),"semantic=%u;index=%u;format=%u;offset=%u",e.semantic,e.semantic_index,e.format,e.byte_offset);d->Emit("PIPELINE",id,key,value);}
+        d->Emit("PIPELINE",id,"additional_input_layout",r->pipeline->model?"slot0:BLENDWEIGHT0_R32_FLOAT@20;BLENDINDICES0_R16G16_UINT@24;NORMAL0_R32_UINT@28":r->pipeline->instanced?"slot1:TEXCOORD1..4_R32G32B32A32_FLOAT@0,16,32,48;step_rate=1":"NONE");
+        SnapshotResource(d,r->vertex_shader);SnapshotResource(d,r->pixel_shader);
+    }
+}
+void ResourceHistory(Device* d,const char* category,const char* id,KichR4Handle handle){
+    Resource* r=d->resources.Find(handle);if(!r)return;
+    d->Emit(category,id,"last_writer_kind",r->last_write_kind==1?"CPU_UPLOAD":r->last_write_kind==2?"SUBMITTED_DRAW; NOT_PIXEL_COVERAGE_PROOF":r->last_write_kind==3?"TARGET_CLEAR":r->last_write_kind==4?"INITIAL_DATA":"UNKNOWN_OR_UNWRITTEN");d->Emit(category,id,"producer_status",r->initialized?"INITIAL_DATA_OR_WRITE_OBSERVED":"NO_PRODUCER_OBSERVED");d->Number(category,id,"write_generation",r->write_generation);d->Number(category,id,"last_writer_pass",r->last_write_pass);
+    if(r->last_write_frame==UINT64_MAX){d->Emit(category,id,"last_writer_engine_frame","UNKNOWN_OR_UNWRITTEN");d->Emit(category,id,"age_frames","UNKNOWN");}
+    else{d->Number(category,id,"last_writer_engine_frame",r->last_write_frame);if(d->telemetry.engine_frame>=r->last_write_frame)d->Number(category,id,"age_frames",d->telemetry.engine_frame-r->last_write_frame);else d->Emit(category,id,"age_frames","ENGINE_FRAME_RESTARTED");}
+    if(r->last_clear_frame==UINT64_MAX)d->Emit(category,id,"last_clear_engine_frame","NEVER_OBSERVED");else{d->Number(category,id,"last_clear_engine_frame",r->last_clear_frame);char value[192];snprintf(value,sizeof(value),"flags=%u;color=[%.9g,%.9g,%.9g,%.9g];depth=%.9g",r->last_clear_flags,r->last_clear_color[0],r->last_clear_color[1],r->last_clear_color[2],r->last_clear_color[3],r->last_clear_depth);d->Emit(category,id,"last_clear",value);}
+}
+void SnapshotPass(Device* d){
+    if(!d->telemetry_sink)return;
+    char id[96],value[384];snprintf(id,sizeof(id),"pass_%llu",static_cast<unsigned long long>(d->pass_ordinal));
+    d->Number("GPU_PASS",id,"engine_frame",d->telemetry.engine_frame);d->Number("GPU_PASS",id,"render_frame",d->telemetry.render_frame);
+    d->Number("GPU_PASS",id,"execution_ordinal",d->pass_ordinal);
+    snprintf(value,sizeof(value),"x=0;y=0;width=%u;height=%u;depth_min=0;depth_max=1",d->pass.width,d->pass.height);d->Emit("GPU_PASS",id,"viewport",value);
+    snprintf(value,sizeof(value),"flags=%u;color=[%.9g,%.9g,%.9g,%.9g];depth=%.9g;stencil=NOT_CLEARED",d->pass.clear_flags,d->pass.color[0],d->pass.color[1],d->pass.color[2],d->pass.color[3],d->pass.depth_value);d->Emit("GPU_PASS",id,"clear",value);
+    for(uint32_t i=0;i<d->pass.color_count;++i){char key[32];snprintf(key,sizeof(key),"rtv_%u",i);d->Number("GPU_PASS",id,key,d->pass.colors[i]);SnapshotResource(d,d->pass.colors[i]);}
+    d->Number("GPU_PASS",id,"dsv",d->pass.depth);SnapshotResource(d,d->pass.depth);
+    d->Emit("GPU_PASS",id,"output_view_range","MIP_0_SLICE_0; HANDLE_0_RTV_IS_BACKBUFFER; HANDLE_0_DSV_IS_UNBOUND");
+    d->Emit("GPU_PASS",id,"input_transition","PS_SRV_SLOTS_0_TO_7_UNBOUND_BEFORE_OM_TARGETS");
+}
+void TelemetryDraw(Device* d,const KichR4DrawIndexedDesc& desc,Resource* pipeline,const KichR4StreamDrawDesc* state,const KichR4Handle* textures,const KichR4DetailDrawDesc* detail,KichR4Handle pose){
+    ++d->draw_ordinal;
+    try { if(d->telemetry_sink && (d->telemetry.flags&KICH_R4_TELEMETRY_DETAILED)){
+        ++d->route_observations;uint64_t route=TelemetryHash(&desc.pipeline,sizeof(desc.pipeline));
+        if(textures)route^=TelemetryHash(textures,8*sizeof(KichR4Handle));
+        route^=TelemetryHash(&desc.constant_buffer,sizeof(desc.constant_buffer));route^=pose;
+        const uint32_t states[]={desc.cull_mode,desc.depth_mode,state?state->depth_write:desc.depth_mode,state?state->blend_enable:0,state?state->source_blend:0,state?state->dest_blend:0,state?state->clamp_texture:0,state?state->scissor_enable:0};route^=TelemetryHash(states,sizeof(states));
+        const bool fresh=d->pass_routes.find(route)==d->pass_routes.end();
+        if(fresh && d->pass_routes.size()>=16)++d->route_records_dropped;
+        else if(fresh){d->pass_routes.insert(route);++d->route_records;
+            char id[96],value[384];snprintf(id,sizeof(id),"pass_%llu_route_%llu",static_cast<unsigned long long>(d->pass_ordinal),static_cast<unsigned long long>(d->draw_ordinal));
+            d->Number("GPU_BINDING",id,"pass_ordinal",d->pass_ordinal);d->Number("GPU_BINDING",id,"first_draw_ordinal",d->draw_ordinal);d->Number("GPU_BINDING",id,"pipeline",desc.pipeline);
+            if(d->pass_active){for(unsigned color=0;color<d->pass.color_count;++color){char attachment[96];snprintf(attachment,sizeof(attachment),"pass_%llu_rtv_%u",static_cast<unsigned long long>(d->pass_ordinal),color);ResourceHistory(d,"GPU_ATTACHMENT",attachment,d->pass.colors[color]);}if(d->pass.depth){char attachment[96];snprintf(attachment,sizeof(attachment),"pass_%llu_dsv",static_cast<unsigned long long>(d->pass_ordinal));ResourceHistory(d,"GPU_ATTACHMENT",attachment,d->pass.depth);}}
+            d->Number("GPU_BINDING",id,"vs_b0",desc.constant_buffer);d->Number("GPU_BINDING",id,"ps_b0",desc.constant_buffer);d->Number("GPU_BINDING",id,"vs_b1",pose);
+            d->Emit("GPU_BINDING",id,"scope","ACTUAL_SUBMITTED_BINDINGS; DECLARATIONS_AND_BRANCH_EXECUTION_ARE_DISTINCT");
+            SnapshotResource(d,desc.pipeline);SnapshotResource(d,desc.vertex_buffer);SnapshotResource(d,desc.index_buffer);SnapshotResource(d,desc.constant_buffer);SnapshotResource(d,pose);if(detail)SnapshotResource(d,detail->instance_buffer);
+            Resource* ps=d->resources.Find(pipeline->pixel_shader);
+            for(unsigned slot=0;slot<8;++slot){KichR4Handle handle=textures?textures[slot]:0;char slot_id[96];snprintf(slot_id,sizeof(slot_id),"draw_%llu_ps_t%u",static_cast<unsigned long long>(d->draw_ordinal),slot);
+                bool declared=false;if(ps)for(const auto& b:ps->bindings)if(b.kind==KICH_R4_BIND_TEXTURE && slot>=b.slot && slot-b.slot<b.count)declared=true;
+                d->Number("GPU_TEXTURE_BINDING",slot_id,"pass_ordinal",d->pass_ordinal);d->Number("GPU_TEXTURE_BINDING",slot_id,"handle",handle);d->Emit("GPU_TEXTURE_BINDING",slot_id,"bound",handle?"YES":"NO");
+                d->Emit("GPU_TEXTURE_BINDING",slot_id,"declared_in_bytecode",ps?(declared?"YES":"NO"):"SHADER_HANDLE_RELEASED");d->Emit("GPU_TEXTURE_BINDING",slot_id,"pixel_branch_executed","NOT_MEASURED");
+                if(handle){SnapshotResource(d,handle);ResourceHistory(d,"GPU_TEXTURE_BINDING",slot_id,handle);d->Emit("GPU_TEXTURE_BINDING",slot_id,"rt_srv_conflict",d->pass_active?"NO_OVERLAPPING_SUBRESOURCE; PROVIDER_REJECTS_OVERLAP_BEFORE_DRAW":"BACKBUFFER_OUTPUT; REGISTERED_TEXTURE_CANNOT_ALIAS_BACKBUFFER");}
+            }
+            snprintf(value,sizeof(value),"filter=MIN_MAG_MIP_LINEAR;U=%s;V=%s;W=%s;comparison=NEVER;lod_min=0;lod_max=FLT_MAX",state && state->clamp_texture?"CLAMP":"WRAP",state && state->clamp_texture?"CLAMP":"WRAP",state && state->clamp_texture?"CLAMP":"WRAP");d->Emit("GPU_BINDING",id,"ps_s0",pipeline->pipeline->textured?value:"UNCHANGED_OR_NULL_BY_THIS_PIPELINE; UNUSED_BY_VALIDATED_SHADER");
+            d->Emit("GPU_BINDING",id,"ps_s1",pipeline->pipeline->advanced?"COMPARISON_MIN_MAG_LINEAR_MIP_POINT;UVW=BORDER;BORDER=1,1,1,1;COMPARE=LESS_EQUAL;LOD=0..FLT_MAX":"UNCHANGED_OR_NULL_BY_THIS_PIPELINE; UNUSED_BY_VALIDATED_SHADER");
+        }
+    }
+    }catch(...){++d->callback_failures;}
+    if(d->pass_active)d->Outputs(desc.depth_mode && (!state || state->depth_write));else{d->backbuffer_write=d->telemetry.struct_size?d->telemetry.engine_frame:UINT64_MAX;++d->backbuffer_generation;}
+}
+void SnapshotDraw(Device* d,const KichR4DrawIndexedDesc& desc,Resource* pipeline,Resource* vb,Resource* cb,const KichR4StreamDrawDesc* state,const KichR4Handle* textures,const KichR4DetailDrawDesc* detail=NULL,KichR4Handle pose=0){
+    TelemetryDraw(d,desc,pipeline,state,textures,detail,pose);
     if(!d->snapshot_sink)return;
     RenderSnapshotDraw event={};event.struct_size=sizeof(event);event.submitted=1;event.topology=4;
     event.index_count=desc.index_count;event.vertex_capacity=vb->info.byte_size/vb->buffer_stride;
     event.instance_count=detail?detail->instance_count:1;event.start_index=desc.start_index;event.first_instance=detail?detail->first_instance:0;
-    event.pipeline=desc.pipeline;event.vb=desc.vertex_buffer;event.ib=desc.index_buffer;event.cb=desc.constant_buffer;event.instances=detail?detail->instance_buffer:0;
+    event.pipeline=desc.pipeline;event.vs=pipeline->vertex_shader;event.ps=pipeline->pixel_shader;event.vb=desc.vertex_buffer;event.ib=desc.index_buffer;event.cb=desc.constant_buffer;event.instances=detail?detail->instance_buffer:0;
     memcpy(event.vertex_shader,pipeline->shader_entry,sizeof(event.vertex_shader));memcpy(event.pixel_shader,pipeline->pixel_entry,sizeof(event.pixel_shader));
     if(textures)memcpy(event.textures,textures,sizeof(event.textures));
     if(detail)strcpy(event.skin,"NONE_INSTANCED_DETAIL");
-    snprintf(event.states,sizeof(event.states),"enum=D3D11;depth=%u;depth_write=%u;depth_func=LESS_EQUAL;alpha_shader_func=%.0f;alpha_ref=%.8f;blend=%u;src_legacy=%u;dst_legacy=%u;blend_op=ADD;cull=%u;front=CLOCKWISE;stencil=OFF;scissor=%u;viewport_depth=%.5f/%.5f;raw_topology=TRIANGLELIST",
-        desc.depth_mode,state?state->depth_write:desc.depth_mode,cb->alpha[1],cb->alpha[0],state?state->blend_enable:0,state?state->source_blend:2,state?state->dest_blend:1,desc.cull_mode==KICH_R4_CULL_BACK?3:desc.cull_mode==KICH_R4_CULL_FRONT?2:1,state?state->scissor_enable:0,state?state->min_depth:0,state?state->max_depth:1);
+    snprintf(event.states,sizeof(event.states),"enum=D3D11;gpu_pass_ordinal=%llu;gpu_draw_ordinal=%llu;depth=%u;depth_write=%u;depth_func=LESS_EQUAL;alpha_shader_func=%.0f;alpha_ref=%.8f;blend=%u;src_legacy=%u;dst_legacy=%u;blend_op=ADD;cull=%u;front=CLOCKWISE;stencil=OFF;scissor=%u;viewport_depth=%.5f/%.5f;raw_topology=TRIANGLELIST",
+        static_cast<unsigned long long>(d->pass_active?d->pass_ordinal:0),static_cast<unsigned long long>(d->draw_ordinal),desc.depth_mode,state?state->depth_write:desc.depth_mode,cb->alpha[1],cb->alpha[0],state?state->blend_enable:0,state?state->source_blend:2,state?state->dest_blend:1,desc.cull_mode==KICH_R4_CULL_BACK?3:desc.cull_mode==KICH_R4_CULL_FRONT?2:1,state?state->scissor_enable:0,state?state->min_depth:0,state?state->max_depth:1);
     snprintf(event.samplers,sizeof(event.samplers),"s0:MIN_MAG_MIP_LINEAR;UVW=%s;s1=%s",state && state->clamp_texture?"CLAMP":"WRAP",pipeline->pipeline->advanced?"COMPARISON_MIN_MAG_LINEAR_MIP_POINT;UVW=BORDER;cmp=LESS_EQUAL":"NOT_BOUND_BY_THIS_PIPELINE");
     /* Callback cannot reenter GPU services; the EXE recorder catches its own
      * allocation failures and copies everything before returning. */
@@ -642,7 +795,8 @@ int32_t SubmitDraw(Device* d,const KichR4DrawIndexedDesc* desc,Resource* texture
         const KichR4FrameStats size=d->frame.Stats();d->frame_driver.Bind(size.width,size.height);
         const int32_t drawn=p->pipeline->Draw(d->context,*desc,vb->buffer,ib->buffer,cb->buffer,ib->buffer_stride,texture?texture->srv:NULL,extra);
         if(drawn<0)return drawn;
-        const KichR4Handle inputs[8]={extra?extra->texture:0,0,0,0,0,0,0,0};SnapshotDraw(d,*desc,p,vb,cb,extra,inputs);
+        d->pass_active=false;d->bound_textures[0]=texture?texture->handle:0;
+        SnapshotDraw(d,*desc,p,vb,cb,extra,d->bound_textures);
         ++d->geometry_stats.draw_calls;
         const uint64_t triangles=uint64_t(d->geometry_stats.triangles)+desc->index_count/3;
         d->geometry_stats.triangles=triangles>UINT32_MAX?UINT32_MAX:static_cast<uint32_t>(triangles);
@@ -694,13 +848,16 @@ int32_t KICH_R4_CALL BeginDeferredPass(KichR4Handle device,const KichR4PassDesc*
         if(pass->depth){Resource* r=d->resources.Find(pass->depth);if(!r)return KICH_R4_E_HANDLE;
             if(!r->dsv || r->info.width!=pass->width || r->info.height!=pass->height)return KICH_R4_E_ARGUMENT;
             depth=r->dsv;}
-        ID3D11ShaderResourceView* empty[8]={};d->context->PSSetShaderResources(0,8,empty);
+        ID3D11ShaderResourceView* empty[8]={};d->context->PSSetShaderResources(0,8,empty);memset(d->bound_textures,0,sizeof(d->bound_textures));
         d->context->OMSetRenderTargets(pass->color_count,colors,depth);
         D3D11_VIEWPORT viewport={};viewport.Width=static_cast<float>(pass->width);viewport.Height=static_cast<float>(pass->height);viewport.MaxDepth=1;
         d->context->RSSetViewports(1,&viewport);
         if(pass->clear_flags&KICH_R4_CLEAR_COLOR)for(uint32_t i=0;i<pass->color_count;++i)d->context->ClearRenderTargetView(colors[i],pass->color);
         if(pass->clear_flags&KICH_R4_CLEAR_DEPTH)d->context->ClearDepthStencilView(depth,D3D11_CLEAR_DEPTH,pass->depth_value,0);
-        d->pass=*pass;d->pass_active=true;return KICH_R4_OK;
+        d->pass=*pass;d->pass_active=true;++d->pass_ordinal;d->pass_routes.clear();
+        for(uint32_t i=0;i<pass->color_count;++i)if(pass->clear_flags&KICH_R4_CLEAR_COLOR){Resource* r=d->resources.Find(pass->colors[i]);if(r){d->Write(r,3);r->last_clear_frame=d->telemetry.struct_size?d->telemetry.engine_frame:UINT64_MAX;r->last_clear_flags=KICH_R4_CLEAR_COLOR;memcpy(r->last_clear_color,pass->color,sizeof(r->last_clear_color));}else{d->backbuffer_write=d->telemetry.struct_size?d->telemetry.engine_frame:UINT64_MAX;++d->backbuffer_generation;}}
+        if(pass->clear_flags&KICH_R4_CLEAR_DEPTH){Resource* r=d->resources.Find(pass->depth);d->Write(r,3);if(r){r->last_clear_frame=d->telemetry.struct_size?d->telemetry.engine_frame:UINT64_MAX;r->last_clear_flags=KICH_R4_CLEAR_DEPTH;r->last_clear_depth=pass->depth_value;}}
+        SnapshotPass(d);return KICH_R4_OK;
     });
 }
 int32_t DrawDeferredOrDetail(KichR4Handle device,const KichR4DeferredDrawDesc* desc,const KichR4DetailDrawDesc* detail,const KichR4ModelDrawDesc* model=NULL)
@@ -738,7 +895,7 @@ int32_t DrawDeferredOrDetail(KichR4Handle device,const KichR4DeferredDrawDesc* d
         hr=p->pipeline->Draw(d->context,draw,vb->buffer,ib->buffer,cb->buffer,ib->buffer_stride,NULL,&desc->state,inputs,
             instances?instances->buffer:NULL,detail?detail->instance_count:0,detail?detail->first_instance:0,pose?pose->buffer:NULL);
         if(hr<0)return hr;
-        SnapshotDraw(d,draw,p,vb,cb,&desc->state,desc->textures,detail);
+        memcpy(d->bound_textures,desc->textures,sizeof(d->bound_textures));SnapshotDraw(d,draw,p,vb,cb,&desc->state,d->bound_textures,detail,model?model->pose_buffer:0);
         ++d->geometry_stats.draw_calls;
         const uint64_t tris=uint64_t(d->geometry_stats.triangles)+uint64_t(draw.index_count/3)*(detail?detail->instance_count:1);
         d->geometry_stats.triangles=tris>UINT32_MAX?UINT32_MAX:static_cast<uint32_t>(tris);
@@ -789,12 +946,14 @@ int32_t KICH_R4_CALL CreateDdsTexture(KichR4Handle device,const KichR4DdsDesc* d
         hr=d->hw->CreateTexture2D(&native,initial,&r->texture);if(FAILED(hr))return hr;
         hr=d->hw->CreateShaderResourceView(r->texture,NULL,&r->srv);if(FAILED(hr))return hr;
         r->info.kind=KICH_R4_TEXTURE_2D;r->info.format=image.format>=kich_r4_dds::BC1?image.format:static_cast<uint32_t>(KICH_R4_RGBA8);r->info.width=image.width;r->info.height=image.height;
-        r->info.byte_size=0;for(uint32_t i=0;i<image.count*image.faces;++i)r->info.byte_size+=initial[i].SysMemSlicePitch;r->info.bindings=KICH_R4_SHADER_READ;
+        r->initialized=true;r->info.byte_size=0;for(uint32_t i=0;i<image.count*image.faces;++i)r->info.byte_size+=initial[i].SysMemSlicePitch;r->info.bindings=KICH_R4_SHADER_READ;
         *out=d->Add(std::move(r));return KICH_R4_OK;
     });
 }
 int32_t KICH_R4_CALL ReadNativePixels(KichR4Handle device,void* output,uint32_t bytes,uint32_t* width,uint32_t* height){
-    return Protect([&]() -> int32_t {int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;return d->frame_driver.ReadPixels(output,bytes,width,height);});
+    return Protect([&]() -> int32_t {int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;
+        if(output)d->Emit("GPU_COPY","screenshot","operation","BACKBUFFER_TO_STAGING_COPYRESOURCE_AND_CPU_MAP; USER_SCREENSHOT_PATH");
+        return d->frame_driver.ReadPixels(output,bytes,width,height);});
 }
 int32_t KICH_R4_CALL SetSnapshotSink(KichR4Handle device,KichR4SnapshotSink sink){
     return Protect([&]()->int32_t{int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;d->snapshot_sink=sink;return KICH_R4_OK;});
@@ -816,9 +975,10 @@ int32_t KICH_R4_CALL NativeProfileMark(KichR4Handle device,uint32_t marker){
     if(marker>7)return KICH_R4_E_ARGUMENT;
     return Protect([&]() -> int32_t {int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;
         Device::ProfileSlot& p=d->profile[d->profile_write];
-        if(marker==0){if(p.pending)return S_FALSE;
-            if(!p.disjoint){D3D11_QUERY_DESC q={D3D11_QUERY_TIMESTAMP_DISJOINT,0};hr=d->hw->CreateQuery(&q,&p.disjoint);if(FAILED(hr))return hr;
-                q.Query=D3D11_QUERY_TIMESTAMP;for(unsigned i=0;i<8;++i){hr=d->hw->CreateQuery(&q,&p.stamp[i]);if(FAILED(hr)){p.Reset();return hr;}}}
+        if(marker==0){d->capture_query_requested=true;if(p.pending){d->TimingResult(d->telemetry,KICH_R4_TIMING_TIMEOUT,0);d->Emit("GPU_TIMING","query_ring","skip_reason","CURRENT_RING_SLOT_PENDING; NO_WAIT");return S_FALSE;}
+            p.origin=d->telemetry;p.valid_mask=(d->telemetry.flags&KICH_R4_TELEMETRY_MENU)?1:127;p.poll_count=0;p.status=KICH_R4_TIMING_NONE;
+            if(!p.disjoint){D3D11_QUERY_DESC q={D3D11_QUERY_TIMESTAMP_DISJOINT,0};hr=d->hw->CreateQuery(&q,&p.disjoint);if(FAILED(hr)){d->TimingResult(p.origin,KICH_R4_TIMING_UNSUPPORTED,0);return hr;}
+                q.Query=D3D11_QUERY_TIMESTAMP;for(unsigned i=0;i<8;++i){hr=d->hw->CreateQuery(&q,&p.stamp[i]);if(FAILED(hr)){d->TimingResult(p.origin,KICH_R4_TIMING_UNSUPPORTED,0);p.Reset();return hr;}}}
             d->context->Begin(p.disjoint);d->profile_open=true;
         }
         if(!d->profile_open)return S_FALSE;
@@ -830,7 +990,7 @@ int32_t KICH_R4_CALL NativeProfileMark(KichR4Handle device,uint32_t marker){
 int32_t KICH_R4_CALL GetNativeProfile(KichR4Handle device,KichR4GPUProfile* out,uint32_t bytes){
     if(!out || bytes<sizeof(*out))return KICH_R4_E_ARGUMENT;
     return Protect([&]() -> int32_t {int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;memset(out,0,sizeof(*out));out->struct_size=sizeof(*out);
-        for(unsigned j=0;j<4;++j){Device::ProfileSlot& p=d->profile[(d->profile_write+j)%4];if(!p.pending)continue;
+        for(unsigned j=0;j<4;++j){Device::ProfileSlot& p=d->profile[(d->profile_write+j)%4];if(!p.pending || p.origin.capture_id)continue;
             D3D11_QUERY_DATA_TIMESTAMP_DISJOINT timing={};if(d->context->GetData(p.disjoint,&timing,sizeof(timing),D3D11_ASYNC_GETDATA_DONOTFLUSH)!=S_OK)continue;
             UINT64 stamp[8]={};bool ready=true;for(unsigned i=0;i<8;++i)if(d->context->GetData(p.stamp[i],&stamp[i],sizeof(stamp[i]),D3D11_ASYNC_GETDATA_DONOTFLUSH)!=S_OK)ready=false;
             if(!ready)continue;
@@ -838,6 +998,50 @@ int32_t KICH_R4_CALL GetNativeProfile(KichR4Handle device,KichR4GPUProfile* out,
             out->ready=1;for(unsigned i=0;i<7;++i)out->milliseconds[i]=static_cast<float>(double(stamp[i+1]-stamp[i])*1000.0/double(timing.Frequency));return S_OK;
         }return S_OK;
     });
+}
+
+int32_t KICH_R4_CALL SetTelemetryCapture(KichR4Handle device,const KichR4TelemetryContext* capture,KichR4TelemetrySink sink){
+    if((capture && !TelemetryContextValid(*capture)) || (!capture && sink))return KICH_R4_E_ARGUMENT;
+    return Protect([&]()->int32_t{int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;
+        if(!capture){
+            if(d->profile_open){Device::ProfileSlot& p=d->profile[d->profile_write];d->context->End(p.disjoint);d->TimingResult(p.origin,KICH_R4_TIMING_ABORTED,0);p.Reset();d->profile_open=false;}
+            if(d->telemetry.capture_id && !d->capture_query_requested){d->TimingResult(d->telemetry,KICH_R4_TIMING_ABORTED,0);d->capture_query_requested=true;}
+            d->Counters();d->telemetry_sink=NULL;return KICH_R4_OK;
+        }
+        d->telemetry=*capture;d->telemetry_sink=sink;d->capture_query_requested=false;++d->telemetry_epoch;d->pass_ordinal=0;d->draw_ordinal=0;d->pass_routes.clear();
+        d->resource_records=d->resource_records_dropped=d->route_observations=d->route_records=d->route_records_dropped=0;
+        d->Number("GPU_CONTEXT","device","engine_frame",capture->engine_frame);d->Number("GPU_CONTEXT","device","render_frame",capture->render_frame);
+        d->Number("GPU_CONTEXT","device","native_present_attempt_ordinal",capture->present_frame);d->Number("GPU_CONTEXT","device","device_generation",capture->device_generation);d->Number("GPU_CONTEXT","device","level_generation",capture->level_generation);
+        const KichR4FrameStats frame=d->frame.Stats();d->Number("GPU_BACKBUFFER","swapchain","width",frame.width);d->Number("GPU_BACKBUFFER","swapchain","height",frame.height);d->Number("GPU_BACKBUFFER","swapchain","write_generation",d->backbuffer_generation);d->Emit("GPU_BACKBUFFER","swapchain","owner","FRAME_DRIVER_SWAPCHAIN; EXCLUDED_FROM_RESOURCE_REGISTRY_PAYLOAD");
+        if(d->backbuffer_write==UINT64_MAX)d->Emit("GPU_BACKBUFFER","swapchain","last_writer_engine_frame","UNKNOWN_OR_UNWRITTEN");else d->Number("GPU_BACKBUFFER","swapchain","last_writer_engine_frame",d->backbuffer_write);
+        d->Number("GPU_CONTEXT","device","feature_level",d->hw->GetFeatureLevel());d->Number("GPU_CONTEXT","device","created_baseline",d->created_total);d->Number("GPU_CONTEXT","device","released_baseline",d->released_total);
+        d->Emit("GPU_CONTEXT","device","timing_policy","4_SLOTS; POLL_ON_RENDER; DONOTFLUSH; MAX_120_POLLS; NO_FORCED_WAIT");
+        d->Emit("GPU_CONTEXT","device","timing_stage_mapping",capture->flags&KICH_R4_TELEMETRY_MENU?"0=MENU_RENDER_TOTAL;1..6=NOT_APPLICABLE":"0=RESOURCE_INIT_UPLOAD_SHADOWS;1=GBUFFER;2=LIGHTING;3=COMBINE;4=FORWARD_DISTORT_HUD;5=POSTPROCESS_UI;6=END_MARKER_GAP");
+        if(sink){Com<IDXGIDevice> dxgi;Com<IDXGIAdapter> adapter;
+            if(SUCCEEDED(d->hw->QueryInterface(__uuidof(IDXGIDevice),reinterpret_cast<void**>(dxgi.Out()))) && SUCCEEDED(dxgi->GetAdapter(adapter.Out()))){DXGI_ADAPTER_DESC desc={};
+                if(SUCCEEDED(adapter->GetDesc(&desc))){char text[384];WideCharToMultiByte(CP_UTF8,0,desc.Description,-1,text,sizeof(text),NULL,NULL);text[sizeof(text)-1]=0;d->Emit("GPU_CONTEXT","adapter","description",text);
+                    d->Number("GPU_CONTEXT","adapter","vendor_id",desc.VendorId);d->Number("GPU_CONTEXT","adapter","device_id",desc.DeviceId);d->Number("GPU_CONTEXT","adapter","dedicated_video_memory",desc.DedicatedVideoMemory);
+                    LARGE_INTEGER version={};if(SUCCEEDED(adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice),&version)))d->Number("GPU_CONTEXT","adapter","driver_version_raw",static_cast<uint64_t>(version.QuadPart));else d->Emit("GPU_CONTEXT","adapter","driver_version_raw","NOT_AVAILABLE");}}
+        }
+        return KICH_R4_OK;});
+}
+int32_t KICH_R4_CALL PollTelemetryTiming(KichR4Handle device,KichR4TelemetryTiming* out,uint32_t bytes){
+    if(!OutputOK(out,bytes))return KICH_R4_E_ARGUMENT;
+    return Protect([&]()->int32_t{int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;
+        memset(out,0,sizeof(*out));out->struct_size=sizeof(*out);
+        for(unsigned j=0;j<4;++j){Device::ProfileSlot& p=d->profile[j];if(!p.pending || !p.origin.capture_id)continue;
+            ++p.poll_count;D3D11_QUERY_DATA_TIMESTAMP_DISJOINT timing={};uint64_t stamps[8]={};uint32_t status=KICH_R4_TIMING_NONE;double ms[7]={};
+            const HRESULT disjoint_hr=d->context->GetData(p.disjoint,&timing,sizeof(timing),D3D11_ASYNC_GETDATA_DONOTFLUSH);
+            if(FAILED(disjoint_hr))status=KICH_R4_TIMING_UNSUPPORTED;
+            else if(disjoint_hr==S_OK){bool ready=true;
+                for(unsigned i=0;i<8;++i){const HRESULT stamp_hr=d->context->GetData(p.stamp[i],&stamps[i],sizeof(stamps[i]),D3D11_ASYNC_GETDATA_DONOTFLUSH);if(FAILED(stamp_hr)){status=KICH_R4_TIMING_UNSUPPORTED;break;}if(stamp_hr!=S_OK)ready=false;}
+                if(!status && ready)status=TelemetryTimestampResult(timing.Disjoint!=FALSE,timing.Frequency,stamps,p.valid_mask,ms);
+            }
+            if(!status && p.poll_count>=120)status=KICH_R4_TIMING_TIMEOUT;
+            if(status){d->TimingResult(p.origin,status,p.valid_mask,ms);p.pending=false;memset(&p.origin,0,sizeof(p.origin));if(status==KICH_R4_TIMING_TIMEOUT || status==KICH_R4_TIMING_UNSUPPORTED)p.Reset();}
+        }
+        if(d->timing_count){*out=d->timing_results[0];--d->timing_count;memmove(d->timing_results,d->timing_results+1,d->timing_count*sizeof(*out));}
+        return KICH_R4_OK;});
 }
 KichR4GeometryStats GeometryStats(const Device& d)
 {
@@ -926,4 +1130,9 @@ extern "C" int32_t KICH_R4_CALL KichR4_GetModelAPI(uint32_t abi,KichR4ModelAPI* 
     if(abi!=KICH_R4_MODEL_ABI || !out || bytes<sizeof(*out))return KICH_R4_E_ARGUMENT;
     const KichR4ModelAPI api={sizeof(api),KICH_R4_MODEL_ABI,sizeof(void*),0,CreateModelPipeline,CreateModelPose,UploadModelPose,DrawModel};
     *out=api;return KICH_R4_OK;
+}
+
+extern "C" int32_t KICH_R4_CALL KichR4_GetTelemetryAPI(uint32_t abi,KichR4TelemetryAPI* out,uint32_t bytes){
+    if(abi!=KICH_R4_TELEMETRY_ABI || !OutputOK(out,bytes))return KICH_R4_E_ARGUMENT;
+    const KichR4TelemetryAPI api={sizeof(api),KICH_R4_TELEMETRY_ABI,sizeof(void*),0,SetTelemetryCapture,PollTelemetryTiming};*out=api;return KICH_R4_OK;
 }

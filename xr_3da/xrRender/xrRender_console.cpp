@@ -291,9 +291,37 @@ public:
         Msg(RenderSnapshot_Request()?"[snapshot] armed: next complete frame":"! [snapshot] request queue is full");}
     void Save(IWriter*){}
 };
+class CCC_SnapshotUICycle : public IConsole_Command {
+public:
+    CCC_SnapshotUICycle(LPCSTR name):IConsole_Command(name){}
+    void Execute(LPCSTR args){
+        if(args && !xr_strcmp(args,"cancel")){RenderSnapshot_UICycleCancel("USER_CANCELLED");Msg("[snapshot] UI cycle cancelled");return;}
+        const char* target=args && !xr_strcmp(args,"pda")?"PDA":args && !xr_strcmp(args,"inventory")?"INVENTORY":args && !xr_strcmp(args,"menu")?"MENU":NULL;
+        if(!target){Msg("! usage: d_snapshot_ui pda|inventory|menu|cancel");return;}
+        Msg(RenderSnapshot_UICycleRequest(target)?"[snapshot] UI cycle armed: close console, open and close requested UI normally":"! [snapshot] UI cycle busy");
+    }
+    void Save(IWriter*){}
+};
+class CCC_SnapshotHotkey : public IConsole_Command {
+public:
+    CCC_SnapshotHotkey(LPCSTR name):IConsole_Command(name){}
+    void Execute(LPCSTR args){unsigned value=0;char tail=0;if(!args || sscanf(args,"%u %c",&value,&tail)!=1 || value>255){Msg("! usage: d_snapshot_key DIK_number (0 disables; 88=F12)");return;}
+        RenderSnapshot_SetHotkey(value);Msg("[snapshot] physical DIK key=%u; normal binding remains active",value);}
+    void Save(IWriter* writer){writer->w_printf("%s %u\r\n",cName,RenderSnapshot_GetHotkey());}
+};
+class CCC_SnapshotProfile : public IConsole_Command {
+public:
+    CCC_SnapshotProfile(LPCSTR name):IConsole_Command(name){}
+    void Execute(LPCSTR args){unsigned frames=0;char tail=0;if(!args || sscanf(args,"%u %c",&frames,&tail)!=1 || frames<1 || frames>120){Msg("! usage: d_snapshot_profile frames (1..120)");return;}
+        Msg(RenderSnapshot_ProfileRequest(frames)?"[snapshot] bounded counter profile armed":"! [snapshot] profile busy");}
+    void Save(IWriter*){}
+};
 void xrRender_initconsole()
 {
 	CMD1(CCC_FrameSnapshot,"d_snapshot");
+    CMD1(CCC_SnapshotUICycle,"d_snapshot_ui");
+    CMD1(CCC_SnapshotHotkey,"d_snapshot_key");
+    CMD1(CCC_SnapshotProfile,"d_snapshot_profile");
 	CMD3(CCC_Preset, "_preset", &ps_Preset, qpreset_token);
 
 	// Common

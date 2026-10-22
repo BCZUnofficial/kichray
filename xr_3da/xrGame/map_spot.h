@@ -21,6 +21,7 @@ class CMapSpot : public CUIStatic
 	}
 	virtual LPCSTR GetHint();
 	virtual void Update();
+	virtual void Draw();
 	virtual bool OnMouseDown(int mouse_btn);
 	virtual void OnFocusLost();
 };

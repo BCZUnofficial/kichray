@@ -24,6 +24,11 @@ class light : public IRender_Light, public ISpatial
 	float cone;
 	Fcolor color;
 
+	// Telemetry identity only; no new virtual slots or rendering policy.
+	unsigned long long snapshot_serial;
+	u32 snapshot_record, snapshot_controller, snapshot_face;
+	bool snapshot_record_valid;
+	light* snapshot_parent;
 	vis_data hom;
 	u32 frame_render;
 
@@ -79,7 +84,7 @@ class light : public IRender_Light, public ISpatial
 #endif
 
   public:
-	void CaptureR4() const; // CPU snapshot only; no new fields or virtual slots
+	void CaptureR4() const; // CPU snapshot only; no new virtual slots
 	virtual void set_type(LT type)
 	{
 		flags.type = type;

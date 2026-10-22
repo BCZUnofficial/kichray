@@ -4,6 +4,7 @@
 
 #include "stdafx.h"
 #include "WallmarksEngine.h"
+#include "WallmarkSnapshot.h"
 
 #include "..\xr_object.h"
 #include "..\x_ray.h"
@@ -101,6 +102,9 @@ CWallmarksEngine::static_wallmark* CWallmarksEngine::static_wm_allocate()
 		static_pool.pop_back();
 	}
 
+	static unsigned long long serial = 0;
+	W->snapshot_serial = ++serial;W->snapshot_frame = Device.dwFrame;W->snapshot_time = Device.fTimeGlobal;
+	W->snapshot_creation_diagnostic = RenderSnapshot_DiagnosticActive();W->snapshot_receiver = NULL;
 	W->ttl = ps_r__WallmarkTTL;
 	W->verts.clear();
 	return W;
@@ -221,7 +225,7 @@ void CWallmarksEngine::AddWallmark_internal(CDB::TRI* pTri, const Fvector* pVert
 		xrc.box_query(g_pGameLevel->ObjectSpace.GetStaticModel(), bbc, bbd);
 		u32 triCount = xrc.r_count();
 		if (0 == triCount)
-			return;
+		{kich_wallmark_snapshot::Event("STATIC_REQUEST",pTri,"REJECTED","NO_RECEIVER_TRIANGLES");return;}
 		CDB::TRI* tris = g_pGameLevel->ObjectSpace.GetStaticTris();
 		sml_collector.clear();
 		sml_collector.add_face_packed_D(pVerts[pTri->verts[0]], pVerts[pTri->verts[1]], pVerts[pTri->verts[2]], 0);
@@ -249,11 +253,13 @@ void CWallmarksEngine::AddWallmark_internal(CDB::TRI* pTri, const Fvector* pVert
 
 	// create wallmark
 	static_wallmark* W = static_wm_allocate();
+	W->snapshot_receiver = pTri;
 	RecurseTri(0, mView, *W);
 
 	// calc sphere
 	if (W->verts.size() < 3)
 	{
+		kich_wallmark_snapshot::Event("STATIC_REQUEST",pTri,"REJECTED","EMPTY_CLIPPED_GEOMETRY");
 		static_wm_destroy(W);
 		return;
 	}
@@ -269,6 +275,7 @@ void CWallmarksEngine::AddWallmark_internal(CDB::TRI* pTri, const Fvector* pVert
 		bb.getsphere(W->bounds.P, W->bounds.R);
 	}
 
+	kich_wallmark_snapshot::Event("static",W,"GEOMETRY_CREATED",W->bounds.R < 1.f?"ELIGIBLE_FOR_STORAGE":"REJECTED_RADIUS_POLICY",W->snapshot_serial);
 	if (W->bounds.R < 1.f)
 	{
 		// search if similar wallmark exists
@@ -284,6 +291,7 @@ void CWallmarksEngine::AddWallmark_internal(CDB::TRI* pTri, const Fvector* pVert
 				{ // replace
 					static_wm_destroy(wm);
 					*it = W;
+					kich_wallmark_snapshot::Event("static",W,"STORED","REPLACED_NEARBY_MARK",W->snapshot_serial);
 					return;
 				}
 			}
@@ -295,15 +303,17 @@ void CWallmarksEngine::AddWallmark_internal(CDB::TRI* pTri, const Fvector* pVert
 
 		// no similar - register _new_
 		slot->static_items.push_back(W);
+		kich_wallmark_snapshot::Event("static",W,"STORED","APPENDED_TO_SHADER_SLOT",W->snapshot_serial);
 	}
 }
 
 void CWallmarksEngine::AddStaticWallmark(CDB::TRI* pTri, const Fvector* pVerts, const Fvector& contact_point,
 										 ref_shader hShader, float sz)
 {
+	kich_wallmark_snapshot::Event("STATIC_REQUEST",pTri,"REQUEST","AddStaticWallmark; EFFECT_ORIGIN_NOT_INSTRUMENTED");
 	// optimization cheat: don't allow wallmarks more than 50 m from viewer/actor
 	if (contact_point.distance_to_sqr(Device.vCameraPosition) > _sqr(100.f))
-		return;
+	{kich_wallmark_snapshot::Event("STATIC_REQUEST",pTri,"REJECTED","CAMERA_DISTANCE_GT_100");return;}
 
 	// Physics may add wallmarks in parallel with rendering
 	lock.Enter();
@@ -314,22 +324,24 @@ void CWallmarksEngine::AddStaticWallmark(CDB::TRI* pTri, const Fvector* pVerts, 
 void CWallmarksEngine::AddSkeletonWallmark(const Fmatrix* xf, CKinematics* obj, ref_shader& sh, const Fvector& start,
 										   const Fvector& dir, float size)
 {
+	kich_wallmark_snapshot::Event("SKELETAL_REQUEST",obj,"REQUEST","AddSkeletonWallmark; EFFECT_ORIGIN_NOT_INSTRUMENTED");
 	if (0 == g_r || ::RImplementation.phase != CRender::PHASE_NORMAL)
-		return;
+	{kich_wallmark_snapshot::Event("SKELETAL_REQUEST",obj,"REJECTED","RENDER_PHASE_DISABLED");return;}
 	// optimization cheat: don't allow wallmarks more than 50 m from viewer/actor
 	if (xf->c.distance_to_sqr(Device.vCameraPosition) > _sqr(50.f))
-		return;
+	{kich_wallmark_snapshot::Event("SKELETAL_REQUEST",obj,"REJECTED","CAMERA_DISTANCE_GT_50");return;}
 
 	VERIFY(obj && xf && (size > EPS_L));
 	lock.Enter();
 	obj->AddWallmark(xf, start, dir, sh, size);
+	kich_wallmark_snapshot::Event("SKELETAL_REQUEST",obj,"CREATION_HANDLER_RETURNED","SEE_SKELETAL_GEOMETRY_EVENT; NOT_PROOF_OF_GEOMETRY");
 	lock.Leave();
 }
 
 void CWallmarksEngine::AddSkeletonWallmark(intrusive_ptr<CSkeletonWallmark> wm)
 {
 	if (0 == g_r || ::RImplementation.phase != CRender::PHASE_NORMAL)
-		return;
+	{kich_wallmark_snapshot::Event("skeletal",wm.get(),"QUEUE_REJECTED","RENDER_PHASE_DISABLED");return;}
 
 	if (!::RImplementation.val_bHUD)
 	{
@@ -340,11 +352,12 @@ void CWallmarksEngine::AddSkeletonWallmark(intrusive_ptr<CSkeletonWallmark> wm)
 			slot = AppendSlot(wm->Shader());
 		// no similar - register _new_
 		slot->skeleton_items.push_back(wm);
+		if(RenderSnapshot_Detailed()){char id[96];kich_wallmark_snapshot::ID(id,sizeof(id),"skeletal",wm.get());RenderSnapshot_Record("DECALS",id,"queue_admission","ACCEPTED_NON_HUD_NORMAL_PHASE");}
 #ifdef DEBUG
 		wm->used_in_render = Device.dwFrame;
 #endif
 		lock.Leave();
-	}
+	}else kich_wallmark_snapshot::Event("skeletal",wm.get(),"QUEUE_REJECTED","HUD_OWNER");
 }
 
 extern float r_ssaDISCARD;
@@ -362,6 +375,8 @@ ICF void FlushStream(ref_geom hGeom, ref_shader shader, u32& w_offset, FVF::LIT*
 	RCache.Vertex.Unlock(w_count, hGeom->vb_stride);
 	if (w_count)
 	{
+		RenderSnapshotProvenance previous={};if(RenderSnapshot_Detailed())RenderSnapshot_GetProvenance(&previous);
+		kich_wallmark_snapshot::Batch(bSuppressCull!=FALSE,w_count,w_offset);
 		RCache.set_Shader(shader);
 		RCache.set_Geometry(hGeom);
 		if (bSuppressCull)
@@ -370,6 +385,7 @@ ICF void FlushStream(ref_geom hGeom, ref_shader shader, u32& w_offset, FVF::LIT*
 		if (bSuppressCull)
 			RCache.set_CullMode(CULL_CCW);
 		Device.Statistic->RenderDUMP_WMT_Count += w_count / 3;
+		if(RenderSnapshot_Detailed())RenderSnapshot_SetProvenance(&previous);
 	}
 }
 
@@ -394,6 +410,10 @@ void CWallmarksEngine::Render()
 	Device.Statistic->RenderDUMP_WMT_Count = 0;
 
 	float ssaCLIP = r_ssaDISCARD / 4;
+	uint64_t snapshot_static_active=0,snapshot_skeletal_active=0,snapshot_static_selected=0,snapshot_skeletal_selected=0;
+	if(g_render_snapshot_active){RenderSnapshot_Text("DECALS","implementation","PROJECTED_STATIC_AND_CPU_SKINNED_SKELETAL; NOT_SCREEN_SPACE_DECALS");
+		RenderSnapshot_Value("DECALS","projection_shift",ps_r__WallmarkSHIFT);RenderSnapshot_Value("DECALS","view_shift",ps_r__WallmarkSHIFT_V);
+		RenderSnapshot_Text("DECALS","depth_stencil_blend","SEE_ACTUAL_DRAW_STATE");RenderSnapshot_Text("DECALS","pixel_contribution","NOT_MEASURED");}
 
 	lock.Enter(); // Physics may add wallmarks in parallel with rendering
 
@@ -407,6 +427,9 @@ void CWallmarksEngine::Render()
 		for (StaticWMVecIt w_it = slot->static_items.begin(); w_it != slot->static_items.end();)
 		{
 			static_wallmark* W = *w_it;
+			char snapshot_id[96]={};if(g_render_snapshot_active){++snapshot_static_active;if(RenderSnapshot_Detailed()){kich_wallmark_snapshot::ID(snapshot_id,sizeof(snapshot_id),"static",W,W->snapshot_serial);
+				kich_wallmark_snapshot::Mark(snapshot_id,"STATIC_PROJECTED",this,W->snapshot_receiver,&W->bounds.P.x,W->bounds.R,W->verts.size()/3,W->ttl,
+					Device.fTimeGlobal-W->snapshot_time,1-W->ttl/ps_r__WallmarkTTL,true,W->snapshot_frame,W->snapshot_creation_diagnostic,"VISIBLE:0.1*Device.fTimeDelta; OUTSIDE:Device.fTimeDelta");}}
 			if (RImplementation.ViewBase.testSphere_dirty(W->bounds.P, W->bounds.R))
 			{
 				Device.Statistic->RenderDUMP_WMS_Count++;
@@ -414,6 +437,7 @@ void CWallmarksEngine::Render()
 				float ssa = W->bounds.R * W->bounds.R / dst;
 				if (ssa >= ssaCLIP)
 				{
+					if(g_render_snapshot_active){++snapshot_static_selected;kich_wallmark_snapshot::Selection(snapshot_id,true,"CAMERA_FRUSTUM_AND_SSA");}
 					u32 w_count = u32(w_verts - w_start);
 					if ((w_count + W->verts.size()) >= (MAX_TRIS * 3))
 					{
@@ -422,14 +446,17 @@ void CWallmarksEngine::Render()
 					}
 					static_wm_render(W, w_verts);
 				}
+				else if(g_render_snapshot_active)kich_wallmark_snapshot::Selection(snapshot_id,false,"SSA_BELOW_THRESHOLD");
 				W->ttl -= 0.1f * Device.fTimeDelta; // visible wallmarks fade much slower
 			}
 			else
 			{
+				if(g_render_snapshot_active)kich_wallmark_snapshot::Selection(snapshot_id,false,"CAMERA_FRUSTUM");
 				W->ttl -= Device.fTimeDelta;
 			}
 			if (W->ttl <= EPS)
 			{
+				kich_wallmark_snapshot::Event("static",W,"EXPIRED","TTL",W->snapshot_serial);
 				static_wm_destroy(W);
 				*w_it = slot->static_items.back();
 				slot->static_items.pop_back();
@@ -462,10 +489,15 @@ void CWallmarksEngine::Render()
 			}
 #endif
 
+			char snapshot_id[96]={};if(g_render_snapshot_active){++snapshot_skeletal_active;if(RenderSnapshot_Detailed()){kich_wallmark_snapshot::ID(snapshot_id,sizeof(snapshot_id),"skeletal",W.get());
+				const float age=Device.fTimeGlobal-W->TimeStart();kich_wallmark_snapshot::Mark(snapshot_id,"SKELETAL_CPU_1W_2W",W->Parent(),W->Parent(),&W->m_Bounds.P.x,W->m_Bounds.R,W->VCount()/3,30.f-age,age,age/30.f,false,0,false,"Device.fTimeGlobal; CKinematics::LIFE_TIME=30");
+				kich_wallmark_snapshot::Float(snapshot_id,"observed_time_start_game_seconds",W->TimeStart());kich_wallmark_snapshot::Float(snapshot_id,"observed_age_game_seconds",age);
+				RenderSnapshot_Record("DECALS",snapshot_id,"pose_freshness","NOT_YET_DEFORMED; SEE_DEFORMATION_RESULT; POSE_VERSION_NOT_INSTRUMENTED");}}
 			float dst = Device.vCameraPosition.distance_to_sqr(W->m_Bounds.P);
 			float ssa = W->m_Bounds.R * W->m_Bounds.R / dst;
 			if (ssa >= ssaCLIP)
 			{
+				if(g_render_snapshot_active){++snapshot_skeletal_selected;kich_wallmark_snapshot::Selection(snapshot_id,true,"PRESELECTED_SKELETON_LIST_AND_SSA");}
 				Device.Statistic->RenderDUMP_WMD_Count++;
 				u32 w_count = u32(w_verts - w_start);
 				if ((w_count + W->VCount()) >= (MAX_TRIS * 3))
@@ -478,13 +510,17 @@ void CWallmarksEngine::Render()
 				try
 				{
 					W->Parent()->RenderWallmark(W, w_verts);
+					if(g_render_snapshot_active)RenderSnapshot_Record("DECALS",snapshot_id,"deformation_result","CPU_RenderWallmark_RETURNED; CURRENT_CALL; POSE_VERSION_NOT_INSTRUMENTED");
 				}
 				catch (...)
 				{
+					kich_wallmark_snapshot::Event("skeletal",W.get(),"GEOMETRY_FAILED","RenderWallmark_EXCEPTION");
+					if(g_render_snapshot_active)RenderSnapshot_Record("DECALS",snapshot_id,"deformation_result","FAILED_EXCEPTION; VERTEX_CURSOR_RESTORED");
 					Msg("! Failed to render dynamic wallmark");
 					w_verts = w_save;
 				}
 			}
+			else if(g_render_snapshot_active)kich_wallmark_snapshot::Selection(snapshot_id,false,"SSA_BELOW_THRESHOLD");
 #ifdef DEBUG
 			W->used_in_render = u32(-1);
 #endif
@@ -494,6 +530,10 @@ void CWallmarksEngine::Render()
 		FlushStream(hGeom, slot->shader, w_offset, w_verts, w_start, TRUE);
 	}
 
+	if(g_render_snapshot_active){RenderSnapshot_U64("DECALS","static_stored_observed",snapshot_static_active);RenderSnapshot_U64("DECALS","static_selected",snapshot_static_selected);
+		RenderSnapshot_U64("DECALS","skeletal_preselected_observed",snapshot_skeletal_active);RenderSnapshot_U64("DECALS","skeletal_selected",snapshot_skeletal_selected);
+		RenderSnapshot_U64("DECALS","stream_triangles_requested",Device.Statistic->RenderDUMP_WMT_Count);
+		RenderSnapshot_Text("DECALS","skeletal_scope","CURRENT_RENDER_LIST; EARLIER_SKELETON_REJECTIONS_RECORDED_SEPARATELY");}
 	lock.Leave(); // Physics may add wallmarks in parallel with rendering
 
 	// Level-wmarks

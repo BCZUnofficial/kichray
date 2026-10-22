@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "RenderSnapshotMaterial.h"
 #include "KichR4Native.h"
 #include "KichR4NativeCPU.h"
 #pragma hdrstop
@@ -56,6 +57,7 @@ class includer : public ID3DXInclude
 		data[size] = 0;
 		FS.r_close(R);
 
+		RenderSnapshot_ShaderInclude(pFileName, data, size);
 		*ppData = data;
 		*pBytes = size;
 		return D3D_OK;
@@ -124,6 +126,7 @@ void CResourceManager::_DeletePass(const SPass* P)
 {
 	if (0 == (P->dwFlags & xr_resource_flagged::RF_REGISTERED))
 		return;
+	RenderSnapshot_ForgetMaterialPass(P);
 	if (reclaim(v_passes, P))
 		return;
 	Msg("! ERROR: Failed to find compiled pass");

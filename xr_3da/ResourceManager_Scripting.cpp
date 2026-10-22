@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "RenderSnapshotMaterial.h"
 #pragma hdrstop
 
 #include "render.h"
@@ -493,6 +494,17 @@ Shader* CResourceManager::_lua_Create(LPCSTR d_shader, LPCSTR s_textures)
 		C.iElement = 4;
 		C.bDetail = FALSE;
 		S.E[4] = C._lua_Compile(s_shader, "l_special");
+	}
+
+	// Bounded diagnostic source sidecar; source descriptors are not backend bindings.
+	if (!C.L_textures.empty()) {
+		LPCSTR detail = NULL; R_constant_setup* scaler = NULL; BOOL diffuse = FALSE, bump_usage = FALSE;
+		const shared_str bump = m_textures_description.GetBumpName(C.L_textures[0]);
+		m_textures_description.GetDetailTexture(C.L_textures[0], detail, scaler);
+		m_textures_description.GetTextureUsage(C.L_textures[0], diffuse, bump_usage);
+		for (u32 element = 0; element < 6; ++element)
+			RenderSnapshot_RegisterMaterialElement(S.E[element]._get(), element, d_shader, s_textures,
+				"LUA_SHADER_DESCRIPTION", bump.c_str(), detail, (diffuse ? 1u : 0u) | (bump_usage ? 2u : 0u));
 	}
 
 	// Search equal in shaders array

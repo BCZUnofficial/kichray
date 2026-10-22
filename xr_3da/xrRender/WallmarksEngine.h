@@ -19,6 +19,12 @@ class CWallmarksEngine
 		Fsphere bounds;
 		xr_vector<FVF::LIT> verts;
 		float ttl;
+		// Observed allocation metadata; no source/effect is guessed for older marks.
+		unsigned long long snapshot_serial;
+		u32 snapshot_frame;
+		float snapshot_time;
+		bool snapshot_creation_diagnostic;
+		const void* snapshot_receiver;
 	};
 	DEFINE_VECTOR(static_wallmark*, StaticWMVec, StaticWMVecIt);
 	DEFINE_VECTOR(wm_slot*, WMSlotVec, WMSlotVecIt);

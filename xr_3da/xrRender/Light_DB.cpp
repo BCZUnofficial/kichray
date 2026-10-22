@@ -4,6 +4,7 @@
 #include "..\igame_persistent.h"
 #include "..\environment.h"
 #include "light_db.h"
+#include "R2LightSnapshot.h"
 
 CLight_DB::CLight_DB()
 {
@@ -42,6 +43,7 @@ void CLight_DB::Load(IReader* fs)
 #endif
 			u32 controller = 0;
 			F->r(&controller, 4);
+			L->snapshot_record=i;L->snapshot_controller=controller;L->snapshot_record_valid=true;
 			F->r(&Ldata, sizeof(Flight));
 			if (Ldata.type == D3DLIGHT_DIRECTIONAL)
 			{
@@ -56,6 +58,7 @@ void CLight_DB::Load(IReader* fs)
 
 				// copy to env-sun
 				sun_adapted = L = Create();
+				L->snapshot_record=i;L->snapshot_controller=controller;L->snapshot_record_valid=true;
 				L->flags.bStatic = true;
 				L->set_type(IRender_Light::DIRECT);
 				L->set_shadow(true);
@@ -132,19 +135,27 @@ void CLight_DB::add_light(light* L)
 #if RENDER == R_R2
 void CLight_DB::add_light(light* L)
 {
+	kich_r2_light_snapshot::Record(L,"candidate","OBSERVED","CLight_DB::add_light");
 	if (Device.dwFrame == L->frame_render)
-		return;
+	{kich_r2_light_snapshot::Record(L,"duplicate_visit","REJECTED","ALREADY_PROCESSED_THIS_FRAME");return;}
 	L->frame_render = Device.dwFrame;
 	if (RImplementation.o.noshadows)
 		L->flags.bShadow = FALSE;
+	if(g_render_snapshot_active){RenderSnapshot_U64("LIGHT_POLICY","R2FLAG_R1LIGHTS_requested",ps_r2_ls_flags.test(R2FLAG_R1LIGHTS)?1:0);RenderSnapshot_U64("LIGHT_POLICY","R2FLAG_R1LIGHTS_applied",ps_r2_ls_flags.test(R2FLAG_R1LIGHTS)?1:0);RenderSnapshot_U64("LIGHT_POLICY","noshadows_applied",RImplementation.o.noshadows?1:0);}
 	if (L->flags.bStatic && !ps_r2_ls_flags.test(R2FLAG_R1LIGHTS))
-		return;
+	{kich_r2_light_snapshot::Record(L,"policy","REJECTED","STATIC_LIGHT_DISABLED_R2FLAG_R1LIGHTS");return;}
+	kich_r2_light_snapshot::Record(L,"policy","ACCEPTED",RImplementation.o.noshadows?"SHADOWS_DISABLED_OPTION":"CURRENT_R2_POLICY");
 	L->_export(package);
 }
 #endif
 
 void CLight_DB::Update()
 {
+	if(g_render_snapshot_active){
+		RenderSnapshot_U64("LIGHT_POLICY","level_registered_count",v_static.size());
+		if(RenderSnapshot_Detailed())for(u32 n=0;n<v_static.size();++n)kich_r2_light_snapshot::Record((light*)v_static[n]._get(),"registered","OBSERVED","LEVEL_LIGHT_DATABASE");
+	}
+
 	// set sun params
 	if (sun_original && sun_adapted)
 	{
@@ -195,6 +206,14 @@ void CLight_DB::Update()
 		sun_adapted->set_color(E.sun_color.x * ps_r2_sun_lumscale, E.sun_color.y * ps_r2_sun_lumscale,
 							   E.sun_color.z * ps_r2_sun_lumscale);
 		sun_adapted->set_range(600.f);
+		if(RenderSnapshot_Detailed()){char source[64],adapted[64],direction[128];
+			kich_r2_light_snapshot::Record(_sun_original,"environment","UPDATED","CURRENT_ENVIRONMENT_COLOR_DIRECTION");
+			kich_r2_light_snapshot::Record(_sun_adapted,"environment","UPDATED","CURRENT_ENVIRONMENT_COLOR_TIMES_SUN_LUMSCALE");
+			kich_r2_light_snapshot::NodeID(source,sizeof(source),_sun_original);kich_r2_light_snapshot::NodeID(adapted,sizeof(adapted),_sun_adapted);
+			RenderSnapshot_Record("LIGHT",adapted,"environment_unscaled_light",source);kich_r2_light_snapshot::Float(adapted,"environment_color_scale",ps_r2_sun_lumscale);
+			snprintf(direction,sizeof(direction),"%.9g,%.9g,%.9g",E.sun_dir.x,E.sun_dir.y,E.sun_dir.z);RenderSnapshot_Record("LIGHT",adapted,"environment_sun_direction",direction);
+			RenderSnapshot_Record("LIGHT",adapted,"visible_disc_alignment","SHARED_ENVIRONMENT_DIRECTION; DISC_DRAW_NOT_MEASURED_HERE");
+		}
 	}
 
 	// Clear selection

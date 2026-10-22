@@ -1,6 +1,8 @@
 #include "StdAfx.h"
 #include "light.h"
 #include "../KichR4Lighting.h"
+#include "R2LightSnapshot.h"
+#include <atomic>
 
 void light::CaptureR4() const
 {
@@ -15,6 +17,9 @@ void light::CaptureR4() const
 
 light::light(void) : ISpatial(g_SpatialSpace)
 {
+	static std::atomic<unsigned long long> snapshot_next_serial(0);
+	snapshot_serial=++snapshot_next_serial;snapshot_record=snapshot_controller=snapshot_face=0;
+	snapshot_record_valid=false;snapshot_parent=NULL;
 	spatial.type = STYPE_LIGHTSOURCE;
 	flags.type = POINT;
 	flags.bStatic = false;
@@ -47,6 +52,7 @@ light::~light()
 	for (int f = 0; f < 6; f++)
 		xr_delete(omnipart[f]);
 #endif
+	kich_r2_light_snapshot::Event(this,"DESTROY","light destructor");
 	set_active(false);
 
 	// remove from Lights_LastFrame
@@ -110,6 +116,7 @@ void light::set_active(bool a)
 		// Msg								("!!! L-unregister: %X",u32(this));
 	}
 	CaptureR4();
+	kich_r2_light_snapshot::Event(this,a?"ACTIVATED":"DEACTIVATED","set_active");
 }
 
 void light::set_position(const Fvector& P)
@@ -316,6 +323,7 @@ void light::_export(light_Package& package)
 			for (int f = 0; f < 6; f++)
 			{
 				light* L = omnipart[f];
+				L->snapshot_parent=this;L->snapshot_face=f;
 				Fvector R;
 				R.crossproduct(cmNorm[f], cmDir[f]);
 				L->set_type(IRender_Light::OMNIPART);
@@ -328,6 +336,7 @@ void light::_export(light_Package& package)
 				L->spatial.sector = spatial.sector; //. dangerous?
 				L->s_spot = s_spot;
 				L->s_point = s_point;
+				kich_r2_light_snapshot::Record(L,"package","EXPORTED_SHADOW_FACE","SOURCE_POINT_LIGHT");
 				package.v_shadowed.push_back(L);
 			}
 		}

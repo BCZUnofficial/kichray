@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "RenderSnapshotUI.h"
 #include "UIPdaWnd.h"
 #include "../Pda.h"
 
@@ -171,11 +172,13 @@ void CUIPdaWnd::Show()
 	InventoryUtilities::SendInfoToActor("ui_pda");
 
 	inherited::Show();
+	snapshot_ui::WindowState(this,"PDA",IsShown());
 }
 
 void CUIPdaWnd::Hide()
 {
 	inherited::Hide();
+	snapshot_ui::WindowState(this,"PDA",IsShown());
 
 	InventoryUtilities::SendInfoToActor("ui_pda_hide");
 	HUD().GetUI()->UIMainIngameWnd->SetFlashIconState_(CUIMainIngameWnd::efiPdaTask, false);
@@ -257,10 +260,17 @@ void CUIPdaWnd::SetActiveSubdialog(EPdaTabs section)
 		UITabControl->SetNewActiveTab(section);
 
 	m_pActiveSection = section;
+	snapshot_ui::Event(this,"PDA_TAB_CHANGE","APPLIED");
 }
 
 void CUIPdaWnd::Draw()
 {
+	snapshot_ui::Scope snapshot_scope(this,"PDA");
+    if(RenderSnapshot_Detailed()){
+        RenderSnapshot_RecordU64("UI",snapshot_scope.id,"pda_active_tab",(unsigned)m_pActiveSection);
+        RenderSnapshot_RecordU64("UI",snapshot_scope.id,"pda_selected_tab",(unsigned)UITabControl->GetActiveIndex());
+        RenderSnapshot_Record("UI",snapshot_scope.id,"active_dialog_visible",m_pActiveDialog && m_pActiveDialog->IsShown()?"YES":"NO");
+    }
 	inherited::Draw();
 	DrawUpdatedSections();
 }

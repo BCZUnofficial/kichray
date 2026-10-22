@@ -35,4 +35,5 @@ KICH_R4_LIGHT_EXPORT void KichR4_CaptureLightForget(const void*);
 #undef KICH_R4_LIGHT_EXPORT
 /* EXE-only helper keeps allocation/exception handling out of the PCH adapter. */
 void KichR4_CaptureLighting(const float*,KichR4LightingFrame&);
+void KichR4_CaptureLightingDiagnostics(const float*,const KichR4LightingFrame&);
 #endif

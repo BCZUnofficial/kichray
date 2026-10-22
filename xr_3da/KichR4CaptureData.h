@@ -5,6 +5,7 @@
 #include "KichR4CaptureInput.h"
 #include "KichR4LightingMath.h"
 #include "RenderSnapshot.h"
+#include "KichR4TelemetryText.h"
 #include <memory>
 #include <set>
 #include <map>
@@ -118,11 +119,13 @@ inline void Transform(const float* p,const Matrix& m,float* out) {
     for(unsigned c=0;c<4;++c)out[c]=p[0]*m.m[c]+p[1]*m.m[4+c]+p[2]*m.m[8+c]+m.m[12+c];
 }
 inline uint32_t RGBA(uint32_t argb){return (argb&0xff00ff00u)|((argb&0xffu)<<16)|((argb>>16)&0xffu);}
+enum CaptureSemantic {CAPTURE_UNKNOWN=0,CAPTURE_UI,CAPTURE_PARTICLE,CAPTURE_STATIC_WALLMARK,CAPTURE_SKELETAL_WALLMARK,CAPTURE_SKY,CAPTURE_CLOUDS,CAPTURE_GLOW,CAPTURE_MODEL,CAPTURE_SEMANTIC_COUNT};
+inline const char* CaptureSemanticName(unsigned value){const char* names[]={"UNKNOWN","UI","PARTICLE","STATIC_WALLMARK","SKELETAL_WALLMARK","SKY","CLOUDS","GLOW","LEGACY_MODEL"};return value<CAPTURE_SEMANTIC_COUNT?names[value]:names[0];}
 struct Command {uint32_t first,count,layer;std::string texture;Style style;uint32_t effect,shader_element,shader_pass;std::string secondary,resource,shader,skin;
     /* Allocated only for a requested diagnostic frame; never crosses the DLL ABI. */
     std::shared_ptr<RenderSnapshotProvenance> provenance;
-    bool console;
-    Command(uint32_t f,uint32_t n,uint32_t l,const std::string& t,const Style& s):first(f),count(n),layer(l),texture(t),style(s),effect(0),shader_element(UINT32_MAX),shader_pass(0),console(false){}
+    uint32_t semantic,captured_vertices;bool console;
+    Command(uint32_t f,uint32_t n,uint32_t l,const std::string& t,const Style& s):first(f),count(n),layer(l),texture(t),style(s),effect(0),shader_element(UINT32_MAX),shader_pass(0),semantic(CAPTURE_UNKNOWN),captured_vertices(0),console(false){}
 };
 /* Immutable shared geometry is owned separately from each animated instance.
  * An instance borrows no engine pointer after submission. Only its palette,
@@ -133,7 +136,8 @@ struct NativeModelCommand {
     std::string resource,shader,texture,secondary;
     std::shared_ptr<RenderSnapshotProvenance> provenance;
     Bounds bounds;bool bounds_known;
-    NativeModelCommand():vertex_count(0),first(0),count(0),layer(0),skin_mode(KICH_R4_SKIN_UNKNOWN),effect(0),shader_element(UINT32_MAX),shader_pass(UINT32_MAX),bounds_known(false){}
+    uint64_t visual_id,skeleton_id,pose_hash;uint32_t source_frame;bool identity_measured,pose_hash_valid;
+    NativeModelCommand():vertex_count(0),first(0),count(0),layer(0),skin_mode(KICH_R4_SKIN_UNKNOWN),effect(0),shader_element(UINT32_MAX),shader_pass(UINT32_MAX),bounds_known(false),visual_id(0),skeleton_id(0),pose_hash(0),source_frame(0),identity_measured(false),pose_hash_valid(false){}
 };
 inline void ValidateModelMatrix(const Matrix& matrix){for(unsigned i=0;i<16;++i)Check(Finite(matrix.m[i]),"nonfinite native model matrix");}
 inline bool AddTransformedBounds(Bounds& out,const Bounds& source,const Matrix& matrix){
@@ -159,6 +163,8 @@ inline uint64_t SnapshotHash(uint64_t h,const void* bytes,size_t n){
 }
 inline uint64_t SnapshotStringHash(uint64_t h,const std::string& value){return SnapshotHash(h,value.c_str(),value.size()+1);}
 inline void SnapshotModelID(const Mesh& mesh,char* out,size_t size,uint32_t first,uint32_t count){
+    /* Minimal profiles must not scan immutable source geometry. */
+    if(!RenderSnapshot_Detailed() && !mesh.snapshot_hashed){snprintf(out,size,"PROFILE_SOURCE_HANDLE:%llu:first=%u:indices=%u",static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(&mesh)),first,count);return;}
     /* Immutable decoded source geometry, not animated/skinned output or a process pointer. */
     if(!mesh.snapshot_hashed){uint64_t h=UINT64_C(14695981039346656037);
         for(size_t i=0;i<mesh.vertices.size();++i){const SourceVertex& v=mesh.vertices[i];
@@ -169,7 +175,7 @@ inline void SnapshotModelID(const Mesh& mesh,char* out,size_t size,uint32_t firs
 }
 inline void SnapshotCommand(Command& cmd,const std::vector<Vertex>& vertices,const std::vector<uint32_t>& indices,
     const char* fallback_semantic,const Mesh* mesh=NULL,uint32_t source_first=0,bool have_uv=true){
-    if(!g_render_snapshot_active)return;
+    if(!g_render_snapshot_active || !RenderSnapshot_Detailed())return;
     try{std::shared_ptr<RenderSnapshotProvenance> p(new RenderSnapshotProvenance());RenderSnapshot_GetProvenance(p.get());
         if(!p->semantic_type[0] || !strcmp(p->semantic_type,"UNKNOWN"))snprintf(p->semantic_type,sizeof(p->semantic_type),"%s",fallback_semantic);
         if(!p->evidence[0])snprintf(p->evidence,sizeof(p->evidence),"%s",mesh?"OGF_DECODED_SOURCE":"CPU_CAPTURE_SOURCE");
@@ -233,7 +239,7 @@ struct Batch {
         if(!model_keys.insert(key).second)return;
         Reserve(count,tris*3,name,layer);const uint32_t base=static_cast<uint32_t>(vertices.size());const Matrix mvp=kich_r4_scene::Multiply(world,vp);
         const Matrix normal_world=kich_r4_lighting::NormalMatrix(world);
-        Command cmd={static_cast<uint32_t>(indices.size()),tris*3,layer,mesh.texture,style};
+        Command cmd={static_cast<uint32_t>(indices.size()),tris*3,layer,mesh.texture,style};cmd.semantic=CAPTURE_MODEL;cmd.captured_vertices=count;
         if(diagnostic){cmd.resource=name;cmd.skin=mesh.skinned?"CPU_CAPTURE_SKIN":"CPU_CAPTURE_RIGID";}
         for(uint32_t i=0;i<count;++i){const SourceVertex& src=mesh.vertices[i];float p[4]={src.p[0],src.p[1],src.p[2],1};
             kich_r4_scene::Vec3 n=UnpackNormal(src.normal);
@@ -258,7 +264,7 @@ struct Batch {
     void NativeModel(const void* identity,const std::shared_ptr<Mesh>& mesh,const Matrix& world,const Matrix& vp,
         const Matrix* bones,uint32_t bone_count,uint32_t count,uint32_t first,uint32_t tris,const Style& style,
         uint32_t skin_mode,const char* name,const char* shader=NULL,const char* texture=NULL,const char* secondary=NULL,uint32_t effect=0,
-        uint32_t shader_element=UINT32_MAX,uint32_t shader_pass=UINT32_MAX){
+        uint32_t shader_element=UINT32_MAX,uint32_t shader_pass=UINT32_MAX,const void* skeleton=NULL){
         Check(mesh.get()!=NULL,"native model geometry missing");
         Check(count && count<=mesh->vertices.size() && tris && uint64_t(first)+uint64_t(tris)*3<=mesh->indices.size(),"native model draw range");
         Check(bone_count<=256 && (!mesh->skinned || (bones && mesh->bones<=bone_count)),"native model bone pose range");
@@ -284,7 +290,9 @@ struct Batch {
         Check(native_models.size()+commands.size()<16384,"native model frame draw limit");Check(pose_bytes+bytes<=16u*1024u*1024u,"native model frame palette budget");
         if(mesh->skinned)cmd.bones.assign(bones,bones+mesh->bones);
         cmd.bounds_known=NativeModelBounds(cmd);
-        if(g_render_snapshot_active){try{cmd.provenance.reset(new RenderSnapshotProvenance());RenderSnapshotProvenance& p=*cmd.provenance;RenderSnapshot_GetProvenance(&p);
+        if(g_render_snapshot_active){cmd.identity_measured=true;cmd.visual_id=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(identity));cmd.skeleton_id=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(skeleton));cmd.source_frame=engine_frame;
+            if(mesh->skinned && RenderSnapshot_Detailed()){cmd.pose_hash=SnapshotHash(UINT64_C(14695981039346656037),cmd.bones.data(),cmd.bones.size()*sizeof(Matrix));cmd.pose_hash_valid=true;}}
+        if(g_render_snapshot_active && RenderSnapshot_Detailed()){try{cmd.provenance.reset(new RenderSnapshotProvenance());RenderSnapshotProvenance& p=*cmd.provenance;RenderSnapshot_GetProvenance(&p);
             snprintf(p.semantic_type,sizeof(p.semantic_type),"%s",mesh->skinned?"SKINNED_MODEL":"RIGID_MODEL");
             snprintf(p.evidence,sizeof(p.evidence),"OGF_SHARED_GPU_MODEL");SnapshotModelID(*mesh,p.mesh_id,sizeof(p.mesh_id),first,cmd.count);
             uint64_t hash=SnapshotStringHash(UINT64_C(14695981039346656037),cmd.shader);hash=SnapshotStringHash(hash,cmd.texture);hash=SnapshotStringHash(hash,cmd.secondary);hash=SnapshotHash(hash,words+5,sizeof(words)-5*sizeof(uint32_t));hash=SnapshotHash(hash,&style.alpha_ref,sizeof(style.alpha_ref));
@@ -321,13 +329,22 @@ struct State {
     Batch frame;std::map<const void*,Entry> models;std::map<void*,Buffer> buffers;
     std::map<const void*,KichR4LocalLight> lights;std::set<const void*> unshadowed_lights;
     std::map<const void*,KichR4LightIdentity> light_sources;
+    struct LightObservation {KichR4LocalLight value;bool active,valid;uint32_t frame;};
+    std::map<const void*,LightObservation> light_observations;
+    uint64_t light_observation_overflow=0;
     uint64_t stream_bytes;bool native_models;
     uint32_t diagnostics;void (*log)(const char*);
     State():stream_bytes(0),native_models(false),diagnostics(0),log(NULL){}
     void Light(const void* id,const KichR4LocalLight& light,bool active){
         if(!id)return;
-        if(!active || !kich_r4_lighting::ValidLight(light)){lights.erase(id);return;}
-        if(lights.size()<4096 || lights.find(id)!=lights.end())lights[id]=light;
+        const bool valid=kich_r4_lighting::ValidLight(light);
+        if(!active || !valid)lights.erase(id);
+        else if(lights.size()<4096 || lights.find(id)!=lights.end())lights[id]=light;
+        // Bounded observation metadata is separate from the render registry.
+        // Retain inactive/invalid sources so a diagnostic can explain exclusion.
+        try{if(light_observations.size()<4096 || light_observations.count(id)){
+            LightObservation o={light,active,valid,frame.engine_frame};light_observations[id]=o;
+        }else ++light_observation_overflow;}catch(...){++light_observation_overflow;}
     }
     void SelectLights(const float* camera,KichR4LightingFrame& out)const {
         struct Choice {float score;KichR4LocalLight light;bool shadow;const void* source;};std::vector<Choice> choices;out.count=0;out.shadow_mask=0;memset(out.sources,0,sizeof(out.sources));
@@ -342,6 +359,51 @@ struct State {
         out.count=static_cast<uint32_t>(std::min(size_t(8),choices.size()));for(unsigned i=0;i<out.count;++i){out.lights[i]=choices[i].light;if(choices[i].shadow)out.shadow_mask|=1u<<i;
             const auto source=light_sources.find(choices[i].source);if(source!=light_sources.end())out.sources[i]=source->second;
             else out.sources[i].process_handle=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(choices[i].source));}
+    }
+    void SnapshotLights(const float* camera,const KichR4LightingFrame& selected)const {
+        if(!g_render_snapshot_active || !camera)return;
+        using namespace kich_r4_telemetry;
+        uint64_t active=0,valid=0,candidates=0,selected_count=0;
+        for(auto it=light_observations.begin();it!=light_observations.end();++it){
+            const LightObservation& o=it->second;const KichR4LocalLight& l=o.value;
+            const auto source=light_sources.find(it->first);KichR4LightIdentity identity={};
+            if(source!=light_sources.end())identity=source->second;
+            else identity.process_handle=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(it->first));
+            float distance=0;for(unsigned a=0;a<3;++a){const float d=l.position[a]-camera[a];distance+=d*d;}
+            const float brightness=std::max(l.color[0],std::max(l.color[1],l.color[2]));
+            const bool in_registry=lights.count(it->first)!=0;
+            const bool candidate=in_registry && !(distance>(150+l.range)*(150+l.range) || brightness<=0);
+            bool chosen=false;for(unsigned i=0;i<selected.count && i<8;++i)if(selected.sources[i].process_handle==identity.process_handle && selected.sources[i].serial==identity.serial){chosen=true;break;}
+            if(o.active)++active;
+            if(in_registry)++valid;
+            if(candidate)++candidates;
+            if(chosen)++selected_count;
+            if(!RenderSnapshot_Detailed())continue;
+            char id[64];if(identity.serial)Handle(id,sizeof(id),"source",identity.serial);else Handle(id,sizeof(id),"process_handle",identity.process_handle);
+            Text("LIGHT",id,"registry","R4_NATIVE");Text("LIGHT",id,"id_scope",identity.serial?"PROCESS_LIFETIME_SOURCE_SERIAL":"PROCESS_POINTER; REUSE_NOT_RESOLVED");
+            U64("LIGHT",id,"source_serial",identity.serial);U64("LIGHT",id,"process_handle",identity.process_handle);
+            U64("LIGHT",id,"registration_observed",1);Text("LIGHT",id,"lifetime_status","NO_CAPTURE_FORGET_OBSERVED; ACTIVE_STATE_SEPARATE");U64("LIGHT",id,"active",o.active?1:0);U64("LIGHT",id,"descriptor_valid",o.valid?1:0);
+            U64("LIGHT",id,"candidate",candidate?1:0);U64("LIGHT",id,"policy_passed",candidate?1:0);U64("LIGHT",id,"selected",chosen?1:0);
+            U64("LIGHT",id,"submitted",0);Text("LIGHT",id,"submission_status","NOT_YET_SUBMITTED");
+            Text("LIGHT",id,"role",identity.role==KICH_R4_LIGHT_ROLE_LEVEL?"LEVEL_RECORD":identity.role==KICH_R4_LIGHT_ROLE_RUNTIME?"RUNTIME_REGISTERED":"UNKNOWN");
+            const bool level_valid=identity.role==KICH_R4_LIGHT_ROLE_LEVEL && identity.level_record!=UINT32_MAX;
+            const bool controller_valid=identity.role==KICH_R4_LIGHT_ROLE_LEVEL && identity.controller!=UINT32_MAX;
+            U64("LIGHT",id,"level_record_valid",level_valid);U64("LIGHT",id,"controller_valid",controller_valid);
+            if(level_valid)U64("LIGHT",id,"level_record",identity.level_record);else Text("LIGHT",id,"level_record","NOT_AVAILABLE");
+            if(controller_valid)U64("LIGHT",id,"controller",identity.controller);else Text("LIGHT",id,"controller","NOT_AVAILABLE");
+            Text("LIGHT",id,"type",l.type==2?"SPOT":l.type==1?"POINT":"UNSUPPORTED");
+            Vector("LIGHT",id,"position",l.position,3);Vector("LIGHT",id,"direction",l.direction,3);Vector("LIGHT",id,"color",l.color,3);
+            Float("LIGHT",id,"range",l.range);Float("LIGHT",id,"cone",l.cone);Float("LIGHT",id,"camera_distance_squared",distance);
+            Text("LIGHT",id,"selection_reason",!o.active?"INACTIVE":!o.valid?"INVALID_DESCRIPTOR":!in_registry?"REGISTRY_CAPACITY_LIMIT":distance>(150+l.range)*(150+l.range)?"OUTSIDE_DISTANCE_LIMIT":brightness<=0?"NONPOSITIVE_COLOR":!chosen?"BELOW_TOP_8_SCORE":"SELECTED_TOP_8_SCORE");
+            Text("LIGHT",id,"policy","ALL_REGISTERED_VALID_ACTIVE_ROLES; R1LIGHTS_FLAG_NOT_APPLIED; NO_NUMERIC_DEDUP");
+            U64("LIGHT",id,"shadow_requested",unshadowed_lights.count(it->first)==0);U64("LIGHT",id,"last_update_frame",o.frame);
+        }
+        RenderSnapshot_U64("LIGHT_REGISTRY","registered_observed",light_observations.size());RenderSnapshot_U64("LIGHT_REGISTRY","identity_records",light_sources.size());
+        RenderSnapshot_U64("LIGHT_REGISTRY","active",active);RenderSnapshot_U64("LIGHT_REGISTRY","valid_active",valid);RenderSnapshot_U64("LIGHT_REGISTRY","candidate",candidates);
+        RenderSnapshot_U64("LIGHT_REGISTRY","policy_passed",candidates);RenderSnapshot_U64("LIGHT_REGISTRY","selected",selected_count);
+        RenderSnapshot_U64("LIGHT_REGISTRY","observation_overflow_events",light_observation_overflow);
+        RenderSnapshot_Text("LIGHT_REGISTRY","counter_scope","BOUNDED_OBSERVATION_REGISTRY_AT_CALCULATE; RETAINS_INACTIVE_UNTIL_FORGET; BEFORE_DICTIONARY_LIMIT");
+        RenderSnapshot_Text("LIGHT_REGISTRY","policy","NATIVE_TOP_8_SCORE; DISTANCE_150_PLUS_RANGE; POSITIVE_COLOR; R1LIGHTS_NOT_APPLIED; NO_DEDUP");
     }
     void Diagnostic(const std::string& message){if(log && diagnostics<64){++diagnostics;log(("[R4 bridge B4.3b.1] "+message).c_str());}}
     void Begin(uint32_t w,uint32_t h,uint32_t f){frame.Begin(w,h,f);stream_bytes=0;

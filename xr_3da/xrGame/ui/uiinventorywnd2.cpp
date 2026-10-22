@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "RenderSnapshotUI.h"
 #include "UIInventoryWnd.h"
 #include "UISleepWnd.h"
 #include "../level.h"
@@ -29,6 +30,7 @@ void CUIInventoryWnd::SetCurrentItem(CUICellItem* itm)
 		return;
 	m_pCurrentCellItem = itm;
 	UIItemInfo.InitItem(CurrentIItem());
+    snapshot_ui::Event(this,"INVENTORY_SELECTION_CHANGED",itm?"ITEM_SELECTED":"SELECTION_CLEARED");
 }
 
 void CUIInventoryWnd::SendMessage(CUIWindow* pWnd, s16 msg, void* pData)
@@ -262,6 +264,7 @@ void CUIInventoryWnd::AddItemToBag(PIItem pItem)
 
 bool CUIInventoryWnd::OnItemStartDrag(CUICellItem* itm)
 {
+    snapshot_ui::Event(itm,"INVENTORY_DRAG","DELEGATED_DEFAULT_BEHAVIOR");
 	return false; // default behaviour
 }
 

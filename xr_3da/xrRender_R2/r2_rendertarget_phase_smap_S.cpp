@@ -1,26 +1,31 @@
 #include "stdafx.h"
 #include "../RenderSnapshot.h"
+#include "../xrRender/R2LightSnapshot.h"
 
 static void snapshot_smap_spot(light* L, bool transparent)
 {
-	if (!g_render_snapshot_active)
+	if (!RenderSnapshot_Detailed())
 		return;
 	RenderSnapshot_Pass(transparent ? "LOCAL_SHADOW_TRANSPARENT" : "LOCAL_SHADOW");
-	char light_id[64], phase_id[128], description[384];
-	// Each OMNIPART has its own live light; the descriptor records its cube-face direction.
-	// Neither the pointer nor the atlas placement is a stable cross-run resource identity.
-	sprintf_s(light_id, "r2.light@%p", static_cast<void*>(L));
-	sprintf_s(phase_id, "%s_%s/atlas=%u,%u,%u/smap=%u",
-		IRender_Light::OMNIPART == L->flags.type ? "OMNIPART" : "SPOT",
-		transparent ? "TRANSPARENT" : "OPAQUE", L->X.S.posX, L->X.S.posY, L->X.S.size,
-		u32(L->vis.smap_ID));
-	RenderSnapshot_Light(light_id, "PROCESS_HANDLE");
-	RenderSnapshot_Phase(phase_id);
-	sprintf_s(description, "type=%u; position=%g,%g,%g; direction=%g,%g,%g; range=%g; cone=%g; static=%u; shadow=%u",
-		u32(L->flags.type), L->position.x, L->position.y, L->position.z,
-		L->direction.x, L->direction.y, L->direction.z, L->range, L->cone,
-		u32(L->flags.bStatic), u32(L->flags.bShadow));
-	RenderSnapshot_Text("LIGHT_DESCRIPTOR", light_id, description);
+	char light_id[64], phase_id[160], atlas[96], shadow_id[96];
+	kich_r2_light_snapshot::SourceID(light_id,sizeof(light_id),L);
+	snprintf(phase_id,sizeof(phase_id),"%s_%s/face=%u/atlas=%u,%u,%u/smap=%u",
+		IRender_Light::OMNIPART==L->flags.type?"POINT_FACE":"SPOT",transparent?"TRANSPARENT":"OPAQUE",
+		L->snapshot_face,L->X.S.posX,L->X.S.posY,L->X.S.size,u32(L->vis.smap_ID));
+	RenderSnapshot_Light(light_id,"RENDERER_PROCESS_LIFETIME_SERIAL");RenderSnapshot_Phase(phase_id);
+	kich_r2_light_snapshot::Record(L,"shadow_pass","SELECTED",transparent?"TRANSPARENT_CASTER_GRAPH":"OPAQUE_CASTER_GRAPH");
+	kich_r2_light_snapshot::Shadow(L,"LOCAL",&L->X.S.combine._11);
+	kich_r2_light_snapshot::ShadowID(shadow_id,sizeof(shadow_id),L,"LOCAL");
+	kich_r2_light_snapshot::Matrix(shadow_id,"caster_view",&L->X.S.view._11);
+	kich_r2_light_snapshot::Matrix(shadow_id,"caster_projection",&L->X.S.project._11);
+	snprintf(atlas,sizeof(atlas),"%u,%u,%u,%u;z=0,1",L->X.S.posX,L->X.S.posY,L->X.S.size,L->X.S.size);
+	kich_r2_light_snapshot::ShadowText(L,"LOCAL","viewport_atlas",atlas);
+	kich_r2_light_snapshot::ShadowFloat(L,"LOCAL","map_size",float(RImplementation.o.smapsize));
+	kich_r2_light_snapshot::ShadowText(L,"LOCAL","target_role",RImplementation.o.HW_smap?"HW_SHADOW_DEPTH":"SOFTWARE_SHADOW_COLOR_AND_ZB");
+	kich_r2_light_snapshot::ShadowText(L,"LOCAL","format","SEE_DRAW_TARGET_RESOURCE; NOT_INFERRED_FROM_ROLE");
+	kich_r2_light_snapshot::ShadowText(L,"LOCAL","slope_bias_filtering","SEE_ACTUAL_DRAW_STATES_AND_SAMPLER");
+	kich_r2_light_snapshot::ShadowText(L,"LOCAL","candidate_source","r_dsgraph_render_subspace; sector/light frustum; category evidence in draw groups");
+	kich_r2_light_snapshot::ShadowText(L,"LOCAL","receiver_intersections_and_pixels","NOT_MEASURED");
 }
 
 void CRenderTarget::phase_smap_spot_clear()
