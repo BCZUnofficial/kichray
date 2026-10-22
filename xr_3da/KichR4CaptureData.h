@@ -4,6 +4,7 @@
 #include "KichR4Stream.h"
 #include "KichR4CaptureInput.h"
 #include "KichR4LightingMath.h"
+#include "RenderSnapshot.h"
 #include <memory>
 #include <set>
 #include <map>
@@ -29,7 +30,8 @@ struct Mesh {
     std::vector<SourceVertex> vertices;std::vector<uint16_t> indices;std::string texture;
     uint32_t bones,ignored_weights,outside_weights,diagnostic_modes;bool skinned,two_weights;
     std::string first_weight_detail;
-    Mesh():bones(0),ignored_weights(0),outside_weights(0),diagnostic_modes(0),skinned(false),two_weights(false){}
+    mutable uint64_t snapshot_hash;mutable bool snapshot_hashed;
+    Mesh():bones(0),ignored_weights(0),outside_weights(0),diagnostic_modes(0),skinned(false),two_weights(false),snapshot_hash(0),snapshot_hashed(false){}
     uint64_t Bytes()const{return uint64_t(vertices.size())*sizeof(SourceVertex)+uint64_t(indices.size())*2;}
 };
 inline std::string WeightDetail(uint32_t vertex,uint32_t b0,uint32_t b1,uint32_t bits,const char* why){
@@ -105,9 +107,50 @@ inline void Transform(const float* p,const Matrix& m,float* out) {
 }
 inline uint32_t RGBA(uint32_t argb){return (argb&0xff00ff00u)|((argb&0xffu)<<16)|((argb>>16)&0xffu);}
 struct Command {uint32_t first,count,layer;std::string texture;Style style;uint32_t effect;std::string secondary,resource,shader,skin;
+    /* Allocated only for a requested diagnostic frame; never crosses the DLL ABI. */
+    std::shared_ptr<RenderSnapshotProvenance> provenance;
     bool console;
     Command(uint32_t f,uint32_t n,uint32_t l,const std::string& t,const Style& s):first(f),count(n),layer(l),texture(t),style(s),effect(0),console(false){}
 };
+inline uint64_t SnapshotHash(uint64_t h,const void* bytes,size_t n){
+    const unsigned char* p=static_cast<const unsigned char*>(bytes);
+    for(size_t i=0;i<n;++i){h^=p[i];h*=UINT64_C(1099511628211);}return h;
+}
+inline uint64_t SnapshotStringHash(uint64_t h,const std::string& value){return SnapshotHash(h,value.c_str(),value.size()+1);}
+inline void SnapshotModelID(const Mesh& mesh,char* out,size_t size,uint32_t first,uint32_t count){
+    /* Immutable decoded source geometry, not animated/skinned output or a process pointer. */
+    if(!mesh.snapshot_hashed){uint64_t h=UINT64_C(14695981039346656037);
+        for(size_t i=0;i<mesh.vertices.size();++i){const SourceVertex& v=mesh.vertices[i];
+            h=SnapshotHash(h,v.p,sizeof(v.p));h=SnapshotHash(h,v.uv,sizeof(v.uv));h=SnapshotHash(h,&v.weight,sizeof(v.weight));
+            h=SnapshotHash(h,v.bone,sizeof(v.bone));h=SnapshotHash(h,&v.normal,sizeof(v.normal));}
+        h=SnapshotHash(h,mesh.indices.data(),mesh.indices.size()*sizeof(uint16_t));mesh.snapshot_hash=h;mesh.snapshot_hashed=true;}
+    snprintf(out,size,"OGF_DECODED_FNV64:%016llx:first=%u:indices=%u",static_cast<unsigned long long>(mesh.snapshot_hash),first,count);
+}
+inline void SnapshotCommand(Command& cmd,const std::vector<Vertex>& vertices,const std::vector<uint32_t>& indices,
+    const char* fallback_semantic,const Mesh* mesh=NULL,uint32_t source_first=0,bool have_uv=true){
+    if(!g_render_snapshot_active)return;
+    try{std::shared_ptr<RenderSnapshotProvenance> p(new RenderSnapshotProvenance());RenderSnapshot_GetProvenance(p.get());
+        if(!p->semantic_type[0] || !strcmp(p->semantic_type,"UNKNOWN"))snprintf(p->semantic_type,sizeof(p->semantic_type),"%s",fallback_semantic);
+        if(!p->evidence[0])snprintf(p->evidence,sizeof(p->evidence),"%s",mesh?"OGF_DECODED_SOURCE":"CPU_CAPTURE_SOURCE");
+        if(mesh)SnapshotModelID(*mesh,p->mesh_id,sizeof(p->mesh_id),source_first,cmd.count);
+        /* Descriptor identity includes the actual captured shader, textures and draw state.
+         * It is deliberately named CAPTURE, not claimed to equal an R2 material ID. */
+        if(!p->material_id[0] || !strcmp(p->material_id,"UNKNOWN")){uint64_t h=SnapshotStringHash(UINT64_C(14695981039346656037),cmd.shader);
+            h=SnapshotStringHash(h,cmd.texture);h=SnapshotStringHash(h,cmd.secondary);
+            const uint32_t state[]={cmd.effect,cmd.style.blend,cmd.style.src,cmd.style.dst,cmd.style.clamp,cmd.style.cull,cmd.style.depth,cmd.style.write,cmd.style.alpha_func};
+            h=SnapshotHash(h,state,sizeof(state));h=SnapshotHash(h,&cmd.style.alpha_ref,sizeof(cmd.style.alpha_ref));
+            snprintf(p->material_id,sizeof(p->material_id),"CAPTURE_DESCRIPTOR_FNV64:%016llx",static_cast<unsigned long long>(h));}
+        /* Select at most four distinct referenced vertices, preserving indexed draw order. */
+        if(have_uv && !p->uv_count){uint32_t sampled[4]={};
+            for(uint32_t i=0;i<cmd.count && i<32 && p->uv_count<4 && uint64_t(cmd.first)+i<indices.size();++i){const uint32_t at=indices[cmd.first+i];
+                if(at>=vertices.size())continue;
+                bool seen=false;for(uint32_t j=0;j<p->uv_count;++j)if(sampled[j]==at)seen=true;
+                if(seen)continue;
+                sampled[p->uv_count]=at;p->uv[p->uv_count*2]=vertices[at].uv[0];p->uv[p->uv_count*2+1]=vertices[at].uv[1];++p->uv_count;}
+            snprintf(p->uv_source,sizeof(p->uv_source),"CPU_CAPTURE_OUTPUT_BASE_UV");}
+        cmd.provenance=p;
+    }catch(...){RenderSnapshot_Text("TELEMETRY_LOSS","capture_provenance","ALLOCATION_FAILED; per-command provenance unavailable");}
+}
 struct Batch {
     uint32_t width,height,engine_frame,models,hands,ui;bool renderer_seen,ui_seen;unsigned ui_scope;
     std::vector<Vertex> vertices;std::vector<uint32_t> indices;std::vector<Command> commands;std::string error;
@@ -167,6 +210,7 @@ struct Batch {
             for(unsigned c=0;c<3;++c)Check(Finite(v.normal[c]),"model world normal");
             v.uv[0]=src.uv[0];v.uv[1]=src.uv[1];v.color=0xffffffffu;vertices.push_back(v);}
         for(uint32_t i=0;i<tris*3;++i){const uint32_t at=mesh.indices[first+i];Check(at<count,"progressive model vertex range");indices.push_back(base+at);}
+        if(diagnostic)SnapshotCommand(cmd,vertices,indices,mesh.skinned?"SKINNED_MODEL":"RIGID_MODEL",&mesh,first);
         commands.push_back(cmd);if(layer)++hands;else ++models;
     }
     Vertex Screen(float x,float y,float z,float rhw,float u,float v,uint32_t argb)const{

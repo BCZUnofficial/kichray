@@ -3,9 +3,29 @@
 
 extern int ps_r2_sun_shadow_cull;
 
+static void snapshot_smap_direct(light* L, u32 sub_phase, bool transparent)
+{
+	if (!g_render_snapshot_active)
+		return;
+	RenderSnapshot_Pass(transparent ? "SUN_SHADOW_TRANSPARENT" : "SUN_SHADOW");
+	char light_id[64], phase_id[96], description[384];
+	// This address identifies the live engine light only; it is not a persistent asset ID.
+	sprintf_s(light_id, "r2.light@%p", static_cast<void*>(L));
+	sprintf_s(phase_id, "SUN_%s_%s/subphase=%u",
+		SE_SUN_NEAR == sub_phase ? "NEAR" : (SE_SUN_FAR == sub_phase ? "FAR" : "UNKNOWN"),
+		transparent ? "TRANSPARENT" : "OPAQUE", sub_phase);
+	RenderSnapshot_Light(light_id, "PROCESS_HANDLE");
+	RenderSnapshot_Phase(phase_id);
+	sprintf_s(description, "type=%u; position=%g,%g,%g; direction=%g,%g,%g; range=%g; cone=%g; static=%u; shadow=%u",
+		u32(L->flags.type), L->position.x, L->position.y, L->position.z,
+		L->direction.x, L->direction.y, L->direction.z, L->range, L->cone,
+		u32(L->flags.bStatic), u32(L->flags.bShadow));
+	RenderSnapshot_Text("LIGHT_DESCRIPTOR", light_id, description);
+}
+
 void CRenderTarget::phase_smap_direct(light* L, u32 sub_phase)
 {
-	if(g_render_snapshot_active)RenderSnapshot_Pass("SUN_SHADOW");
+	snapshot_smap_direct(L, sub_phase, false);
 	// Targets
 	if (RImplementation.o.HW_smap)
 		u_setrt(rt_smap_surf, NULL, NULL, rt_smap_depth->pRT);
@@ -62,7 +82,7 @@ void CRenderTarget::phase_smap_direct(light* L, u32 sub_phase)
 
 void CRenderTarget::phase_smap_direct_tsh(light* L, u32 sub_phase)
 {
-	if(g_render_snapshot_active)RenderSnapshot_Pass("SUN_SHADOW_TRANSPARENT");
+	snapshot_smap_direct(L, sub_phase, true);
 	VERIFY(RImplementation.o.Tshadows);
 	u32 _clr = 0xffffffff; // color_rgba(127,127,12,12);
 	RCache.set_ColorWriteEnable();

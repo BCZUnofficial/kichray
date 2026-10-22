@@ -1,6 +1,28 @@
 #include "stdafx.h"
 #include "../RenderSnapshot.h"
 
+static void snapshot_smap_spot(light* L, bool transparent)
+{
+	if (!g_render_snapshot_active)
+		return;
+	RenderSnapshot_Pass(transparent ? "LOCAL_SHADOW_TRANSPARENT" : "LOCAL_SHADOW");
+	char light_id[64], phase_id[128], description[384];
+	// Each OMNIPART has its own live light; the descriptor records its cube-face direction.
+	// Neither the pointer nor the atlas placement is a stable cross-run resource identity.
+	sprintf_s(light_id, "r2.light@%p", static_cast<void*>(L));
+	sprintf_s(phase_id, "%s_%s/atlas=%u,%u,%u/smap=%u",
+		IRender_Light::OMNIPART == L->flags.type ? "OMNIPART" : "SPOT",
+		transparent ? "TRANSPARENT" : "OPAQUE", L->X.S.posX, L->X.S.posY, L->X.S.size,
+		u32(L->vis.smap_ID));
+	RenderSnapshot_Light(light_id, "PROCESS_HANDLE");
+	RenderSnapshot_Phase(phase_id);
+	sprintf_s(description, "type=%u; position=%g,%g,%g; direction=%g,%g,%g; range=%g; cone=%g; static=%u; shadow=%u",
+		u32(L->flags.type), L->position.x, L->position.y, L->position.z,
+		L->direction.x, L->direction.y, L->direction.z, L->range, L->cone,
+		u32(L->flags.bStatic), u32(L->flags.bShadow));
+	RenderSnapshot_Text("LIGHT_DESCRIPTOR", light_id, description);
+}
+
 void CRenderTarget::phase_smap_spot_clear()
 {
 	/*
@@ -12,7 +34,7 @@ void CRenderTarget::phase_smap_spot_clear()
 
 void CRenderTarget::phase_smap_spot(light* L)
 {
-	if(g_render_snapshot_active)RenderSnapshot_Pass("LOCAL_SHADOW");
+	snapshot_smap_spot(L, false);
 	// Targets + viewport
 	if (RImplementation.o.HW_smap)
 		u_setrt(rt_smap_surf, NULL, NULL, rt_smap_depth->pRT);
@@ -33,7 +55,7 @@ void CRenderTarget::phase_smap_spot(light* L)
 
 void CRenderTarget::phase_smap_spot_tsh(light* L)
 {
-	if(g_render_snapshot_active)RenderSnapshot_Pass("LOCAL_SHADOW_TRANSPARENT");
+	snapshot_smap_spot(L, true);
 	VERIFY(RImplementation.o.Tshadows);
 	RCache.set_ColorWriteEnable();
 	if (IRender_Light::OMNIPART == L->flags.type)

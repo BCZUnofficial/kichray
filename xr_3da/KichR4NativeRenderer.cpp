@@ -3,6 +3,7 @@
 #include "KichR4NativeCPU.h"
 #include "KichR4Capture.h"
 #include "KichR4Lighting.h"
+#include "RenderSnapshot.h"
 #include "IGame_Persistent.h"
 #include "Environment.h"
 #include "CustomHUD.h"
@@ -73,7 +74,10 @@ public:
         const u32 c=color_rgba(iFloor(clampr(color.r,0.f,1.f)*255),iFloor(clampr(color.g,0.f,1.f)*255),iFloor(clampr(color.b,0.f,1.f)*255),255);
         for(u32 i=0;i<4;++i){p=position;p.mad(right,coords[i][0]);p.mad(up,coords[i][1]);v[i].set(p,c,(coords[i][0]+1)*.5f,(1-coords[i][1])*.5f);}
         RCache.Vertex.Unlock(4,sizeof(FVF::LIT));ref_geom geometry;geometry.create(FVF::F_LIT,RCache.Vertex.Buffer(),RCache.QuadIB);
+        RenderSnapshotProvenance previous={};if(g_render_snapshot_active){RenderSnapshot_GetProvenance(&previous);
+            RenderSnapshot_Object("GLOW","PROCEDURAL_GLOW_QUAD",NULL,"R4Glow::Draw",RENDER_SNAPSHOT_GLOW);}
         RCache.set_xform_world(Fidentity);RCache.set_Shader(shader);RCache.set_Geometry(geometry);RCache.Render(D3DPT_TRIANGLELIST,offset,0,4,0,2);
+        if(g_render_snapshot_active)RenderSnapshot_SetProvenance(&previous);
     }
 };
 xr_vector<ref_glow> static_glows;

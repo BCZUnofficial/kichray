@@ -56,7 +56,8 @@ void KichR4_NativeFillRect(int32_t left,int32_t top,int32_t right,int32_t bottom
         for(unsigned i=0;i<4;++i)b.vertices.push_back(b.Screen(x[i]-.5f,y[i]-.5f,0,1,0,0,color));
         const uint32_t indices[6]={0,1,2,2,1,3};for(unsigned i=0;i<6;++i)b.indices.push_back(base+indices[i]);
         Style draw;draw.blend=draw.depth=draw.write=0;draw.cull=KICH_R4_CULL_NONE;draw.alpha_func=8;
-        Command command(first,6,2,std::string(),draw);command.console=g_render_snapshot_console;command.effect=menu_pp?7:menu_overlay?8:0;b.commands.push_back(command);++b.ui;
+        Command command(first,6,2,std::string(),draw);command.console=g_render_snapshot_console;command.effect=menu_pp?7:menu_overlay?8:0;
+        SnapshotCommand(command,b.vertices,b.indices,"UI_RECT",NULL,0,false);b.commands.push_back(command);++b.ui;
     }catch(const std::exception& e){s->frame.Fail(e.what());}
 }
 void KichR4_NativeDraw(void* declaration,void* vb,void* ib,uint32_t stride,uint32_t topology,uint32_t base,uint32_t start,uint32_t vertex_count,uint32_t first,uint32_t primitives,bool indexed){
@@ -115,6 +116,7 @@ void KichR4_NativeDraw(void* declaration,void* vb,void* ib,uint32_t stride,uint3
         if(g_render_snapshot_active){cmd.shader=active_shader;cmd.resource=texture;cmd.skin="CPU_CAPTURE_STREAM";}
         cmd.console=g_render_snapshot_console;
         if(effect==2){cmd.style.depth=1;cmd.style.write=0;cmd.style.cull=KICH_R4_CULL_NONE;}
+        SnapshotCommand(cmd,batch.vertices,batch.indices,screen?"UI_GEOMETRY":"UNKNOWN",NULL,0,uv!=NULL);
         batch.commands.push_back(cmd);if(layer==2)++batch.ui;else if(layer==1)++batch.hands;else ++batch.models;
         (void)vertex_count;
     }catch(const std::exception& e){state->frame.Fail(e.what());}

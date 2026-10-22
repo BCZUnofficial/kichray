@@ -5,6 +5,10 @@
 #include "..\igame_persistent.h"
 #include "..\environment.h"
 #include "../RenderSnapshot.h"
+#include "../fmesh.h"
+#include "r__snapshot_provenance.h"
+#include "FVisual.h"
+#include "FTreeVisual.h"
 
 using namespace R_dsgraph;
 
@@ -18,6 +22,72 @@ ICF float calcLOD(float ssa /*fDistSq*/, float R)
 	return _sqrt(clampr((ssa - r_ssaGLOD_end) / (r_ssaGLOD_start - r_ssaGLOD_end), 0.f, 1.f));
 }
 
+static void snapshot_visual(IRender_Visual* visual, const char* fallback, const char* queue)
+{
+	if (!g_render_snapshot_active) return;
+	const char* semantic = fallback;
+	u32 flags = 0;
+	switch (visual->Type)
+	{
+	case MT_PARTICLE_EFFECT:
+	case MT_PARTICLE_GROUP:
+		semantic = "PARTICLE";
+		flags = RENDER_SNAPSHOT_PARTICLE;
+		break;
+	case MT_SKELETON_ANIM:
+	case MT_SKELETON_RIGID:
+	case MT_SKELETON_GEOMDEF_PM:
+	case MT_SKELETON_GEOMDEF_ST:
+		semantic = "SKINNED_MODEL";
+		break;
+	case MT_TREE_ST:
+	case MT_TREE_PM:
+		semantic = "TREE";
+		break;
+	case MT_LOD:
+		semantic = "LOD";
+		break;
+	}
+	const char* mesh_id = "UNAVAILABLE_RELEASE_VISUAL_SOURCE";
+	const char* evidence = "VISUAL_TYPE_SHADER_TEXTURE_SET_MESH_UNAVAILABLE";
+#if RENDER == R_R2
+	char source_mesh_id[160];
+	IRender_Mesh* mesh = 0;
+	if (visual->Type == MT_NORMAL || visual->Type == MT_PROGRESSIVE)
+		mesh = static_cast<Fvisual*>(visual);
+	else if (visual->Type == MT_TREE_ST || visual->Type == MT_TREE_PM)
+		mesh = static_cast<FTreeVisual*>(visual);
+	if (mesh)
+	{
+		// Recover the original level.geom container ordinals, not a process
+		// handle. Keep the original ranges even when a shadow uses m_fast.
+		size_t vb = 0, ib = 0;
+		while (vb < RImplementation.nVB.size() && RImplementation.nVB[vb] != mesh->p_rm_Vertices) ++vb;
+		while (ib < RImplementation.nIB.size() && RImplementation.nIB[ib] != mesh->p_rm_Indices) ++ib;
+		if (vb < RImplementation.nVB.size() && ib < RImplementation.nIB.size())
+		{
+			sprintf_s(source_mesh_id, "level.geom/vb_%u:%u+%u/ib_%u:%u+%u",
+				static_cast<unsigned>(vb), mesh->vBase, mesh->vCount,
+				static_cast<unsigned>(ib), mesh->iBase, mesh->iCount);
+			mesh_id = source_mesh_id;
+			evidence = "VISUAL_TYPE_LEVEL_GEOM_CONTAINERS_RANGES";
+		}
+	}
+#endif
+#ifdef DEBUG
+	if (visual->dbg_name.size() && !strcmp(mesh_id, "UNAVAILABLE_RELEASE_VISUAL_SOURCE"))
+	{
+		mesh_id = visual->dbg_name.c_str();
+		evidence = "VISUAL_TYPE_DEBUG_SOURCE_SHADER_TEXTURE_SET";
+	}
+#endif
+	char material_id[160];
+	RenderSnapshotShaderMaterial(visual->shader._get(), material_id);
+	RenderSnapshot_Context(semantic, mesh_id, material_id);
+	RenderSnapshot_Object(semantic, mesh_id, material_id, evidence, flags);
+	RenderSnapshot_Queue(queue);
+}
+
 // NORMAL
 IC bool cmp_normal_items(const _NormalItem& N1, const _NormalItem& N2)
 {
@@ -26,6 +96,7 @@ IC bool cmp_normal_items(const _NormalItem& N1, const _NormalItem& N2)
 
 void __fastcall mapNormal_Render(mapNormalItems& N)
 {
+	RenderSnapshotSourceScope snapshot_scope;
 #if RENDER == R_R2
 	RImplementation.apply_object(0); // reset dynamic material and stencil
 #endif
@@ -35,7 +106,7 @@ void __fastcall mapNormal_Render(mapNormalItems& N)
 	for (; I != E; I++)
 	{
 		_NormalItem& Ni = *I;
-		if(g_render_snapshot_active)RenderSnapshot_Context("STATIC","UNKNOWN_RELEASE_VISUAL","DSGRAPH_NORMAL");
+		snapshot_visual(Ni.pVisual, "STATIC", "DSGRAPH_NORMAL");
 		Ni.pVisual->Render(calcLOD(Ni.ssa, Ni.pVisual->vis.sphere.R));
 	}
 }
@@ -48,13 +119,14 @@ IC bool cmp_matrix_items(const _MatrixItem& N1, const _MatrixItem& N2)
 
 void __fastcall mapMatrix_Render(mapMatrixItems& N)
 {
+	RenderSnapshotSourceScope snapshot_scope;
 	// *** DIRECT ***
 	std::sort(N.begin(), N.end(), cmp_matrix_items);
 	_MatrixItem *I = &*N.begin(), *E = &*N.end();
 	for (; I != E; I++)
 	{
 		_MatrixItem& Ni = *I;
-		if(g_render_snapshot_active)RenderSnapshot_Context("DYNAMIC_MODEL","UNKNOWN_RELEASE_VISUAL","DSGRAPH_MATRIX");
+		snapshot_visual(Ni.pVisual, "DYNAMIC_MODEL", "DSGRAPH_MATRIX");
 		RCache.set_xform_world(Ni.Matrix);
 		RImplementation.apply_object(Ni.pObject);
 		RImplementation.apply_lmaterial();
@@ -64,18 +136,27 @@ void __fastcall mapMatrix_Render(mapMatrixItems& N)
 }
 
 // ALPHA
-void __fastcall sorted_L1(mapSorted_Node* N)
+static void sorted_Render(mapSorted_Node* N, const char* queue)
 {
+	RenderSnapshotSourceScope snapshot_scope;
 	VERIFY(N);
 	IRender_Visual* V = N->val.pVisual;
 	VERIFY(V && V->shader._get());
 	RCache.set_Element(N->val.se);
-	if(g_render_snapshot_active)RenderSnapshot_Context("SORTED_TRANSPARENT","UNKNOWN_RELEASE_VISUAL","DSGRAPH_SORTED");
+	// A sorting queue does not identify the object: HUD, particles, trees,
+	// decals and ordinary models can all reach this callback.
+	snapshot_visual(V, N->val.pObject ? "DYNAMIC_MODEL" : "STATIC", queue);
 	RCache.set_xform_world(N->val.Matrix);
 	RImplementation.apply_object(N->val.pObject);
 	RImplementation.apply_lmaterial();
 	V->Render(calcLOD(N->key, V->vis.sphere.R));
 }
+
+void __fastcall sorted_L1(mapSorted_Node* N) { sorted_Render(N, "DSGRAPH_SORTED"); }
+static void __fastcall hud_L1(mapSorted_Node* N) { sorted_Render(N, "DSGRAPH_HUD"); }
+static void __fastcall emissive_L1(mapSorted_Node* N) { sorted_Render(N, "DSGRAPH_EMISSIVE"); }
+static void __fastcall wmark_L1(mapSorted_Node* N) { sorted_Render(N, "DSGRAPH_WMARK"); }
+static void __fastcall distort_L1(mapSorted_Node* N) { sorted_Render(N, "DSGRAPH_DISTORT"); }
 
 IC bool cmp_vs_nrm(mapNormalVS::TNode* N1, mapNormalVS::TNode* N2)
 {
@@ -471,7 +552,7 @@ void R_dsgraph_structure::r_dsgraph_render_hud()
 
 	// Rendering
 	rmNear();
-	mapHUD.traverseLR(sorted_L1);
+	mapHUD.traverseLR(hud_L1);
 	mapHUD.clear();
 	rmNormal();
 
@@ -496,7 +577,7 @@ void R_dsgraph_structure::r_dsgraph_render_emissive()
 {
 #if RENDER == R_R2
 	// Sorted (back to front)
-	mapEmissive.traverseLR(sorted_L1);
+	mapEmissive.traverseLR(emissive_L1);
 	mapEmissive.clear();
 #endif
 }
@@ -507,7 +588,7 @@ void R_dsgraph_structure::r_dsgraph_render_wmarks()
 {
 #if RENDER == R_R2
 	// Sorted (back to front)
-	mapWmark.traverseLR(sorted_L1);
+	mapWmark.traverseLR(wmark_L1);
 	mapWmark.clear();
 #endif
 }
@@ -517,7 +598,7 @@ void R_dsgraph_structure::r_dsgraph_render_wmarks()
 void R_dsgraph_structure::r_dsgraph_render_distort()
 {
 	// Sorted (back to front)
-	mapDistort.traverseRL(sorted_L1);
+	mapDistort.traverseRL(distort_L1);
 	mapDistort.clear();
 }
 

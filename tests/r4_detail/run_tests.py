@@ -20,7 +20,7 @@ with tempfile.TemporaryDirectory(prefix="kich-g3a-") as directory:
     for header in ("KichR4Native.h","IGame_Level.h","IGame_Persistent.h",
                    "Environment.h","XR_IOConsole.h","CustomHUD.h","ResourceManager.h"):
         (work/header).write_text('// Engine types are provided by snapshot_engine_fake.h.\n')
-    for name in ("frontend","session","snapshot","snapshot_engine"):
+    for name in ("frontend","session","snapshot","snapshot_engine","provenance"):
         binary=work/name
         extra=[str(work/"snapshot_engine_under_test.cpp")] if name=="snapshot_engine" else []
         subprocess.run([os.environ.get("CXX","g++"),"-std=c++11","-O2","-Wall","-Wextra","-Werror",

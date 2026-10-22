@@ -3,6 +3,7 @@
 
 #include "detailmanager.h"
 #include "../RenderSnapshot.h"
+#include "r__snapshot_provenance.h"
 
 #ifdef _EDITOR
 #include "igame_persistent.h"
@@ -167,6 +168,7 @@ void CDetailManager::hw_Render()
 }
 void CDetailManager::hw_Render_dump(ref_constant x_array, u32 var_id, u32 lod_id, u32 c_offset)
 {
+	RenderSnapshotSourceScope snapshot_scope;
 	Device.Statistic->RenderDUMP_DT_Count = 0;
 
 	// Matrices and offsets
@@ -189,7 +191,27 @@ void CDetailManager::hw_Render_dump(ref_constant x_array, u32 var_id, u32 lod_id
 		xr_vector<SlotItemVec*>& vis = list[O];
 		if (!vis.empty())
 		{
-			if(g_render_snapshot_active){char name[64];sprintf_s(name,"level.details/mesh_%u",O);RenderSnapshot_Context("DETAIL",name,lod_id?"DETAIL_STILL":"DETAIL_WAVE");RenderSnapshot_Skin("NONE_CONSTANT_BATCH");}
+			if (g_render_snapshot_active)
+			{
+				char name[64], material_id[160];
+				sprintf_s(name, "level.details/mesh_%u", O);
+				RenderSnapshotShaderMaterial(Object.shader._get(), material_id);
+				RenderSnapshot_Context("DETAIL", name, material_id);
+				RenderSnapshot_Object("DETAIL", name, material_id, "LEVEL_DETAILS_MESH_ORDINAL_SHADER_TEXTURE_SET", 0);
+				RenderSnapshot_Queue(lod_id ? "DETAIL_STILL" : "DETAIL_WAVE");
+				RenderSnapshot_DetailVariant(var_id);
+				RenderSnapshot_Skin("NONE_CONSTANT_BATCH");
+				float uv[8];
+				const u32 sample_count = Object.number_vertices < 4 ? Object.number_vertices : 4;
+				for (u32 sample = 0; sample < sample_count; ++sample)
+				{
+					// Reproduce the existing CPU packing/vertex shader scale. This
+					// is a source sample, never a lock or readback of the GPU VB.
+					uv[2 * sample] = float(QC(Object.vertices[sample].u)) / float(quant);
+					uv[2 * sample + 1] = float(QC(Object.vertices[sample].v)) / float(quant);
+				}
+				RenderSnapshot_UV(uv, sample_count, "DETAIL_CPU_SOURCE_SHORT4_DECODED");
+			}
 			// Setup matrices + colors (and flush it as nesessary)
 			RCache.set_Element(Object.shader->E[lod_id]);
 			RImplementation.apply_lmaterial();

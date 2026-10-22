@@ -2,6 +2,7 @@
 #pragma hdrstop
 
 #include "ParticleEffect.h"
+#include "r__snapshot_provenance.h"
 
 using namespace PAPI;
 using namespace PS;
@@ -300,6 +301,16 @@ void CParticleEffect::Render(float)
 	{
 		if (m_Def && m_Def->m_Flags.is(CPEDef::dfSprite))
 		{
+			RenderSnapshotSourceScope snapshot_scope;
+			if (g_render_snapshot_active)
+			{
+				char material_id[160];
+				RenderSnapshotNamedMaterial(m_Def->m_ShaderName.c_str(), m_Def->m_TextureName.c_str(), material_id);
+				// This is the actual particle definition, independent of render queue
+				// and of whether the texture happens to contain "particle" or "glow".
+				RenderSnapshot_Object("PARTICLE", m_Def->m_Name.c_str(), material_id,
+					"PARTICLE_DEFINITION_ORIGINAL_SHADER_TEXTURE", RENDER_SNAPSHOT_PARTICLE);
+			}
 			FVF::LIT* pv_start = (FVF::LIT*)RCache.Vertex.Lock(p_cnt * 4 * 4, geom->vb_stride, dwOffset);
 			FVF::LIT* pv = pv_start;
 
@@ -399,6 +410,17 @@ void CParticleEffect::Render(float)
 				}
 			}
 			dwCount = u32(pv - pv_start);
+			if (g_render_snapshot_active && dwCount)
+			{
+				float uv[8];
+				const u32 sample_count = dwCount < 4 ? dwCount : 4;
+				for (u32 sample = 0; sample < sample_count; ++sample)
+				{
+					uv[2 * sample] = pv_start[sample].t.x;
+					uv[2 * sample + 1] = pv_start[sample].t.y;
+				}
+				RenderSnapshot_UV(uv, sample_count, "PARTICLE_CPU_GENERATED_VERTICES");
+			}
 			RCache.Vertex.Unlock(dwCount, geom->vb_stride);
 			if (dwCount)
 			{

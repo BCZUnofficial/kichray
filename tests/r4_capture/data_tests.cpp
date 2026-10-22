@@ -49,6 +49,27 @@ void HUD(){Batch b;b.Begin(1920,1080,9);Vertex v=b.Screen(0,0,.0001f,2,1,.5f,0x8
     KichR4_CaptureBeginFrame(800,600,2);KichR4_CaptureHUD(false);Require(!KichR4_CapturedFrame()->Ready(),"HUD imbalance cannot hide a legacy frame");
     KichR4_CaptureEnable(false);Require(!KichR4_CapturedFrame() && !KichR4_CaptureActive(),"capture shutdown releases registry");
 }
+void SnapshotCapture(){const fixture::Bytes raw=capture_fixture::Model(0);const std::shared_ptr<Mesh> mesh=Decode(View(raw));
+    Batch batch;Matrix world=kich_r4_scene::Identity();Style style;batch.Begin(800,600,1);
+    batch.Model(mesh.get(),*mesh,world,world,NULL,0,3,0,1,style);
+    Require(!batch.commands[0].provenance && !mesh->snapshot_hashed,"ordinary frame allocates no diagnostic payload and does not hash models");
+    RenderSnapshotInfo info={};strcpy(info.directory,".");strcpy(info.renderer,"R4");
+    RenderSnapshot_Request();RenderSnapshot_Begin(info);RenderSnapshot_Pass("CPU_CAPTURE");
+    batch.Begin(800,600,2);batch.Model(mesh.get(),*mesh,world,world,NULL,0,3,3,1,style,KICH_R4_SKIN_SOFTWARE,"model.ogf",true);
+    Require(batch.commands[0].provenance.get()!=NULL && mesh->snapshot_hashed,"snapshot owns diagnostic provenance");
+    const RenderSnapshotProvenance first=*batch.commands[0].provenance;
+    Require(!strcmp(first.semantic_type,"RIGID_MODEL") && first.uv_count==3 && Near(first.uv[4],1),"model semantics and actual distinct indexed UVs");
+    world.m[12]=20;batch.Begin(800,600,3);batch.Model(mesh.get(),*mesh,world,world,NULL,0,3,3,1,style,KICH_R4_SKIN_SOFTWARE,"model.ogf",true);
+    Require(!strcmp(first.mesh_id,batch.commands[0].provenance->mesh_id),"source mesh ID survives transforms and frame changes");
+    style.src=2;batch.Begin(800,600,4);batch.Model(mesh.get(),*mesh,world,world,NULL,0,3,0,1,style,KICH_R4_SKIN_SOFTWARE,"model.ogf",true);
+    Require(strcmp(first.mesh_id,batch.commands[0].provenance->mesh_id)!=0 && strcmp(first.material_id,batch.commands[0].provenance->material_id)!=0,"mesh range and material state distinguish IDs");
+    const float uv[]={-1,0,2,1,3,2,4,3,5,4};RenderSnapshot_Object("PARTICLE","effect:test","material:test","CParticleEffect",RENDER_SNAPSHOT_PARTICLE);
+    RenderSnapshot_UV(uv,5,"PARTICLE_SOURCE_UV");Command cmd=batch.commands[0];SnapshotCommand(cmd,batch.vertices,batch.indices,"UNKNOWN_STREAM");
+    RenderSnapshot_Context("OTHER","other","other");
+    Require(cmd.provenance->flags==RENDER_SNAPSHOT_PARTICLE && cmd.provenance->uv_count==4 && Near(cmd.provenance->uv[0],-1) && !strcmp(cmd.provenance->mesh_id,"effect:test"),"deferred command preserves particle source after global context changes");
+    RenderSnapshot_End("COMPLETE");remove(RenderSnapshot_LastPath());
+    batch.Begin(800,600,5);Require(batch.commands.empty(),"next frame releases command provenance");
+}
 void ABI(){KichR4StreamDrawDesc d={};d.struct_size=sizeof(d);d.draw.struct_size=sizeof(d.draw);d.texture=1;d.source_blend=5;d.dest_blend=6;d.max_depth=1;
     Require(kich_r4::ValidStreamDraw(d),"valid additive stream descriptor");
     for(unsigned i=0;i<12;++i){KichR4StreamDrawDesc bad=d;switch(i){case 0:bad.struct_size=0;break;case 1:bad.source_blend=0;break;case 2:bad.dest_blend=11;break;
@@ -57,5 +78,5 @@ void ABI(){KichR4StreamDrawDesc d={};d.struct_size=sizeof(d);d.draw.struct_size=
         case 10:bad.scissor_enable=1;bad.scissor[2]=-1;break;case 11:bad.texture=0;break;}Require(!kich_r4::ValidStreamDraw(bad),"invalid stream state rejected before GPU calls");}
 }
 }
-int main(){try{Models();HUD();ABI();printf("B4.3b OGF / skinning / stream ownership / state validation: %d checks passed\n",checks);return 0;}
+int main(){try{Models();HUD();SnapshotCapture();ABI();printf("B4.3b OGF / skinning / stream ownership / state validation: %d checks passed\n",checks);return 0;}
 catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

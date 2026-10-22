@@ -100,6 +100,8 @@ void KichR4_CaptureSubmitUI(const kich_r4_capture::UIInput& input) {
                 for(unsigned j=0;j<4;++j){const float sign=(j&1)?-1.f:1.f;line[j].p[0]+=sign*ox*line[j].p[3];line[j].p[1]+=sign*oy*line[j].p[3];}
                 const uint32_t at=static_cast<uint32_t>(frame.vertices.size());frame.vertices.insert(frame.vertices.end(),line,line+4);
                 const uint32_t ix[]={0,1,2,2,1,3};for(unsigned j=0;j<6;++j)frame.indices.push_back(at+ix[j]);}}
-        cmd.count=static_cast<uint32_t>(frame.indices.size())-cmd.first;if(cmd.count){frame.commands.push_back(cmd);++frame.ui;}
+        cmd.count=static_cast<uint32_t>(frame.indices.size())-cmd.first;if(cmd.count){
+            SnapshotCommand(cmd,frame.vertices,frame.indices,"UI_GEOMETRY",NULL,0,uv!=UINT32_MAX);
+            frame.commands.push_back(cmd);++frame.ui;}
     });
 }

@@ -132,6 +132,9 @@ bool KichR4_NativeReadPixels(std::vector<unsigned char>& out,uint32_t& w,uint32_
 }
 bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)return false;Context* context=native.context.get();
     struct SnapshotFailureGuard {bool complete;SnapshotFailureGuard():complete(false){}~SnapshotFailureGuard(){if(!complete && g_render_snapshot_active)RenderSnapshot_End("NATIVE_FRAME_FAILED");}} snapshot_guard;
+    if(g_render_snapshot_active){RenderSnapshot_Text("MEMORY","registered_gpu_payload_bytes","NOT_AVAILABLE");RenderSnapshot_Text("MEMORY","resource_stats_status","NOT_QUERIED");
+        RenderSnapshot_Text("MEMORY","registered_gpu_payload_scope","DEVICE_RESOURCE_REGISTRY_PAYLOAD; NOT_VRAM_RESIDENCY");RenderSnapshot_Text("MEMORY","cpu_capture_bytes","NOT_AVAILABLE");
+        context->deferred.details.SnapshotSummary(input.engine_frame,false);}
     try{if(context->name!=native.desired){if(!ResetContext())return false;context=native.context.get();}
         Context& c=*context;LARGE_INTEGER start,end,submitted,frequency;QueryPerformanceCounter(&start);const uint32_t shadows_before=c.deferred.shadow_passes;QueryPerformanceFrequency(&frequency);
         if(!c.loaded && !c.name.empty() && input.allowed){if(c.level.Start(c.frame,c.name.c_str())!=0)return false;c.loaded=true;
@@ -157,16 +160,14 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
         if(hr==0){hr=c.frame.api.present(c.frame.device,native.interval);if(!hr)++c.frame.rendered;}
         QueryPerformanceCounter(&end);
         sink_guard.Reset();
-        if(g_render_snapshot_active){const kich_r4_detail::Frame& details=KichR4_DetailFrame();
+        if(g_render_snapshot_active){
             RenderSnapshot_Value("MEMORY","cpu_capture_bytes",batch->vertices.size()*sizeof(kich_r4_capture::Vertex)+batch->indices.size()*4);
-            RenderSnapshot_Value("DETAIL_RENDERER","visible_instances",details.instances.size());
-            RenderSnapshot_Value("DETAIL_RENDERER","still_instances",details.variants[0]);RenderSnapshot_Value("DETAIL_RENDERER","wind1_instances",details.variants[1]);RenderSnapshot_Value("DETAIL_RENDERER","wind2_instances",details.variants[2]);
-            RenderSnapshot_Value("DETAIL_RENDERER","unique_meshes",details.meshes.size());RenderSnapshot_Value("DETAIL_RENDERER","gpu_vertex_bytes",c.deferred.details.vertex_bytes);RenderSnapshot_Value("DETAIL_RENDERER","gpu_index_bytes",c.deferred.details.index_bytes);
-            RenderSnapshot_Value("DETAIL_RENDERER","instance_upload_bytes",details.instances.size()*sizeof(KichR4DetailInstance));
-            RenderSnapshot_Value("DETAIL_RENDERER","instanced_draw_calls",c.deferred.details.draw_calls);RenderSnapshot_Value("DETAIL_RENDERER","shadow_draw_calls",c.deferred.details.shadow_draw_calls);
-            RenderSnapshot_Value("DETAIL_RENDERER","legacy_capture_vertices",static_cast<double>(details.legacy_vertices));RenderSnapshot_Value("DETAIL_RENDERER","legacy_capture_indices",static_cast<double>(details.legacy_indices));RenderSnapshot_Value("DETAIL_RENDERER","legacy_detail_draws",details.legacy_draws);
-            RenderSnapshot_Value("DETAIL_RENDERER","cpu_prepare_ms",details.prepare_ms);RenderSnapshot_Text("DETAIL_RENDERER","gpu_detail_ms","NOT_INSTRUMENTED");RenderSnapshot_Text("DETAIL_RENDERER","path","NATIVE_DX11");
-            KichR4ResourceStats memory={};if(native.api.resources.get_stats(c.frame.device,&memory,sizeof(memory))==0)RenderSnapshot_Value("MEMORY","registered_gpu_payload_bytes",static_cast<double>(memory.payload_bytes));
+            RenderSnapshot_Value("MEMORY","cpu_capture_capacity_bytes",batch->vertices.capacity()*sizeof(kich_r4_capture::Vertex)+batch->indices.capacity()*4);
+            RenderSnapshot_Value("MEMORY","cpu_level_geometry_payload_bytes",static_cast<double>(c.level.scene.cpu_bytes));
+            c.deferred.details.SnapshotSummary(input.engine_frame,c.loaded && input.allowed);
+            KichR4ResourceStats memory={};const int32_t memory_result=native.api.resources.get_stats(c.frame.device,&memory,sizeof(memory));
+            if(memory_result==0){RenderSnapshot_Value("MEMORY","registered_gpu_payload_bytes",static_cast<double>(memory.payload_bytes));RenderSnapshot_Text("MEMORY","resource_stats_status","AVAILABLE");RenderSnapshot_Value("MEMORY","registered_gpu_resources",memory.live_resources);}
+            else{RenderSnapshot_Text("MEMORY","registered_gpu_payload_bytes","NOT_AVAILABLE");RenderSnapshot_Text("MEMORY","resource_stats_status","QUERY_FAILED");RenderSnapshot_Value("MEMORY","resource_stats_hresult",memory_result);}
             if(hr<0)RenderSnapshot_End("GPU_SUBMISSION_FAILED");
         }
         if(hr<0){Write("[R4 native B5] frame failed: step=%s HRESULT=0x%08X shader=%s",c.frame.step?c.frame.step:"present",static_cast<uint32_t>(hr),c.level.bridge.shader_error);return false;}

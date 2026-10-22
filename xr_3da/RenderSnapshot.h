@@ -31,7 +31,21 @@ struct RenderSnapshotDraw {
     char vertex_shader[96],pixel_shader[96],texture_names[8][128];
     char states[768],samplers[1024],skin[32];
 };
+/* EXE-side provenance only: RenderSnapshotDraw and the renderer DLL ABI stay unchanged. */
+struct RenderSnapshotProvenance {
+    char semantic_type[32],queue[48],mesh_id[160],material_id[160],evidence[64],uv_source[48];
+    uint32_t flags,pass_mask,pass_mask_known,uv_count;
+    float uv[8];
+};
 #pragma pack(pop)
+enum RenderSnapshotObjectFlags { RENDER_SNAPSHOT_PARTICLE=1, RENDER_SNAPSHOT_GLOW=2 };
+enum RenderSnapshotPassBits {
+    RENDER_SNAPSHOT_PASS_SUN_SHADOW=1u<<0, RENDER_SNAPSHOT_PASS_LOCAL_SHADOW=1u<<1,
+    RENDER_SNAPSHOT_PASS_GBUFFER=1u<<2, RENDER_SNAPSHOT_PASS_LIGHT_ACCUMULATION=1u<<3,
+    RENDER_SNAPSHOT_PASS_ENVIRONMENT_COMBINE=1u<<4, RENDER_SNAPSHOT_PASS_FORWARD_TRANSPARENCY=1u<<5,
+    RENDER_SNAPSHOT_PASS_HUD_UI=1u<<6, RENDER_SNAPSHOT_PASS_POSTPROCESS=1u<<7,
+    RENDER_SNAPSHOT_PASS_MENU_UI=1u<<8
+};
 typedef void (SNAPSHOT_CALL *RenderSnapshotSink)(const RenderSnapshotDraw*);
 #if defined(_EDITOR)
 /* Shared renderer sources also build in the legacy editors. They have no
@@ -44,6 +58,15 @@ inline void RenderSnapshot_Begin(const RenderSnapshotInfo&){g_render_snapshot_co
 inline void RenderSnapshot_End(const char*){}
 inline void RenderSnapshot_Pass(const char*){}
 inline void RenderSnapshot_Context(const char*,const char*,const char*){}
+inline void RenderSnapshot_Object(const char*,const char*,const char*,const char*,uint32_t){}
+inline void RenderSnapshot_Queue(const char*){}
+inline void RenderSnapshot_PassMask(uint32_t){}
+inline void RenderSnapshot_UV(const float*,uint32_t,const char*){}
+inline void RenderSnapshot_GetProvenance(RenderSnapshotProvenance* p){if(p)*p=RenderSnapshotProvenance();}
+inline void RenderSnapshot_SetProvenance(const RenderSnapshotProvenance*){}
+inline void RenderSnapshot_Light(const char*,const char*){}
+inline void RenderSnapshot_Phase(const char*){}
+inline void RenderSnapshot_DetailVariant(uint32_t){}
 inline void RenderSnapshot_Shaders(const char*,const char*){}
 inline void RenderSnapshot_ShaderStage(bool,const char*){}
 inline void RenderSnapshot_Texture(uint32_t,const char*){}
@@ -67,6 +90,15 @@ SNAPSHOT_API void RenderSnapshot_Begin(const RenderSnapshotInfo&);
 SNAPSHOT_API void RenderSnapshot_End(const char* status);
 SNAPSHOT_API void RenderSnapshot_Pass(const char*);
 SNAPSHOT_API void RenderSnapshot_Context(const char* category,const char* resource,const char* material);
+SNAPSHOT_API void RenderSnapshot_Object(const char* semantic,const char* mesh_id,const char* material_id,const char* evidence,uint32_t flags);
+SNAPSHOT_API void RenderSnapshot_Queue(const char*);
+SNAPSHOT_API void RenderSnapshot_PassMask(uint32_t);
+SNAPSHOT_API void RenderSnapshot_UV(const float* pairs,uint32_t count,const char* source);
+SNAPSHOT_API void RenderSnapshot_GetProvenance(RenderSnapshotProvenance*);
+SNAPSHOT_API void RenderSnapshot_SetProvenance(const RenderSnapshotProvenance*);
+SNAPSHOT_API void RenderSnapshot_Light(const char* id,const char* scope);
+SNAPSHOT_API void RenderSnapshot_Phase(const char* id);
+SNAPSHOT_API void RenderSnapshot_DetailVariant(uint32_t variant);
 SNAPSHOT_API void RenderSnapshot_Shaders(const char* vs,const char* ps);
 SNAPSHOT_API void RenderSnapshot_ShaderStage(bool vertex,const char* name);
 SNAPSHOT_API void RenderSnapshot_Texture(uint32_t stage,const char* name);
