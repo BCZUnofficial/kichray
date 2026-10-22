@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <!-- Full-framework MSBuild supplied with VS2019/2022; no Python, PowerShell,
+  <!-- Visual Studio MSBuild; no Python, PowerShell,
        CMake or mandatory Git installation. Separate IntDir avoids build races. -->
   <PropertyGroup>
     <KichR4IdentityRoot>$(MSBuildThisFileDirectory)..\</KichR4IdentityRoot>
@@ -8,7 +8,8 @@
   <UsingTask TaskName="KichR4WriteBuildIdentity" TaskFactory="RoslynCodeTaskFactory"
              AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
     <Task>
-      <Reference Include="System.Core" />
+      <!-- Roslyn supplies the standard .NET reference set. An explicit legacy
+           framework assembly name can fail resolution on newer MSBuild. -->
       <Code Type="Class" Language="cs" Source="$(MSBuildThisFileDirectory)KichR4BuildIdentity.cs" />
     </Task>
   </UsingTask>

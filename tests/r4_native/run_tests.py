@@ -39,7 +39,15 @@ def main():
         assert any(p.endswith("build\\KichR4BuildIdentity.targets") for p in imports), path
         item=next(n for n in project.findall(".//m:ClCompile",ns) if n.get("Include")==source)
         assert "$(IntDir)" in item.find("m:AdditionalIncludeDirectories",ns).text, path
-    ET.parse(ROOT/"build/KichR4BuildIdentity.targets")
+    identity = ET.parse(ROOT/"build/KichR4BuildIdentity.targets")
+    task = identity.find("m:UsingTask", ns)
+    assert task is not None and task.get("TaskFactory") == "RoslynCodeTaskFactory"
+    # The standalone task only uses standard .NET APIs. Adding a legacy
+    # assembly name made Roslyn fail with MSB3755 before loading the task.
+    assert not task.findall("m:Task/m:Reference", ns), "Use Roslyn's default .NET reference set"
+    source = task.find("m:Task/m:Code", ns)
+    assert source is not None and source.get("Type") == "Class"
+    assert source.get("Source") == "$(MSBuildThisFileDirectory)KichR4BuildIdentity.cs"
     print("PASS: G0/G1 C ABI (including x86 packing), real provider/EXE negotiation, capture diagnostics and project wiring")
     print("MSBuild identity task, full MSVC link and visual validation require the Windows build.")
 
