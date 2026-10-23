@@ -238,6 +238,21 @@ struct KichR4ModelSession {
         const size_t checked=std::min(size_t(128),c.mesh->vertices.size());size_t zero=0;for(size_t i=0;i<checked;++i)if(!c.mesh->vertices[i].normal)++zero;
         U64("NORMAL_MAPPING",id,"normal_sample_vertices",checked);U64("NORMAL_MAPPING",id,"zero_packed_normal_samples",zero);Text("NORMAL_MAPPING",id,"normal_check_scope",checked==c.mesh->vertices.size()?"ALL_SOURCE_VERTICES":"FIRST_128_SOURCE_VERTICES");
     }
+    static void SnapshotMaterialBasis(const Command& c,uint32_t flags){
+        if(!RenderSnapshot_Detailed())return;
+        const uint32_t basis=kich_r4_material::ATTR_NORMAL|kich_r4_material::ATTR_TANGENT|kich_r4_material::ATTR_BINORMAL;
+        uint32_t valid=0;
+        for(uint32_t i=0;i<c.count;++i)if((c.mesh->vertices[c.mesh->indices[c.first+i]].attributes&basis)==basis)++valid;
+        char id[64];kich_r4_material::ExecutionID(c.material,c.available_attributes,flags,false,id,sizeof(id));
+        using namespace kich_r4_telemetry;
+        Text("MODEL_MATERIAL_EXECUTION",id,"basis_scope","LAST_BOUND_COMMAND; INDEX_REFERENCES_INCLUDE_DUPLICATES; MESH_COUNTS_ARE_FULL_SOURCE");
+        Text("MODEL_MATERIAL_EXECUTION",id,"basis_resource",c.resource.c_str());
+        U64("MODEL_MATERIAL_EXECUTION",id,"basis_index_references",c.count);
+        U64("MODEL_MATERIAL_EXECUTION",id,"basis_valid_index_references",valid);
+        U64("MODEL_MATERIAL_EXECUTION",id,"basis_missing_index_references",c.count-valid);
+        U64("MODEL_MATERIAL_EXECUTION",id,"basis_mesh_vertices",c.mesh->vertices.size());
+        U64("MODEL_MATERIAL_EXECUTION",id,"basis_mesh_derived_vertices",c.mesh->derived_basis_vertices);
+    }
     static void Snapshot(const Command& c,uint32_t pass_mask){
         const char* semantic=c.layer?"HUD_MODEL":"DYNAMIC_MODEL";
         RenderSnapshot_Context(semantic,c.resource.empty()?"UNKNOWN":c.resource.c_str(),c.shader.empty()?"UNKNOWN":c.shader.c_str());
@@ -298,6 +313,7 @@ struct KichR4ModelSession {
             if(maps)for(unsigned j=0;j<6;++j)d.surface.textures[j+2]=maps[j];
             if(pass==Distortion)d.surface.textures[1]=scene_color;
             if(c.has_material && (pass==Geometry || pass==Shadow))kich_r4_material::Bind(s,l,c.material,c.available_attributes,constants,d.surface,pass==Shadow,false,c.object_light_valid && pass==Geometry?kich_r4_material::SHADER_SUN:0,"MODEL_MATERIAL_EXECUTION");
+            if(g_render_snapshot_active && c.has_material && pass==Geometry)SnapshotMaterialBasis(c,uint32_t(constants.material[0]));
             // Reuse unused model constants; static/tree layout and DLL ABI stay unchanged.
             constants.color_bias[3]=c.object_light_valid?1.f:0.f;constants.color_scale[3]=c.object_hemi;constants.sun_scale_bias[2]=c.object_sun;
             if(c.object_light_valid && pass==Geometry)constants.material[0]=float(uint32_t(constants.material[0])|kich_r4_material::SHADER_SUN);

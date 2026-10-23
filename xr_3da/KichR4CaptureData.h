@@ -92,7 +92,7 @@ inline std::shared_ptr<Mesh> Decode(Span source) {
         for(uint32_t s=0;s<sets;++s){const uint32_t dims=(format>>(16+s*2))&3;
             Check(!s?dims==0:true,"model base UV format");if(s==1 && dims==0)uv1=stride;stride+=dims==0?8:dims==1?12:dims==2?16:4;}
     }
-    Check(count<=vertices.Left()/stride,"truncated model vertices");mesh->vertices.resize(count);
+    Check(count<=vertices.Left()/stride,"truncated model vertices");mesh->vertices.resize(count);bool missing_basis=false;
     for(uint32_t i=0;i<count;++i){const unsigned char* p=vertices.Take(stride);SourceVertex& v=mesh->vertices[i];v={};v.hemi=v.sun=1;v.color=0xffffffffu;
         Reader xyz(Span(p+pos,12)),tc(Span(p+uv,8));for(unsigned a=0;a<3;++a)v.p[a]=xyz.Float();
         v.uv[0]=tc.Float();v.uv[1]=tc.Float();
@@ -121,13 +121,16 @@ inline std::shared_ptr<Mesh> Decode(Span source) {
                         if(mesh->first_weight_detail.empty())mesh->first_weight_detail=WeightDetail(i,v.bone[0],v.bone[1],bits,"active weight outside 0..1");}
                 }}
             mesh->bones=std::max(mesh->bones,uint32_t(std::max(v.bone[0],v.bone[1]))+1);}
+        if(!(v.attributes&kich_r4_level::ATTR_TANGENT))missing_basis=true;
     }
     Reader indices(Chunk(source,4));const uint32_t n=indices.U32();Check(n && n%3==0 && n<=3u*1024u*1024u && n<=indices.Left()/2,"model index limit");
     mesh->indices.resize(n);for(uint32_t i=0;i<n;++i){mesh->indices[i]=indices.U16();Check(mesh->indices[i]<count,"model index range");}
-    /* Rigid FVF has no tangent semantics. Reconstruct at load from indexed
-     * triangles only; a UV seam with conflicting handedness remains an explicit
-     * flat-normal fallback instead of averaging the mirrored bases together. */
-    if(!mesh->skinned){
+    /* Repair only missing T/B, once in the common model bind space. Skeletal
+     * render matrices already include inverse bind transforms, so 1W/2W source
+     * positions share this space even across different bone IDs. Preserve valid
+     * authored bases; conflicting mirrored UVs and degenerate triangles retain
+     * their explicit fallback rather than inventing a tangent orientation. */
+    if(missing_basis){
         struct Tangents {float t[3],b[3];int sign;bool conflict;Tangents():sign(0),conflict(false){for(unsigned a=0;a<3;++a)t[a]=b[a]=0;}};
         std::vector<Tangents> basis(count);
         for(uint32_t i=0;i<n;i+=3){const uint16_t ids[]={mesh->indices[i],mesh->indices[i+1],mesh->indices[i+2]};
@@ -146,7 +149,9 @@ inline std::shared_ptr<Mesh> Decode(Span source) {
                 target.sign=sign;
                 for(unsigned axis=0;axis<3;++axis){target.t[axis]+=t[axis];target.b[axis]+=bn[axis];}}
         }
-        for(uint32_t i=0;i<count;++i){SourceVertex& v=mesh->vertices[i];Tangents& t=basis[i];const kich_r4_scene::Vec3 unpacked=UnpackNormal(v.normal);float normal[]={unpacked.x,unpacked.y,unpacked.z};
+        for(uint32_t i=0;i<count;++i){SourceVertex& v=mesh->vertices[i];
+            if(v.attributes&kich_r4_level::ATTR_TANGENT)continue;
+            Tangents& t=basis[i];const kich_r4_scene::Vec3 unpacked=UnpackNormal(v.normal);float normal[]={unpacked.x,unpacked.y,unpacked.z};
             if(!t.conflict && t.sign && kich_r4_level::Basis(normal,t.t,t.b)){
                 v.tangent=PackNormal(t.t[0],t.t[1],t.t[2]);v.binormal=PackNormal(t.b[0],t.b[1],t.b[2]);v.attributes|=kich_r4_level::ATTR_TANGENT|kich_r4_level::ATTR_BINORMAL;++mesh->derived_basis_vertices;}}
     }

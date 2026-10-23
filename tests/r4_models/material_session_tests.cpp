@@ -2,6 +2,7 @@
 #define main G3cPaletteSuiteMain
 #include "session_tests.cpp"
 #undef main
+#include "../r4_capture/fixture.h"
 
 namespace {
 kich_r4_material::Descriptor CutoutMaterial(){
@@ -78,6 +79,44 @@ void MaterialFallbacks(const char* directory){for(unsigned mode=0;mode<3;++mode)
     RenderSnapshot_End("COMPLETE");const char* reason=mode==0?"bump_missing_valid_source_basis":mode==1?"bump_dds_unavailable":"lightmap_missing_source_uv1";
     Require(MaterialReport().find(reason)!=std::string::npos,"snapshot explicitly explains optional material fallback");
 }}
+void RepairedModelBindsBump(const char* directory){
+    for(unsigned weights=1;weights<=2;++weights){
+        auto raw=capture_fixture::Model(weights);const kich_r4_level::Span source(raw.data(),static_cast<uint32_t>(raw.size()));
+        const auto vb=kich_r4_level::Chunk(source,3);const unsigned start=static_cast<unsigned>(vb.p-raw.data())+8,stride=weights==1?60:64,pos=weights==1?0:4;
+        for(unsigned i=0;i<3;++i){const float p[]={i==1?.3f:0.f,i==2?.3f:0.f,.5f};
+            for(unsigned a=0;a<3;++a){uint32_t bits;memcpy(&bits,p+a,4);fixture::Set(raw,start+i*stride+pos+a*4,bits);}
+            fixture::Set(raw,start+i*stride+pos+20,0x3f800000u); // Valid N, zero T/B in the actual OGF payload.
+        }
+        const auto mesh=kich_r4_capture::Decode(source);
+        Require(mesh->derived_basis_vertices==3 && mesh->basis_vertices==3,"actual skeletal OGF recovers all referenced tangent frames");
+        Harness h;Require(h.Start()==0,"repaired material integration setup");const auto material=CutoutMaterial();SeedTextures(h,material);
+        kich_r4_capture::Batch batch;batch.Begin(640,480,70+weights);const auto identity=kich_r4_scene::Identity();const kich_r4_scene::Matrix bones[]={identity,identity};kich_r4_capture::Style style;
+        batch.NativeModel(mesh.get(),mesh,identity,identity,bones,2,3,3,1,style,KICH_R4_SKIN_HARDWARE,"repaired_actor",NULL,NULL,NULL,0,0,0,mesh.get(),&material);
+        Require(h.models.Prepare(h.frame,h.level,batch)==0,"repaired source uploads through normal GPU model path");
+        BeginMaterialSnapshot(directory);RenderSnapshot_Pass("GBUFFER");Require(h.Draw(batch,KichR4ModelSession::Geometry)==0 && model_draws.size()==1,"repaired source reaches actual model material draw");
+        Require((uint32_t(constants_drawn.back().material[0])&kich_r4_material::SHADER_BUMP)!=0 && model_draws.back().surface.textures[1]==h.level.textures[material.bump] && model_draws.back().surface.textures[2]==h.level.textures[material.bump_aux],"1W/2W decoded repaired bases enable real bump and auxiliary bindings");
+        RenderSnapshot_End("COMPLETE");const auto report=MaterialReport();
+        Require(report.find("basis_mesh_derived_vertices=3")!=std::string::npos && report.find("basis_missing_index_references=0")!=std::string::npos && report.find("normal_path=SOC_R2_BUMP")!=std::string::npos,"repair result is visible in model execution telemetry");
+    }
+}
+void BasisFallbackTelemetry(const char* directory){
+    Harness h;Require(h.Start()==0,"basis telemetry setup");auto mesh=MaterialMesh();const auto material=CutoutMaterial();SeedTextures(h,material);
+    mesh->vertices[1].attributes&=~(kich_r4_material::ATTR_TANGENT|kich_r4_material::ATTR_BINORMAL);
+    mesh->vertices.push_back({}); // Unreferenced source vertex must not inflate this draw's missing count.
+    mesh->derived_basis_vertices=1;
+    kich_r4_capture::Batch batch;batch.Begin(640,480,60);Capture(batch,mesh,material);
+    Require(h.models.Prepare(h.frame,h.level,batch)==0,"basis telemetry prepares partial source");
+    BeginMaterialSnapshot(directory);
+    // Earlier source descriptors can exhaust NORMAL_MAPPING without losing execution evidence.
+    for(unsigned i=0;i<300;++i){char id[48];snprintf(id,sizeof(id),"early_%u",i);RenderSnapshot_Record("NORMAL_MAPPING",id,"source","EARLY_DESCRIPTOR");}
+    RenderSnapshot_Pass("GBUFFER");Require(h.Draw(batch,KichR4ModelSession::Geometry)==0,"partially valid basis still draws");
+    RenderSnapshot_End("COMPLETE");const std::string report=MaterialReport();
+    const size_t start=report.find("[RECORD MODEL_MATERIAL_EXECUTION]");Require(start!=std::string::npos,"model execution record kept independently");
+    const std::string record=report.substr(start,report.find("\n\n",start)-start);
+    Require(record.find("basis_valid_index_references=2")!=std::string::npos && record.find("basis_missing_index_references=1")!=std::string::npos,"partial TBN counted only over actual referenced range");
+    Require(record.find("basis_mesh_vertices=4")!=std::string::npos && record.find("basis_mesh_derived_vertices=1")!=std::string::npos && record.find("basis_resource=source_actor")!=std::string::npos,"whole-source derivation counts and source name are explicit");
+    Require(record.find("basis_scope=LAST_BOUND_COMMAND;")!=std::string::npos && record.find("bump_missing_valid_source_basis")!=std::string::npos,"shared material record describes last command without pretending to cover all meshes");
+}
 void DrawBasisAndExposure(){Harness h;Require(h.Start()==0,"object exposure setup");auto mesh=MaterialMesh();const auto material=CutoutMaterial();SeedTextures(h,material);
     mesh->vertices.push_back({});mesh->available_attributes=0; // unrelated unused vertex cannot poison this range
     kich_r4_capture::Batch batch;batch.Begin(640,480,50);Capture(batch,mesh,material);
@@ -88,6 +127,6 @@ void DrawBasisAndExposure(){Harness h;Require(h.Start()==0,"object exposure setu
     Require((uint32_t(c.material[0])&33)==33,"valid bump and object sun mask coexist");
 }
 }
-int main(int argc,char** argv){try{Require(argc==2,"snapshot output directory");MaterialCaptureOwnership();MaterialBindingsAndRouting(argv[1]);MaterialFallbacks(argv[1]);DrawBasisAndExposure();
+int main(int argc,char** argv){try{Require(argc==2,"snapshot output directory");MaterialCaptureOwnership();MaterialBindingsAndRouting(argv[1]);MaterialFallbacks(argv[1]);BasisFallbackTelemetry(argv[1]);RepairedModelBindsBump(argv[1]);DrawBasisAndExposure();
     printf("G3c native model material integration: %d checks passed\n",checks);return 0;
 }catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}
