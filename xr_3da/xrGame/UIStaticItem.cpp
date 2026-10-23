@@ -66,7 +66,7 @@ void CUIStaticItem::Init(LPCSTR tex, LPCSTR sh, float left, float top, u32 align
 void CUIStaticItem::Render()
 {
 	VERIFY(g_bRendering);
-	// óñòàíîâèòü îáÿçàòåëüíî ïåðåä âûçîâîì CustomItem::Render() !!!
+	// Ã³Ã±Ã²Ã Ã­Ã®Ã¢Ã¨Ã²Ã¼ Ã®Ã¡Ã¿Ã§Ã Ã²Ã¥Ã«Ã¼Ã­Ã® Ã¯Ã¥Ã°Ã¥Ã¤ Ã¢Ã»Ã§Ã®Ã¢Ã®Ã¬ CustomItem::Render() !!!
 	VERIFY(hShader);
 	RCache.set_Shader(hShader);
     if(RenderSnapshot_Detailed()){
@@ -75,7 +75,7 @@ void CUIStaticItem::Render()
         CTexture* texture=RCache.get_ActiveTexture(0);RenderSnapshot_Record("UI",id,"atlas",texture?texture->cName.c_str():"NOT_AVAILABLE");
         snapshot_ui::Rect(id,"atlas_region_texels",GetOriginalRect());snapshot_ui::Rect(id,"visible_rect_ui_units",iVisRect);
         RenderSnapshot_RecordU64("UI",id,"vertex_color_argb",dwColor);RenderSnapshot_RecordI64("UI",id,"alpha_reference_override",alpha_ref);
-        snapshot_ui::Number(id,"scale_x",UI()->ClientToScreenScaledX(1.0f));snapshot_ui::Number(id,"scale_y",UI()->ClientToScreenScaledY(1.0f));
+        Fvector2 ui_snapshot_scale;UI()->ClientToScreenScaled(ui_snapshot_scale,1.f,1.f);snapshot_ui::Number(id,"scale_x",ui_snapshot_scale.x);snapshot_ui::Number(id,"scale_y",ui_snapshot_scale.y);
         RenderSnapshot_Record("UI",id,"glyph_text","OMITTED_BY_POLICY");
     }
 	if (alpha_ref != -1)
@@ -126,7 +126,7 @@ void CUIStaticItem::Render()
 void CUIStaticItem::Render(float angle)
 {
 	VERIFY(g_bRendering);
-	// óñòàíîâèòü îáÿçàòåëüíî ïåðåä âûçîâîì CustomItem::Render() !!!
+	// Ã³Ã±Ã²Ã Ã­Ã®Ã¢Ã¨Ã²Ã¼ Ã®Ã¡Ã¿Ã§Ã Ã²Ã¥Ã«Ã¼Ã­Ã® Ã¯Ã¥Ã°Ã¥Ã¤ Ã¢Ã»Ã§Ã®Ã¢Ã®Ã¬ CustomItem::Render() !!!
 	VERIFY(hShader);
 	RCache.set_Shader(hShader);
     if(RenderSnapshot_Detailed()){
@@ -135,7 +135,7 @@ void CUIStaticItem::Render(float angle)
         CTexture* texture=RCache.get_ActiveTexture(0);RenderSnapshot_Record("UI",id,"atlas",texture?texture->cName.c_str():"NOT_AVAILABLE");
         snapshot_ui::Rect(id,"atlas_region_texels",GetOriginalRect());snapshot_ui::Rect(id,"visible_rect_ui_units",iVisRect);
         RenderSnapshot_RecordU64("UI",id,"vertex_color_argb",dwColor);RenderSnapshot_RecordI64("UI",id,"alpha_reference_override",alpha_ref);
-        snapshot_ui::Number(id,"scale_x",UI()->ClientToScreenScaledX(1.0f));snapshot_ui::Number(id,"scale_y",UI()->ClientToScreenScaledY(1.0f));
+        Fvector2 ui_snapshot_scale;UI()->ClientToScreenScaled(ui_snapshot_scale,1.f,1.f);snapshot_ui::Number(id,"scale_x",ui_snapshot_scale.x);snapshot_ui::Number(id,"scale_y",ui_snapshot_scale.y);
         RenderSnapshot_Record("UI",id,"glyph_text","OMITTED_BY_POLICY");
     }
 	if (alpha_ref != -1)
