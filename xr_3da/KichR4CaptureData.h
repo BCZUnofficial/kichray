@@ -21,6 +21,12 @@ struct SourceVertex {
     float uv1[2],hemi,sun;uint32_t color,attributes;
 };
 static_assert(sizeof(SourceVertex)==64,"G3c source model GPU vertex");
+/* G3c retains twice the vertex payload (32 -> 64 bytes). Preserve the model
+ * population accepted by G3b's 96 MiB registry without dropping TBN/UV1 data:
+ * 32V + 2I <= 96 MiB implies 64V + 2I <= 192 MiB. A single mesh can gain at
+ * most 65536 * 32 bytes over its former 8 MiB limit. Both caps count payload. */
+static const uint64_t ModelRegistryBudgetBytes=192u*1024u*1024u;
+static const uint64_t ModelMeshBudgetBytes=10u*1024u*1024u;
 struct Bounds {
     float min[3],max[3];bool valid;
     Bounds():valid(false){for(unsigned i=0;i<3;++i)min[i]=max[i]=0;}
@@ -149,7 +155,7 @@ inline std::shared_ptr<Mesh> Decode(Span source) {
     if(mesh->skinned)mesh->bone_bounds.resize(mesh->bones);
     for(uint32_t i=0;i<count;++i){const SourceVertex& v=mesh->vertices[i];mesh->source_bounds.Add(v.p);
         if(mesh->skinned){mesh->bone_bounds[v.bone[0]].Add(v.p);mesh->bone_bounds[v.bone[1]].Add(v.p);}}
-    Check(mesh->Bytes()<=8u*1024u*1024u,"single model CPU budget");return mesh;
+    Check(mesh->Bytes()<=ModelMeshBudgetBytes,"single model CPU budget");return mesh;
 }
 inline void Transform(const float* p,const Matrix& m,float* out) {
     for(unsigned c=0;c<4;++c)out[c]=p[0]*m.m[c]+p[1]*m.m[4+c]+p[2]*m.m[8+c]+m.m[12+c];
@@ -481,7 +487,11 @@ struct State {
     uint64_t ModelBytes()const {uint64_t result=0;std::set<const Mesh*> counted;
         for(std::map<const void*,Entry>::const_iterator i=models.begin();i!=models.end();++i){if(i->second.mesh && counted.insert(i->second.mesh.get()).second)result+=i->second.mesh->Bytes();}return result;}
     void Load(void* visual,Span source,const char* name=NULL){Entry& entry=models[visual];entry=Entry();entry.name=name && *name?std::string(name).substr(0,240):"<unnamed>";
-        try{entry.mesh=Decode(source);if(entry.mesh)Check(ModelBytes()<=96u*1024u*1024u,"model registry CPU budget");}
+        try{entry.mesh=Decode(source);if(entry.mesh){const uint64_t total=ModelBytes();
+            if(total>ModelRegistryBudgetBytes){const uint64_t requested=entry.mesh->Bytes();char reason[192];
+                snprintf(reason,sizeof(reason),"model registry CPU budget: used=%llu requested=%llu limit=%llu bytes",
+                    static_cast<unsigned long long>(total-requested),static_cast<unsigned long long>(requested),
+                    static_cast<unsigned long long>(ModelRegistryBudgetBytes));Check(false,reason);}}}
         catch(const std::exception& e){entry.mesh.reset();entry.error=ModelError(entry,e.what());Diagnostic("model rejected: "+entry.error);return;}
         if(entry.mesh && (entry.mesh->ignored_weights || entry.mesh->outside_weights)){char counts[128];snprintf(counts,sizeof(counts),"; ignored_unused=%u active_outside_01=%u; ",entry.mesh->ignored_weights,entry.mesh->outside_weights);
             Diagnostic("2W compatibility: model="+entry.name+counts+entry.mesh->first_weight_detail);}}

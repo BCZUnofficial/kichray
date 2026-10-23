@@ -10,6 +10,51 @@ int checks=0;void Require(bool b,const char* why){++checks;if(!b)throw std::runt
 Span View(const fixture::Bytes& b){return Span(b.data(),static_cast<uint32_t>(b.size()));}
 template<class F>void Reject(F action,const char* why){bool rejected=false;try{action();}catch(const std::exception&){rejected=true;}Require(rejected,why);}
 bool Near(float a,float b){return fabsf(a-b)<1.e-5f;}
+fixture::Bytes BudgetModel(uint32_t count,uint32_t index_count){
+    const fixture::Bytes base=capture_fixture::Model(1);const Span source=Chunk(View(base),3);
+    fixture::Bytes record(source.p+8,source.p+8+60),vertices,indices,out;
+    // A valid source TBN must survive the increased resident vertex stride.
+    fixture::Set(record,20,0x3f800000u);fixture::Set(record,24,0x3f800000u);fixture::Set(record,40,0x3f800000u);
+    vertices.reserve(8+size_t(count)*60);fixture::U32(vertices,0x12071980u);fixture::U32(vertices,count);
+    for(uint32_t i=0;i<count;++i)vertices.insert(vertices.end(),record.begin(),record.end());
+    indices.reserve(4+size_t(index_count)*2);fixture::U32(indices,index_count);
+    for(uint32_t i=0;i<index_count;++i)fixture::U16(indices,static_cast<uint16_t>(i%3));
+    for(uint32_t id=1;id<=2;++id){const Span data=Chunk(View(base),id);fixture::Chunk(out,id,fixture::Bytes(data.p,data.p+data.n));}
+    fixture::Chunk(out,3,vertices);fixture::Chunk(out,4,indices);return out;
+}
+void ModelBudgets(){
+    {const fixture::Bytes largest=BudgetModel(65536,3u*1024u*1024u);const std::shared_ptr<Mesh> mesh=Decode(View(largest));
+        Require(mesh->Bytes()==10u*1024u*1024u,"maximum formerly 8MiB model fits expanded G3c vertex layout");
+        Require(mesh->vertices.front().normal && mesh->vertices.front().tangent && mesh->vertices.front().binormal,"budget adjustment preserves source TBN");}
+    const fixture::Bytes large=BudgetModel(65536,6),rigid=capture_fixture::Model(0);
+    const uint64_t large_bytes=uint64_t(65536)*sizeof(SourceVertex)+12,rigid_bytes=3*sizeof(SourceVertex)+12;
+    KichR4_CaptureEnable(true);State* state=KichR4_CaptureState();state->native_models=true;KichR4_CaptureBeginFrame(800,600,1);
+    const uintptr_t count=static_cast<uintptr_t>((ModelRegistryBudgetBytes-rigid_bytes)/large_bytes);
+    for(uintptr_t i=1;i<=count;++i){KichR4_CaptureLoad(reinterpret_cast<void*>(i),large.data(),static_cast<uint32_t>(large.size()),"prefetched.ogf");
+        Require(state->models[reinterpret_cast<void*>(i)].mesh && state->models[reinterpret_cast<void*>(i)].error.empty(),"prefetch retains every model within expanded byte budget");}
+    Require(state->ModelBytes()==count*large_bytes && state->ModelBytes()>96u*1024u*1024u,"preload crosses old 96MiB cap with exact resident accounting");
+    void* base=reinterpret_cast<void*>(1);void* clone=reinterpret_cast<void*>(10000);void* decor=reinterpret_cast<void*>(10001);
+    void* rendered=reinterpret_cast<void*>(10002);void* rejected=reinterpret_cast<void*>(10003);
+    const Mesh* shared=state->models[base].mesh.get();KichR4_CaptureCopy(clone,base);KichR4_CaptureForget(base);
+    Require(state->ModelBytes()==count*large_bytes && state->models[clone].mesh.get()==shared,"clone is counted once and retains mesh after base removal");
+    KichR4_CaptureLoad(decor,rigid.data(),static_cast<uint32_t>(rigid.size()),"physics\\decor\\fire_vedro:1");KichR4_CaptureCopy(rendered,decor);
+    Require(state->models[rendered].mesh && state->models[rendered].error.empty(),"visible rigid model remains available after large preload");
+    uint32_t bones=99;Require(KichR4_CaptureModelNeeded(rendered,bones) && bones==0,"rigid model enters production frame route");
+    const Matrix identity=kich_r4_scene::Identity();ModelInput input={};input.visual=rendered;input.count=3;input.first=3;input.triangles=1;
+    memcpy(input.world,identity.m,sizeof(input.world));memcpy(input.vp,identity.m,sizeof(input.vp));
+    KichR4_CaptureHUD(true);KichR4_CaptureHUD(false);KichR4_CaptureSubmitModel(input);
+    Require(state->frame.Ready() && state->frame.native_models.size()==1 && state->frame.vertices.empty(),"preloaded save reaches a ready native frame without CPU expansion");
+    const uint64_t used=state->ModelBytes();KichR4_CaptureLoad(rejected,large.data(),static_cast<uint32_t>(large.size()),"overflow.ogf");
+    const Entry& failure=state->models[rejected];Require(!failure.mesh && !failure.error.empty() && state->ModelBytes()==used,"actual byte overflow drops candidate without damaging admitted meshes");
+    Require(failure.error.find("used=")!=std::string::npos && failure.error.find("requested=")!=std::string::npos && failure.error.find("limit=")!=std::string::npos,"budget error reports used requested and limit bytes");
+    Require(state->models[clone].mesh.get()==shared && state->frame.Ready(),"failed preload leaves clone and prepared frame intact");
+    KichR4_CaptureForget(clone);Require(state->ModelBytes()==used-large_bytes,"last registry owner releases its payload allowance");
+    KichR4_CaptureLoad(rejected,large.data(),static_cast<uint32_t>(large.size()),"replacement.ogf");
+    Require(state->models[rejected].mesh && state->models[rejected].error.empty() && state->ModelBytes()==used,"released allowance admits replacement and clears prior rejection");
+    const size_t registered=state->models.size();KichR4_CaptureBeginFrame(800,600,2);
+    Require(state->frame.native_models.empty() && state->models.size()==registered && state->ModelBytes()==used,"frame reset releases commands while preserving preload registry");
+    KichR4_CaptureEnable(false);
+}
 void Models(){for(unsigned weights=0;weights<3;++weights){const fixture::Bytes raw=capture_fixture::Model(weights);const std::shared_ptr<Mesh> mesh=Decode(View(raw));
     Require(mesh && mesh->vertices.size()==3 && mesh->indices.size()==6 && mesh->texture=="base","inline OGF positions/UV/material decoded");
     Require(mesh->skinned==(weights!=0) && (!weights || mesh->bones==2),"1W/2W bone IDs retained");
@@ -78,5 +123,5 @@ void ABI(){KichR4StreamDrawDesc d={};d.struct_size=sizeof(d);d.draw.struct_size=
         case 10:bad.scissor_enable=1;bad.scissor[2]=-1;break;case 11:bad.texture=0;break;}Require(!kich_r4::ValidStreamDraw(bad),"invalid stream state rejected before GPU calls");}
 }
 }
-int main(){try{Models();HUD();SnapshotCapture();ABI();printf("B4.3b OGF / skinning / stream ownership / state validation: %d checks passed\n",checks);return 0;}
+int main(){try{Models();ModelBudgets();HUD();SnapshotCapture();ABI();printf("B4.3b OGF / skinning / stream ownership / state validation: %d checks passed\n",checks);return 0;}
 catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}
