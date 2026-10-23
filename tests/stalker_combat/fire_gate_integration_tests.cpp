@@ -268,6 +268,52 @@ void test_visibility_shots_relay_and_weapon_budget()
     assert(npc.m_combat_suppression_shots == 2);
 }
 
+void test_final_shot_after_death_keeps_recoil_without_ai_memory()
+{
+    frame(1000);
+    CAI_Stalker npc;
+    CEntityAlive enemy(10);
+    CWeapon weapon(20);
+    equip_and_select(npc, enemy, weapon);
+    see(npc, enemy, 1000);
+    assert(npc.combat_fire_solution());
+    hide(npc, enemy);
+    frame(1100);
+    assert(npc.combat_fire_solution());
+    shoot(npc, weapon);
+    assert(npc.m_combat_suppression_shots == 1);
+    assert(npc.combat_fire_solution());
+    const unsigned memory_accesses = npc.memory_accesses;
+    const u32 gate_frame = npc.m_combat_fire_gate_frame;
+
+    // Death detaches squad sense storage while the clutched-hammer shot remains
+    // valid. Keep the old selected enemy, as death does not clear that manager.
+    npc.fixture_alive = false;
+    npc.fixture_memory_available = false;
+    shoot(npc, weapon);
+    assert(npc.memory_accesses == memory_accesses);
+    assert(npc.m_combat_suppression_shots == 1 && npc.m_combat_fire_gate_frame == gate_frame);
+    assert(npc.effector.calls == 2 && npc.effector.seed == npc.m_weapon_shot_random_seed);
+    assert(std::fabs(npc.effector.last_dispersion - .12f) < .0001f);
+}
+
+void test_shot_callback_without_matching_target()
+{
+    CAI_Stalker npc;
+    CEntityAlive other(11);
+    CWeapon weapon(20);
+    npc.items.active = &weapon;
+    npc.m_combat_fire_enemy_id = 10;
+    npc.m_combat_suppression_shots = 3;
+    npc.m_combat_fire_gate_frame = 77;
+    shoot(npc, weapon); // No selected enemy: recoil only.
+    assert(npc.m_combat_suppression_shots == 3 && npc.m_combat_fire_gate_frame == 77);
+    npc.memories.enemies.value = &other;
+    shoot(npc, weapon); // A different enemy must not consume the previous budget.
+    assert(npc.m_combat_suppression_shots == 3 && npc.m_combat_fire_gate_frame == 77);
+    assert(npc.effector.calls == 2);
+}
+
 void test_shared_only_load_and_ammo_reserve()
 {
     frame(1000);
@@ -325,6 +371,8 @@ int main()
     test_center_friend_sweep_and_blocked_timer();
     test_pitch_tolerance_and_hysteresis();
     test_visibility_shots_relay_and_weapon_budget();
+    test_final_shot_after_death_keeps_recoil_without_ai_memory();
+    test_shot_callback_without_matching_target();
     test_shared_only_load_and_ammo_reserve();
-    std::cout << "PASS: extracted stalker fire gate, target coordinates, visibility, budget, rays and cache\n";
+    std::cout << "PASS: extracted stalker fire gate, shot lifecycle, target coordinates, visibility, budget, rays and cache\n";
 }

@@ -213,8 +213,13 @@ public:
     Fvector fixture_direction = Fvector(0.f, 0.f, 1.f);
     RayResult rays[5];
     unsigned fire_param_calls = 0, ray_calls = 0, ray_index = 0;
-    FakeMemory& memory() { return memories; }
-    const FakeMemory& memory() const { return memories; }
+    bool fixture_alive = true, fixture_memory_available = true;
+    mutable unsigned memory_accesses = 0;
+    bool g_Alive() const { return fixture_alive; }
+    FakeMemory& memory()
+    { assert(fixture_memory_available); ++memory_accesses; return memories; }
+    const FakeMemory& memory() const
+    { assert(fixture_memory_available); ++memory_accesses; return memories; }
     FakeInventory& inventory() { return items; }
     const FakeInventory& inventory() const { return items; }
     CInventoryItem* best_weapon() { return items.active; }
