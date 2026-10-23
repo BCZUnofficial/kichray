@@ -783,6 +783,23 @@ void CStalkerActionLookOut::initialize()
 	object().brain().affect_cover(true);
 }
 
+// Danger-in-direction actions still use this externally linked helper, including
+// when no enemy is selected. Keep their eye-to-static-cover probe independent of
+// the combat firing solution used by CStalkerActionLookOut.
+float current_cover(CAI_Stalker* object)
+{
+	Fvector position, direction;
+	position = object->eye_matrix.c;
+	direction = object->eye_matrix.k;
+	collide::rq_result ray_query_result;
+	BOOL result = Level().ObjectSpace.RayPick(position, direction, 10.f, collide::rqtStatic, ray_query_result, NULL);
+
+	if (!result)
+		return (100.f);
+
+	return (ray_query_result.range);
+}
+
 void CStalkerActionLookOut::finalize()
 {
 	inherited::finalize();
