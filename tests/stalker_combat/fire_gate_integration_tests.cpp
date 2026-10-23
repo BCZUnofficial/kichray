@@ -89,7 +89,7 @@ void test_known_position_never_reads_hidden_entity()
 void test_chest_pose_and_occlusion()
 {
     CAI_Stalker npc; CEntityAlive enemy(19); CWeapon weapon(20); CKinematics skeleton;
-    equip_and_select(npc,enemy,weapon); enemy.human=true; enemy.skeleton=&skeleton;
+    equip_and_select(npc,enemy,weapon); enemy.human=true; enemy.renderable.visual=&skeleton;
     const float distances[]={.3f,.5f,1.f,2.f,5.f};
     for(float distance:distances) for(float elevation:{-2.f,0.f,2.f}) for(float height:{.8f,1.4f}) {
         see(npc,enemy,1000); enemy.live_position=Fvector(0,elevation,distance);
@@ -103,6 +103,13 @@ void test_chest_pose_and_occlusion()
     }
     see(npc,enemy,1200); skeleton.has_chest=false; enemy.center_height=.9f;
     Fvector point; assert(npc.combat_target_position(point,true));
+    assert(std::fabs(point.y-enemy.live_position.y-1.25f)<.0001f);
+    enemy.renderable.visual=nullptr;
+    assert(npc.combat_target_position(point,true));
+    assert(std::fabs(point.y-enemy.live_position.y-1.25f)<.0001f);
+    IRender_Visual non_skeletal;
+    enemy.renderable.visual=&non_skeletal;
+    assert(npc.combat_target_position(point,true));
     assert(std::fabs(point.y-enemy.live_position.y-1.25f)<.0001f);
 }
 

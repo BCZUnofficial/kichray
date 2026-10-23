@@ -57,7 +57,8 @@ struct CObject
 inline bool _valid(const Fvector& v) {return std::isfinite(v.x)&&std::isfinite(v.y)&&std::isfinite(v.z);}
 const u16 BI_NONE=u16(-1);
 struct BoneTransform {Fvector c;};
-struct CKinematics {
+struct IRender_Visual {virtual ~IRender_Visual() {}};
+struct CKinematics : IRender_Visual {
     virtual ~CKinematics() {}
     bool has_chest=true;
     BoneTransform chest;
@@ -88,9 +89,10 @@ struct CEntityAlive : CObject
     }
     Fvector live_position = Fvector(0.f, 0.f, 10.f);
     bool human=false;
-    CKinematics* skeleton=nullptr;
+    struct Renderable {IRender_Visual* visual=nullptr;} renderable;
     bool human_being() const {return human;}
-    CKinematics* Visual() const {assert(live_reads_allowed);return skeleton;}
+    // Match CObject: Visual() has no const overload; the stored pointer remains readable.
+    IRender_Visual* Visual() {assert(live_reads_allowed);return renderable.visual;}
     Transform XFORM() const {assert(live_reads_allowed);Transform t;t.c=live_position;return t;}
     float center_height = .9f;
     bool live_reads_allowed = false;

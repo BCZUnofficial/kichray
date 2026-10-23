@@ -834,7 +834,8 @@ bool CAI_Stalker::combat_target_position(Fvector& position, bool aim_point)
         if (enemy->human_being())
         {
             // Read the existing visible pose, never force bone evaluation or read a hidden pose.
-            CKinematics* skeleton = enemy->Visual() ? smart_cast<CKinematics*>(enemy->Visual()) : 0;
+            IRender_Visual* model = enemy->renderable.visual;
+            CKinematics* skeleton = model ? smart_cast<CKinematics*>(model) : 0;
             const u16 chest = skeleton ? skeleton->LL_BoneID("bip01_spine2") : BI_NONE;
             if (chest != BI_NONE)
             {
