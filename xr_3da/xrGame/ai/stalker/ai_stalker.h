@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include "../../stalker_combat_awareness_policy.h"
+
 #include "../../CustomMonster.h"
 #include "../../object_handler.h"
 #include "../../AI_PhraseDialogManager.h"
@@ -318,6 +320,8 @@ class CAI_Stalker : public CCustomMonster, public CObjectHandler, public CAI_Phr
 	u32 m_pick_frame_id;
 	Fvector m_combat_fire_position;
 	Fvector m_combat_fire_direction;
+	stalker_combat_awareness::Peripheral m_combat_peripheral;
+	Fvector m_combat_peripheral_point;
 	Fvector m_combat_target_offset;
 	u16 m_combat_target_offset_id;
 	u16 m_combat_fire_enemy_id;
@@ -345,6 +349,8 @@ class CAI_Stalker : public CCustomMonster, public CObjectHandler, public CAI_Phr
 	float pick_distance();
 	IC float start_pick_distance() const;
 	bool fire_make_sense();
+	void update_combat_peripheral();
+	bool combat_peripheral_look(Fvector& point);
 	bool combat_target_position(Fvector& position, bool aim_point = false);
 	bool combat_fire_solution();
 	u32 combat_fire_blocked_time() const;

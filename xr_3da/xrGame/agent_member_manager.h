@@ -10,6 +10,7 @@
 
 #include "member_order.h"
 #include "memory_space.h"
+#include "stalker_combat_awareness_policy.h"
 
 class CAgentManager;
 class CEntity;
@@ -28,6 +29,7 @@ class CAgentMemberManager
 	MEMBER_STORAGE m_combat_members;
 	bool m_actuality;
 	squad_mask_type m_combat_mask;
+    stalker_combat_awareness::ScoutLease m_scout;
 
   protected:
 	IC CAgentManager& object() const;
@@ -53,6 +55,9 @@ class CAgentMemberManager
 	IC const squad_mask_type& combat_mask() const;
 	squad_mask_type non_combat_members_mask() const;
 	MEMBER_STORAGE& combat_members();
+    bool claim_scout(const CAI_Stalker* member, u16 enemy, u32 now);
+    void release_scout(u16 member);
+    bool other_scout(u16 member, u16 enemy, u32 now) const;
 	u32 in_detour() const;
 	bool can_detour() const;
 	bool cover_detouring() const;

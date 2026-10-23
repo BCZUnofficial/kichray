@@ -1601,6 +1601,7 @@
     <ClInclude Include="stalker_base_action.h" />
     <ClInclude Include="stalker_combat_memory_utils.h" />
     <ClInclude Include="stalker_combat_cover_policy.h" />
+    <ClInclude Include="stalker_combat_awareness_policy.h" />
     <ClInclude Include="stalker_combat_fire_policy.h" />
     <ClInclude Include="stalker_combat_diagnostics.h" />
     <ClInclude Include="stalker_combat_trace_policy.h" />

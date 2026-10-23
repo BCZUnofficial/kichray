@@ -226,6 +226,13 @@ class CStalkerActionSearchEnemy : public CStalkerActionCombatBase
 	u32 m_search_stage;
 	bool m_search_has_anchor;
 	bool m_search_moving;
+    bool m_sneak_decided, m_sneak_active, m_sneak_arrived;
+    u32 m_sneak_started, m_sneak_arrival_time, m_sneak_hit_revision;
+    float m_sneak_health;
+    Fvector m_sneak_destination;
+    void stop_sneak(const char* reason);
+    bool try_sneak(u32 now, bool squad_visible);
+    bool update_sneak(u32 now);
 
   protected:
 	typedef CStalkerActionCombatBase inherited;

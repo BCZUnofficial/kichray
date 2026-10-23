@@ -86,6 +86,26 @@ void test_known_position_never_reads_hidden_entity()
     assert(second.position_reads == 0 && second.center_reads == 0);
 }
 
+void test_chest_pose_and_occlusion()
+{
+    CAI_Stalker npc; CEntityAlive enemy(19); CWeapon weapon(20); CKinematics skeleton;
+    equip_and_select(npc,enemy,weapon); enemy.human=true; enemy.skeleton=&skeleton;
+    const float distances[]={.3f,.5f,1.f,2.f,5.f};
+    for(float distance:distances) for(float elevation:{-2.f,0.f,2.f}) for(float height:{.8f,1.4f}) {
+        see(npc,enemy,1000); enemy.live_position=Fvector(0,elevation,distance);
+        skeleton.chest.c=Fvector(0,height,0); Fvector point;
+        assert(npc.combat_target_position(point,true));
+        assert(equal(point,Fvector(0,elevation+height,distance)));
+        hide(npc,enemy); skeleton.chest.c=Fvector(99,99,99);
+        snapshot(npc,enemy,Fvector(1,elevation,distance+1),1100);
+        assert(npc.combat_target_position(point,true));
+        assert(equal(point,Fvector(1,elevation+height,distance+1)));
+    }
+    see(npc,enemy,1200); skeleton.has_chest=false; enemy.center_height=.9f;
+    Fvector point; assert(npc.combat_target_position(point,true));
+    assert(std::fabs(point.y-enemy.live_position.y-1.25f)<.0001f);
+}
+
 void test_absent_inputs_and_same_frame_identity_changes()
 {
     frame(1000);
@@ -367,6 +387,7 @@ void test_shared_only_load_and_ammo_reserve()
 int main()
 {
     test_known_position_never_reads_hidden_entity();
+    test_chest_pose_and_occlusion();
     test_absent_inputs_and_same_frame_identity_changes();
     test_center_friend_sweep_and_blocked_timer();
     test_pitch_tolerance_and_hysteresis();

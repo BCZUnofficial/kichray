@@ -42,6 +42,8 @@
 #include "ai_space.h"
 #include "agent_manager.h"
 #include "stalker_combat_cover_policy.h"
+#include "hit_memory_manager.h"
+#include "entitycondition.h"
 #include "stalker_combat_diagnostics.h"
 
 #define DISABLE_COVER_BEFORE_DETOUR
@@ -283,7 +285,9 @@ void CStalkerActionMakeItemKilling::execute()
 	object().movement().set_detail_path_type(DetailPathManager::eDetailPathTypeSmooth);
 	object().movement().set_body_state(eBodyStateStand);
 	object().movement().set_movement_type(eMovementTypeWalk);
-	object().sight().action(eSightActionTypeWatchEnemy).set_vector3d(object().memory().enemy().selected()->Position());
+    Fvector known;
+    if (object().combat_target_position(known, true))
+        object().sight().setup(CSightAction(SightManager::eSightTypePosition, known, true));
 	object().set_goal(eObjectActionIdle);
 }
 
@@ -1040,6 +1044,7 @@ CStalkerActionSearchEnemy::CStalkerActionSearchEnemy(CAI_Stalker* object, LPCSTR
 void CStalkerActionSearchEnemy::initialize()
 {
 	inherited::initialize();
+    m_sneak_decided = m_sneak_active = m_sneak_arrived = false;
     m_search_has_anchor = false;
     m_search_moving = false;
     m_search_started = Device.dwTimeGlobal;
@@ -1062,21 +1067,114 @@ void CStalkerActionSearchEnemy::initialize()
 
 void CStalkerActionSearchEnemy::finalize()
 {
+    stop_sneak("sneak_finalize");
 	inherited::finalize();
+}
+
+void CStalkerActionSearchEnemy::stop_sneak(const char* reason)
+{
+    if (!object().g_Alive()) { m_sneak_active = false; return; }
+    object().agent_manager().member().release_scout(object().ID());
+    if (!m_sneak_active) return;
+    m_sneak_active = false;
+    object().movement().set_body_state(eBodyStateStand);
+    object().movement().set_nearest_accessible_position();
+    object().movement().set_movement_type(eMovementTypeStand);
+    m_search_anchor = object().Position();
+    m_search_stage = 1;
+    m_search_stage_time = Device.dwTimeGlobal;
+    m_search_moving = false;
+    if (stalker_combat_diagnostics::enabled(object().ID()))
+        stalker_combat_diagnostics::log(object().ID(), stalker_combat_diagnostics::action,
+            reason, "enemy=%u elapsed_ms=%u", u32(m_search_enemy_id), Device.dwTimeGlobal - m_sneak_started);
+}
+
+bool CStalkerActionSearchEnemy::try_sneak(u32 now, bool squad_visible)
+{
+    if (m_sneak_decided) return false;
+    m_sneak_decided = true;
+    CAgentMemberManager& members = object().agent_manager().member();
+    const bool grouped = members.group_behaviour();
+    const CDangerObject* danger = object().memory().danger().selected();
+    const bool unsafe = object().wounded() || object().critically_wounded() ||
+        (danger && danger->type() == CDangerObject::eDangerTypeGrenade);
+    if (!stalker_combat_awareness::sneak_candidate(now - m_search_memory_time,
+        object().Position().distance_to_sqr(m_search_anchor), squad_visible, unsafe,
+        object().ID(), m_search_memory_time, grouped)) return false;
+    Fvector away;
+    away.sub(object().Position(), m_search_anchor);
+    away.y = 0.f;
+    away.normalize_safe();
+    Fvector requested;
+    requested.mad(m_search_anchor, away, 4.f);
+    u32 vertex;
+    if (!stalker_local_destination(object(), requested, m_sneak_destination, vertex) ||
+        !stalker_local_space(object(), m_sneak_destination, vertex, true)) return false;
+    if (grouped && !members.claim_scout(&object(), m_search_enemy_id, now)) return false;
+    m_sneak_active = true;
+    m_sneak_arrived = false;
+    m_sneak_started = now;
+    m_sneak_hit_revision = object().memory().hit().recent_hit_revision();
+    m_sneak_health = object().conditions().health();
+    object().movement().set_level_dest_vertex(vertex);
+    object().movement().set_desired_position(&m_sneak_destination);
+    object().movement().set_body_state(eBodyStateCrouch);
+    object().movement().set_movement_type(eMovementTypeWalk);
+    if (stalker_combat_diagnostics::enabled(object().ID()))
+        stalker_combat_diagnostics::log(object().ID(), stalker_combat_diagnostics::action,
+            "sneak_start", "enemy=%u memory_ms=%u grouped=%u", u32(m_search_enemy_id), now - m_search_memory_time, u32(grouped));
+    return true;
+}
+
+bool CStalkerActionSearchEnemy::update_sneak(u32 now)
+{
+    if (!m_sneak_active) return false;
+    const CDangerObject* danger = object().memory().danger().selected();
+    const bool unsafe = object().wounded() || object().critically_wounded() ||
+        object().conditions().health() < m_sneak_health ||
+        object().memory().hit().recent_hit_revision() != m_sneak_hit_revision ||
+        (danger && danger->type() == CDangerObject::eDangerTypeGrenade);
+    const bool lease_lost = object().agent_manager().member().group_behaviour() &&
+        !object().agent_manager().member().claim_scout(&object(), m_search_enemy_id, now);
+    if (unsafe || lease_lost || now - m_sneak_started >= 6000u ||
+        (now - m_sneak_started >= 250u && object().movement().level_path().failed()))
+    {
+        stop_sneak(unsafe ? "sneak_threat" : "sneak_timeout_or_path");
+        return true; // Do not overwrite the cancellation with a new move in this tick.
+    }
+    Fvector look = m_search_observed_position;
+    look.y += 1.f;
+    object().sight().setup(CSightAction(SightManager::eSightTypePosition, look, true));
+    if (!m_sneak_arrived && (object().Position().distance_to_sqr(m_sneak_destination) <= .64f ||
+        (now - m_sneak_started >= 250u && object().movement().path_completed())))
+    {
+        if (object().Position().distance_to_sqr(m_sneak_destination) > 2.25f)
+        {
+            stop_sneak("sneak_unreachable");
+            return true;
+        }
+        m_sneak_arrived = true;
+        m_sneak_arrival_time = now;
+        object().movement().set_nearest_accessible_position();
+        object().movement().set_movement_type(eMovementTypeStand);
+    }
+    if (m_sneak_arrived && now - m_sneak_arrival_time >= 1000u) stop_sneak("sneak_inspected");
+    return true;
 }
 
 void CStalkerActionSearchEnemy::execute()
 {
     inherited::execute();
     const CEntityAlive* enemy = object().memory().enemy().selected();
-    if (!enemy) return;
+    if (!enemy) { stop_sneak("sneak_no_enemy"); return; }
     if (object().memory().visual().visible_now(enemy))
     {
+        stop_sneak("sneak_visible");
         object().movement().set_movement_type(eMovementTypeStand);
         return; // The planner returns to visible-target combat without disabling memory.
     }
     const CMemoryInfo memory = object().memory().memory(enemy);
-    if (!memory.m_object) return;
+    if (!memory.m_object) { stop_sneak("sneak_no_memory"); return; }
     const CVisibleObject* visual = object().memory().visual().visible_object(enemy);
     const bool squad_visible = visual && visual->visible(squad_mask_type(-1));
     const u32 now = Device.dwTimeGlobal;
@@ -1094,6 +1192,8 @@ void CStalkerActionSearchEnemy::execute()
     }
     if (changed_position)
     {
+        stop_sneak("sneak_report_changed");
+        if (new_enemy) m_sneak_decided = false;
         m_search_anchor = memory.m_object_params.m_position;
         m_search_observed_position = m_search_anchor;
         m_search_enemy_id = enemy->ID();
@@ -1106,7 +1206,20 @@ void CStalkerActionSearchEnemy::execute()
         m_search_stage = 0;
         m_search_has_anchor = true;
         m_search_moving = true;
-        if (object().movement().accessible(m_search_vertex) && object().movement().accessible(m_search_anchor))
+        if (try_sneak(now, squad_visible))
+        {
+            update_sneak(now);
+            return;
+        }
+        else if (object().agent_manager().member().other_scout(object().ID(), enemy->ID(), now))
+        {
+            // Search around our own position instead of following the assigned scout.
+            m_search_anchor = object().Position();
+            m_search_stage = 1;
+            m_search_moving = false;
+            object().movement().set_nearest_accessible_position();
+        }
+        else if (object().movement().accessible(m_search_vertex) && object().movement().accessible(m_search_anchor))
         {
             object().movement().set_level_dest_vertex(m_search_vertex);
             object().movement().set_desired_position(&m_search_anchor);
@@ -1114,6 +1227,7 @@ void CStalkerActionSearchEnemy::execute()
         else object().movement().set_nearest_accessible_position(m_search_anchor, m_search_vertex);
         object().movement().set_movement_type(eMovementTypeWalk);
     }
+    if (update_sneak(now)) return;
     const u32 report_age = now - m_search_started;
     if (stalker_combat_cover_policy::finish_search(report_age, m_search_stage > 3, squad_visible))
     {

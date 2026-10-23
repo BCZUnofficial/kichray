@@ -252,6 +252,16 @@ void CAgentEnemyManager::assign_enemies()
 	}
 }
 
+namespace
+{
+float stalker_known_enemy_distance(CAI_Stalker& member, const CEntityAlive* enemy)
+{
+    const CMemoryInfo known = member.memory().memory(enemy);
+    if (!known.m_object) return flt_max;
+    return member.Position().distance_to(known.m_object_params.m_position);
+}
+}
+
 void CAgentEnemyManager::permutate_enemies()
 {
 	// filling member enemies
@@ -302,7 +312,7 @@ void CAgentEnemyManager::permutate_enemies()
 			if ((*I)->processed())
 				continue;
 
-			float best = (*I)->object().Position().distance_to(m_enemies[(*I)->selected_enemy()].m_object->Position());
+			float best = stalker_known_enemy_distance((*I)->object(), m_enemies[(*I)->selected_enemy()].m_object);
 			bool found = false;
 			xr_vector<u32>::const_iterator i = (*I)->enemies().begin();
 			xr_vector<u32>::const_iterator e = (*I)->enemies().end();
@@ -310,7 +320,7 @@ void CAgentEnemyManager::permutate_enemies()
 			{
 				if ((*I)->selected_enemy() == *i)
 					continue;
-				float my_distance = (*I)->object().Position().distance_to(m_enemies[*i].m_object->Position());
+				float my_distance = stalker_known_enemy_distance((*I)->object(), m_enemies[*i].m_object);
 				if (my_distance < best)
 				{
 					// check if we can exchange enemies
@@ -328,7 +338,7 @@ void CAgentEnemyManager::permutate_enemies()
 
 						// check if I'm closer to the enemy
 						float member_distance =
-							(*j)->object().Position().distance_to(m_enemies[*i].m_object->Position());
+							stalker_known_enemy_distance((*j)->object(), m_enemies[*i].m_object);
 						if (member_distance <= my_distance)
 							continue;
 

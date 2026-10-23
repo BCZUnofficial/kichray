@@ -20,10 +20,13 @@ template <class T> T _max(T a, T b) { return std::max(a, b); }
 template <class T> T _min(T a, T b) { return std::min(a, b); }
 template <class T, class U> T smart_cast(U* value) { return dynamic_cast<T>(value); }
 
+inline float clampr(float x,float a,float b) {return std::max(a,std::min(x,b));}
 struct Fvector
 {
     float x, y, z;
     Fvector(float ax = 0.f, float ay = 0.f, float az = 0.f) : x(ax), y(ay), z(az) {}
+    Fvector& set(float a,float b,float c) {x=a;y=b;z=c;return *this;}
+    float distance_to_sqr(const Fvector& v) const {return (x-v.x)*(x-v.x)+(y-v.y)*(y-v.y)+(z-v.z)*(z-v.z);}
     Fvector& sub(const Fvector& a, const Fvector& b)
     { x = a.x - b.x; y = a.y - b.y; z = a.z - b.z; return *this; }
     Fvector& add(const Fvector& a) { x += a.x; y += a.y; z += a.z; return *this; }
@@ -51,6 +54,20 @@ struct CObject
     u16 object_id;
 };
 
+inline bool _valid(const Fvector& v) {return std::isfinite(v.x)&&std::isfinite(v.y)&&std::isfinite(v.z);}
+const u16 BI_NONE=u16(-1);
+struct BoneTransform {Fvector c;};
+struct CKinematics {
+    virtual ~CKinematics() {}
+    bool has_chest=true;
+    BoneTransform chest;
+    u16 LL_BoneID(const char*) {return has_chest?0:BI_NONE;}
+    const BoneTransform& LL_GetTransform(u16) {return chest;}
+};
+struct Transform {
+    Fvector c;
+    void transform_tiny(Fvector& p,const Fvector& local) const {p=local;p.add(c);}
+};
 struct CEntityAlive : CObject
 {
     explicit CEntityAlive(u16 id) : CObject(id) {}
@@ -70,6 +87,11 @@ struct CEntityAlive : CObject
         result.y += center_height;
     }
     Fvector live_position = Fvector(0.f, 0.f, 10.f);
+    bool human=false;
+    CKinematics* skeleton=nullptr;
+    bool human_being() const {return human;}
+    CKinematics* Visual() const {assert(live_reads_allowed);return skeleton;}
+    Transform XFORM() const {assert(live_reads_allowed);Transform t;t.c=live_position;return t;}
     float center_height = .9f;
     bool live_reads_allowed = false;
     mutable unsigned position_reads = 0;

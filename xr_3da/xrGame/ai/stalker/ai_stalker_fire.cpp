@@ -51,6 +51,7 @@
 #include "../../script_game_object.h"
 #include "../../inventory.h"
 #include "../../stalker_combat_fire_policy.h"
+#include "../../danger_manager.h"
 #include "../../stalker_combat_diagnostics.h"
 
 using namespace StalkerSpace;
@@ -727,6 +728,97 @@ void CAI_Stalker::update_range_fov(float& new_range, float& new_fov, float start
 	return (inherited::update_range_fov(new_range, new_fov, range, fov));
 }
 
+bool CAI_Stalker::combat_peripheral_look(Fvector& point)
+{
+    if (!m_combat_peripheral.looking(Device.dwTimeGlobal)) return false;
+    if (!g_Alive() || GetScriptControl() || wounded() || critically_wounded() || IsTalking() ||
+        !animation().script_animations().empty())
+    {
+        m_combat_peripheral.active = false;
+        return false;
+    }
+    const CEntityAlive* enemy = memory().enemy().selected();
+    const CDangerObject* danger = memory().danger().selected();
+    if ((danger && danger->type() == CDangerObject::eDangerTypeGrenade) ||
+        (enemy && memory().visual().visible_now(enemy)))
+    {
+        m_combat_peripheral.active = false;
+        return false;
+    }
+    point = m_combat_peripheral_point;
+    return true;
+}
+
+void CAI_Stalker::update_combat_peripheral()
+{
+    const u32 now = Device.dwTimeGlobal;
+    if (!g_Alive() || GetScriptControl() || wounded() || critically_wounded() || IsTalking() ||
+        !animation().script_animations().empty())
+    {
+        m_combat_peripheral = stalker_combat_awareness::Peripheral();
+        return;
+    }
+    if (!m_combat_peripheral.due(now)) return;
+    const CEntityAlive* enemy = memory().enemy().selected();
+    const CDangerObject* danger = memory().danger().selected();
+    if ((enemy && memory().visual().visible_now(enemy)) ||
+        (danger && danger->type() == CDangerObject::eDangerTypeGrenade))
+    {
+        m_combat_peripheral.pending = m_combat_peripheral.active = false;
+        return;
+    }
+    if (m_combat_peripheral.reacted && now - m_combat_peripheral.looked < 2500u) return;
+
+    xr_vector<CObject*> nearby;
+    Level().ObjectSpace.GetNearest(nearby, Position(), 3.f, this);
+    Fvector forward = eye_matrix.k;
+    forward.y = 0.f;
+    forward.normalize_safe();
+    float best = 9.f;
+    u16 candidate = u16(-1);
+    Fvector point;
+    u32 rays = 0;
+    for (u32 i = 0; i < nearby.size(); ++i)
+    {
+        CEntityAlive* other = smart_cast<CEntityAlive*>(nearby[i]);
+        if (!other || !other->g_Alive() || !is_relation_enemy(other) ||
+            memory().visual().visible_now(other) || other->ps_Size() < 2) continue;
+        const CObject::SavedPosition a = other->ps_Element(other->ps_Size() - 2);
+        const CObject::SavedPosition b = other->ps_Element(other->ps_Size() - 1);
+        const u32 dt = b.dwTime - a.dwTime;
+        if (!dt || dt > 1000u) continue;
+        const float speed_sqr = b.vPosition.distance_to_xz_sqr(a.vPosition) * 1000000.f / (float(dt) * float(dt));
+        Fvector direction;
+        direction.sub(other->Position(), Position());
+        const float distance_sqr = direction.square_magnitude();
+        if (distance_sqr > best) continue;
+        direction.y = 0.f;
+        direction.normalize_safe();
+        if (!stalker_combat_awareness::peripheral_motion(distance_sqr, forward.dotproduct(direction),
+            speed_sqr, now - b.dwTime)) continue;
+        Fvector seen;
+        other->Center(seen);
+        direction.sub(seen, eye_matrix.c);
+        const float distance = direction.magnitude();
+        if (distance < EPS_L) continue;
+        direction.div(distance);
+        collide::rq_result hit;
+        const bool blocked = Level().ObjectSpace.RayPick(eye_matrix.c, direction, distance,
+            collide::rqtBoth, hit, this) && hit.O != other;
+        ++rays;
+        if (!blocked) { best = distance_sqr; candidate = other->ID(); point = seen; }
+        if (rays == 4u) break;
+    }
+    if (m_combat_peripheral.observe(now, candidate, candidate != u16(-1)))
+    {
+        // A fixed glance, not an enemy observation: no memory insertion, target assignment or firing.
+        m_combat_peripheral_point = point;
+        if (stalker_combat_diagnostics::enabled(ID()))
+            stalker_combat_diagnostics::log(ID(), stalker_combat_diagnostics::action,
+                "peripheral_glance", "candidate=%u distance=%.2f sight_confirmation_required=1", u32(candidate), _sqrt(best));
+    }
+}
+
 bool CAI_Stalker::combat_target_position(Fvector& position, bool aim_point)
 {
     const CEntityAlive* enemy = memory().enemy().selected();
@@ -739,6 +831,19 @@ bool CAI_Stalker::combat_target_position(Fvector& position, bool aim_point)
         position = enemy->Position();
         Fvector center;
         enemy->Center(center);
+        if (enemy->human_being())
+        {
+            // Read the existing visible pose, never force bone evaluation or read a hidden pose.
+            CKinematics* skeleton = enemy->Visual() ? smart_cast<CKinematics*>(enemy->Visual()) : 0;
+            const u16 chest = skeleton ? skeleton->LL_BoneID("bip01_spine2") : BI_NONE;
+            if (chest != BI_NONE)
+            {
+                Fvector point;
+                enemy->XFORM().transform_tiny(point, skeleton->LL_GetTransform(chest).c);
+                if (_valid(point) && point.distance_to_sqr(center) < 2.25f) center = point;
+            }
+            else center.y += clampr((center.y - position.y) * .45f, 0.f, .35f);
+        }
         m_combat_target_offset.sub(center, position);
         m_combat_target_offset_id = enemy->ID();
     }
@@ -832,6 +937,7 @@ bool CAI_Stalker::combat_fire_solution()
 
     u8 reason = combat_fire_none;
     Fvector target_position;
+    target_position.set(0.f, 0.f, 0.f);
     if (!enemy || !combat_target_position(target_position, true))
         reason = combat_fire_no_target;
     else if (!weapon)
@@ -884,9 +990,12 @@ bool CAI_Stalker::combat_fire_solution()
 
     if (stalker_combat_diagnostics::enabled(ID()))
         stalker_combat_diagnostics::log(ID(), stalker_combat_diagnostics::fire, combat_fire_block_reason(),
-            "target=%u visible=%u age_ms=%u suppression_shots=%u center=%.2f blocked_ms=%u",
+            "target=%u visible=%u age_ms=%u suppression_shots=%u center=%.2f blocked_ms=%u aim=(%.2f,%.2f,%.2f) origin=(%.2f,%.2f,%.2f) shot=(%.3f,%.3f,%.3f)",
             u32(enemy_id), u32(visible), seen == u32(-1) ? u32(-1) : Device.dwTimeGlobal - seen,
-            m_combat_suppression_shots, m_combat_center_pick_distance, combat_fire_blocked_time());
+            m_combat_suppression_shots, m_combat_center_pick_distance, combat_fire_blocked_time(),
+            target_position.x, target_position.y, target_position.z,
+            m_combat_fire_position.x, m_combat_fire_position.y, m_combat_fire_position.z,
+            m_combat_fire_direction.x, m_combat_fire_direction.y, m_combat_fire_direction.z);
     return m_combat_fire_allowed;
 }
 

@@ -12,7 +12,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", help="also verify the change stays inside the stalker AI scope")
     args = parser.parse_args()
-    for name in ("memory", "cover", "cover_integration", "current_cover", "action_recovery", "fire", "diagnostics", "lua"):
+    for name in ("memory", "cover", "cover_integration", "current_cover", "action_recovery", "fire", "awareness", "diagnostics", "lua"):
         runner = HERE / f"run_{name}_tests.py"
         subprocess.run([sys.executable, str(runner)], check=True)
     if args.base:

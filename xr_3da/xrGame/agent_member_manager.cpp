@@ -62,6 +62,7 @@ void CAgentMemberManager::remove(CEntity* member)
 	if (registered_in_combat(stalker))
 		unregister_in_combat(stalker);
 
+    release_scout(stalker->ID());
 	squad_mask_type m = mask(stalker);
 	object().memory().update_memory_masks(m);
 	object().memory().update_memory_mask(m, m_combat_mask);
@@ -78,6 +79,7 @@ void CAgentMemberManager::update()
 
 void CAgentMemberManager::remove_links(CObject* object)
 {
+    m_scout.remove(object->ID());
 	MEMBER_STORAGE::iterator I = m_members.begin();
 	MEMBER_STORAGE::iterator E = m_members.end();
 	for (; I != E; ++I)
@@ -120,6 +122,7 @@ void CAgentMemberManager::register_in_combat(const CAI_Stalker* object)
 
 void CAgentMemberManager::unregister_in_combat(const CAI_Stalker* object)
 {
+    release_scout(object->ID());
 	//	if (!object->group_behaviour()) {
 	//		VERIFY					(!registered_in_combat(object));
 	//		return;
@@ -177,6 +180,16 @@ CAgentMemberManager::squad_mask_type CAgentMemberManager::non_combat_members_mas
 	}
 
 	return (result);
+}
+
+bool CAgentMemberManager::claim_scout(const CAI_Stalker* member, u16 enemy, u32 now)
+{
+    return member->g_Alive() && registered_in_combat(member) && m_scout.claim(member->ID(), enemy, now);
+}
+void CAgentMemberManager::release_scout(u16 member) { m_scout.release(member); }
+bool CAgentMemberManager::other_scout(u16 member, u16 enemy, u32 now) const
+{
+    return m_scout.active(now) && m_scout.enemy == enemy && m_scout.owner != member;
 }
 
 u32 CAgentMemberManager::in_detour() const

@@ -85,14 +85,14 @@ void CSightManager::SetFirePointLookAngles(const Fvector& tPosition, float& yaw,
 	else
 	{
 		Fvector my_position;
-		if (m_object->eye_matrix.c.distance_to_xz_sqr(tPosition) < .1f)
-			my_position = m_object->Position();
-		else
-			my_position = m_object->eye_matrix.c;
+        // Combat position sights and the standing/crouched shot use the same eye origin.
+        // Switching to the feet below 32 cm inverted close-range pitch.
+        my_position = m_object->eye_matrix.c;
 
 		tTemp.sub(tPosition, my_position);
 	}
 
+    if (tTemp.square_magnitude() < EPS_L) tTemp = m_object->eye_matrix.k;
 	tTemp.getHP(yaw, pitch);
 	VERIFY(_valid(yaw));
 	VERIFY(_valid(pitch));
@@ -379,6 +379,10 @@ void CSightManager::update()
 		//%f,%f",Device.dwTimeGlobal,object().movement().m_head.target.yaw,object().movement().m_head.target.pitch);
 
 		inherited::update();
+        Fvector peripheral;
+        if (object().combat_peripheral_look(peripheral))
+            SetPointLookAngles(peripheral, object().movement().m_head.target.yaw,
+                object().movement().m_head.target.pitch);
 	}
 	STOP_PROFILE
 }

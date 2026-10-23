@@ -154,6 +154,8 @@ void CAI_Stalker::reinit()
 	m_pick_frame_id = u32(-1);
 	m_combat_fire_position.set(0.f, 0.f, 0.f);
 	m_combat_fire_direction.set(0.f, 0.f, 1.f);
+	m_combat_peripheral = stalker_combat_awareness::Peripheral();
+	m_combat_peripheral_point.set(0.f, 0.f, 0.f);
 	m_combat_target_offset.set(0.f, .9f, 0.f);
 	m_combat_target_offset_id = u16(-1);
 	m_combat_fire_enemy_id = u16(-1);
@@ -868,6 +870,7 @@ void CAI_Stalker::shedule_Update(u32 DT)
 			if (Device.dwFrame > (spawn_time() + g_AI_inactive_time))
 #endif
 			Think();
+		update_combat_peripheral();
 		m_dwLastUpdateTime = Device.dwTimeGlobal;
 		Device.Statistic->AI_Think.End();
 		VERIFY(_valid(Position()));
