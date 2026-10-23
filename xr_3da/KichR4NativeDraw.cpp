@@ -10,6 +10,7 @@
 #include "KichR4LevelOption.h"
 #include "KichR4DetailData.h"
 #include "KichR4MaterialRules.h"
+#include "KichR4OpticalRules.h"
 #include "KichR4MaterialServices.h"
 #include "RenderSnapshot.h"
 #include <map>
@@ -18,6 +19,7 @@
 
 namespace {
 bool selected=false,menu_pp=false,menu_overlay=false,distortion_enabled=true;
+bool celestial_source=false;
 std::chrono::steady_clock::time_point queue_begin;
 uint32_t states[256]={};
 kich_r4_capture::Style style;
@@ -87,6 +89,7 @@ bool KichR4_NativeDistortionEnabled(){return distortion_enabled;}
 void KichR4_NativeSetState(uint32_t key,uint32_t value){if(key<256)states[key]=value;}
 uint32_t KichR4_NativeGetState(uint32_t key){return key<256?states[key]:0;}
 void KichR4_NativeMenuPP(bool enabled){if(menu_pp && !enabled)menu_overlay=true;menu_pp=enabled;}
+void KichR4_NativeCelestialSource(bool enabled){celestial_source=enabled;}
 void KichR4_NativeViewport(float a,float b){style.min_z=a;style.max_z=b;}
 void KichR4_NativeScissor(const int* p){style.scissor=p!=NULL;if(p)memcpy(style.rect,p,sizeof(style.rect));}
 bool KichR4_NativeStyle(kich_r4_capture::Style& out){out=style;out.blend=states[D3DRS_ALPHABLENDENABLE]!=0;out.src=states[D3DRS_SRCBLEND];out.dst=states[D3DRS_DESTBLEND];
@@ -112,7 +115,7 @@ void KichR4_NativeModelMaterial(kich_r4_capture::ModelInput& input){
     }catch(...){KichR4_CaptureFail("G3c model material snapshot failed");}
 }
 double KichR4_NativeQueueTime(){return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-queue_begin).count();}
-void KichR4_NativeBegin(uint32_t width,uint32_t height,uint32_t frame){menu_pp=menu_overlay=false;queue_begin=std::chrono::steady_clock::now();memset(states,0,sizeof(states));style=kich_r4_capture::Style();states[D3DRS_ZENABLE]=states[D3DRS_ZWRITEENABLE]=1;
+void KichR4_NativeBegin(uint32_t width,uint32_t height,uint32_t frame){celestial_source=false;menu_pp=menu_overlay=false;queue_begin=std::chrono::steady_clock::now();memset(states,0,sizeof(states));style=kich_r4_capture::Style();states[D3DRS_ZENABLE]=states[D3DRS_ZWRITEENABLE]=1;
     KichR4_DetailFrame().ClearFrame(frame);active_material=NULL;
     states[D3DRS_CULLMODE]=D3DCULL_CCW;states[D3DRS_SRCBLEND]=D3DBLEND_SRCALPHA;states[D3DRS_DESTBLEND]=D3DBLEND_INVSRCALPHA;states[D3DRS_ALPHAFUNC]=D3DCMP_GREATER;
     states[D3DRS_COLORWRITEENABLE]=15;states[255]=D3DTADDRESS_WRAP;effect=0;source_element=UINT32_MAX;source_pass=0;active_shader.clear();model_texture.clear();model_secondary.clear();memset(textures,0,sizeof(textures));
@@ -208,6 +211,7 @@ void KichR4_NativeDraw(void* declaration,void* vb,void* ib,uint32_t stride,uint3
             else{Transform(xyz,mvp,out.p);float w[4];Transform(xyz,world,w);memcpy(out.world,w,12);out.uv[0]=u;out.uv[1]=v;out.color=RGBA(argb);out.normal[3]=1;
                 if(normal && (normal->Type==D3DDECLTYPE_FLOAT3 || normal->Type==D3DDECLTYPE_FLOAT4 || normal->Type==D3DDECLTYPE_D3DCOLOR)){Check(normal->Offset+(normal->Type==D3DDECLTYPE_D3DCOLOR?4u:12u)<=stride,"native normal offset");const unsigned char* np=p+normal->Offset;const kich_r4_scene::Vec3 vector=normal->Type==D3DDECLTYPE_D3DCOLOR?kich_r4_scene::Vec3{np[2]*(2.f/255)-1,np[1]*(2.f/255)-1,np[0]*(2.f/255)-1}:kich_r4_scene::Vec3{Float(np),Float(np+4),Float(np+8)};if(normal->Type==D3DDECLTYPE_D3DCOLOR)out.normal[3]=np[3]/255.f;const kich_r4_scene::Vec3 result=kich_r4_scene::Normalize(kich_r4_lighting::Direction(vector,nm));out.normal[0]=result.x;out.normal[1]=result.y;out.normal[2]=result.z;}
                 for(unsigned j=0;j<4;++j)Check(Finite(out.p[j]),"native clip position");}
+            if(celestial_source && !screen)kich_r4_optics::SkyDepth(out.p);
             if(effect==2 && uv && !screen && uv->Type==D3DDECLTYPE_FLOAT3){out.normal[0]=u;out.normal[1]=v;out.normal[2]=Float(p+uv->Offset+8);}
             if(effect==3 && !screen){const float t=Device.fTimeGlobal;const float d0x=((argb>>16)&255)*(2.f/255)-1,d0y=((argb>>8)&255)*(2.f/255)-1,d1x=((argb>>24)&255)*(2.f/255)-1,d1y=(argb&255)*(2.f/255)-1;
                 out.uv[0]=xyz[0]*.7f+d0x*t*.01f;out.uv[1]=xyz[2]*.7f+d0y*t*.01f;out.normal[0]=xyz[0]*2.8f+d1x*t*.005f;out.normal[1]=xyz[2]*2.8f+d1y*t*.005f;
@@ -224,13 +228,14 @@ void KichR4_NativeDraw(void* declaration,void* vb,void* ib,uint32_t stride,uint3
                 Vertex quad[4]={va,va,vbv,vbv};for(unsigned j=0;j<4;++j){const float sign=j&1?1.f:-1.f;quad[j].p[0]+=sign*x*quad[j].p[3];quad[j].p[1]+=sign*y*quad[j].p[3];batch.vertices.push_back(quad[j]);}
                 const uint32_t ix[]={0,1,2,2,1,3};for(unsigned j=0;j<6;++j)batch.indices.push_back(q+ix[j]);}}
         Command cmd={ibase,static_cast<uint32_t>(batch.indices.size())-ibase,layer,texture,draw};cmd.effect=screen && menu_pp?7:screen && menu_overlay?8:effect;cmd.secondary=secondary;
+        if(celestial_source && !screen){cmd.effect=kich_r4_optics::CelestialSource;kich_r4_optics::SkyStyle(cmd.style);}
         cmd.semantic=CapturedSemantic(screen,effect);cmd.captured_vertices=static_cast<uint32_t>(batch.vertices.size())-vbase;
         cmd.shader=active_shader;cmd.shader_element=source_element;cmd.shader_pass=source_pass;
         if(g_render_snapshot_active){cmd.resource=texture;cmd.skin="CPU_CAPTURE_STREAM";}
         cmd.console=g_render_snapshot_console;
         if(effect==2){cmd.style.depth=1;cmd.style.write=0;cmd.style.cull=KICH_R4_CULL_NONE;}
         SnapshotGeneratedGeometry(decl,dn,stride,topology,vertices,reused,normal,tangent,binormal,uv,batch,vbase,world,nm,screen,cmd);
-        SnapshotCommand(cmd,batch.vertices,batch.indices,screen?"UI_GEOMETRY":"UNKNOWN",NULL,0,uv!=NULL);
+        SnapshotCommand(cmd,batch.vertices,batch.indices,celestial_source && !screen?"CELESTIAL_SOURCE":screen?"UI_GEOMETRY":"UNKNOWN",NULL,0,uv!=NULL);
         batch.commands.push_back(cmd);if(layer==2)++batch.ui;else if(layer==1)++batch.hands;else ++batch.models;
         (void)vertex_count;
     }catch(const std::exception& e){state->frame.Fail(e.what());}

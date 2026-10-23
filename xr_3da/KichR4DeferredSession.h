@@ -10,6 +10,7 @@
 #include "KichR4ModelSession.h"
 #include "KichR4Visibility.h"
 #include "KichR4MaterialSession.h"
+#include "KichR4OpticalRules.h"
 #include <set>
 /* EXE-side pass planner. Native resources remain owned by the R4 device;
  * destroying that device releases partial construction and all cached maps. */
@@ -266,7 +267,7 @@ struct KichR4DeferredSession {
             if(l.Expect(s,"B5 static transparent surface",hr)<0)return s.failure;
         }return 0;
     }
-    enum ModelPass {GeometryModels,ShadowModels,ForwardBase,ForwardAdd,HUD,Environment,MenuPP,MenuOverlay,DistortionModels};
+    enum ModelPass {GeometryModels,ShadowModels,ForwardBase,ForwardAdd,HUD,Environment,MenuPP,MenuOverlay,DistortionModels,Celestial,CloudLayer};
     int32_t Models(KichR4FrameSession& s,KichR4LevelSession& l,KichR4StreamSession& stream,const kich_r4_capture::Batch* batch,
         ModelPass pass,const kich_r4_lighting::Constants& frame,const KichR4Handle* maps=NULL){
         if(!batch)return 0;
@@ -294,6 +295,7 @@ struct KichR4DeferredSession {
                 if(batch->native_models[index].layer==layer && native_models.Draw(s,l,cb,frame,*batch,model_pass,snapshot_pass_mask,snapshot_phase,maps,0,index)<0)return s.failure;
                 continue;}
             const kich_r4_capture::Command& c=batch->commands[order[sorted]];if(c.layer!=layer)continue;
+            if((pass==Celestial)!=(native_mode && c.effect==kich_r4_optics::CelestialSource))continue;
             if(pass==GeometryModels && !Opaque(c))continue;
             if(pass==ShadowModels && !Opaque(c))continue;
             if((pass==ForwardBase || pass==ForwardAdd) && (c.layer==2 || Opaque(c)))continue;
@@ -303,16 +305,18 @@ struct KichR4DeferredSession {
                 if(pass==MenuPP){if(c.effect!=7)continue;}
                 else if(pass==MenuOverlay){if(c.effect!=8)continue;}
                 else if(c.effect==7 || c.effect==8)continue;
-                const bool env=c.effect==2 || c.effect==3;
-                if(pass==Environment && !env)continue;
-                if(pass!=Environment && env)continue;
+                if(pass==Environment && c.effect!=2)continue;
+                if(pass!=Environment && c.effect==2)continue;
+                if(pass==CloudLayer && c.effect!=3)continue;
+                if(pass!=CloudLayer && c.effect==3)continue;
                 if(pass==ForwardAdd && c.effect && c.effect!=6)continue;}
             else if(pass==Environment)continue;
             kich_r4_lighting::Constants constants=frame;constants.alpha[0]=c.style.alpha_ref;constants.alpha[1]=static_cast<float>(c.style.alpha_func);constants.alpha[2]=c.style.blend?1.f:0.f;
-            if(native_mode && (c.effect==2 || c.effect==3 || c.effect==1 || c.effect==5 || c.effect==7))constants.alpha[3]=0;
+            if(native_mode && (c.effect==2 || c.effect==3 || c.effect==1 || c.effect==5 || c.effect==7 || pass==Celestial))constants.alpha[3]=0;
             if(native_mode && pass==MenuPP)constants.alpha[3]=30;
             if(Constants(s,l,constants)<0)return s.failure;
             kich_r4_capture::Style style=c.style;
+            if(pass==Celestial)kich_r4_optics::SkyStyle(style);
             if(native_mode && pass==MenuPP)style.blend=0;
             unsigned pipeline=pass==GeometryModels?ModelGeometry:pass==ShadowModels?ModelShadow:pass==ForwardBase?ForwardSun:pass==ForwardAdd?ForwardLocal:Plain;
             if(native_mode && pass!=ShadowModels && pass!=GeometryModels){if(c.effect==2)pipeline=Sky;else if(c.effect==3)pipeline=Clouds;else if(c.effect==4)pipeline=Water;else if(c.effect==5 || c.effect==7)pipeline=Distortion;else if(c.effect==1)pipeline=Plain;}
@@ -341,6 +345,13 @@ struct KichR4DeferredSession {
                 }catch(...){RenderSnapshot_Context("UNKNOWN","NOT_AVAILABLE","NOT_AVAILABLE");RenderSnapshot_PassMask(snapshot_pass_mask);RenderSnapshot_Text("TELEMETRY_LOSS","r4_model_provenance","ALLOCATION_FAILED");}}
             SnapshotResolvedTexture(l,0,c.texture.c_str(),d.textures[0]);
             if(l.Expect(s,"B4.4 model/forward/UI draw",api.draw(s.device,&d))<0)return s.failure;
+            if(g_render_snapshot_active && pass==Celestial){
+                char id[64];snprintf(id,sizeof(id),"source_%u",static_cast<unsigned>(order[sorted]));
+                kich_r4_telemetry::Text("CELESTIAL",id,"mask","EMPTY_GBUFFER_DEPTH; CLIP_Z_EQUALS_W; LESS_EQUAL; NO_DEPTH_WRITE; STENCIL_NOT_USED");
+                kich_r4_telemetry::Text("CELESTIAL",id,"stage","AFTER_SKY_BEFORE_COMBINE_CLOUDS_AND_FORWARD");
+                kich_r4_telemetry::Text("CELESTIAL",id,"texture",c.texture.c_str());
+                kich_r4_telemetry::Text("CELESTIAL",id,"execution","DRAW_SUCCEEDED; PIXEL_CONTRIBUTION_NOT_MEASURED");
+            }
             if(g_render_snapshot_active && native_mode && (c.effect==2 || c.effect==3 || c.effect==4 || c.effect==5 || c.effect==7)){
                 using namespace kich_r4_telemetry;char id[96];snprintf(id,sizeof(id),"command_%u_effect_%u_pass_%u",static_cast<unsigned>(order[sorted]),c.effect,static_cast<unsigned>(pass));
                 const char* category=c.effect==2 || c.effect==3?"ENVIRONMENT":"POSTPROCESS";
@@ -510,9 +521,18 @@ struct KichR4DeferredSession {
         Mark(s,3);
         KichR4Handle combine_inputs[6]={normal,depth,0,0,0,0};
         SnapshotPass("ENVIRONMENT_COMBINE",RENDER_SNAPSHOT_PASS_ENVIRONMENT_COMBINE,"environment_combine");
-        if(native_mode){if(Pass(s,l,width,height,1,scene_color,0,depth,KICH_R4_CLEAR_COLOR)<0 || Models(s,l,stream,captured,Environment,base)<0)return s.failure;}
+        if(native_mode){if(Pass(s,l,width,height,1,scene_color,0,depth,KICH_R4_CLEAR_COLOR)<0 || Models(s,l,stream,captured,Environment,base)<0)return s.failure;
+            // Depth remains the completed opaque GBuffer. At z/w=1 the source
+            // passes only sky pixels, matching the R2 stencil==0 contract.
+            SnapshotPass("COMBINE_POSTPROCESS",RENDER_SNAPSHOT_PASS_ENVIRONMENT_COMBINE,"celestial_source_sky_mask");
+            if(Models(s,l,stream,captured,Celestial,base)<0)return s.failure;
+            SnapshotPass("ENVIRONMENT_COMBINE",RENDER_SNAPSHOT_PASS_ENVIRONMENT_COMBINE,"environment_combine");}
         kich_r4_lighting::Constants combination=base;if(native_mode)combination.alpha[3]=20;
         if(Pass(s,l,width,height,1,native_mode?scene_color:0,0,0,0)<0 || Fullscreen(s,l,Combine,combination,albedo,light,combine_inputs)<0)return s.failure;
+        // Match R2 phase_combine: sky/source, combine, clouds, forward. Clouds
+        // must cover the source instead of having the disc blended over them.
+        if(native_mode){SnapshotPhase("clouds_after_combine");
+            if(Pass(s,l,width,height,1,scene_color,0,depth,0)<0 || Models(s,l,stream,captured,CloudLayer,base)<0)return s.failure;}
         if(native_mode){kich_r4_lighting::Constants copy=base;copy.alpha[1]=8;if(Pass(s,l,width,height,1,final_color,0,0,0)<0 || Fullscreen(s,l,Copy,copy,scene_color,0,NULL)<0)return s.failure;}
         Mark(s,4);
         SnapshotPass("FORWARD_TRANSPARENCY",RENDER_SNAPSHOT_PASS_FORWARD_TRANSPARENCY,"forward_base");

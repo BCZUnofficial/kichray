@@ -2,6 +2,7 @@
 #pragma hdrstop
 
 #include "xr_efflensflare.h"
+#include "KichR4Native.h"
 
 #include "igame_persistent.h"
 #include "Environment.h"
@@ -506,10 +507,16 @@ void CLensFlare::Render(BOOL bSun, BOOL bFlares, BOOL bGradient)
             const bool sourceSkyMask = bSun && i == 0 &&
                 m_Current->m_Flags.is(CLensFlareDescriptor::flSource) &&
                 (::Render->get_generation() >= IRender_interface::GENERATION_R2);
-            if (sourceSkyMask)
+            // R4 has a depth-only GBuffer. Preserve this source-only contract
+            // explicitly; do not infer it from a texture or mask all flares.
+            if (sourceSkyMask && KichR4_NativeActive())
+                KichR4_NativeCelestialSource(true);
+            else if (sourceSkyMask)
                 RCache.set_Stencil(TRUE, D3DCMP_EQUAL, 0x00, 0xff, 0x00);
 			RCache.Render(D3DPT_TRIANGLELIST, vBase, 0, 4, 0, 2);
-            if (sourceSkyMask)
+            if (sourceSkyMask && KichR4_NativeActive())
+                KichR4_NativeCelestialSource(false);
+            else if (sourceSkyMask)
                 RCache.set_Stencil(FALSE);
 		}
 	}
