@@ -156,6 +156,8 @@ void CAI_Stalker::reinit()
 	m_combat_fire_direction.set(0.f, 0.f, 1.f);
 	m_combat_peripheral = stalker_combat_awareness::Peripheral();
 	m_combat_peripheral_point.set(0.f, 0.f, 0.f);
+	m_combat_near_miss = stalker_combat_awareness::NearMiss();
+	m_combat_near_miss_point.set(0.f, 0.f, 0.f);
 	m_combat_target_offset.set(0.f, .9f, 0.f);
 	m_combat_target_offset_id = u16(-1);
 	m_combat_fire_enemy_id = u16(-1);
@@ -844,6 +846,7 @@ void CAI_Stalker::shedule_Update(u32 DT)
 		STOP_PROFILE
 
 		START_PROFILE("stalker/schedule_update/memory/update")
+		process_combat_near_miss();
 		memory().update(dt);
 		STOP_PROFILE
 
@@ -985,6 +988,7 @@ void CAI_Stalker::Think()
 		return;
 
 	//	try {
+	update_combat_near_miss();
 	movement().update(update_delta);
 //	}
 #if 0  // def DEBUG

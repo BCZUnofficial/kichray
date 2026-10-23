@@ -19,17 +19,18 @@ void search_lifecycle()
     assert(stalker_known_enemy_distance(npc,&enemy)==4.f);
     npc.memories.info.m_object=nullptr;assert(stalker_known_enemy_distance(npc,&enemy)==flt_max);
     // A failed, unsafe or old observation never enters crouch approach.
-    for(int mode=0;mode<4;++mode){configure(npc,enemy,group);action.initialize();
+    for(int mode=0;mode<5;++mode){configure(npc,enemy,group);action.initialize();
         if(mode==0)route=false;
-        if(mode==1)npc.memories.info.m_level_time=1000;
+        if(mode==1){npc.memories.info.m_level_time=1000;Device.dwTimeGlobal=20000;}
         if(mode==2)npc.memories.visuals.record.squad=true;
         if(mode==3)space=false;
+        if(mode==4)npc.near_miss_recent=true;
         action.execute();assert(npc.moving.body==eBodyStateStand);action.finalize();
-        npc.memories.visuals.record.squad=false;}
+        npc.memories.visuals.record.squad=false;npc.near_miss_recent=false;}
 }
 void search_cancellation()
 {
-    for(int cause=0;cause<9;++cause){
+    for(int cause=0;cause<10;++cause){
         CAgentMemberManager group;group.grouped=true;CAI_Stalker npc;CEntityAlive enemy;configure(npc,enemy,group);
         CDangerObject grenade;CStalkerActionSearchEnemy action(&npc);action.initialize();action.execute();
         assert(npc.moving.body==eBodyStateCrouch && group.m_scout.assigned);
@@ -38,7 +39,8 @@ void search_cancellation()
         case 2:npc.memories.dangers.danger=&grenade;break;case 3:npc.moving.level.fail=true;break;
         case 4:npc.memories.visuals.seen=true;break;case 5:npc.memories.enemies.target=nullptr;break;
         case 6:npc.memories.info.m_object=nullptr;break;case 7:Device.dwTimeGlobal+=6000;break;
-        case 8:npc.memories.info.m_object_params.m_position.x=3;++npc.memories.info.m_level_time;break;}
+        case 8:npc.memories.info.m_object_params.m_position.x=3;++npc.memories.info.m_level_time;break;
+        case 9:++npc.near_miss_revision;break;}
         action.execute();assert(npc.moving.body==eBodyStateStand && !group.m_scout.assigned);
         action.finalize();
     }
@@ -63,6 +65,78 @@ void group_scout()
     assert(lease.claim(1,50,100));assert(!lease.claim(1,51,101));
     assert(lease.claim(2,51,7000));lease.remove(51);assert(!lease.assigned);
     lease.claim(2,50,8000);lease.remove(2);assert(!lease.assigned);
+}
+void delayed_sneak_decision()
+{
+    // Entry outside the final segment must not consume the choice before walking closer.
+    CAgentMemberManager group;CAI_Stalker npc;CEntityAlive enemy;configure(npc,enemy,group);
+    npc.memories.info.m_object_params.m_position=Fvector(0,0,12);
+    CStalkerActionSearchEnemy action(&npc);action.initialize();action.execute();
+    assert(npc.moving.body==eBodyStateStand);
+    npc.pos=Fvector(0,0,4);Device.dwTimeGlobal+=1000;action.execute();
+    assert(npc.moving.body==eBodyStateCrouch && npc.moving.type==eMovementTypeWalk);
+    assert(npc.moving.desired.distance_to(Fvector(0,0,8))<.001f);
+    assert(npc.memories.info.m_level_time==10000); // Walking and local events never refresh knowledge.
+    action.finalize();
+
+    // A failed route is still one decision per episode, not repeated geometry probes.
+    configure(npc,enemy,group);npc.pos=Fvector();route=false;route_queries=0;
+    action.initialize();action.execute();assert(route_queries==1);
+    route=true;Device.dwTimeGlobal+=200;action.execute();
+    assert(route_queries==1 && npc.moving.body==eBodyStateStand);action.finalize();
+
+    // A rejected stable choice cannot reroll on a subsequent same-position report.
+    configure(npc,enemy,group,1);npc.pos=Fvector();action.initialize();action.execute();
+    assert(npc.moving.body==eBodyStateStand);
+    npc.memories.info.m_level_time=11000;Device.dwTimeGlobal=11000;action.execute();
+    assert(npc.moving.body==eBodyStateStand);action.finalize();
+
+    // The previous seven-second window often expired during lookout/hold/detour.
+    for(u32 age:{15000u,15001u}){
+        configure(npc,enemy,group);npc.pos=Fvector();Device.dwTimeGlobal=10000+age;
+        action.initialize();action.execute();
+        assert((npc.moving.body==eBodyStateCrouch)==(age==15000u));action.finalize();
+    }
+}
+void finish_sectors(CAI_Stalker& npc,CStalkerActionSearchEnemy& action)
+{
+    npc.pos=npc.memories.info.m_object_params.m_position;
+    npc.moving.complete=true;action.execute();
+    for(int sector=0;sector<3;++sector){Device.dwTimeGlobal+=2500;action.execute();}
+    action.execute();
+}
+void search_patience()
+{
+    for(int scenario=0;scenario<4;++scenario){
+        CAgentMemberManager group;CAI_Stalker npc;CEntityAlive enemy;configure(npc,enemy,group,1);
+        CStalkerActionSearchEnemy action(&npc);action.initialize();action.execute();finish_sectors(npc,action);
+        assert(!npc.memories.disabled); // Completing three sectors after 7.5 s is not forgetting.
+        Device.dwTimeGlobal=39999;action.execute();assert(!npc.memories.disabled);
+        const u32 routes=npc.moving.changes;
+        if(scenario==0){
+            // Repeated old reports and a local bullet event do not refresh enemy observation time.
+            ++npc.near_miss_revision;npc.near_miss_recent=true;
+            Device.dwTimeGlobal=40000;action.execute();assert(npc.memories.disabled);
+        }else if(scenario==1){
+            // A genuinely newer report extends patience from observation time, not receipt time.
+            npc.memories.info.m_level_time=20000;action.execute();assert(!npc.memories.disabled);
+            Device.dwTimeGlobal=49999;action.execute();assert(!npc.memories.disabled);
+            Device.dwTimeGlobal=50000;action.execute();assert(npc.memories.disabled);
+        }else if(scenario==2){
+            npc.memories.info.m_level_time=9000;Device.dwTimeGlobal=40000;
+            action.execute();assert(npc.memories.disabled); // Older relay is ignored.
+        }else{
+            npc.memories.visuals.record.squad=true;Device.dwTimeGlobal=90000;
+            action.execute();assert(!npc.memories.disabled); // Live squad contact is retained.
+        }
+        assert(npc.moving.changes==routes); // Patience does not rebuild the finished route.
+        action.finalize();
+    }
+    // Entering search late cannot restart the hard budget from the receipt/action time.
+    CAgentMemberManager group;CAI_Stalker npc;CEntityAlive enemy;configure(npc,enemy,group,1);
+    Device.dwTimeGlobal=54999;CStalkerActionSearchEnemy action(&npc);action.initialize();action.execute();
+    assert(!npc.memories.disabled);
+    Device.dwTimeGlobal=55000;action.execute();assert(npc.memories.disabled);action.finalize();
 }
 void moving(CEntityAlive& other,u32 now,float x=1.f,float z=0.f)
 {
@@ -118,5 +192,5 @@ void close_pitch()
     float yaw,pitch;sight.SetFirePointLookAngles(npc.eye_matrix.c,yaw,pitch);
     assert(std::isfinite(yaw)&&std::isfinite(pitch));
 }
-int main(){search_lifecycle();search_cancellation();group_scout();peripheral();close_pitch();
- std::cout<<"PASS: production cautious search, squad lease, cancellation, peripheral occlusion/delay and close pitch\n";}
+int main(){search_lifecycle();search_cancellation();group_scout();delayed_sneak_decision();search_patience();peripheral();close_pitch();
+ std::cout<<"PASS: production cautious search, observation-age patience, delayed choice, squad lease, cancellation, peripheral occlusion/delay and close pitch\n";}

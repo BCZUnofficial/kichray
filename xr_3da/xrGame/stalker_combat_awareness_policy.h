@@ -33,6 +33,31 @@ struct Peripheral
     }
 };
 
+// Local incoming fire only: no shooter identity and no enemy observation.
+struct NearMiss
+{
+    unsigned int time, revision, duck_started, last_duck;
+    bool seen, pending, response_pending, duck_active, reacted, restore_body;
+    NearMiss() : time(0), revision(0), duck_started(0), last_duck(0), seen(false),
+        pending(false), response_pending(false), duck_active(false), reacted(false), restore_body(false) {}
+    bool ready(unsigned int now) const { return !pending && (!seen || now - time >= 250u); }
+    bool recent(unsigned int now, unsigned int interval) const { return seen && now - time < interval; }
+    bool observe(unsigned int now)
+    {
+        if (!ready(now)) return false;
+        time = now; seen = pending = true;
+        if (!++revision) ++revision;
+        return true;
+    }
+    bool start_duck(unsigned int now)
+    {
+        if (!recent(now, 1000u) || (reacted && now - last_duck < 2500u)) return false;
+        duck_started = last_duck = now; duck_active = reacted = true;
+        return true;
+    }
+    bool ducking(unsigned int now) const { return duck_active && now - duck_started < 900u; }
+};
+
 struct ScoutLease
 {
     unsigned int owner, enemy, started;
@@ -52,8 +77,9 @@ inline bool sneak_candidate(unsigned int age, float distance_sqr, bool squad_vis
     bool unsafe, unsigned int npc, unsigned int observation, bool grouped)
 {
     // At most six metres of validated final approach, ending four metres short.
+    // Leave time for the preceding lookout/hold/detour actions.
     // Stable per episode: no frame-by-frame random reroll.
-    return !unsafe && !squad_visible && age <= 7000u && distance_sqr >= 25.f &&
+    return !unsafe && !squad_visible && age <= 15000u && distance_sqr >= 25.f &&
         distance_sqr <= 100.f && (npc + observation / 1000u) % 3u < (grouped ? 2u : 1u);
 }
 }

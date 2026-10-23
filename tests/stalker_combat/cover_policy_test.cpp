@@ -38,8 +38,8 @@ int main()
     assert(policy::elapsed(499u,start)==1000u);
     assert(policy::retry_empty(policy::elapsed(499u,start),0.f,0.f));
     // Search cannot retain the old 120-second idle phase; grenade escape must increase separation.
-    assert(!policy::search_expired(19999u));
-    assert(policy::search_expired(20000u));
+    assert(!policy::search_expired(44999u));
+    assert(policy::search_expired(45000u));
     assert(policy::search_step_expired(2500u));
     // Same-position observations refresh patience; repeated/older relays do not.
     assert(policy::newer_observation(105u, 100u));
@@ -48,9 +48,10 @@ int main()
     assert(policy::newer_observation(100u, start));
     assert(!policy::finish_search(60000u, true, true)); // another member still sees the enemy
     assert(!policy::finish_search(100u, true, false)); // fresh same-position report
-    assert(policy::finish_search(7500u, true, false));
-    assert(!policy::finish_search(7500u, false, false));
-    assert(policy::finish_search(20000u, false, false));
+    assert(!policy::finish_search(29999u, true, false));
+    assert(policy::finish_search(30000u, true, false));
+    assert(!policy::finish_search(30000u, false, false));
+    assert(policy::finish_search(45000u, false, false));
     // A short fuse cannot justify a distant cover route; escape stays local even with long fuses.
     assert(policy::fuse_remaining(900u, 1100u) == 200u);
     assert(policy::fuse_remaining(1100u, 900u) == 0u);

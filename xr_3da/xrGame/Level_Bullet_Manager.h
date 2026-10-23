@@ -115,6 +115,17 @@ class CBulletManager
 	BulletVec m_BulletsRendered; // copy for rendering
 	xr_vector<_event> m_Events;
 
+    // Worker writes value-only, clipped flight segments; AI delivery runs in CommitEvents.
+    struct NearMissSegment
+    {
+        Fvector start, direction;
+        float range;
+        u16 shooter;
+    };
+    xr_vector<NearMissSegment> m_near_miss_segments;
+    void QueueNearMissSegment(const SBullet& bullet, const collide::ray_defs& ray, float range);
+    void CommitNearMissSegments();
+
 	//остаток времени, который не был учтен на предыдущем кадре
 	u32 m_dwTimeRemainder;
 

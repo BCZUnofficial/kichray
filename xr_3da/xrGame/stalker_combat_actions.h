@@ -221,13 +221,12 @@ class CStalkerActionSearchEnemy : public CStalkerActionCombatBase
 	Fvector m_search_direction;
 	u32 m_search_vertex;
 	u32 m_search_memory_time;
-	u32 m_search_started;
 	u32 m_search_stage_time;
 	u32 m_search_stage;
 	bool m_search_has_anchor;
 	bool m_search_moving;
     bool m_sneak_decided, m_sneak_active, m_sneak_arrived;
-    u32 m_sneak_started, m_sneak_arrival_time, m_sneak_hit_revision;
+    u32 m_sneak_started, m_sneak_arrival_time, m_sneak_hit_revision, m_sneak_near_miss_revision;
     float m_sneak_health;
     Fvector m_sneak_destination;
     void stop_sneak(const char* reason);

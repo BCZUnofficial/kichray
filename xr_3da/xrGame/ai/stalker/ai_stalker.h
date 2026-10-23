@@ -322,6 +322,8 @@ class CAI_Stalker : public CCustomMonster, public CObjectHandler, public CAI_Phr
 	Fvector m_combat_fire_direction;
 	stalker_combat_awareness::Peripheral m_combat_peripheral;
 	Fvector m_combat_peripheral_point;
+	stalker_combat_awareness::NearMiss m_combat_near_miss;
+	Fvector m_combat_near_miss_point;
 	Fvector m_combat_target_offset;
 	u16 m_combat_target_offset_id;
 	u16 m_combat_fire_enemy_id;
@@ -342,6 +344,8 @@ class CAI_Stalker : public CCustomMonster, public CObjectHandler, public CAI_Phr
 						 collide::rq_results& rq_storage);
 	void can_kill_entity_from(const Fvector& position, Fvector direction, float distance);
 	void update_can_kill_info();
+	void process_combat_near_miss();
+	void update_combat_near_miss();
 
   public:
 	bool can_kill_member();
@@ -351,6 +355,10 @@ class CAI_Stalker : public CCustomMonster, public CObjectHandler, public CAI_Phr
 	bool fire_make_sense();
 	void update_combat_peripheral();
 	bool combat_peripheral_look(Fvector& point);
+	bool bullet_near_miss_ready() const;
+	void on_bullet_near_miss(const Fvector& local_point);
+	u32 combat_near_miss_revision() const;
+	bool combat_near_miss_recent(u32 interval) const;
 	bool combat_target_position(Fvector& position, bool aim_point = false);
 	bool combat_fire_solution();
 	u32 combat_fire_blocked_time() const;

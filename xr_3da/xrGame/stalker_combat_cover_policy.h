@@ -56,10 +56,10 @@ inline bool newer_observation(unsigned int candidate, unsigned int previous)
     const unsigned int difference = candidate - previous;
     return difference != 0u && difference < 0x80000000u;
 }
-inline bool search_expired(unsigned int age) { return age >= 20000u; }
+inline bool search_expired(unsigned int age) { return age >= 45000u; }
 inline bool finish_search(unsigned int age, bool sectors_done, bool squad_visible)
 {
-    return !squad_visible && (search_expired(age) || (sectors_done && age >= 7500u));
+    return !squad_visible && (search_expired(age) || (sectors_done && age >= 30000u));
 }
 inline unsigned int fuse_remaining(unsigned int now, unsigned int deadline)
 {

@@ -7,6 +7,7 @@
 #include "Level_Bullet_Manager.h"
 #include "game_cl_base.h"
 #include "Actor.h"
+#include "ai/stalker/ai_stalker.h"
 #include "gamepersistent.h"
 #include "mt_config.h"
 #include "game_cl_base_weapon_usage_statistic.h"
@@ -149,6 +150,7 @@ void CBulletManager::Clear()
 {
 	m_Bullets.clear();
 	m_Events.clear();
+    m_near_miss_segments.clear();
 }
 
 void CBulletManager::AddBullet(const Fvector& position, const Fvector& direction, float starting_speed, float power,
@@ -245,6 +247,7 @@ bool CBulletManager::CalcBullet(collide::rq_results& rq_storage, xr_vector<ISpat
 	{
 		range = (rq_storage.r_begin() + rq_storage.r_count() - 1)->range;
 	}
+    QueueNearMissSegment(*bullet, RD, range);
 	range = _max(EPS_L, range);
 
 	bullet->flags.skipped_frame = (Device.dwFrame >= bullet->frame_num);
@@ -464,6 +467,57 @@ void CBulletManager::CommitEvents() // @ the start of frame
 		}
 	}
 	m_Events.clear_and_reserve();
+    CommitNearMissSegments();
+}
+
+void CBulletManager::QueueNearMissSegment(const SBullet& bullet, const collide::ray_defs& ray, float range)
+{
+    // No world/AI callbacks on the bullet worker, and no changes to bullet simulation.
+    if (GameID() != GAME_SINGLE || bullet.hit_type != ALife::eHitTypeFireWound ||
+        range <= EPS_L || m_near_miss_segments.size() >= 256u) return;
+    NearMissSegment segment;
+    segment.start = ray.start;
+    segment.direction = ray.dir;
+    segment.range = range;
+    segment.shooter = bullet.parent_id;
+    m_near_miss_segments.push_back(segment);
+}
+
+void CBulletManager::CommitNearMissSegments()
+{
+    // Same worker/main-frame handoff as hit events. Never keep CObject pointers across it.
+    xr_vector<CObject*> nearby;
+    u32 rays = 0;
+    for (u32 i = 0; i < m_near_miss_segments.size() && rays < 64u; ++i)
+    {
+        const NearMissSegment& segment = m_near_miss_segments[i];
+        Fvector midpoint;
+        midpoint.mad(segment.start, segment.direction, segment.range * .5f);
+        Level().ObjectSpace.GetNearest(nearby, midpoint, segment.range * .5f + 1.5f, 0);
+        for (u32 j = 0; j < nearby.size() && rays < 64u; ++j)
+        {
+            CAI_Stalker* stalker = smart_cast<CAI_Stalker*>(nearby[j]);
+            if (!stalker || stalker->ID() == segment.shooter || !stalker->bullet_near_miss_ready()) continue;
+            Fvector center, offset, point;
+            stalker->Center(center);
+            offset.sub(center, segment.start);
+            const float along = clampr(offset.dotproduct(segment.direction), 0.f, segment.range);
+            point.mad(segment.start, segment.direction, along);
+            offset.sub(point, center);
+            const float distance = offset.magnitude();
+            if (distance > 1.5f) continue;
+            if (distance > EPS_L)
+            {
+                offset.div(distance);
+                collide::rq_result hit;
+                ++rays;
+                // A close segment on the other side of a wall/door is not a flyby.
+                if (Level().ObjectSpace.RayPick(center, offset, distance, collide::rqtBoth, hit, stalker)) continue;
+            }
+            stalker->on_bullet_near_miss(point);
+        }
+    }
+    m_near_miss_segments.clear_and_reserve();
 }
 
 void CBulletManager::RegisterEvent(EventType Type, BOOL _dynamic, SBullet* bullet, const Fvector& end_point,

@@ -728,6 +728,101 @@ void CAI_Stalker::update_range_fov(float& new_range, float& new_fov, float start
 	return (inherited::update_range_fov(new_range, new_fov, range, fov));
 }
 
+bool CAI_Stalker::bullet_near_miss_ready() const
+{
+    return g_Alive() && !getDestroy() && !Remote() && !GetScriptControl() && !wounded() &&
+        m_combat_near_miss.ready(Device.dwTimeGlobal);
+}
+
+void CAI_Stalker::on_bullet_near_miss(const Fvector& local_point)
+{
+    // Delivered on the main thread by CommitEvents. Do not mutate danger memory here:
+    // its selected pointer remains valid until the next scheduled memory update.
+    if (!bullet_near_miss_ready() || !_valid(local_point) || critically_wounded() || IsTalking() ||
+        !animation().script_animations().empty()) return;
+    if (m_combat_near_miss.observe(Device.dwTimeGlobal)) m_combat_near_miss_point = local_point;
+}
+
+u32 CAI_Stalker::combat_near_miss_revision() const
+{
+    return m_combat_near_miss.revision;
+}
+
+bool CAI_Stalker::combat_near_miss_recent(u32 interval) const
+{
+    return m_combat_near_miss.recent(Device.dwTimeGlobal, interval);
+}
+
+void CAI_Stalker::process_combat_near_miss()
+{
+    if (!g_Alive() || getDestroy() || Remote() || GetScriptControl() || wounded() ||
+        critically_wounded() || IsTalking() || !animation().script_animations().empty())
+    {
+        // A higher-priority controller may have requested its own crouch since our
+        // last update. Relinquish the override without changing its posture.
+        m_combat_near_miss.restore_body = m_combat_near_miss.pending = false;
+        m_combat_near_miss.response_pending = m_combat_near_miss.duck_active = false;
+        return;
+    }
+    // Remove only our temporary body override before the planner chooses this tick's
+    // posture. Combat actions that deliberately crouch can then request it again.
+    if (m_combat_near_miss.restore_body)
+    {
+        if (movement().target_body_state() == eBodyStateCrouch)
+            movement().set_body_state(eBodyStateStand);
+        m_combat_near_miss.restore_body = false;
+    }
+    if (!m_combat_near_miss.pending) return;
+    m_combat_near_miss.pending = false;
+    if (!combat_near_miss_recent(1000u)) return;
+
+    const bool combat = memory().enemy().selected() != 0;
+    m_combat_near_miss.response_pending = combat;
+    if (!combat)
+        memory().danger().add(CDangerObject(0, m_combat_near_miss_point, m_combat_near_miss.time,
+            CDangerObject::eDangerTypeBulletRicochet, CDangerObject::eDangerPerceiveTypeSound));
+    if (stalker_combat_diagnostics::enabled(ID()))
+        stalker_combat_diagnostics::log(ID(), stalker_combat_diagnostics::action,
+            "near_miss", "combat=%u revision=%u", u32(combat), combat_near_miss_revision());
+}
+
+void CAI_Stalker::update_combat_near_miss()
+{
+    if (!g_Alive() || getDestroy() || Remote() || GetScriptControl() || wounded() ||
+        critically_wounded() || IsTalking() || !animation().script_animations().empty())
+    {
+        m_combat_near_miss.response_pending = m_combat_near_miss.duck_active = false;
+        return;
+    }
+    const CDangerObject* danger = memory().danger().selected();
+    if (!memory().enemy().selected() || (danger && danger->type() == CDangerObject::eDangerTypeGrenade) ||
+        movement().target_movement_type() == eMovementTypeRun ||
+        movement().target_mental_state() != eMentalStateDanger)
+    {
+        // Existing escape/run decisions have priority; do not defer a stale flinch.
+        m_combat_near_miss.response_pending = m_combat_near_miss.duck_active = false;
+        return;
+    }
+    const u32 now = Device.dwTimeGlobal;
+    if (m_combat_near_miss.response_pending)
+    {
+        m_combat_near_miss.response_pending = false;
+        if (m_combat_near_miss.start_duck(now) && stalker_combat_diagnostics::enabled(ID()))
+            stalker_combat_diagnostics::log(ID(), stalker_combat_diagnostics::action,
+                "near_miss_duck", "duration_ms=%u", 900u);
+    }
+    if (!m_combat_near_miss.ducking(now))
+    {
+        m_combat_near_miss.duck_active = false;
+        return;
+    }
+    if (movement().target_body_state() == eBodyStateStand)
+    {
+        movement().set_body_state(eBodyStateCrouch);
+        m_combat_near_miss.restore_body = true;
+    }
+}
+
 bool CAI_Stalker::combat_peripheral_look(Fvector& point)
 {
     if (!m_combat_peripheral.looking(Device.dwTimeGlobal)) return false;

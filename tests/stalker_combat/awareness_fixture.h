@@ -96,6 +96,9 @@ struct CAI_Stalker:CEntityAlive {
  struct Matrix {Fvector c=Fvector(0,1.5f,0),k=Fvector(0,0,1);void transform_tiny(Fvector& p,const Fvector& v)const{p=v;}} eye_matrix;
  stalker_combat_awareness::Peripheral m_combat_peripheral;Fvector m_combat_peripheral_point;
  bool script=false,injured=false,critical=false,talking=false,relation=true;
+ u32 near_miss_revision=0;bool near_miss_recent=false;
+ u32 combat_near_miss_revision() const{return near_miss_revision;}
+ bool combat_near_miss_recent(u32) const{return near_miss_recent;}
  Memory& memory(){assert(alive);return memories;} Movement& movement(){return moving;} Agent& agent_manager(){assert(alive);return agent;}
  Sight& sight(){return sights;} Condition& conditions(){return condition;} Animation& animation(){return animations;}
  bool wounded()const{return injured;}bool critically_wounded()const{return critical;}bool GetScriptControl()const{return script;}bool IsTalking()const{return talking;}
@@ -125,7 +128,7 @@ struct CStalkerActionCombatBase {
  virtual void initialize(){}virtual void execute(){}virtual void finalize(){}
  CAI_Stalker& object(){return *m_object;}void aim_ready(){}
 };
-bool route=true,space=true;
-bool stalker_local_destination(CAI_Stalker&,const Fvector& requested,Fvector& dest,u32& v){dest=requested;v=3;return route;}
+bool route=true,space=true;u32 route_queries=0;
+bool stalker_local_destination(CAI_Stalker&,const Fvector& requested,Fvector& dest,u32& v){++route_queries;dest=requested;v=3;return route;}
 bool stalker_local_space(CAI_Stalker&,const Fvector&,u32,bool){return space;}
 #include "awareness.generated.h"
