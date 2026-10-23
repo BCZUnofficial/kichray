@@ -217,6 +217,8 @@ class CStalkerActionSearchEnemy : public CStalkerActionCombatBase
   private:
 	Fvector m_search_anchor;
 	Fvector m_search_observed_position;
+    Fvector m_search_progress_position;
+    u32 m_search_last_progress;
 	u16 m_search_enemy_id;
 	Fvector m_search_direction;
 	u32 m_search_vertex;

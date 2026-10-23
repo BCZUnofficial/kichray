@@ -18,6 +18,8 @@ def main():
         'bool CAI_Stalker::bullet_near_miss_ready()',
         'void CAI_Stalker::on_bullet_near_miss(',
         'u32 CAI_Stalker::combat_near_miss_revision()',
+        'void CAI_Stalker::on_combat_heard_shot(',
+        'bool CAI_Stalker::combat_alert_look(',
         'bool CAI_Stalker::combat_near_miss_recent(',
         'void CAI_Stalker::process_combat_near_miss()',
         'void CAI_Stalker::update_combat_near_miss()')]
@@ -29,6 +31,8 @@ def main():
     think = extract(lifecycle, 'void CAI_Stalker::Think()')
     assert think.index('brain().update(') < think.index('update_combat_near_miss();') < think.index('movement().update(')
     assert 'm_combat_near_miss = stalker_combat_awareness::NearMiss();' in extract(lifecycle, 'void CAI_Stalker::reinit()')
+    sight = extract((GAME / 'sight_manager.cpp').read_text(encoding='cp1251'), 'void CSightManager::update()')
+    assert 'object().combat_alert_look(peripheral) || object().combat_peripheral_look(peripheral)' in sight
     with tempfile.TemporaryDirectory(prefix='stalker-near-miss-') as directory:
         temp = Path(directory)
         (temp / 'near_miss.generated.h').write_text('\n\n'.join(methods))

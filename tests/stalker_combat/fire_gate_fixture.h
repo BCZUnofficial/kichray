@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdint>
 #include <map>
+#include <vector>
 
 typedef std::uint8_t u8;
 typedef std::uint16_t u16;
@@ -20,6 +21,7 @@ template <class T> T _max(T a, T b) { return std::max(a, b); }
 template <class T> T _min(T a, T b) { return std::min(a, b); }
 template <class T, class U> T smart_cast(U* value) { return dynamic_cast<T>(value); }
 
+inline float _sqrt(float value) {return std::sqrt(value);}
 inline float clampr(float x,float a,float b) {return std::max(a,std::min(x,b));}
 struct Fvector
 {
@@ -27,6 +29,7 @@ struct Fvector
     Fvector(float ax = 0.f, float ay = 0.f, float az = 0.f) : x(ax), y(ay), z(az) {}
     Fvector& set(float a,float b,float c) {x=a;y=b;z=c;return *this;}
     float distance_to_sqr(const Fvector& v) const {return (x-v.x)*(x-v.x)+(y-v.y)*(y-v.y)+(z-v.z)*(z-v.z);}
+    Fvector& mad(const Fvector& a, const Fvector& b, float k) {x=a.x+b.x*k;y=a.y+b.y*k;z=a.z+b.z*k;return *this;}
     Fvector& sub(const Fvector& a, const Fvector& b)
     { x = a.x - b.x; y = a.y - b.y; z = a.z - b.z; return *this; }
     Fvector& add(const Fvector& a) { x += a.x; y += a.y; z += a.z; return *this; }
@@ -88,6 +91,10 @@ struct CEntityAlive : CObject
         result.y += center_height;
     }
     Fvector live_position = Fvector(0.f, 0.f, 10.f);
+    bool alive=true, enemy_relation=true;
+    float radius=.6f;
+    bool g_Alive() const {return alive;}
+    float Radius() const {return radius;}
     bool human=false;
     struct Renderable {IRender_Visual* visual=nullptr;} renderable;
     bool human_being() const {return human;}
@@ -187,7 +194,23 @@ struct FakeShotEffector
     void SetRndSeed(u32 value) { seed = value; }
     void Shot(float value) { ++calls; last_dispersion = value; }
 };
-namespace collide { struct rq_results { void r_clear() {} }; }
+namespace collide { struct rq_results { void r_clear() {} }; enum rq_target {rqtBoth}; struct rq_result {CObject* O=nullptr;}; }
+template<class T> using xr_vector=std::vector<T>;
+struct FixtureObjectSpace {
+    std::vector<CObject*> objects;
+    bool blocked=false;CObject* blocking_object=nullptr;
+    unsigned nearby_calls=0, local_rays=0;
+    Fvector last_local_direction;
+    float last_local_range=0.f;
+    void GetNearest(xr_vector<CObject*>& out,const Fvector&,float,CObject* ignore) {
+        ++nearby_calls;out.clear();for(auto* object:objects)if(object!=ignore)out.push_back(object);
+    }
+    bool RayPick(const Fvector&,const Fvector& direction,float range,collide::rq_target,collide::rq_result& hit,CObject*) {
+        ++local_rays;last_local_direction=direction;last_local_range=range;hit.O=blocking_object;return blocked;
+    }
+};
+struct FixtureLevel {FixtureObjectSpace ObjectSpace;};
+inline FixtureLevel& Level(){static FixtureLevel level;return level;}
 struct RayResult
 {
     RayResult(float range = 50.f, bool foe = false, bool friend_hit = false)
@@ -224,9 +247,13 @@ struct FakeSightManager
     void setup(const CSightAction& action) { point = action.point; }
 };
 
-class CAI_Stalker : public CObjectHandler
+class CAI_Stalker : public CObjectHandler, public CEntityAlive
 {
 public:
+    CAI_Stalker(): CEntityAlive(7) {}
+    bool fixture_script=false;
+    bool GetScriptControl() const {return fixture_script;}
+    bool is_relation_enemy(const CEntityAlive* other) const {return other->enemy_relation;}
     FakeMemory memories;
     FakeInventory items;
     FakeShotEffector effector;
@@ -301,6 +328,7 @@ public:
     u32 combat_fire_blocked_time() const;
     u32 combat_suppression_remaining() const;
     bool combat_fire_solution();
+    bool combat_safe_to_shoot(const Fvector&,const Fvector&);
     bool fire_make_sense();
     void on_weapon_shot_start(CWeapon*);
 };

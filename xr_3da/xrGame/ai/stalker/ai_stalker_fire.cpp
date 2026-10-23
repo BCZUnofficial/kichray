@@ -734,13 +734,60 @@ bool CAI_Stalker::bullet_near_miss_ready() const
         m_combat_near_miss.ready(Device.dwTimeGlobal);
 }
 
-void CAI_Stalker::on_bullet_near_miss(const Fvector& local_point)
+void CAI_Stalker::on_bullet_near_miss(const Fvector& local_point, const Fvector& flight_direction)
 {
     // Delivered on the main thread by CommitEvents. Do not mutate danger memory here:
     // its selected pointer remains valid until the next scheduled memory update.
     if (!bullet_near_miss_ready() || !_valid(local_point) || critically_wounded() || IsTalking() ||
         !animation().script_animations().empty()) return;
-    if (m_combat_near_miss.observe(Device.dwTimeGlobal)) m_combat_near_miss_point = local_point;
+    if (m_combat_near_miss.observe(Device.dwTimeGlobal))
+    {
+        m_combat_near_miss_point = local_point;
+        if (_valid(flight_direction) && flight_direction.square_magnitude() > .5f &&
+            flight_direction.square_magnitude() < 1.5f && m_combat_alert.observe(Device.dwTimeGlobal))
+        {
+            Fvector incoming = flight_direction;
+            incoming.normalize_safe();
+            m_combat_alert_point.mad(local_point, incoming, -3.f);
+        }
+    }
+}
+
+void CAI_Stalker::on_combat_heard_shot(const Fvector& sound_position)
+{
+    // The sound manager already applied audibility/attenuation. Sample the event,
+    // never the current position of its hidden owner; no enemy or hit is added.
+    if (!g_Alive() || getDestroy() || Remote() || GetScriptControl() || wounded() ||
+        critically_wounded() || IsTalking() || !animation().script_animations().empty() ||
+        !_valid(sound_position)) return;
+    const float distance_sqr = Position().distance_to_sqr(sound_position);
+    if (distance_sqr < .04f || distance_sqr > 1600.f || !m_combat_alert.observe(Device.dwTimeGlobal)) return;
+    m_combat_alert_point = sound_position;
+    if (stalker_combat_diagnostics::enabled(ID()))
+        stalker_combat_diagnostics::log(ID(), stalker_combat_diagnostics::action,
+            "heard_shot_look", "distance=%.2f event_position_only=1", _sqrt(distance_sqr));
+}
+
+bool CAI_Stalker::combat_alert_look(Fvector& point)
+{
+    if (!m_combat_alert.looking(Device.dwTimeGlobal)) return false;
+    if (!g_Alive() || getDestroy() || Remote() || GetScriptControl() || wounded() ||
+        critically_wounded() || IsTalking() || !animation().script_animations().empty())
+    {
+        m_combat_alert.active = false;
+        return false;
+    }
+    const CEntityAlive* enemy = memory().enemy().selected();
+    const CDangerObject* danger = memory().danger().selected();
+    if ((danger && danger->type() == CDangerObject::eDangerTypeGrenade) ||
+        movement().target_movement_type() == eMovementTypeRun ||
+        (enemy && memory().visual().visible_now(enemy)))
+    {
+        m_combat_alert.active = false;
+        return false;
+    }
+    point = m_combat_alert_point;
+    return true;
 }
 
 u32 CAI_Stalker::combat_near_miss_revision() const
@@ -1065,7 +1112,7 @@ bool CAI_Stalker::combat_fire_solution()
                 direction.dotproduct(to_target), m_combat_aim_locked);
             if (!m_combat_aim_locked)
                 reason = combat_fire_aiming;
-            else if (m_can_kill_member)
+            else if (m_can_kill_member || !combat_safe_to_shoot(m_combat_fire_position, m_combat_fire_direction))
                 reason = combat_fire_friendly;
             else if (!stalker_combat_fire_policy::line_reaches_target(m_combat_center_pick_distance,
                 target_distance, m_combat_center_can_kill_enemy))
@@ -1083,6 +1130,9 @@ bool CAI_Stalker::combat_fire_solution()
         m_combat_fire_blocked_since = u32(-1);
     m_combat_fire_block_reason = reason;
     m_combat_fire_allowed = reason == combat_fire_none;
+    // The live guard invalidates stale caches when called by the weapon; this
+    // scheduled solution has just completed and may be reused within its frame.
+    m_combat_fire_gate_frame = Device.dwFrame;
 
     if (stalker_combat_diagnostics::enabled(ID()))
         stalker_combat_diagnostics::log(ID(), stalker_combat_diagnostics::fire, combat_fire_block_reason(),
@@ -1093,6 +1143,56 @@ bool CAI_Stalker::combat_fire_solution()
             m_combat_fire_position.x, m_combat_fire_position.y, m_combat_fire_position.z,
             m_combat_fire_direction.x, m_combat_fire_direction.y, m_combat_fire_direction.z);
     return m_combat_fire_allowed;
+}
+
+bool CAI_Stalker::combat_safe_to_shoot(const Fvector& position, const Fvector& direction)
+{
+    // Called immediately before a live NPC shot, using the weapon's already chosen
+    // trajectory. Scheduled planner/cache results cannot protect a continuing burst.
+    if (!g_Alive() || GetScriptControl() || !memory().enemy().selected()) return true;
+    Fvector axis = direction;
+    const float magnitude = axis.magnitude();
+    if (!_valid(position) || !_valid(direction) || magnitude <= EPS_L) return false;
+    axis.div(magnitude);
+    const float range = start_pick_distance();
+    Fvector midpoint;
+    midpoint.mad(position, axis, range * .5f);
+    xr_vector<CObject*> nearby;
+    Level().ObjectSpace.GetNearest(nearby, midpoint, range * .5f + 1.5f, this);
+    for (u32 i = 0; i < nearby.size(); ++i)
+    {
+        CEntityAlive* other = smart_cast<CEntityAlive*>(nearby[i]);
+        if (!other || other == this || !other->g_Alive() || is_relation_enemy(other)) continue;
+        Fvector center, offset, nearest;
+        other->Center(center);
+        offset.sub(center, position);
+        const float along = offset.dotproduct(axis);
+        if (along <= 0.f || along > range) continue;
+        nearest.mad(position, axis, along);
+        // The old five infinitesimal rays left gaps between their directions.
+        // Protect the ally's full body plus a small crossing margin.
+        const float radius = clampr(other->Radius(), .25f, 1.25f) + .2f;
+        const float lateral_sqr = center.distance_to_sqr(nearest);
+        if (lateral_sqr > radius * radius) continue;
+        // Only cover before the near side of the body can make this shot safe.
+        // A ray to the center could hit a wall while leaving a shoulder exposed.
+        const float entry = along - _sqrt(_max(0.f, radius * radius - lateral_sqr));
+        if (entry > EPS_L)
+        {
+            collide::rq_result hit;
+            if (Level().ObjectSpace.RayPick(position, axis, entry, collide::rqtBoth, hit, this) && hit.O != other)
+                continue;
+        }
+        m_combat_fire_block_reason = combat_fire_friendly;
+        m_combat_fire_allowed = false;
+        m_combat_fire_gate_frame = m_pick_frame_id = u32(-1);
+        if (m_combat_fire_blocked_since == u32(-1)) m_combat_fire_blocked_since = Device.dwTimeGlobal;
+        if (stalker_combat_diagnostics::enabled(ID()))
+            stalker_combat_diagnostics::log(ID(), stalker_combat_diagnostics::fire,
+                "friendly_volume", "ally=%u distance=%.2f", u32(other->ID()), along);
+        return false;
+    }
+    return true;
 }
 
 bool CAI_Stalker::fire_make_sense()

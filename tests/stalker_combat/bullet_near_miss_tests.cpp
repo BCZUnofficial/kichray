@@ -31,11 +31,11 @@ struct Fvector {
 };
 struct CObject {virtual ~CObject(){};};
 struct CAI_Stalker: CObject {
-    u16 id=1; bool ready=true; unsigned events=0; Fvector center,point;
+    u16 id=1; bool ready=true; unsigned events=0; Fvector center,point,incoming;
     u16 ID()const{return id;}
     bool bullet_near_miss_ready()const{return ready;}
     void Center(Fvector& v)const{v=center;}
-    void on_bullet_near_miss(const Fvector& v){++events;point=v;ready=false;}
+    void on_bullet_near_miss(const Fvector& v,const Fvector& direction){++events;point=v;incoming=direction;ready=false;}
 };
 template<class T> T smart_cast(CObject* o){return dynamic_cast<T>(o);}
 namespace ALife {enum EHitType {eHitTypeFireWound, eHitTypeStrike};}
@@ -107,7 +107,7 @@ int main(){
     assert(manager.m_near_miss_segments[0].range==10.f);
     assert(bullet.pos.x==10.f&&std::fabs(bullet.speed-1000.f)<.01f);
     manager.CommitNearMissSegments();
-    assert(near.events==1&&near.point.x==5.f&&near.point.y==0.f);
+    assert(near.events==1&&near.point.x==5.f&&near.point.y==0.f&&near.incoming.x==1.f);
     assert(far.events==0&&self.events==0&&unready.events==0&&level.ObjectSpace.rays==1);
     assert(manager.m_near_miss_segments.empty());
     // Clipping at a stopping wall excludes a target farther down the original ray.

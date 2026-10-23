@@ -15,7 +15,7 @@ ALLOWED_GAME_FILES = {
     "ai/stalker/ai_stalker_cover.cpp", "ai/stalker/ai_stalker_fire.cpp", "ai/stalker/ai_stalker_misc.cpp",
     "console_commands.cpp", "xrGame.vcxproj", "xrGame.vcxproj.filters",
     "stalker_sound_data_visitor.cpp", "sight_manager.cpp",
-    "Level_Bullet_Manager.cpp", "Level_Bullet_Manager.h",
+    "Level_Bullet_Manager.cpp", "Level_Bullet_Manager.h", "WeaponMagazined.cpp",
     "agent_member_manager.cpp", "agent_member_manager.h", "agent_enemy_manager.cpp",
     "enemy_manager.h", "enemy_manager.cpp", "enemy_manager_inline.h",
     "memory_manager.h", "memory_manager.cpp", "memory_manager_inline.h",
@@ -78,6 +78,15 @@ def check_bullet_simulation(base):
     before, after = git("show", base + ":" + path), (ROOT / path).read_bytes()
     if before == after:
         return
+    if b"void CBulletManager::QueueNearMissSegment(" in before:
+        previous = b"stalker->on_bullet_near_miss(point);"
+        current = b"stalker->on_bullet_near_miss(point, segment.direction);"
+        if before.count(previous) != 1 or after.count(current) != 1 or after.replace(current, previous, 1) != before:
+            raise SystemExit("Existing bullet simulation/hit processing changed beyond the observed direction argument")
+        path = GAME + "Level_Bullet_Manager.h"
+        if git("show", base + ":" + path) != (ROOT / path).read_bytes():
+            raise SystemExit("Existing bullet data/layout declarations changed")
+        return
     begin = after.index(b"void CBulletManager::QueueNearMissSegment(")
     end = after.index(b"void CBulletManager::RegisterEvent(", begin)
     after = after[:begin] + after[end:]
@@ -98,6 +107,32 @@ def check_bullet_simulation(base):
         raise SystemExit("Existing bullet data/layout declarations changed")
 
 
+def check_weapon_fire(base):
+    """Allow only the stalker safety veto before the unchanged live shot loop."""
+    path = GAME + "WeaponMagazined.cpp"
+    before, after = git("show", base + ":" + path), (ROOT / path).read_bytes()
+    if before == after:
+        return
+    include = b'#include "ai/stalker/ai_stalker.h"\n'
+    hook = b'''        CAI_Stalker* stalker = smart_cast<CAI_Stalker*>(H_Parent());
+        const bool initial_direction = m_iShotNum < m_iShootEffectorStart;
+        if (stalker && !stalker->combat_safe_to_shoot(initial_direction ? m_vStartPos : p1,
+            initial_direction ? m_vStartDir : d))
+        {
+            // Stop the existing queue before recoil, sound, ammo or ballistics.
+            // A later planner decision can start a fresh burst after the ally clears.
+            m_bFireSingleShot = false;
+            FireEnd();
+            fTime = _max(fTime, fTimeToFire);
+            break;
+        }
+'''
+    if after.count(include) != 1 or after.count(hook) != 1:
+        raise SystemExit("Missing/duplicated stalker pre-shot safety hook")
+    if after.replace(include, b"", 1).replace(hook, b"", 1) != before:
+        raise SystemExit("Existing weapon accuracy, shot vectors, ammo or firing mechanics changed")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", required=True, help="audited commit before the stalker changes")
@@ -116,9 +151,10 @@ def main():
     check_preserved_region(base, GAME + "ai/stalker/ai_stalker_fire.cpp",
                            b"float CAI_Stalker::GetWeaponAccuracy()", b"void CAI_Stalker::Hit(")
     check_bullet_simulation(base)
+    check_weapon_fire(base)
     print(f"PASS: {len(paths)} changed/additional files are within the stalker AI scope against {base[:12]}")
     print("Renderer, shaders, graphics settings, core, physics and generic pathfinding are unchanged.")
-    print("Project settings, accuracy, shot vectors and existing bullet simulation are preserved; only a deferred AI observation hook is added.")
+    print("Project settings, accuracy, shot vectors and bullet simulation are preserved; weapon changes are limited to the stalker pre-shot safety veto.")
 
 
 if __name__ == "__main__":

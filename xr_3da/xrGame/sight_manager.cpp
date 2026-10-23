@@ -380,7 +380,7 @@ void CSightManager::update()
 
 		inherited::update();
         Fvector peripheral;
-        if (object().combat_peripheral_look(peripheral))
+        if (object().combat_alert_look(peripheral) || object().combat_peripheral_look(peripheral))
             SetPointLookAngles(peripheral, object().movement().m_head.target.yaw,
                 object().movement().m_head.target.pitch);
 	}

@@ -389,6 +389,83 @@ void test_shared_only_load_and_ammo_reserve()
     assert(npc.combat_fire_solution()); // Non-automatic weapons still fire at visible enemies.
     assert(npc.memories.visuals.shared_time_reads == 0);
 }
+
+void test_live_friendly_volume_and_wall_filter()
+{
+    frame(2000);
+    CAI_Stalker npc;
+    CEntityAlive enemy(10), ally(11);
+    CWeapon weapon(20);
+    CObject prop(30);
+    equip_and_select(npc, enemy, weapon);
+    see(npc, enemy, 2000);
+    assert(npc.combat_fire_solution()); // Scheduled five-ray solution is already cached.
+    const unsigned samples = npc.fire_param_calls;
+    ally.enemy_relation = false;
+    ally.live_reads_allowed = true;
+    ally.live_position = Fvector(.5f, 0.f, 5.f); // Between the old center and 11.25-degree rays.
+    auto& world = Level().ObjectSpace;
+    world = FixtureObjectSpace();
+    world.objects = {&enemy, &prop, &npc, &ally};
+    assert(!npc.combat_safe_to_shoot(npc.fixture_origin, npc.fixture_direction));
+    reason(npc, "friendly");
+    assert(!npc.m_combat_fire_allowed && npc.m_combat_fire_gate_frame == u32(-1));
+    assert(npc.m_pick_frame_id == u32(-1));
+    assert(npc.fire_param_calls == samples && world.nearby_calls == 1);
+    assert(world.local_rays == 1 && npc.combat_fire_blocked_time() == 0);
+    assert(equal(world.last_local_direction, npc.fixture_direction));
+    assert(std::fabs(world.last_local_range - (5.f - std::sqrt(.8f*.8f - .5f*.5f))) < .0001f);
+
+    // Same device frame: do not reuse an earlier live body position or resample aim.
+    ally.live_position.x = 2.f;
+    assert(npc.combat_safe_to_shoot(npc.fixture_origin, npc.fixture_direction));
+    ally.live_position.x = .5f;
+    world.blocked = true;
+    world.blocking_object = nullptr; // Static wall before the near side of the ally's volume.
+    assert(npc.combat_safe_to_shoot(npc.fixture_origin, npc.fixture_direction));
+    world.blocking_object = &ally;
+    assert(!npc.combat_safe_to_shoot(npc.fixture_origin, npc.fixture_direction));
+    world.blocked = false;
+    ally.alive = false;
+    assert(npc.combat_safe_to_shoot(npc.fixture_origin, npc.fixture_direction));
+    ally.alive = true;
+    ally.live_position.z = -1.f;
+    assert(npc.combat_safe_to_shoot(npc.fixture_origin, npc.fixture_direction));
+    ally.live_position.z = 51.f;
+    assert(npc.combat_safe_to_shoot(npc.fixture_origin, npc.fixture_direction));
+
+    hide(npc, enemy); // Broad phase can return a hidden enemy: never sample its live pose.
+    assert(npc.combat_safe_to_shoot(npc.fixture_origin, npc.fixture_direction));
+    assert(npc.fire_param_calls == samples);
+    assert(!npc.combat_safe_to_shoot(npc.fixture_origin, Fvector()));
+
+    // Scheduled decisions must preserve the obstruction timer used by existing
+    // cover recovery, instead of repeatedly restarting a vetoed burst.
+    ally.live_position = Fvector(.5f, 0.f, 5.f);
+    assert(!npc.combat_fire_solution());
+    reason(npc, "friendly");
+    const unsigned blocked_samples = npc.fire_param_calls;
+    const unsigned blocked_queries = world.nearby_calls;
+    assert(!npc.combat_fire_solution());
+    assert(npc.fire_param_calls == blocked_samples && world.nearby_calls == blocked_queries);
+    frame(2250);
+    assert(!npc.combat_fire_solution());
+    assert(npc.combat_fire_blocked_time() == 250);
+    ally.live_position.x = 2.f;
+    frame(2300);
+    assert(npc.combat_fire_solution());
+    assert(npc.combat_fire_blocked_time() == 0);
+    world = FixtureObjectSpace();
+
+    // Preserve scripted/death shutdown behavior without touching released memory.
+    npc.fixture_memory_available = false;
+    npc.fixture_script = true;
+    assert(npc.combat_safe_to_shoot(npc.fixture_origin, npc.fixture_direction));
+    npc.fixture_script = false;
+    npc.fixture_alive = false;
+    assert(npc.combat_safe_to_shoot(npc.fixture_origin, npc.fixture_direction));
+}
+
 }
 
 int main()
@@ -402,5 +479,6 @@ int main()
     test_final_shot_after_death_keeps_recoil_without_ai_memory();
     test_shot_callback_without_matching_target();
     test_shared_only_load_and_ammo_reserve();
+    test_live_friendly_volume_and_wall_filter();
     std::cout << "PASS: extracted stalker fire gate, shot lifecycle, target coordinates, visibility, budget, rays and cache\n";
 }

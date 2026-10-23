@@ -158,6 +158,8 @@ void CAI_Stalker::reinit()
 	m_combat_peripheral_point.set(0.f, 0.f, 0.f);
 	m_combat_near_miss = stalker_combat_awareness::NearMiss();
 	m_combat_near_miss_point.set(0.f, 0.f, 0.f);
+	m_combat_alert = stalker_combat_awareness::AlertLook();
+	m_combat_alert_point.set(0.f, 0.f, 0.f);
 	m_combat_target_offset.set(0.f, .9f, 0.f);
 	m_combat_target_offset_id = u16(-1);
 	m_combat_fire_enemy_id = u16(-1);

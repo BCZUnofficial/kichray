@@ -33,6 +33,19 @@ struct Peripheral
     }
 };
 
+// A fixed, short look at an audible event or the local incoming-fire sector.
+struct AlertLook
+{
+    unsigned int time; bool active, reacted;
+    AlertLook() : time(0), active(false), reacted(false) {}
+    bool looking(unsigned int now) const { return active && now - time < 1500u; }
+    bool observe(unsigned int now)
+    {
+        if (reacted && now - time < 2500u) return false;
+        time = now; active = reacted = true; return true;
+    }
+};
+
 // Local incoming fire only: no shooter identity and no enemy observation.
 struct NearMiss
 {

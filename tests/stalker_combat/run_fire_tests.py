@@ -41,6 +41,7 @@ def integration_source():
         "u32 CAI_Stalker::combat_suppression_remaining(",
         "bool CAI_Stalker::combat_fire_solution(",
         "bool CAI_Stalker::fire_make_sense(",
+        "bool CAI_Stalker::combat_safe_to_shoot(",
         "void CAI_Stalker::on_weapon_shot_start(",
     ):
         result.append(production_function(source, signature))
@@ -64,9 +65,16 @@ def burst_integration_source():
     body = production_function(weapon, "void CWeaponMagazined::state_Fire(")
     begin = body.index("\twhile (!m_magazine.empty()")
     end = body.index("\n\tUpdateSounds();", begin)
-    result.append("void CWeaponMagazined::advance_for_test(int shots_available) {\n"
-                  "assert(shots_available > 0);\nfTime = -float(shots_available - 1);\nFvector p1, d;\n" +
+    result.append("void CWeaponMagazined::state_Fire(float) {\n"
+                  "Fvector p1=holder.fixture_origin, d=holder.fixture_direction;\n" +
                   body[begin:end] + "\n}\n")
+    result.append("void CWeaponMagazined::advance_for_test(int shots_available) {\n"
+                  "assert(shots_available > 0);\nfTime = -float(shots_available - 1);\nstate_Fire(0.f);\n}\n")
+    update = production_function(weapon, "void CWeaponMagazined::UpdateCL(")
+    begin = update.index("\t\tcase eFire:") + len("\t\tcase eFire:")
+    end = update.index("\n\t\t\tbreak;", begin)
+    result.append("void CWeaponMagazined::update_fire_for_test(float dt) {\n" +
+                  update[begin:end] + "\n}\n")
     return "\n".join(result)
 
 

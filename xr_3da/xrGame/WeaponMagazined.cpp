@@ -4,6 +4,7 @@
 #include "WeaponMagazined.h"
 #include "entity.h"
 #include "actor.h"
+#include "ai/stalker/ai_stalker.h"
 #include "ParticlesObject.h"
 #include "scope.h"
 #include "silencer.h"
@@ -513,6 +514,18 @@ void CWeaponMagazined::state_Fire(float dt)
 	while (!m_magazine.empty() && fTime <= 0 && (IsWorking() || m_bFireSingleShot) &&
 		   (m_iQueueSize < 0 || m_iShotNum < m_iQueueSize))
 	{
+        CAI_Stalker* stalker = smart_cast<CAI_Stalker*>(H_Parent());
+        const bool initial_direction = m_iShotNum < m_iShootEffectorStart;
+        if (stalker && !stalker->combat_safe_to_shoot(initial_direction ? m_vStartPos : p1,
+            initial_direction ? m_vStartDir : d))
+        {
+            // Stop the existing queue before recoil, sound, ammo or ballistics.
+            // A later planner decision can start a fresh burst after the ally clears.
+            m_bFireSingleShot = false;
+            FireEnd();
+            fTime = _max(fTime, fTimeToFire);
+            break;
+        }
 		m_bFireSingleShot = false;
 
 		VERIFY(fTimeToFire > 0.f);

@@ -514,7 +514,7 @@ void CBulletManager::CommitNearMissSegments()
                 // A close segment on the other side of a wall/door is not a flyby.
                 if (Level().ObjectSpace.RayPick(center, offset, distance, collide::rqtBoth, hit, stalker)) continue;
             }
-            stalker->on_bullet_near_miss(point);
+            stalker->on_bullet_near_miss(point, segment.direction);
         }
     }
     m_near_miss_segments.clear_and_reserve();

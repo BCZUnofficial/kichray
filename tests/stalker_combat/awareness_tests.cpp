@@ -138,6 +138,31 @@ void search_patience()
     assert(!npc.memories.disabled);
     Device.dwTimeGlobal=55000;action.execute();assert(npc.memories.disabled);action.finalize();
 }
+void search_doorway_route()
+{
+    CAgentMemberManager group;CAI_Stalker npc;CEntityAlive enemy;configure(npc,enemy,group,1);
+    npc.memories.info.m_object_params.m_position=Fvector(0,0,16);
+    CStalkerActionSearchEnemy action(&npc);action.initialize();action.execute();
+    const u32 planned=npc.moving.changes;
+    // A queued path can still report the previous path complete for the first tick.
+    npc.moving.complete=true;Device.dwTimeGlobal+=100;action.execute();
+    assert(npc.moving.changes==planned && npc.moving.desired.z==16.f);
+    npc.moving.complete=false;
+    // Progress around the wall, away from the target, must count too. No direct ray
+    // to the hidden position is needed by this existing level navigation route.
+    for(u32 seconds=1;seconds<=12;++seconds){
+        Device.dwTimeGlobal=10000+seconds*1000;npc.pos.x=float(seconds);
+        action.execute();assert(npc.moving.changes==planned && npc.moving.desired.z==16.f);
+    }
+    // Continued movement still has an absolute approach limit.
+    Device.dwTimeGlobal=28000;npc.pos.x=18;action.execute();assert(npc.moving.changes>planned);
+    action.finalize();
+    configure(npc,enemy,group,1);npc.pos=Fvector();npc.memories.info.m_object_params.m_position.z=16;
+    action.initialize();action.execute();const u32 stalled=npc.moving.changes;
+    Device.dwTimeGlobal=14499;action.execute();assert(npc.moving.changes==stalled);
+    Device.dwTimeGlobal=14500;action.execute();assert(npc.moving.changes>stalled);
+    assert(npc.memories.info.m_level_time==10000);action.finalize();
+}
 void moving(CEntityAlive& other,u32 now,float x=1.f,float z=0.f)
 {
     other.hidden=false;other.pos=Fvector(x,0,z);
@@ -192,5 +217,5 @@ void close_pitch()
     float yaw,pitch;sight.SetFirePointLookAngles(npc.eye_matrix.c,yaw,pitch);
     assert(std::isfinite(yaw)&&std::isfinite(pitch));
 }
-int main(){search_lifecycle();search_cancellation();group_scout();delayed_sneak_decision();search_patience();peripheral();close_pitch();
+int main(){search_lifecycle();search_cancellation();group_scout();delayed_sneak_decision();search_patience();search_doorway_route();peripheral();close_pitch();
  std::cout<<"PASS: production cautious search, observation-age patience, delayed choice, squad lease, cancellation, peripheral occlusion/delay and close pitch\n";}

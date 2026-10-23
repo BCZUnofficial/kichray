@@ -14,12 +14,15 @@ struct CWeaponMagazined : CWeapon
 {
     explicit CWeaponMagazined(u16 id, CAI_Stalker& owner) : CWeapon(id), holder(owner), m_magazine(30, 1) {}
     CAI_Stalker& holder;
+    CObject* non_stalker_parent=nullptr;
+    CObject* H_Parent(){return non_stalker_parent ? non_stalker_parent : static_cast<CObject*>(&holder);}
     std::vector<int> m_magazine;
     int m_iQueueSize = -1, m_iShotNum = 0, m_iShootEffectorStart = 0;
     bool m_bStopedAfterQueueFired = false, m_bFireSingleShot = false;
     float fTime = 0.f, fTimeToFire = 1.f;
     Fvector m_vStartPos, m_vStartDir;
-    unsigned queue_writes = 0, stops = 0;
+    unsigned queue_writes = 0, stops = 0, scheduled_stops = 0;
+    int& iAmmoElapsed = ammo;
     int GetQueueSize() const { return m_iQueueSize; }
     void SetQueueSize(int value) { m_iQueueSize = value; ++queue_writes; }
     int ShotsFired() const override { return m_iShotNum; }
@@ -33,10 +36,15 @@ struct CWeaponMagazined : CWeapon
         m_bStopedAfterQueueFired = false;
         m_bFireSingleShot = true;
         m_iShotNum = 0;
+        m_vStartPos=holder.fixture_origin;m_vStartDir=holder.fixture_direction;
     }
     void OnShot() { holder.on_weapon_shot_start(this); }
     void FireTrace(const Fvector&, const Fvector&) { m_magazine.pop_back(); --ammo; }
     void advance_for_test(int shots_available);
+    void state_Fire(float dt);
+    void update_fire_for_test(float dt);
+    void StopShooting() { state = eIdle; working = false; ++scheduled_stops; }
+    void OnMagazineEmpty() { assert(ammo == 0); }
 };
 
 namespace ObjectHandlerSpace

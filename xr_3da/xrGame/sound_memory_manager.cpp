@@ -178,9 +178,15 @@ void CSoundMemoryManager::feel_sound_new(CObject* object, int sound_type, CSound
 	{
 		if (is_sound_type(sound_type, SOUND_TYPE_WEAPON_SHOOTING))
 		{
-			// this is fake!
+            // Stalkers investigate the audible event; a shot is not a damage report.
+            // The old fake-hit route also sampled the hidden shooter's live position.
+            if (m_stalker)
+            {
+                CObject* source = object && object->H_Parent() ? object->H_Parent() : object;
+                if (!source || source->ID() != self->ID()) m_stalker->on_combat_heard_shot(position);
+            }
 			CEntityAlive* _entity_alive = smart_cast<CEntityAlive*>(object);
-			if (_entity_alive && (self->ID() != _entity_alive->ID()) &&
+			if (!m_stalker && _entity_alive && (self->ID() != _entity_alive->ID()) &&
 				(_entity_alive->g_Team() != entity_alive->g_Team()))
 				m_object->memory().hit().add(_entity_alive);
 		}
@@ -274,16 +280,34 @@ void CSoundMemoryManager::add(const CObject* object, int sound_type, const Fvect
 		return;
 
 	const CGameObject* self = m_object;
+    const bool sampled_shot = m_stalker && is_sound_type(sound_type, SOUND_TYPE_WEAPON_SHOOTING);
+    u32 sampled_vertex = u32(-1);
+    if (sampled_shot)
+    {
+        // Keep the transient glance even off the AI mesh, but never pass an invalid
+        // event node to cover/search consumers or overwrite the last usable memory.
+        if (!_valid(position.x) || !_valid(position.y) || !_valid(position.z) ||
+            !ai().get_level_graph() || !ai().level_graph().valid_vertex_position(position))
+            return;
+        sampled_vertex = ai().level_graph().vertex_id(position);
+        if (!ai().level_graph().valid_vertex_id(sampled_vertex))
+            return;
+    }
 
 	xr_vector<CSoundObject>::iterator J = std::find(m_sounds->begin(), m_sounds->end(), object_id(object));
 	if (m_sounds->end() == J)
 	{
 		CSoundObject sound_object;
 
-		sound_object.fill(game_object, self, ESoundTypes(sound_type), sound_power,
+		sound_object.fill(sampled_shot ? 0 : game_object, self, ESoundTypes(sound_type), sound_power,
 						  !m_stalker ? squad_mask_type(-1) : m_stalker->agent_manager().member().mask(m_stalker));
-		if (!game_object)
+		if (!game_object || sampled_shot)
 			sound_object.m_object_params.m_position = position;
+        if (sampled_shot)
+        {
+            sound_object.m_object = game_object;
+            sound_object.m_object_params.m_level_vertex_id = sampled_vertex;
+        }
 #ifdef USE_FIRST_GAME_TIME
 		sound_object.m_first_game_time = Level().GetGameTime();
 #endif
@@ -294,11 +318,16 @@ void CSoundMemoryManager::add(const CObject* object, int sound_type, const Fvect
 	}
 	else
 	{
-		(*J).fill(game_object, self, ESoundTypes(sound_type), sound_power,
+		(*J).fill(sampled_shot ? 0 : game_object, self, ESoundTypes(sound_type), sound_power,
 				  (!m_stalker ? (*J).m_squad_mask.get()
 							  : ((*J).m_squad_mask.get() | m_stalker->agent_manager().member().mask(m_stalker))));
-		if (!game_object)
+		if (!game_object || sampled_shot)
 			(*J).m_object_params.m_position = position;
+        if (sampled_shot)
+        {
+            (*J).m_object = game_object;
+            (*J).m_object_params.m_level_vertex_id = sampled_vertex;
+        }
 	}
 }
 

@@ -904,9 +904,9 @@ void CStalkerActionHoldPosition::execute()
 	if (!mem_object.m_object)
 		return;
 
-    if (object().combat_fire_blocked_time() >= 750u)
-        m_storage->set_property(eWorldPropertyLookedOut, false);
-
+    // Hold follows a failed peek at an unseen target. A blocked firing line is
+    // expected here; resetting LookedOut would loop peek/hold forever and keep
+    // the remembered-position search unreachable.
     Fvector aim_position;
     if (object().combat_target_position(aim_position, true))
         object().sight().setup(CSightAction(SightManager::eSightTypePosition, aim_position, true));
@@ -955,6 +955,7 @@ CStalkerActionDetourEnemy::CStalkerActionDetourEnemy(CAI_Stalker* object, LPCSTR
 void CStalkerActionDetourEnemy::initialize()
 {
 	inherited::initialize();
+    m_enemy_cover = 0;
 	object().agent_manager().member().member(&object()).detour(true);
 	object().movement().set_desired_direction(0);
 	object().movement().set_path_type(MovementManager::ePathTypeLevelPath);
@@ -1002,7 +1003,20 @@ void CStalkerActionDetourEnemy::execute()
 	if (!mem_object.m_object)
 		return;
 
-	if (object().movement().path_completed())
+    const u32 elapsed = Device.dwTimeGlobal - start_level_time();
+    // A detour is one bounded leg, not another cover selection at every arrival.
+    // Complete it so the existing planner can investigate the remembered place.
+    if (elapsed >= 6000u || (elapsed >= 250u &&
+        (object().movement().level_path().failed() ||
+         (m_enemy_cover && object().movement().path_completed()))))
+    {
+        object().movement().set_nearest_accessible_position();
+        object().movement().set_movement_type(eMovementTypeStand);
+        m_storage->set_property(eWorldPropertyEnemyDetoured, true);
+        return;
+    }
+
+	if (!m_enemy_cover && object().movement().path_completed())
 	{
 		Fvector position = mem_object.m_object_params.m_position;
 
@@ -1019,14 +1033,16 @@ void CStalkerActionDetourEnemy::execute()
 
 		if (point)
 		{
+            m_enemy_cover = point;
 			object().movement().set_level_dest_vertex(point->level_vertex_id());
 			object().movement().set_desired_position(&point->position());
 		}
 		else
-			object().movement().set_nearest_accessible_position();
-
-		if (object().movement().path_completed())
-			m_storage->set_property(eWorldPropertyEnemyDetoured, true);
+        {
+            object().movement().set_nearest_accessible_position();
+            object().movement().set_movement_type(eMovementTypeStand);
+            m_storage->set_property(eWorldPropertyEnemyDetoured, true);
+        }
 	}
 
 	object().sight().setup(CSightAction(SightManager::eSightTypePosition, mem_object.m_object_params.m_position, true));
@@ -1207,7 +1223,8 @@ void CStalkerActionSearchEnemy::execute()
         m_search_direction.y = 0.f;
         if (m_search_direction.square_magnitude() < EPS_L) m_search_direction.set(0.f, 0.f, 1.f);
         m_search_direction.normalize_safe();
-        m_search_stage_time = now;
+        m_search_stage_time = m_search_last_progress = now;
+        m_search_progress_position = object().Position();
         m_search_stage = 0;
         m_search_has_anchor = true;
         m_search_moving = true;
@@ -1253,8 +1270,18 @@ void CStalkerActionSearchEnemy::execute()
             return;
         }
         object().sight().setup(CSightAction(SightManager::eSightTypePosition, m_search_anchor, true));
+        if (object().Position().distance_to_sqr(m_search_progress_position) >= .0625f)
+        {
+            m_search_progress_position = object().Position();
+            m_search_last_progress = now;
+        }
+        // The level path can turn around a wall and enter through a doorway.
+        // Allow that existing route to progress instead of giving up after six
+        // seconds; retain both a no-progress timeout and an absolute budget.
+        const u32 approach_age = now - m_search_stage_time;
+        if (approach_age < 250u && object().Position().distance_to_sqr(m_search_anchor) > .64f) return;
         if (!object().movement().path_completed() && !object().movement().level_path().failed() &&
-            now - m_search_stage_time < 6000u) return;
+            approach_age < 18000u && now - m_search_last_progress < 4500u) return;
         // If the exact last-known node cannot be reached, search only around our reachable position.
         if (object().Position().distance_to_sqr(m_search_anchor) > 16.f) m_search_anchor = object().Position();
         m_search_stage = 1;

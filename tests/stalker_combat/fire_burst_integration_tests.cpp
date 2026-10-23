@@ -1,5 +1,6 @@
 #include "fire_burst_fixture.h"
 #include <iostream>
+#include <cstring>
 
 TestDevice Device;
 FixtureRandom Random;
@@ -167,6 +168,94 @@ void test_zero_allowance_and_lost_target_stop_fire_goal()
     expect_goal(other_planner, other_weapon, eWorldPropertyAimingReady1);
     assert(!other_weapon.IsWorking());
 }
+
+void test_ally_entering_live_queue_stops_before_shot_and_can_resume()
+{
+    CAI_Stalker npc;
+    CEntityAlive enemy(10), ally(11);
+    CWeaponMagazined weapon(20, npc);
+    CObjectHandlerPlanner planner(npc);
+    CStalkerActionCombatBase action(npc);
+    prepare(npc, enemy, weapon, false);
+    auto& world = Level().ObjectSpace;
+    world = FixtureObjectSpace();
+    assert(npc.combat_fire_solution());
+    action.fire();
+    weapon.start_burst();
+    weapon.advance_for_test(1);
+    assert(weapon.ammo == 29 && weapon.ShotsFired() == 1 && npc.effector.calls == 1);
+    const unsigned samples = npc.fire_param_calls;
+    ally.enemy_relation = false;
+    ally.live_reads_allowed = true;
+    ally.live_position = Fvector(.5f, 0.f, 5.f);
+    world.objects = {&ally}; // Ally moves after scheduling and first shot, in the same frame.
+    weapon.advance_for_test(20);
+    assert(weapon.ammo == 29 && weapon.m_magazine.size() == 29);
+    assert(weapon.ShotsFired() == 1 && npc.effector.calls == 1);
+    assert(!weapon.IsWorking() && !weapon.m_bFireSingleShot && weapon.stops == 1);
+    assert(weapon.fTime >= weapon.fTimeToFire && !weapon.StopedAfterQueueFired());
+    assert(npc.fire_param_calls == samples); // No second stochastic aim sample for the guard.
+    assert(std::strcmp(npc.combat_fire_block_reason(), "friendly") == 0);
+
+    // Run the actual UpdateCL eFire branch: no stale shot, ammo use or stuck state.
+    weapon.update_fire_for_test(.5f);
+    assert(weapon.GetState() == CWeapon::eFire && weapon.scheduled_stops == 0);
+    weapon.update_fire_for_test(.5f);
+    weapon.update_fire_for_test(.5f);
+    assert(weapon.GetState() == CWeapon::eIdle && weapon.scheduled_stops == 1);
+    assert(weapon.ammo == 29 && weapon.ShotsFired() == 1 && npc.effector.calls == 1);
+    // The object planner can now issue its ordinary fire start after the ally clears.
+    world.objects.clear();
+    ++Device.dwFrame;
+    assert(npc.combat_fire_solution());
+    action.fire();
+    weapon.start_burst();
+    weapon.advance_for_test(1);
+    assert(weapon.ammo == 28 && weapon.ShotsFired() == 1 && npc.effector.calls == 2);
+    assert(weapon.IsWorking());
+    world = FixtureObjectSpace();
+}
+
+void test_guard_matches_initial_burst_direction_and_actor_bypass()
+{
+    CAI_Stalker npc;
+    CEntityAlive enemy(10), ally(11);
+    CWeaponMagazined weapon(20, npc);
+    CObjectHandlerPlanner planner(npc);
+    CStalkerActionCombatBase action(npc);
+    prepare(npc, enemy, weapon, false);
+    auto& world = Level().ObjectSpace;
+    world = FixtureObjectSpace();
+    action.fire();
+    weapon.m_iShootEffectorStart = 2;
+    weapon.start_burst();
+    weapon.advance_for_test(1);
+    npc.fixture_direction = Fvector(1.f, 0.f, 0.f);
+    ally.enemy_relation = false;
+    ally.live_reads_allowed = true;
+    ally.live_position = Fvector(.5f, 0.f, 5.f);
+    world.objects = {&ally};
+    weapon.advance_for_test(1); // Shot 2 would still use the saved initial direction.
+    assert(weapon.ShotsFired() == 1 && weapon.ammo == 29);
+
+    weapon.working = true;
+    weapon.m_iShotNum = 2; // Above the startup threshold FireTrace uses this frame's direction.
+    weapon.advance_for_test(1);
+    assert(weapon.ShotsFired() == 3 && weapon.ammo == 28);
+    ally.live_position = Fvector(5.f, 0.f, .5f);
+    weapon.advance_for_test(1);
+    assert(weapon.ShotsFired() == 3 && weapon.ammo == 28);
+
+    CObject actor(99);
+    weapon.non_stalker_parent = &actor;
+    weapon.start_burst();
+    const unsigned queries = world.nearby_calls;
+    weapon.advance_for_test(1); // The new hook has no effect on a non-stalker parent.
+    assert(weapon.ShotsFired() == 1 && weapon.ammo == 27);
+    assert(world.nearby_calls == queries);
+    world = FixtureObjectSpace();
+}
+
 }
 
 int main()
@@ -175,5 +264,7 @@ int main()
     test_completed_queue_is_not_reopened_by_next_profile();
     test_completion_boundary_and_live_profile_shrink();
     test_zero_allowance_and_lost_target_stop_fire_goal();
+    test_ally_entering_live_queue_stops_before_shot_and_can_resume();
+    test_guard_matches_initial_burst_direction_and_actor_bypass();
     std::cout << "PASS: extracted combat base/queue planner with production shot-loop completion semantics\n";
 }
