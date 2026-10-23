@@ -115,12 +115,12 @@ inline std::string Observe(const Registry& r,const View& v){
     Field("NORMAL_MAPPING",id,"metadata_source","TEXTURE_DESCRIPTOR_AND_R_SAMPLER; NOT_DDS_FILENAME_INFERENCE");
     Field("NORMAL_MAPPING",id,"bump_declared",bump?"YES":pi==r.passes.end()?"NOT_INSTRUMENTED":"NO");Field("NORMAL_MAPPING",id,"bump_aux_declared",bumpx?"YES":pi==r.passes.end()?"NOT_INSTRUMENTED":"NO");
     Field("NORMAL_MAPPING",id,"detail_declared",detail?"YES":pi==r.passes.end()?"NOT_INSTRUMENTED":"NO");
-    Field("NORMAL_MAPPING",id,"actual_normal_mapping",v.native?"UNSUPPORTED_BY_CURRENT_R4_DIFFUSE_PIPELINE":"SEE_COMPILED_VARIANT_AND_ACTUAL_BINDINGS; BRANCH_NOT_MEASURED");
+    Field("NORMAL_MAPPING",id,"actual_normal_mapping",v.native?"SEE_MATERIAL_EXECUTION_AND_MODEL_MATERIAL_EXECUTION; SOURCE_METADATA_NOT_EXECUTION":"SEE_COMPILED_VARIANT_AND_ACTUAL_BINDINGS; BRANCH_NOT_MEASURED");
     Field("NORMAL_MAPPING",id,"actual_parallax",v.native?"UNSUPPORTED_BY_CURRENT_R4_DIFFUSE_PIPELINE":"NOT_PROVEN_BY_SAMPLER_DECLARATION; SEE_VARIANT");
     Field("NORMAL_MAPPING",id,"detail_uv_scale","NOT_INSTRUMENTED_IN_SOURCE_DESCRIPTOR; SOURCE_AND_ACTUAL_SHADER_EVIDENCE_SEPARATE");
-    Field("NORMAL_MAPPING",id,"normal_texture_sampler",v.native?"NO_NORMAL_SAMPLER_IN_CURRENT_R4_BACKEND_SHADERS":"SOURCE_SAMPLER_DECLARATIONS_AND_ACTUAL_D3D9_BINDINGS_RECORDED_SEPARATELY");
+    Field("NORMAL_MAPPING",id,"normal_texture_sampler",v.native?"SEE_ACTUAL_NATIVE_MATERIAL_BINDINGS":"SOURCE_SAMPLER_DECLARATIONS_AND_ACTUAL_D3D9_BINDINGS_RECORDED_SEPARATELY");
     Field("NORMAL_MAPPING",id,"final_gbuffer_normal","NOT_READ_BACK");Field("NORMAL_MAPPING",id,"texture_branch_contribution","NOT_MEASURED");
-    Field("NORMAL_MAPPING",id,"decode_equation",v.native?"NOT_APPLICABLE_TEXTURE_NORMAL_UNUSED":"NOT_DERIVED_FROM_NAME; TOP_SOURCE_AND_BYTECODE_HASH_IDENTIFY_VARIANT");
+    Field("NORMAL_MAPPING",id,"decode_equation",v.native?"SEE_NATIVE_MATERIAL_NORMAL_PATH":"NOT_DERIVED_FROM_NAME; TOP_SOURCE_AND_BYTECODE_HASH_IDENTIFY_VARIANT");
     RenderSnapshot_U64("MATERIAL_REGISTRY","source_entries_retained",r.sources.size());RenderSnapshot_U64("MATERIAL_REGISTRY","pass_entries_retained",r.passes.size());RenderSnapshot_U64("MATERIAL_REGISTRY","variant_entries_retained",r.variants.size());
     RenderSnapshot_U64("MATERIAL_REGISTRY","source_entries_omitted",r.dropped_sources);RenderSnapshot_U64("MATERIAL_REGISTRY","pass_entries_omitted",r.dropped_passes);RenderSnapshot_U64("MATERIAL_REGISTRY","variant_entries_omitted",r.dropped_variants);
     return id;

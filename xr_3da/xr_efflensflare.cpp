@@ -500,6 +500,9 @@ void CLensFlare::Render(BOOL bSun, BOOL bFlares, BOOL bGradient)
 		{
 			u32 vBase = i * 4 + VS_Offset;
 			RCache.set_Shader(_2render[i]);
+            // Lens sprites already carry the weather/occlusion color. They
+            // must not receive surface lighting or far-plane clipping in R4.
+            if(KichR4_NativeActive())KichR4_NativeLensEffect(true);
             // KICH_CELESTIAL_OCCLUSION_V5: the source is drawn into the sky
             // before combine_1 blends distant geometry with that sky. Exclude
             // G-buffer geometry here so fog cannot reveal the disc through it.
@@ -514,6 +517,7 @@ void CLensFlare::Render(BOOL bSun, BOOL bFlares, BOOL bGradient)
             else if (sourceSkyMask)
                 RCache.set_Stencil(TRUE, D3DCMP_EQUAL, 0x00, 0xff, 0x00);
 			RCache.Render(D3DPT_TRIANGLELIST, vBase, 0, 4, 0, 2);
+            if(KichR4_NativeActive())KichR4_NativeLensEffect(false);
             if (sourceSkyMask && KichR4_NativeActive())
                 KichR4_NativeCelestialSource(false);
             else if (sourceSkyMask)

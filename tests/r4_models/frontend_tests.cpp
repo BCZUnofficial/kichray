@@ -55,7 +55,9 @@ void OwnershipAndRouting(){const fixture::Bytes raw=capture_fixture::Model(1);Ki
     KichR4_CaptureLoad(source,raw.data(),static_cast<uint32_t>(raw.size()),"shared.ogf");KichR4_CaptureCopy(copy,source);
     Matrix matrix=kich_r4_scene::Identity(),bones[2]={matrix,matrix};ModelInput in={};in.visual=copy;in.count=3;in.first=3;in.triangles=1;in.bone_count=2;in.bones=bones[0].m;in.skin_mode=KICH_R4_SKIN_SOFTWARE;
     memcpy(in.world,matrix.m,sizeof(in.world));memcpy(in.vp,matrix.m,sizeof(in.vp));
+    in.object_light_valid=true;in.object_hemi=.25f;in.object_sun=0;
     KichR4_CaptureSubmitModel(in);Require(state->frame.native_models.size()==1 && state->frame.vertices.empty(),"native mode integration bypasses legacy CPU Model");
+    Require(state->frame.native_models[0].object_light_valid && state->frame.native_models[0].object_hemi==.25f && state->frame.native_models[0].object_sun==0,"borrowed exposure copied into frame command");
     std::weak_ptr<const Mesh> alive=state->frame.native_models[0].mesh;KichR4_CaptureForget(source);KichR4_CaptureForget(copy);
     Require(!alive.expired(),"frame retains source geometry after visual registry deletion");bones[1].m[12]=300;
     Require(state->frame.native_models[0].bones[1].m[12]==0,"palette owns data beyond caller scope");

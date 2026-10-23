@@ -18,7 +18,7 @@ public:
     u32 get_width(){return Device.dwWidth;}u32 get_height(){return Device.dwHeight;}
 };
 class CRender:public IRender_interface,public pureFrame {
-    struct Queued {IRender_Visual* visual;Fmatrix world;bool hud;float distance;};
+    struct Queued {IRender_Visual* visual;Fmatrix world;bool hud;float distance;bool light_valid;float hemi,sun;};
     xr_vector<Queued> queue;
     xr_vector<CFrustum> shadow_views;
     Fmatrix transform;

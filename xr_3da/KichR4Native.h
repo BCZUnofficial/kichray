@@ -46,6 +46,8 @@ double KichR4_NativeQueueTime();
 void KichR4_NativeBegin(uint32_t width,uint32_t height,uint32_t frame);
 void KichR4_NativeMenuPP(bool enabled);
 KICH_NATIVE_API void KichR4_NativeCelestialSource(bool enabled);
+KICH_NATIVE_API void KichR4_NativeLensEffect(bool enabled);
+KICH_NATIVE_API void KichR4_NativeObjectLight(bool valid,float hemi,float sun);
 bool KichR4_NativePresent(const KichR4GameFrame& input);
 void KichR4_NativeDestroy();
 void KichR4_NativeLevel(const char* name);

@@ -22,9 +22,10 @@ void Facing(){
 kich_r4_capture::Batch MakeOpticalBatch(){
     using namespace kich_r4_capture;Batch batch;batch.Begin(960,540,7);batch.renderer_seen=batch.ui_seen=true;
     // Reverse capture order deliberately: ordinary glow, source, clouds, sky.
-    const uint32_t effects[]={1,kich_r4_optics::CelestialSource,3,2};
-    for(unsigned j=0;j<4;++j){Style style;style.blend=1;style.src=style.dst=2;style.write=0;
+    const uint32_t effects[]={1,kich_r4_optics::CelestialSource,3,2,1};
+    for(unsigned j=0;j<5;++j){Style style;style.blend=1;style.src=style.dst=2;style.write=0;
         if(j==1){style.depth=0;style.min_z=.1f;style.max_z=.8f;} // planner must enforce sky depth state
+        if(j==4)kich_r4_optics::SkyStyle(style); // lens gradient/flare: explicit unlit optical draw
         Command c(j*3,3,0,"base",style);c.effect=effects[j];batch.commands.push_back(c);
         for(unsigned i=0;i<3;++i){Vertex v={};v.p[0]=i==0?-.1f:.1f;v.p[1]=i==1?.1f:-.1f;v.p[2]=.5f;v.p[3]=1;v.color=0xffffffffu;
             if(j==1)kich_r4_optics::SkyDepth(v.p);
@@ -38,7 +39,7 @@ void Frame(){
     // Exercise local-light additive path: source must not be repeated there.
     input.lighting.count=1;auto& point=input.lighting.lights[0];point.type=1;point.range=15;point.position[1]=2;point.color[0]=1;
     auto batch=MakeOpticalBatch();Require(game.Render(input,&batch)==1,"native optical frame presents");
-    size_t source_at=0,combine_at=0,glow_at=0,sky_at=0,clouds_at=0;unsigned sources=0,glows=0;
+    size_t source_at=0,combine_at=0,glow_at=0,sky_at=0,clouds_at=0;unsigned sources=0,glows=0,lenses=0;
     for(size_t i=0;i<draw_entries.size();++i){const auto& d=draw_descriptions[i];
         if(draw_entries[i]=="PSSky")sky_at=i;
         if(draw_entries[i]=="PSClouds")clouds_at=i;
@@ -50,8 +51,9 @@ void Frame(){
             Require(!(draw_passes[i].clear_flags&KICH_R4_CLEAR_DEPTH),"sky source never clears opaque geometry mask");
             Require(!d.state.draw.depth_mode && !d.state.depth_write && d.state.min_depth==0 && d.state.max_depth==1,"source disables fixed-function depth despite captured state");
             Require(d.state.blend_enable && d.state.source_blend==2 && d.state.dest_blend==2,"source preserves original blend contract");
-        }else if(d.state.draw.start_index==0){++glows;glow_at=i;Require(draw_entries[i]=="PSPlain","ordinary glow retains existing forward shader");}}
-    Require(sources==1 && glows==1,"sun source and ordinary glow submitted exactly once");
+        }else if(d.state.draw.start_index==12){++lenses;Require(draw_entries[i]=="PSPlain" && !d.state.draw.depth_mode && !d.state.depth_write,"lens gradient is unlit and independent of interpolated depth");}
+        else if(d.state.draw.start_index==0){++glows;glow_at=i;Require(draw_entries[i]=="PSPlain","ordinary glow retains existing forward shader");}}
+    Require(sources==1 && glows==1 && lenses==1,"source, glow and lens gradient submitted once, without local-light additive replay");
     Require(sky_at<source_at && source_at<combine_at && combine_at<clouds_at && clouds_at<glow_at,"sky -> source -> combine -> clouds -> ordinary glow ordering");
     for(unsigned mode=6;mode<kich_r4_optics::DebugViewCount;++mode){
         draw_entries.clear();draw_descriptions.clear();draw_constants.clear();draw_passes.clear();
@@ -74,5 +76,5 @@ void Frame(){
     KichR4GeometryReport report={};Require(game.Stop(report)==0 && f->objects.empty(),"optical fixture releases all resources");
 }
 }
-int main(){try{(void)&Scenario;Facing();Frame();printf("G3e glow and sampled celestial mask/order/debug: %d checks passed (no GPU rasterization)\n",checks);return 0;}
+int main(){try{(void)&Scenario;Facing();Frame();printf("G3f lens routing and sampled celestial mask/order/debug: %d checks passed (no GPU rasterization)\n",checks);return 0;}
 catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

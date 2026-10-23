@@ -67,7 +67,7 @@ void KichR4_CaptureSubmitModel(const kich_r4_capture::ModelInput& input){GuardCa
         const uint32_t bit=1u<<input.skin_mode;if(!(mesh.diagnostic_modes&bit)){mesh.diagnostic_modes|=bit;
             c.Diagnostic("2W skin path: model="+found->second.name+"; mode="+(input.skin_mode==KICH_R4_SKIN_HARDWARE?"hardware clamp/u8":"software raw")+"; "+mesh.first_weight_detail);}}
     try{if(c.native_models)c.frame.NativeModel(input.visual,found->second.mesh,world,vp,bones,input.bone_count,input.count,input.first,input.triangles,input.style,input.skin_mode,
-            found->second.name.c_str(),input.shader,input.texture,input.secondary,input.effect,input.shader_element,input.shader_pass,input.skeleton,input.material);
+            found->second.name.c_str(),input.shader,input.texture,input.secondary,input.effect,input.shader_element,input.shader_pass,input.skeleton,input.material,input.object_light_valid,input.object_hemi,input.object_sun);
         else c.frame.Model(input.visual,mesh,world,vp,bones,input.bone_count,input.count,input.first,input.triangles,input.style,input.skin_mode,found->second.name.c_str(),g_render_snapshot_active);}
     catch(const std::exception& e){c.frame.Fail(ModelError(found->second,e.what()).c_str());}
 });}

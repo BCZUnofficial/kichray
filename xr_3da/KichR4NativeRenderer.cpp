@@ -29,7 +29,7 @@
 namespace {
 class R4Sector:public IRender_Sector {};
 class R4ROS:public IRender_ObjectSpecific {
-    IRenderable* parent;u32 updated;float total,sky;
+    IRenderable* parent;u32 updated;float total,sky,hemi_visibility=1,sun_visibility=1;
     void Update(){if(!g_pGamePersistent)return;if(updated!=u32(-1) && Device.dwTimeGlobal-updated<200)return;updated=Device.dwTimeGlobal;
         const CEnvDescriptor& e=g_pGamePersistent->Environment().CurrentEnv;Fvector p;p.set(0,0,0);
         if(parent){p=parent->renderable.xform.c;if(parent->renderable.visual)parent->renderable.xform.transform_tiny(p,parent->renderable.visual->vis.sphere.P);}
@@ -37,7 +37,9 @@ class R4ROS:public IRender_ObjectSpecific {
         if(trace){const Fvector directions[5]={{0,1,0},{.70710678f,.70710678f,0},{-.70710678f,.70710678f,0},{0,.70710678f,.70710678f},{0,.70710678f,-.70710678f}};
             exposure=0;for(u32 i=0;i<5;++i)if(!g_pGameLevel->ObjectSpace.RayTest(p,directions[i],32,collide::rqtStatic,NULL,NULL))exposure+=.2f;}
         sky=clampr((e.ambient.x+e.ambient.y+e.ambient.z)/3.f+(e.hemi_color.x+e.hemi_color.y+e.hemi_color.z)*exposure/3.f,0.f,1.f);total=sky;
-        Fvector sun;sun.invert(e.sun_dir);if(!trace || !g_pGameLevel->ObjectSpace.RayTest(p,sun,256,collide::rqtStatic,NULL,NULL))total+=(e.sun_color.x+e.sun_color.y+e.sun_color.z)/3.f;
+        hemi_visibility=exposure;
+        Fvector sun;sun.invert(e.sun_dir);sun_visibility=(!trace || !g_pGameLevel->ObjectSpace.RayTest(p,sun,256,collide::rqtStatic,NULL,NULL))?1.f:0.f;
+        if(sun_visibility)total+=(e.sun_color.x+e.sun_color.y+e.sun_color.z)/3.f;
         KichR4LightingFrame lights={};KichR4_CaptureLighting(&p.x,lights,ps_r2_ls_flags.test(R2FLAG_R1LIGHTS)!=0);
         for(u32 i=0;i<lights.count;++i){const KichR4LocalLight& l=lights.lights[i];Fvector d;d.set(l.position[0]-p.x,l.position[1]-p.y,l.position[2]-p.z);const float distance=d.magnitude();if(distance>=l.range || distance<EPS_L)continue;d.div(distance);
             if(l.type==IRender_Light::SPOT && -(d.x*l.direction[0]+d.y*l.direction[1]+d.z*l.direction[2])<cosf(l.cone*.5f))continue;
@@ -49,6 +51,7 @@ public:
     void force_mode(u32){updated=u32(-1);}
     float get_luminocity(){Update();return total;}
     float get_luminocity_hemi(){Update();return sky;}
+    void Exposure(float& hemi,float& sun){Update();hemi=hemi_visibility;sun=sun_visibility;}
 };
 xr_vector<ref_light> static_lights;
 u32 native_level_light_records=0,native_level_directional_skips=0;
@@ -157,7 +160,9 @@ IDirect3DIndexBuffer9* CRender::getIB(int id){if(vertices.empty())LoadBuffers();
 FSlideWindowItem* CRender::getSWI(int id){if(vertices.empty())LoadBuffers();R_ASSERT(id>=0 && id<(int)windows.size());return &windows[id];}
 void CRender::set_Transform(Fmatrix* v){transform=v?*v:Fidentity;RCache.set_xform_world(transform);}
 void CRender::set_HUD(BOOL v){val_bHUD=v;}
-void CRender::add_Visual(IRender_Visual* v){if(!v || invisible)return;Fvector center;transform.transform_tiny(center,v->vis.sphere.P);Queued q={v,transform,val_bHUD!=FALSE,center.distance_to_sqr(Device.vCameraPosition)};queue.push_back(q);}
+void CRender::add_Visual(IRender_Visual* v){if(!v || invisible)return;Fvector center;transform.transform_tiny(center,v->vis.sphere.P);Queued q={v,transform,val_bHUD!=FALSE,center.distance_to_sqr(Device.vCameraPosition),false,1,1};
+    if(object && !q.hud){R4ROS* ros=dynamic_cast<R4ROS*>(object->renderable_ROS());if(ros){ros->Exposure(q.hemi,q.sun);q.light_valid=true;}}
+    queue.push_back(q);}
 void CRender::add_Geometry(IRender_Visual* v){if(v && occ_visible(v->vis))add_Visual(v);}
 void CRender::Submit(IRender_Visual* v,CKinematics* parent){if(!v)return;CKinematics* k=v->dcast_PKinematics();if(k){k->CalculateBones(TRUE);k->CalculateWallmarks();parent=k;}
     const Fmatrix original=RCache.get_xform_world();
@@ -205,7 +210,8 @@ void CRender::flush(){const Fmatrix original=Device.mProject;Fmatrix hands=origi
     if(g_render_snapshot_active){kich_r4_telemetry::Vector("HUD","projection","world_projection",&original._11,16);kich_r4_telemetry::Vector("HUD","projection","hands_projection",&hands._11,16);
         kich_r4_telemetry::Float("HUD","projection","psHUD_FOV_multiplier",psHUD_FOV);kich_r4_telemetry::Float("HUD","projection","camera_fov_degrees",Device.fFOV);
         kich_r4_telemetry::Text("HUD","projection","usage","hands_projection_BOUND_FOR_hud_QUEUE_ONLY; WORLD_PROJECTION_RESTORED_AFTER_FLUSH");}
-    for(u32 i=0;i<queue.size();++i){const Queued& q=queue[i];val_bHUD=q.hud;RCache.set_xform_world(q.world);if(q.hud){rmNear();RCache.set_xform_project(hands);}else{rmNormal();RCache.set_xform_project(original);}Submit(q.visual,NULL);}
+    for(u32 i=0;i<queue.size();++i){const Queued& q=queue[i];KichR4_NativeObjectLight(q.light_valid,q.hemi,q.sun);val_bHUD=q.hud;RCache.set_xform_world(q.world);if(q.hud){rmNear();RCache.set_xform_project(hands);}else{rmNormal();RCache.set_xform_project(original);}Submit(q.visual,NULL);}
+    KichR4_NativeObjectLight(false,1,1);
     queue.clear();val_bHUD=FALSE;rmNormal();RCache.set_xform_project(original);
 }
 void CRender::Calculate(){queue.clear();shadow_views.clear();if(!loaded || !g_pGameLevel)return;ViewBase.CreateFromMatrix(Device.mFullTransform,FRUSTUM_P_ALL);View=&ViewBase;phase=PHASE_NORMAL;

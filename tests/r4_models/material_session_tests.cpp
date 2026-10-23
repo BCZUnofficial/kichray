@@ -66,9 +66,9 @@ void MaterialBindingsAndRouting(const char* directory){Harness h;Require(h.Start
     Require(report.find("source=SOC_MODEL_SOURCE_TEST")!=std::string::npos && report.find("texture1=native/bump")!=std::string::npos && report.find("texture4=level/hemi")!=std::string::npos,"snapshot exposes descriptor source and actual auxiliary texture bindings");
 }
 void MaterialFallbacks(const char* directory){for(unsigned mode=0;mode<3;++mode){Harness h;Require(h.Start()==0,"material fallback setup");auto mesh=MaterialMesh();const auto material=CutoutMaterial();SeedTextures(h,material);
-    if(mode==0)mesh->available_attributes&=~(kich_r4_material::ATTR_TANGENT|kich_r4_material::ATTR_BINORMAL);
+    if(mode==0)for(auto& v:mesh->vertices)v.attributes&=~(kich_r4_material::ATTR_TANGENT|kich_r4_material::ATTR_BINORMAL);
     if(mode==1)h.level.textures[material.bump_aux]=h.level.checker;
-    if(mode==2)mesh->available_attributes&=~kich_r4_material::ATTR_UV1;
+    if(mode==2)for(auto& v:mesh->vertices)v.attributes&=~kich_r4_material::ATTR_UV1;
     kich_r4_capture::Batch batch;batch.Begin(640,480,43+mode);Capture(batch,mesh,material);Require(h.models.Prepare(h.frame,h.level,batch)==0,"fallback prepares native source model");
     BeginMaterialSnapshot(directory);RenderSnapshot_Pass("GBUFFER");Require(h.Draw(batch,KichR4ModelSession::Geometry)==0 && model_draws.size()==1,"missing optional material evidence retains geometry submission");
     const auto& draw=model_draws.back();const auto& constants=constants_drawn.back();
@@ -78,7 +78,16 @@ void MaterialFallbacks(const char* directory){for(unsigned mode=0;mode<3;++mode)
     RenderSnapshot_End("COMPLETE");const char* reason=mode==0?"bump_missing_valid_source_basis":mode==1?"bump_dds_unavailable":"lightmap_missing_source_uv1";
     Require(MaterialReport().find(reason)!=std::string::npos,"snapshot explicitly explains optional material fallback");
 }}
+void DrawBasisAndExposure(){Harness h;Require(h.Start()==0,"object exposure setup");auto mesh=MaterialMesh();const auto material=CutoutMaterial();SeedTextures(h,material);
+    mesh->vertices.push_back({});mesh->available_attributes=0; // unrelated unused vertex cannot poison this range
+    kich_r4_capture::Batch batch;batch.Begin(640,480,50);Capture(batch,mesh,material);
+    Require(batch.native_models[0].available_attributes==15,"model attributes come from referenced draw indices");
+    auto& cmd=batch.native_models[0];cmd.object_light_valid=true;cmd.object_hemi=.2f;cmd.object_sun=0;
+    Require(h.models.Prepare(h.frame,h.level,batch)==0 && h.Draw(batch,KichR4ModelSession::Geometry)==0,"object exposure draw");
+    const auto& c=constants_drawn.back();Require(c.color_bias[3]==1 && c.color_scale[3]==.2f && c.sun_scale_bias[2]==0,"raw object visibility reaches model shader without weather multiplication");
+    Require((uint32_t(c.material[0])&33)==33,"valid bump and object sun mask coexist");
 }
-int main(int argc,char** argv){try{Require(argc==2,"snapshot output directory");MaterialCaptureOwnership();MaterialBindingsAndRouting(argv[1]);MaterialFallbacks(argv[1]);
+}
+int main(int argc,char** argv){try{Require(argc==2,"snapshot output directory");MaterialCaptureOwnership();MaterialBindingsAndRouting(argv[1]);MaterialFallbacks(argv[1]);DrawBasisAndExposure();
     printf("G3c native model material integration: %d checks passed\n",checks);return 0;
 }catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

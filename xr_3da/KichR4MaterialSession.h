@@ -30,7 +30,7 @@ inline void SnapshotMetadata(const Descriptor& m,const char* category,const char
 }
 inline void Bind(KichR4FrameSession& s,KichR4LevelSession& level,const Descriptor& m,
     uint32_t attributes,kich_r4_lighting::Constants& c,KichR4DeferredDrawDesc& draw,
-    bool shadow,bool vertex_baked=false,uint32_t extra_flags=0) {
+    bool shadow,bool vertex_baked=false,uint32_t extra_flags=0,const char* main_category="MATERIAL_EXECUTION") {
     c.material[0]=0;c.material[1]=m.detail_scale[0];c.material[2]=m.detail_scale[1];c.material[3]=0;
     c.alpha[0]=m.alpha_ref;c.alpha[1]=static_cast<float>(m.alpha_func);
     uint32_t flags=extra_flags;std::string fallback=m.unsupported_reason;
@@ -62,7 +62,7 @@ inline void Bind(KichR4FrameSession& s,KichR4LevelSession& level,const Descripto
     if(g_render_snapshot_active){
         for(unsigned i=1;i<8;++i)RenderSnapshot_Texture(i,"UNBOUND");
         char id[64];snprintf(id,sizeof(id),"mx_%016llx_%x_%x_%u",static_cast<unsigned long long>(Key(m)),attributes,flags,shadow?1:0);
-        const char* category=shadow?"MATERIAL_SHADOW_EXECUTION":"MATERIAL_EXECUTION";
+        const char* category=shadow?"MATERIAL_SHADOW_EXECUTION":main_category;
         RenderSnapshot_MaterialRoute(id);SnapshotMetadata(m,category,id);
         kich_r4_telemetry::U64(category,id,"descriptor_key",Key(m));
         kich_r4_telemetry::U64(category,id,"source_attributes",attributes);

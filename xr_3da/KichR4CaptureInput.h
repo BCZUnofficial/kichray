@@ -18,6 +18,7 @@ struct ModelInput {
     /* Borrowed only until CaptureSubmitModel returns. Null uses source OGF metadata. */
     const char* shader;const char* texture;const char* secondary;uint32_t effect,shader_element,shader_pass;
     const kich_r4_material::Descriptor* material;
+    bool object_light_valid;float object_hemi,object_sun;
 };
 struct UIInput {
     void* vb;void* ib;

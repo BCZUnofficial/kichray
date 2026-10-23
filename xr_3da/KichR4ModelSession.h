@@ -297,7 +297,14 @@ struct KichR4ModelSession {
                 else if(d.surface.textures[0]==l.checker){char resolved[256];snprintf(resolved,sizeof(resolved),"CHECKER_FALLBACK:%s",texture.c_str());RenderSnapshot_Texture(0,resolved);}}
             if(maps)for(unsigned j=0;j<6;++j)d.surface.textures[j+2]=maps[j];
             if(pass==Distortion)d.surface.textures[1]=scene_color;
-            if(c.has_material && (pass==Geometry || pass==Shadow))kich_r4_material::Bind(s,l,c.material,c.mesh->available_attributes,constants,d.surface,pass==Shadow);
+            if(c.has_material && (pass==Geometry || pass==Shadow))kich_r4_material::Bind(s,l,c.material,c.available_attributes,constants,d.surface,pass==Shadow,false,c.object_light_valid && pass==Geometry?kich_r4_material::SHADER_SUN:0,"MODEL_MATERIAL_EXECUTION");
+            // Reuse unused model constants; static/tree layout and DLL ABI stay unchanged.
+            constants.color_bias[3]=c.object_light_valid?1.f:0.f;constants.color_scale[3]=c.object_hemi;constants.sun_scale_bias[2]=c.object_sun;
+            if(c.object_light_valid && pass==Geometry)constants.material[0]=float(uint32_t(constants.material[0])|kich_r4_material::SHADER_SUN);
+            if(c.object_light_valid && (pass==Forward || pass==HUD))for(unsigned axis=0;axis<3;++axis)constants.sun_color[axis]*=c.object_sun;
+            if(g_render_snapshot_active){char id[64];snprintf(id,sizeof(id),"command_%u",static_cast<unsigned>(index));
+                kich_r4_telemetry::U64("MODEL_LIGHTING",id,"valid",c.object_light_valid);kich_r4_telemetry::Float("MODEL_LIGHTING",id,"hemi_visibility",c.object_hemi);kich_r4_telemetry::Float("MODEL_LIGHTING",id,"sun_visibility",c.object_sun);
+                kich_r4_telemetry::Text("MODEL_LIGHTING",id,"resource",c.resource.c_str());}
             if(g_render_snapshot_active && maps)for(unsigned j=0;j<6;++j){char name[48];snprintf(name,sizeof(name),"SELECTED_SHADOW_FACE_%u",j);RenderSnapshot_Texture(j+2,maps[j]?name:"UNBOUND");}
             if(l.Expect(s,"G3c model material constants",l.bridge.api.update_buffer(s.device,cb,&constants,sizeof(constants)))<0)return s.failure;
             d.pose_buffer=command_poses[index];if(l.Expect(s,"G3b native model DrawIndexed",api.draw(s.device,&d))<0)return s.failure;

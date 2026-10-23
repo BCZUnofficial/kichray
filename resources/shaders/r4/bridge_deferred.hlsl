@@ -65,6 +65,7 @@ Varying VSModelGPU(NativeModelInput v){
     o.n=float4(dot(n,n)>1e-12?normalize(n):float3(0,0,0),(v.attributes&16)!=0?v.uv_hemi_sun.z:1);
     o.t=mul(float4(t,0),world).xyz;o.b=mul(float4(b,0),world).xyz;o.uv1=v.uv_hemi_sun.xy;
     o.baked_sun=float4(v.light.rgb,(v.attributes&32)!=0?v.uv_hemi_sun.w:1);
+    if(color_bias.w>0){o.n.w*=color_scale.w;o.baked_sun.w=((v.attributes&32)!=0?o.baked_sun.w:.5)*sun_scale_bias.z;}
     o.p=mul(float4(p,1),mvp);o.w=mul(float4(p,1),world).xyz;o.uv=v.uv;o.c=1;return o;
 }
 Varying VSScreen(ScreenInput v){Varying o=(Varying)0;o.p=float4(v.p,1);o.uv=v.uv;o.c=1;return o;}

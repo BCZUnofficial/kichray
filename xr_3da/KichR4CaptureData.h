@@ -177,6 +177,7 @@ struct NativeModelCommand {
     uint32_t vertex_count,first,count,layer,skin_mode,effect,shader_element,shader_pass;Style style;
     std::string resource,shader,texture,secondary;
     kich_r4_material::Descriptor material;bool has_material;
+    uint32_t available_attributes=0;bool object_light_valid=false;float object_hemi=1,object_sun=1;
     std::shared_ptr<RenderSnapshotProvenance> provenance;
     Bounds bounds;bool bounds_known;
     uint64_t visual_id,skeleton_id,pose_hash;uint32_t source_frame;bool identity_measured,pose_hash_valid;
@@ -309,16 +310,20 @@ struct Batch {
     void NativeModel(const void* identity,const std::shared_ptr<Mesh>& mesh,const Matrix& world,const Matrix& vp,
         const Matrix* bones,uint32_t bone_count,uint32_t count,uint32_t first,uint32_t tris,const Style& style,
         uint32_t skin_mode,const char* name,const char* shader=NULL,const char* texture=NULL,const char* secondary=NULL,uint32_t effect=0,
-        uint32_t shader_element=UINT32_MAX,uint32_t shader_pass=UINT32_MAX,const void* skeleton=NULL,const kich_r4_material::Descriptor* material=NULL){
+        uint32_t shader_element=UINT32_MAX,uint32_t shader_pass=UINT32_MAX,const void* skeleton=NULL,const kich_r4_material::Descriptor* material=NULL,
+        bool light_valid=false,float object_hemi=1,float object_sun=1){
         Check(mesh.get()!=NULL,"native model geometry missing");
         Check(count && count<=mesh->vertices.size() && tris && uint64_t(first)+uint64_t(tris)*3<=mesh->indices.size(),"native model draw range");
         Check(bone_count<=256 && (!mesh->skinned || (bones && mesh->bones<=bone_count)),"native model bone pose range");
         Check(!mesh->two_weights || skin_mode==KICH_R4_SKIN_SOFTWARE || skin_mode==KICH_R4_SKIN_HARDWARE,"2W skin mode handshake missing; rebuild R1/R2");
         ValidateModelMatrix(world);ValidateModelMatrix(vp);
         if(mesh->skinned)for(uint32_t i=0;i<mesh->bones;++i)ValidateModelMatrix(bones[i]);
-        for(uint32_t i=0;i<tris*3;++i)Check(mesh->indices[first+i]<count,"native progressive model vertex range");
+        uint32_t attributes=~0u;
+        for(uint32_t i=0;i<tris*3;++i){Check(mesh->indices[first+i]<count,"native progressive model vertex range");attributes&=mesh->vertices[mesh->indices[first+i]].attributes;}
         Check(!mesh->two_weights || skin_mode!=KICH_R4_SKIN_HARDWARE || mesh->hardware_weights_safe,"2W hardware weight exceeds safe quantization range");
         NativeModelCommand cmd;cmd.mesh=mesh;cmd.world=world;cmd.vp=vp;cmd.vertex_count=count;cmd.first=first;cmd.count=tris*3;
+        Check(!light_valid || (Finite(object_hemi) && Finite(object_sun) && object_hemi>=0 && object_hemi<=1 && object_sun>=0 && object_sun<=1),"object exposure range");
+        cmd.available_attributes=attributes;cmd.object_light_valid=light_valid;cmd.object_hemi=object_hemi;cmd.object_sun=object_sun;
         cmd.layer=style.max_z<.1f?1:0;cmd.style=style;cmd.skin_mode=skin_mode;cmd.effect=effect;
         if(material){cmd.material=*material;cmd.has_material=true;kich_r4_material::Apply(cmd.material,cmd.style);}
         cmd.shader_element=shader_element;cmd.shader_pass=shader_pass;
@@ -327,6 +332,7 @@ struct Batch {
         key.append(reinterpret_cast<const char*>(&world),sizeof(world));key.append(reinterpret_cast<const char*>(&vp),sizeof(vp));
         const uint32_t words[]={first,tris,count,skin_mode,cmd.layer,effect,shader_element,shader_pass,style.blend,style.src,style.dst,style.clamp,style.cull,style.depth,style.write,style.alpha_func};
         key.append(reinterpret_cast<const char*>(words),sizeof(words));key.append(reinterpret_cast<const char*>(&style.alpha_ref),sizeof(style.alpha_ref));
+        const float exposure[]={light_valid?1.f:0.f,object_hemi,object_sun};key.append(reinterpret_cast<const char*>(exposure),sizeof(exposure));
         const float depth_range[]={style.min_z,style.max_z};key.append(reinterpret_cast<const char*>(depth_range),sizeof(depth_range));
         key.append(reinterpret_cast<const char*>(&style.scissor),sizeof(style.scissor));if(style.scissor)key.append(reinterpret_cast<const char*>(style.rect),sizeof(style.rect));
         if(mesh->skinned)key.append(reinterpret_cast<const char*>(bones),mesh->bones*sizeof(Matrix));
