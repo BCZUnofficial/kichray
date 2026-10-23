@@ -138,7 +138,7 @@ void CObjectHandlerPlanner::set_goal(MonsterSpace::EObjectAction object_action, 
 			.set_inertia_time(m_queue_interval ? m_queue_interval : 300);
 	}
 
-    const u32 fired = u32(_max(0, weapon->ShotsFired()));
+    const u32 fired = u32(_max(0, static_cast<CWeapon*>(weapon)->ShotsFired()));
     const int current_queue = weapon->GetQueueSize();
     const bool finished = weapon->StopedAfterQueueFired() ||
         (current_queue >= 0 && fired >= u32(current_queue));

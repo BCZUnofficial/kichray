@@ -101,8 +101,8 @@ void CStalkerActionCombatBase::fire()
         if (weapon && object().best_weapon() && weapon->ID() == object().best_weapon()->object().ID() &&
             stalker_combat_fire_policy::queue_in_progress(weapon->GetState() == CWeapon::eFire,
                 !!weapon->IsWorking(), weapon->StopedAfterQueueFired(),
-                u32(_max(0, weapon->ShotsFired())), weapon->GetQueueSize()))
-            fired = u32(_max(0, weapon->ShotsFired()));
+                u32(_max(0, static_cast<CWeapon*>(weapon)->ShotsFired())), weapon->GetQueueSize()))
+            fired = u32(_max(0, static_cast<CWeapon*>(weapon)->ShotsFired()));
         max_queue_size = _min(max_queue_size,
             stalker_combat_fire_policy::suppression_queue_limit(fired, remaining));
         min_queue_size = _min(min_queue_size, max_queue_size);

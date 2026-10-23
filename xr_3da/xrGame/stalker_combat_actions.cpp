@@ -1061,7 +1061,7 @@ void CStalkerActionSearchEnemy::execute()
     const CMemoryInfo memory = object().memory().memory(enemy);
     if (!memory.m_object) return;
     const CVisibleObject* visual = object().memory().visual().visible_object(enemy);
-    const bool squad_visible = visual && visual->m_visible.get() != 0;
+    const bool squad_visible = visual && visual->visible(squad_mask_type(-1));
     const u32 now = Device.dwTimeGlobal;
     const bool new_enemy = !m_search_has_anchor || m_search_enemy_id != enemy->ID();
     const bool fresh_report = new_enemy ||
