@@ -72,7 +72,7 @@ void MaterialExecution(){Fixture fixture;f=&fixture;ResetDeferredRecorder();cons
     Require(!(uint32_t(c.material[0])&1) && !draw.textures[1] && !draw.textures[2],"missing bump auxiliary checker never reaches normal decoder");
     m.bump_aux="bump#";
     for(auto& material:game.level.scene.materials){material.descriptor=m;material.kind=3;}
-    for(auto& vb:game.level.scene.vertices)vb.available_attributes=127;
+    for(auto& draw:game.level.scene.draws)draw.available_attributes=127;
     game.deferred.native_mode=true;const KichR4FrameColor clear={sizeof(clear),{0,0,0,1}};Require(game.frame.BeginClear(clear)==0,"begin isolated material passes");
     const size_t first=draw_descriptions.size();
     Require(game.deferred.Pass(game.frame,game.level,input.width,input.height,3,game.deferred.albedo,game.deferred.normal,game.deferred.depth,3,NULL,game.deferred.light)==0 && game.deferred.Static(game.frame,game.level,game.deferred.base.mvp,false)==0,"classified cutout enters GBuffer despite legacy transparent kind");
@@ -82,7 +82,15 @@ void MaterialExecution(){Fixture fixture;f=&fixture;ResetDeferredRecorder();cons
     for(size_t j=0;j<split-first;++j){const auto& main=draw_descriptions[first+j];const auto& shadow=draw_descriptions[split+j];
         Require(!main.state.blend_enable && main.state.depth_write && main.state.draw.depth_mode && main.state.draw.cull_mode==KICH_R4_CULL_NONE,"cutout uses opaque depth state and source two-sided cull");
         Require(main.textures[0]==shadow.textures[0] && draw_constants[first+j].alpha[0]==draw_constants[split+j].alpha[0] && draw_constants[first+j].alpha[1]==draw_constants[split+j].alpha[1],"main and shadow preserve same base resource and alpha compare");}
-    Require(game.frame.Present()==0,"material pass frame completed");KichR4GeometryReport report={};game.Stop(report);Require(f->objects.empty(),"material fixture releases maps and targets");
+    Require(game.frame.Present()==0,"material pass frame completed");
+    RenderSnapshotInfo info={};strcpy(info.renderer,"R4");strcpy(info.api,"D3D11");strcpy(info.directory,"/tmp");
+    Require(RenderSnapshot_Request(),"material coverage request");RenderSnapshot_Begin(info);
+    for(unsigned i=0;i<160;++i){m.shader="shadow_only_"+std::to_string(i);draw={};kich_r4_material::Bind(game.frame,game.level,m,127,c,draw,true);}
+    m.shader="main_after_shadow_overflow";draw={};kich_r4_material::Bind(game.frame,game.level,m,127,c,draw,false);
+    RenderSnapshot_End("COMPLETE");std::ifstream file(RenderSnapshot_LastPath());std::ostringstream text;text<<file.rdbuf();const std::string output=text.str();
+    Require(output.find("shader=main_after_shadow_overflow")!=std::string::npos && output.find("TBN; GBUFFER_NORMAL")!=std::string::npos,"shadow dictionary overflow cannot consume main material coverage");
+    Require(output.find("SHADOW; OPTIONAL_MAPS_INTENTIONALLY_UNUSED")!=std::string::npos,"shadow optional maps explicitly distinguished from missing geometry maps");
+    KichR4GeometryReport report={};game.Stop(report);Require(f->objects.empty(),"material fixture releases maps and targets");
 }
 void Invalid(){
     for(unsigned which=0;which<3;++which){Fixture fixture;f=&fixture;ResetDeferredRecorder();const KichR4LevelFiles fs={Open,Close};kich_r4_game::Session game(DeferredAPIs(),fs,"l01_escape",NULL);

@@ -1,6 +1,7 @@
 #include "fixture.h"
 #include "../../xr_3da/KichR4LevelData.h"
 #include "../../xr_3da/KichR4LightingMath.h"
+#include "../../xr_3da/KichR4FrameMetrics.h"
 #include <stdio.h>
 #include <stddef.h>
 #include <limits>
@@ -58,6 +59,24 @@ void TreeLighting(){fixture::Level source;const Span visuals=Chunk(View(source.l
     Scene scene;Parse(View(source.level),View(source.geometry),scene);
     Require(scene.draws[2].tree && Near(scene.draws[2].tree_scale[3],.4f) && Near(scene.draws[2].tree_bias[3],.1f),"tree hemi coefficients follow FTreeVisual::Load half-scale exactly");
 }
+void DrawBasis(){fixture::Level source;Scene scene;Parse(View(source.level),View(source.geometry),scene);
+    scene.draws.clear();scene.indices.clear();scene.triangles=scene.visuals=scene.skipped=scene.trees=0;
+    for(auto& buffer:scene.vertices)for(auto& v:buffer.vertices)v.attributes=127;
+    scene.vertices[0].vertices[0].attributes=0; // not referenced by either static visual
+    scene.vertices[0].vertices[5].attributes&=~ATTR_TANGENT; // referenced only by SWI visual
+    scene.vertices[0].available_attributes=0; // shared VB intersection is deliberately unusable
+    Visuals(View(source.level),Indices(View(source.geometry)),TreeWindows(View(source.geometry)),scene);
+    Require(scene.draws[0].available_attributes==127,"unreferenced bad vertex cannot disable material basis");
+    Require(scene.draws[1].available_attributes==(127u&~ATTR_TANGENT),"referenced bad SWI vertex disables bump only in its mesh");
+    Require(scene.draws[2].available_attributes==127 && scene.draws[3].available_attributes==127,"tree and progressive tree use their own referenced basis");
 }
-int main(){try{Static();Math();TreeLighting();printf("G3c XRLC source basis / UV1 / baked channels: %d checks passed\n",checks);return 0;}
+void Metrics(){kich_r4_metrics::Window window;window.Add(1000,true);window.Add(1010,true);window.Add(1030,true);
+    Require(window.count==2 && Near(float(window.Low()),50),"1 percent low uses slowest ceil(samples/100) intervals");
+    window.Add(2000,false);window.Add(3000,true);Require(window.count==2,"snapshot and following gap excluded");
+    for(unsigned i=1;i<=120;++i)window.Add(3000+i*10,true);
+    Require(window.count==120 && Near(float(window.Low()),100),"bounded window overwrites old spikes");
+    window.Gap();window.Add(999999,true);Require(window.count==120 && Near(float(window.Low()),100),"suspension excluded");
+}
+}
+int main(){try{Static();Math();TreeLighting();DrawBasis();Metrics();printf("G3e XRLC draw basis / baked channels / frame windows: %d checks passed\n",checks);return 0;}
 catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

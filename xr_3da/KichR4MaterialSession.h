@@ -62,16 +62,18 @@ inline void Bind(KichR4FrameSession& s,KichR4LevelSession& level,const Descripto
     if(g_render_snapshot_active){
         for(unsigned i=1;i<8;++i)RenderSnapshot_Texture(i,"UNBOUND");
         char id[64];snprintf(id,sizeof(id),"mx_%016llx_%x_%x_%u",static_cast<unsigned long long>(Key(m)),attributes,flags,shadow?1:0);
-        RenderSnapshot_MaterialRoute(id);SnapshotMetadata(m,"MATERIAL_EXECUTION",id);
-        kich_r4_telemetry::U64("MATERIAL_EXECUTION",id,"descriptor_key",Key(m));
-        kich_r4_telemetry::U64("MATERIAL_EXECUTION",id,"source_attributes",attributes);
-        kich_r4_telemetry::U64("MATERIAL_EXECUTION",id,"shader_flags",flags);
-        kich_r4_telemetry::Text("MATERIAL_EXECUTION",id,"semantic",Name(m.semantic));
-        kich_r4_telemetry::Text("MATERIAL_EXECUTION",id,"normal_path",flags&SHADER_BUMP?"SOC_R2_BUMP_WZY_PLUS_BUMP_AUX_RGB_MINUS_ONE; TBN; GBUFFER_NORMAL":"GEOMETRIC_NORMAL");
-        kich_r4_telemetry::Text("MATERIAL_EXECUTION",id,"lightmap_path",flags&SHADER_LIGHTMAP?"UV1; RGB_BAKED_ADDED_BEFORE_DIRECT_LIGHT; ALPHA_SUN":"NO_BAKED_LIGHTMAP");
-        kich_r4_telemetry::Text("MATERIAL_EXECUTION",id,"lighting_model","R4_DIFFUSE_COMPATIBILITY; LMAP0_RGB_RAW_ADDITIVE; STATIC_SUN_RAW_MASK_TIMES_2; NO_R2_MATERIAL_LUT_SPECULAR");
-        kich_r4_telemetry::Text("MATERIAL_EXECUTION",id,"hemi_path",flags&SHADER_HEMI?"UV1; MEAN_RGB_HEMI; ALPHA_SUN":"SOURCE_VERTEX_HEMI");
-        kich_r4_telemetry::Text("MATERIAL_EXECUTION",id,"fallback_reason",fallback.empty()?"NONE":fallback.c_str());
+        const char* category=shadow?"MATERIAL_SHADOW_EXECUTION":"MATERIAL_EXECUTION";
+        RenderSnapshot_MaterialRoute(id);SnapshotMetadata(m,category,id);
+        kich_r4_telemetry::U64(category,id,"descriptor_key",Key(m));
+        kich_r4_telemetry::U64(category,id,"source_attributes",attributes);
+        kich_r4_telemetry::U64(category,id,"shader_flags",flags);
+        kich_r4_telemetry::Text(category,id,"semantic",Name(m.semantic));
+        kich_r4_telemetry::Text(category,id,"normal_path",flags&SHADER_BUMP?"SOC_R2_BUMP_WZY_PLUS_BUMP_AUX_RGB_MINUS_ONE; TBN; GBUFFER_NORMAL":"GEOMETRIC_NORMAL");
+        kich_r4_telemetry::Text(category,id,"lightmap_path",flags&SHADER_LIGHTMAP?"UV1; RGB_BAKED_ADDED_BEFORE_DIRECT_LIGHT; ALPHA_SUN":"NO_BAKED_LIGHTMAP");
+        kich_r4_telemetry::Text(category,id,"lighting_model","R4_DIFFUSE_COMPATIBILITY; LMAP0_RGB_RAW_ADDITIVE; STATIC_SUN_RAW_MASK_TIMES_2; NO_R2_MATERIAL_LUT_SPECULAR");
+        kich_r4_telemetry::Text(category,id,"hemi_path",flags&SHADER_HEMI?"UV1; MEAN_RGB_HEMI; ALPHA_SUN":"SOURCE_VERTEX_HEMI");
+        kich_r4_telemetry::Text(category,id,"fallback_reason",fallback.empty()?"NONE":fallback.c_str());
+        kich_r4_telemetry::Text(category,id,"pass",shadow?"SHADOW; OPTIONAL_MAPS_INTENTIONALLY_UNUSED":"MAIN_MATERIAL; GBUFFER_OR_FORWARD");
         if(!shadow){const std::string* names[]={&m.bump,&m.bump_aux,&m.lightmap,&m.hemi,&m.detail};
             for(unsigned i=0;i<5;++i)RenderSnapshot_Texture(i+1,draw.textures[i+1]?names[i]->c_str():"UNBOUND");}
     }

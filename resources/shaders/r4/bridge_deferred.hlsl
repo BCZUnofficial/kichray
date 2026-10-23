@@ -110,9 +110,23 @@ GeometryOutput PSGeometry(Varying v,bool front:SV_IsFrontFace){GeometryOutput o;
     // additive baked term. This is not R2 material-LUT/specular parity.
     if((flags&2)!=0){float4 lm=shadow1.Sample(surface,v.uv1);baked+=lm.rgb;s=lm.a;}
     if((flags&4)!=0){float4 lm=shadow2.Sample(surface,v.uv1);h=dot(lm.rgb,float3(1.0/3,1.0/3,1.0/3));s=lm.a;}
-    o.albedo=float4(Base(v).rgb,saturate(s));o.normal=float4(Normal(v,front),saturate(h));o.baked=float4(baked,0);return o;}
+    o.albedo=float4(Base(v).rgb,saturate(s));o.normal=float4(Normal(v,front),saturate(h));o.baked=float4(baked,0);
+    // Diagnostics keep separate components before accumulation, with no new MRT.
+    if((int)screen.z==6)o.albedo.rgb=baked;
+    if((int)screen.z==9){float3 n=v.n.xyz;if(dot(n,n)<.05)n=cross(ddy(v.w),ddx(v.w));
+        n=dot(n,n)>1e-6?normalize(n):float3(0,1,0);o.albedo.rgb=(front?n:-n)*.5+.5;}
+    if((int)screen.z==8)o.baked=0;
+    return o;}
 void PSShadow(Varying v){Base(v);}
 float4 PSPlain(Varying v):SV_Target {return Base(v);}
+// Source-only sky mask: integer pixel loads cannot generate a diagonal from
+// far-plane depth interpolation. The same depth predicate is used by combine.
+float4 PSCelestial(Varying v,uint primitive_id:SV_PrimitiveID):SV_Target {
+    int mode=(int)screen.z;
+    if(mode!=11 && mode!=12 && image1.Load(int3(int2(v.p.xy),0)).r<1)discard;
+    if(mode==12)return (primitive_id&1)==0?float4(1,0,0,1):float4(0,1,0,1);
+    return Base(v);
+}
 float3 WorldPosition(float2 pixel,float depth){float4 p=float4(pixel.x*2/screen.x-1,1-pixel.y*2/screen.y,depth,1);
     p=mul(p,inverse_vp);return p.xyz/p.w;}
 float PCF(Texture2D map,float4 projected){if(projected.w<=0)return 0;
@@ -142,6 +156,7 @@ float3 LocalLight(float3 p,float3 n){float3 delta=light_position.xyz-p;float dis
     return light_color.rgb*(saturate(dot(n,direction))*attenuation*LocalVisibility(p));}
 float4 PSSun(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=image1.Load(int3(at,0)).r;
     if(depth>=1)return 0;float4 n=image0.Load(int3(at,0));float3 p=WorldPosition(v.p.xy,depth);
+    if((int)screen.z==8)return float4(SunVisibility(p).xxx,1);
     // SoC R2 combine uses raw static occlusion *2; .5 encodes unmasked runtime sun.
     return float4(SunLight(p,n.xyz,n.w,shadow1.Load(int3(at,0)).a*2),1);}
 float4 PSLocal(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=image1.Load(int3(at,0)).r;
@@ -156,7 +171,8 @@ float4 PSCombine(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=shadow1.
     float3 light=image1.Load(int3(at,0)).rgb;int mode=(int)screen.z;
     if(mode==1)return float4(a.rgb,1);if(mode==2)return float4(n.xyz*.5+.5,1);
     if(mode==3)return float4(saturate(length(WorldPosition(v.p.xy,depth)-camera.xyz)/camera.w).xxx,1);
-    if(mode==4)return float4(light,1);if(mode==5)return float4(n.www,1);
+    if(mode==4 || mode==8)return float4(light,1);if(mode==5)return float4(n.www,1);
+    if(mode==6 || mode==9)return float4(a.rgb,1);if(mode==7)return float4(a.aaa,1);
     return float4(a.rgb*light,1);}
 
 // Native environment entries use the engine's two weather cubemaps.

@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 root=Path(__file__).resolve().parents[2]
 tool=os.environ.get('GLSLANG','glslangValidator')
-entries=('VSStatic','VSModel','VSModelShadow','VSModelGPU','VSScreen','VSDetail','PSGeometry','PSShadow','PSSun','PSLocal','PSForwardSun','PSForwardLocal','PSPlain','PSCombine','PSSky','PSClouds','PSWater','PSPostprocess','PSDistortion','PSParticleDistortionMask','PSDistortionComposite')
+entries=('VSStatic','VSModel','VSModelShadow','VSModelGPU','VSScreen','VSDetail','PSGeometry','PSShadow','PSSun','PSLocal','PSForwardSun','PSForwardLocal','PSPlain','PSCelestial','PSCombine','PSSky','PSClouds','PSWater','PSPostprocess','PSDistortion','PSParticleDistortionMask','PSDistortionComposite')
 source=root/'resources/shaders/r4/bridge_deferred.hlsl'
 with tempfile.TemporaryDirectory(prefix='kich-b44-hlsl-') as folder:
     reflection=''

@@ -288,6 +288,8 @@ Dictionary dictionaries[]={
     {"R2_DECAL_BINDING",128,128,768*1024,0,0,0,0,0,{}},{"R2_MODEL_BINDING",128,128,768*1024,0,0,0,0,0,{}},
     {"DETAIL_GEOMETRY",128,48,384*1024,0,0,0,0,0,{}},
     {"NATIVE_MATERIAL",128,48,384*1024,0,0,0,0,0,{}},{"MATERIAL_EXECUTION",128,48,384*1024,0,0,0,0,0,{}},
+    {"MATERIAL_SHADOW_EXECUTION",32,48,128*1024,0,0,0,0,0,{}},
+    {"CELESTIAL",16,48,32*1024,0,0,0,0,0,{}},{"GLOW",32,24,32*1024,0,0,0,0,0,{}},
     {"OTHER",64,48,192*1024,0,0,0,0,0,{}}};
 const size_t dictionary_count=sizeof(dictionaries)/sizeof(dictionaries[0]);
 bool dictionary_overflow=false;uint64_t profile_dictionary_skips=0;

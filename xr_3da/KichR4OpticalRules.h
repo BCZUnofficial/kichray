@@ -4,6 +4,13 @@
 #include "KichR4CaptureInput.h"
 namespace kich_r4_optics {
 enum { CelestialSource = 9 };
+enum { DebugViewCount = 13 };
+inline const char* DebugView(unsigned view){
+    const char* names[]={"NORMAL","ALBEDO","MAPPED_NORMAL","DISTANCE","TOTAL_LIGHT","HEMI",
+        "BAKED_RGB_RAW","BAKED_SUN_MASK_RAW","SUN_PCF_VISIBILITY","SOURCE_NORMAL",
+        "CELESTIAL_ONLY_MASKED","CELESTIAL_ONLY_UNMASKED","CELESTIAL_TRIANGLES"};
+    return view<DebugViewCount?names[view]:"INVALID";
+}
 // X-Ray glow convention: zero direction is omnidirectional; otherwise the
 // emitter faces the camera only for a positive direction-to-observer cosine.
 inline float GlowFacing(const float* direction,const float* to_camera){
@@ -14,9 +21,11 @@ inline float GlowFacing(const float* direction,const float* to_camera){
     const float scale=(direction[0]*to_camera[0]+direction[1]*to_camera[1]+direction[2]*to_camera[2])/sqrtf(d2*r2);
     return scale>0?(scale<1?scale:1):0;
 }
-inline void SkyDepth(float* clip){clip[2]=clip[3];}
+// The mask is sampled from completed GBuffer depth in PSCelestial. Keep the
+// quad inside the clip volume without comparing interpolated far-plane depth.
+inline void SkyDepth(float* clip){clip[2]=clip[3]*.5f;}
 inline void SkyStyle(kich_r4_capture::Style& style){
-    style.depth=1;style.write=0;style.min_z=0;style.max_z=1;
+    style.depth=0;style.write=0;style.min_z=0;style.max_z=1;
 }
 }
 #endif

@@ -15,8 +15,9 @@ void Facing(){
     const float bad[3]={std::numeric_limits<float>::quiet_NaN(),0,0};
     Require(GlowFacing(bad,front)==0,"invalid direction cannot emit NaN intensity");
     float clip[4]={.2f,-.3f,.5f,2};kich_r4_optics::SkyDepth(clip);
-    Require(clip[0]==.2f && clip[1]==-.3f && clip[2]==clip[3],"sky mask changes depth only, preserving source projected size");
-    Require(!(clip[2]/clip[3]<=.999f) && clip[2]/clip[3]<=1.f,"LESS_EQUAL sky fragment rejects geometry and accepts clear depth");
+    Require(clip[0]==.2f && clip[1]==-.3f && clip[2]==clip[3]*.5f,"source keeps XY/W away from far clip boundary");
+    kich_r4_capture::Style style;kich_r4_optics::SkyStyle(style);
+    Require(!style.depth && !style.write,"sky coverage uses shader depth sample, never interpolated depth comparison");
 }
 kich_r4_capture::Batch MakeOpticalBatch(){
     using namespace kich_r4_capture;Batch batch;batch.Begin(960,540,7);batch.renderer_seen=batch.ui_seen=true;
@@ -44,14 +45,28 @@ void Frame(){
         if(draw_entries[i]=="PSCombine")combine_at=i;
         if(d.state.draw.vertex_buffer!=game.stream.vb)continue;
         if(d.state.draw.start_index==3){++sources;source_at=i;
-            Require(draw_entries[i]=="PSPlain" && draw_constants[i].alpha[3]==0,"source is unlit, never local-light shaded");
-            Require(draw_passes[i].colors[0]==game.deferred.scene_color && draw_passes[i].depth==game.deferred.depth,"source uses sky color and completed geometry depth");
+            Require(draw_entries[i]=="PSCelestial" && draw_constants[i].alpha[3]==0,"source uses dedicated unlit mask shader");
+            Require(draw_passes[i].colors[0]==game.deferred.scene_color && !draw_passes[i].depth && d.textures[1]==game.deferred.depth,"source samples completed depth without DSV hazard");
             Require(!(draw_passes[i].clear_flags&KICH_R4_CLEAR_DEPTH),"sky source never clears opaque geometry mask");
-            Require(d.state.draw.depth_mode && !d.state.depth_write && d.state.min_depth==0 && d.state.max_depth==1,"source forces read-only full-range depth despite captured state");
+            Require(!d.state.draw.depth_mode && !d.state.depth_write && d.state.min_depth==0 && d.state.max_depth==1,"source disables fixed-function depth despite captured state");
             Require(d.state.blend_enable && d.state.source_blend==2 && d.state.dest_blend==2,"source preserves original blend contract");
         }else if(d.state.draw.start_index==0){++glows;glow_at=i;Require(draw_entries[i]=="PSPlain","ordinary glow retains existing forward shader");}}
     Require(sources==1 && glows==1,"sun source and ordinary glow submitted exactly once");
     Require(sky_at<source_at && source_at<combine_at && combine_at<clouds_at && clouds_at<glow_at,"sky -> source -> combine -> clouds -> ordinary glow ordering");
+    for(unsigned mode=6;mode<kich_r4_optics::DebugViewCount;++mode){
+        draw_entries.clear();draw_descriptions.clear();draw_constants.clear();draw_passes.clear();
+        const KichR4FrameColor clear={sizeof(clear),{0,0,0,1}};Require(game.frame.BeginClear(clear)==0,"begin diagnostic frame");
+        Require(game.deferred.Draw(game.frame,game.level,game.stream,input,&batch,mode)==0,"diagnostic pass submits");
+        unsigned isolated=0;
+        for(size_t i=0;i<draw_entries.size();++i){
+            Require(draw_entries[i]!="PSPostprocess","diagnostic bypasses postprocess");
+            if(draw_entries[i]=="PSCelestial"){++isolated;
+                Require(mode>=10 && draw_passes[i].colors[0]==game.deferred.final_color,"isolated source bypasses scene composition");
+                Require(draw_constants[i].screen[2]==mode && !draw_passes[i].depth,"mask/triangle diagnostic selected explicitly");
+                if(mode==12)Require(!draw_descriptions[i].state.blend_enable,"triangle colors cannot be altered by blend");}}
+        Require(isolated==(mode>=10?1u:0u),"source submitted once only in source diagnostic modes");
+        Require(game.frame.Present()==0,"finish diagnostic frame");
+    }
     batch.Begin(960,540,8);batch.renderer_seen=batch.ui_seen=true;input.engine_frame=8;
     draw_entries.clear();draw_descriptions.clear();draw_constants.clear();draw_passes.clear();
     Require(game.Render(input,&batch)==1,"empty next frame presents without stale source");
@@ -59,5 +74,5 @@ void Frame(){
     KichR4GeometryReport report={};Require(game.Stop(report)==0 && f->objects.empty(),"optical fixture releases all resources");
 }
 }
-int main(){try{(void)&Scenario;Facing();Frame();printf("G3d directional glow and celestial depth-mask/order: %d checks passed\n",checks);return 0;}
+int main(){try{(void)&Scenario;Facing();Frame();printf("G3e glow and sampled celestial mask/order/debug: %d checks passed (no GPU rasterization)\n",checks);return 0;}
 catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

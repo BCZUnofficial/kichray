@@ -4,6 +4,7 @@
 #include "KichR4Level.h"
 #include "KichR4Dds.h"
 #include "KichR4LevelCamera.h"
+#include "KichR4FrameMetrics.h"
 #include <map>
 #include <stdio.h>
 #include <stdarg.h>
@@ -15,6 +16,7 @@ struct KichR4LevelSession {
     KichR4Handle white,checker;
     uint32_t textures_loaded,texture_fallbacks,budget_skips,frames,visible,culled,camera_steps,revision,cull,depth;
     uint64_t texture_bytes,submitted_triangles,submitted_draws;
+    double texture_io_ms=0,texture_parse_ms=0,texture_create_ms=0;
     bool textured,cancelled;
     std::string detail;
     void (*log)(const char*);
@@ -44,17 +46,22 @@ struct KichR4LevelSession {
         const std::map<std::string,KichR4Handle>::const_iterator cached=textures.find(name);if(cached!=textures.end())return cached->second;
         KichR4Handle result=checker;kich_r4_level::File file(files);std::string path=name;
         if(path.size()<4 || kich_r4_level::Lower(path.substr(path.size()-4))!=".dds")path+=".dds";
-        int32_t opened;
+        int32_t opened;auto measured=kich_r4_metrics::Clock::now();
         if(texture_override){
             const bool absolute=name.find(':')!=std::string::npos || name[0]=='\\' || name[0]=='/';
             if(absolute)opened=file.Open("$r4_absolute$",path.c_str());
             else{opened=file.Open("$level$",path.c_str());if(opened!=0)opened=file.Open("$game_saves$",path.c_str());if(opened!=0)opened=file.Open("$game_textures$",path.c_str());}
         }else opened=file.Open("$game_textures$",path.c_str());
+        texture_io_ms+=kich_r4_metrics::Elapsed(measured);measured=kich_r4_metrics::Clock::now();
         kich_r4_dds::Image image={};int32_t hr=opened;
-        if(opened==0 && kich_r4_dds::Parse(file.view.data,file.view.bytes,2048,image)){
+        const bool parsed=opened==0 && kich_r4_dds::Parse(file.view.data,file.view.bytes,2048,image);
+        texture_parse_ms+=kich_r4_metrics::Elapsed(measured);
+        if(parsed){
             const uint64_t payload=kich_r4_dds::UploadBytes(image);
             if(payload<=384u*1024u*1024u-texture_bytes){const KichR4DdsDesc d={sizeof(d),2048,0};
+                measured=kich_r4_metrics::Clock::now();
                 KichR4Handle loaded=0;hr=api.create_texture_dds(s.device,&d,file.view.data,file.view.bytes,&loaded);
+                texture_create_ms+=kich_r4_metrics::Elapsed(measured);
                 if(hr==0 && loaded){result=loaded;++textures_loaded;texture_bytes+=payload;}
                 else if(loaded)bridge.resources.release_resource(s.device,loaded);
             }else{++budget_skips;hr=KICH_R4_E_MEMORY;}
@@ -63,6 +70,7 @@ struct KichR4LevelSession {
         textures[name]=result;return result;
     }
     int32_t Start(KichR4FrameSession& s,const char* name){try{
+        const auto started=kich_r4_metrics::Clock::now();auto measured=started;double io_ms=0,parse_ms=0;
         Continue();kich_r4_level::Check(files.open && files.close,"engine filesystem adapter unavailable");
         kich_r4_level::Check(name && kich_r4_level::SafeName(name) && strlen(name)<64 && !strchr(name,'\\') && !strchr(name,'/'),"invalid level name");
         Write("[R4 bridge B4.2] loading: $game_levels$/%s/level + level.geom",name);
@@ -70,7 +78,8 @@ struct KichR4LevelSession {
             kich_r4_level::File level(files),geom(files);const std::string prefix=std::string(name)+"\\";
             if(Expect(s,"B4.2 open level",level.Open("$game_levels$",(prefix+"level").c_str()))<0)return s.failure;
             if(Expect(s,"B4.2 open level.geom",geom.Open("$game_levels$",(prefix+"level.geom").c_str()))<0)return s.failure;
-            kich_r4_level::Parse(level.Data(),geom.Data(),scene);
+            io_ms=kich_r4_metrics::Elapsed(measured);measured=kich_r4_metrics::Clock::now();
+            kich_r4_level::Parse(level.Data(),geom.Data(),scene);parse_ms=kich_r4_metrics::Elapsed(measured);
         }
         Write("[R4 bridge B4.2] level=%s; visuals=%u static_meshes=%u trees=%u skipped_nodes=%u triangles=%u; CPU geometry=%u MiB",
             name,scene.visuals,static_cast<uint32_t>(scene.draws.size()),scene.trees,scene.skipped,scene.triangles,static_cast<uint32_t>(scene.cpu_bytes/(1024u*1024u)));
@@ -83,6 +92,7 @@ struct KichR4LevelSession {
         p.elements[0]={KICH_R4_POSITION,0,KICH_R4_FLOAT3,0};p.elements[1]={KICH_R4_TEXCOORD,0,KICH_R4_FLOAT2,12};
         if(Expect(s,"B4.2 textured pipeline",api.create_pipeline(s.device,&p,&bridge.pipeline))<0)return s.failure;
         if(Placeholder(s,false,&white)<0 || Placeholder(s,true,&checker)<0)return s.failure;
+        measured=kich_r4_metrics::Clock::now();
         for(size_t i=0;i<scene.vertices.size();++i){Continue();std::vector<kich_r4_level::Vertex>& data=scene.vertices[i].vertices;KichR4Handle handle=0;
             b.kind=KICH_R4_VERTEX_BUFFER;b.stride=sizeof(data[0]);b.byte_size=static_cast<uint32_t>(data.size()*sizeof(data[0]));
             if(Expect(s,"B4.2 vertex buffer",bridge.resources.create_buffer(s.device,&b,data.data(),b.byte_size,&handle))<0)return s.failure;
@@ -91,11 +101,13 @@ struct KichR4LevelSession {
             b.kind=KICH_R4_INDEX_BUFFER;b.stride=4;b.byte_size=static_cast<uint32_t>(data.size()*4);
             if(Expect(s,"B4.2 index buffer",bridge.resources.create_buffer(s.device,&b,data.data(),b.byte_size,&handle))<0)return s.failure;
             index_buffers.push_back(handle);std::vector<uint32_t>().swap(data);}
+        const double buffers_ms=kich_r4_metrics::Elapsed(measured);
         materials.resize(scene.materials.size(),white);std::vector<bool> used(materials.size(),false);
         for(size_t i=0;i<scene.draws.size();++i)used[scene.draws[i].material]=true;
         for(size_t i=0;i<materials.size();++i)if(used[i]){Continue();materials[i]=Texture(s,scene.materials[i].texture);}
         Write("[R4 bridge B4.2] ready: VBs=%u IBs=%u; DDS loaded=%u fallback=%u budget_skips=%u; texture payload=%u MiB; base color / alpha cutout",
             static_cast<uint32_t>(vertex_buffers.size()),static_cast<uint32_t>(index_buffers.size()),textures_loaded,texture_fallbacks,budget_skips,static_cast<uint32_t>(texture_bytes/(1024u*1024u)));
+        if(texture_override)Write("[R4 G3e load] level_io_ms=%.3f parse_basis_ms=%.3f geometry_create_ms=%.3f level_setup_ms=%.3f; texture phases reported after material resolution; CPU wall times, not GPU durations",io_ms,parse_ms,buffers_ms,kich_r4_metrics::Elapsed(started));
         return KICH_R4_OK;
     }catch(const Cancel&){cancelled=true;return KICH_R4_FRAME_SUSPENDED;}
      catch(const std::bad_alloc&){detail="viewer allocation failed";return s.Record("B4.2 load level",KICH_R4_E_MEMORY);}

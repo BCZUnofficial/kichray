@@ -30,6 +30,8 @@ struct Context {
     KichR4FrameSession frame;KichR4LevelSession level;KichR4StreamSession stream;KichR4DeferredSession deferred;
     std::map<std::string,Uploaded> uploads;
     bool loaded;std::string name;
+    kich_r4_metrics::Window metrics;uint32_t last_created=0,last_released=0;unsigned gpu_quarantine=4;
+    uint64_t created_window=0,meshes_window=0;double submit_peak_ms=0;
     Context():loaded(false){memset(&frame,0,sizeof(frame));}
 };
 struct NativeState {
@@ -218,9 +220,13 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
                     const std::string* maps[]={&m.descriptor.base,&m.descriptor.bump,&m.descriptor.bump_aux,&m.descriptor.lightmap,&m.descriptor.hemi,&m.descriptor.detail};
                     for(unsigned j=0;j<6;++j)if(!maps[j]->empty())c.level.Texture(c.frame,*maps[j]);
                 }}
+            LARGE_INTEGER loaded;QueryPerformanceCounter(&loaded);
+            Write("[R4 G3e load] native_level_and_materials_ms=%.3f DDS_io_ms=%.3f DDS_parse_ms=%.3f DDS_create_upload_api_ms=%.3f DDS_loaded=%u; excludes engine prefetch; create includes provider parse and upload submission",
+                double(loaded.QuadPart-start.QuadPart)*1000.0/double(frequency.QuadPart),c.level.texture_io_ms,c.level.texture_parse_ms,c.level.texture_create_ms,c.level.textures_loaded);
         }
         const kich_r4_capture::Batch* batch=KichR4_CapturedFrame();if(!batch || !batch->Ready()){Write("[R4 native B5] rejected CPU frame: %s",batch?batch->error.c_str():"queue unavailable");return false;}
-        if(input.debug_down && !native.debug_key){native.debug=(native.debug+1)%6;}native.debug_key=input.debug_down;
+        if(input.debug_down && !native.debug_key){native.debug=(native.debug+1)%kich_r4_optics::DebugViewCount;
+            Write("[R4 G3e] F9 view=%u %s; diagnostic views bypass postprocess",native.debug,kich_r4_optics::DebugView(native.debug));}native.debug_key=input.debug_down;
         if(!c.frame.rendered){const float* p=input.postprocess;Write("[R4 native B5] output: gamma=%.3f brightness=%.3f contrast=%.3f balance=[%.3f %.3f %.3f] PP_base=[%.3f %.3f %.3f] PP_add=[%.3f %.3f %.3f]",
             p[0],p[1],p[2],p[19],p[20],p[21],p[10],p[11],p[12],p[13],p[14],p[15]);}
         const KichR4FrameColor color={sizeof(color),{((native.color>>16)&255)/255.f,((native.color>>8)&255)/255.f,(native.color&255)/255.f,1}};
@@ -229,12 +235,14 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
             void Reset(){if(enabled){api.set_snapshot_sink(device,NULL);enabled=false;}}~SinkGuard(){Reset();}} sink_guard={native.api.tools,c.frame.device,tracing};
         if(tracing)native.api.tools.set_snapshot_sink(c.frame.device,RenderSnapshot_Draw);
         int32_t hr=c.frame.BeginClear(color);if(hr==KICH_R4_FRAME_OCCLUDED || hr==KICH_R4_FRAME_SUSPENDED){sink_guard.Reset();telemetry_guard.Reset();
+            c.metrics.Gap();c.gpu_quarantine=4;
             if(g_render_snapshot_active){RenderSnapshot_GPUTiming(RenderSnapshot_CaptureID(),input.engine_frame,RenderSnapshot_RenderFrameID(),"CANCELLED",NULL,0);ForgetTiming(RenderSnapshot_CaptureID());}
             RenderSnapshot_PresentID(native.successful_presents,false);RenderSnapshot_End("PRESENT_SUSPENDED");snapshot_guard.complete=true;return true;}
         if(hr==0 && c.loaded && input.allowed)hr=c.deferred.Draw(c.frame,c.level,c.stream,input,batch,native.debug);
         else if(hr==0){if(native.telemetry.set_capture && tracing)native.api.tools.profile_mark(c.frame.device,0);hr=c.deferred.DrawMenu(c.frame,c.level,c.stream,input,*batch);
             if(native.telemetry.set_capture && tracing)for(uint32_t marker=1;marker<8;++marker)native.api.tools.profile_mark(c.frame.device,marker);}
-        if(hr==0 && KichR4_NativeNeedScreenshot()){std::vector<unsigned char> pixels;uint32_t w=0,h=0;if(KichR4_NativeReadPixels(pixels,w,h))KichR4_NativeWriteScreenshot(pixels.data(),w,h);}
+        const bool screenshot=hr==0 && KichR4_NativeNeedScreenshot();
+        if(screenshot){std::vector<unsigned char> pixels;uint32_t w=0,h=0;if(KichR4_NativeReadPixels(pixels,w,h))KichR4_NativeWriteScreenshot(pixels.data(),w,h);}
         QueryPerformanceCounter(&submitted);
         if(hr==0){hr=c.frame.api.present(c.frame.device,native.interval);if(!hr){++c.frame.rendered;++native.successful_presents;}}
         QueryPerformanceCounter(&end);
@@ -260,11 +268,21 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
             if(hr<0){RenderSnapshot_GPUTiming(RenderSnapshot_CaptureID(),input.engine_frame,RenderSnapshot_RenderFrameID(),"CANCELLED",NULL,0);ForgetTiming(RenderSnapshot_CaptureID());RenderSnapshot_End("GPU_SUBMISSION_FAILED");}
         }
         if(hr<0){Write("[R4 native B5] frame failed: step=%s HRESULT=0x%08X shader=%s",c.frame.step?c.frame.step:"present",static_cast<uint32_t>(hr),c.level.bridge.shader_error);return false;}
-        if(c.frame.rendered && c.frame.rendered%300==0){KichR4GPUProfile profile={};native.api.tools.get_profile(c.frame.device,&profile,sizeof(profile));
-            Write("[R4 native B5] frames=%u legacy_draws=0 models=%u hands=%u UI=%u CPU_queue_ms=%.3f CPU_submit_ms=%.3f present_ms=%.3f shadow_passes_frame=%u GPU_ready=%u GPU_ms=[%.3f %.3f %.3f %.3f %.3f %.3f %.3f]",
-                c.frame.rendered,batch->models,batch->hands,batch->ui,input.prepare_ms,double(submitted.QuadPart-start.QuadPart)*1000.0/double(frequency.QuadPart),double(end.QuadPart-submitted.QuadPart)*1000.0/double(frequency.QuadPart),c.deferred.shadow_passes-shadows_before,profile.ready,
-                profile.milliseconds[0],profile.milliseconds[1],profile.milliseconds[2],profile.milliseconds[3],profile.milliseconds[4],profile.milliseconds[5],profile.milliseconds[6]);}
-        else if(c.loaded){KichR4GPUProfile unused={};native.api.tools.get_profile(c.frame.device,&unused,sizeof(unused));}
+        const bool eligible=hr==0 && c.loaded && input.allowed && !tracing && !native.debug && !screenshot;
+        c.metrics.Add(double(end.QuadPart)*1000.0/double(frequency.QuadPart),eligible);
+        if(!eligible)c.gpu_quarantine=4;else if(c.gpu_quarantine)--c.gpu_quarantine;
+        KichR4GPUProfile profile={};if(c.loaded)native.api.tools.get_profile(c.frame.device,&profile,sizeof(profile));
+        KichR4ResourceStats resources={};const bool stats_ok=native.api.resources.get_stats(c.frame.device,&resources,sizeof(resources))==0;
+        if(eligible){c.created_window+=stats_ok?resources.created-c.last_created:0;c.meshes_window+=c.deferred.native_models.mesh_uploads;
+            c.submit_peak_ms=(std::max)(c.submit_peak_ms,double(submitted.QuadPart-start.QuadPart)*1000.0/double(frequency.QuadPart));}
+        if(eligible && (c.metrics.frames==1 || c.metrics.frames==30 || c.metrics.frames==60 || c.metrics.frames==120 || c.metrics.frames%300==0)){
+            Write("[R4 G3e frame] gameplay=%u samples=%u present_interval_1pct_low_fps=%.2f CPU_queue_ms=%.3f CPU_submit_ms=%.3f present_ms=%.3f created_frame=%u released_frame=%u stats_ok=%u shadow_passes=%u GPU_async_ready=%u GPU_ms=[%.3f %.3f %.3f %.3f %.3f %.3f %.3f]",
+                c.metrics.frames,c.metrics.count,c.metrics.Low(),input.prepare_ms,double(submitted.QuadPart-start.QuadPart)*1000.0/double(frequency.QuadPart),double(end.QuadPart-submitted.QuadPart)*1000.0/double(frequency.QuadPart),stats_ok?resources.created-c.last_created:0,stats_ok?resources.released-c.last_released:0,unsigned(stats_ok),c.deferred.shadow_passes-shadows_before,
+                !c.gpu_quarantine?profile.ready:0,!c.gpu_quarantine?profile.milliseconds[0]:0,!c.gpu_quarantine?profile.milliseconds[1]:0,!c.gpu_quarantine?profile.milliseconds[2]:0,!c.gpu_quarantine?profile.milliseconds[3]:0,!c.gpu_quarantine?profile.milliseconds[4]:0,!c.gpu_quarantine?profile.milliseconds[5]:0,!c.gpu_quarantine?profile.milliseconds[6]:0);
+            Write("[R4 G3e stability] since_last_report_created=%llu mesh_uploads=%llu CPU_submit_peak_ms=%.3f model_prepare_current_ms=%.3f; interval_window=120; low=reciprocal_mean_slowest_ceil_1pct; GPU_async_not_current_CPU_frame; snapshot_debug_screenshot_excluded",
+                static_cast<unsigned long long>(c.created_window),static_cast<unsigned long long>(c.meshes_window),c.submit_peak_ms,c.deferred.model_prepare_ms);
+            c.created_window=c.meshes_window=0;c.submit_peak_ms=0;}
+        if(stats_ok){c.last_created=resources.created;c.last_released=resources.released;}
         {std::lock_guard<std::mutex> lock(runtime_mutex);std::set<std::string> alive;for(const auto& item:runtime)alive.insert(item.second.key);retired.clear();
             for(auto it=c.uploads.begin();it!=c.uploads.end();){if(!alive.count(it->first)){if(it->second.handle){c.level.bridge.resources.release_resource(c.frame.device,it->second.handle);++native.runtime_releases;}it=c.uploads.erase(it);}else ++it;}}
         snapshot_guard.complete=true;return true;

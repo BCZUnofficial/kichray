@@ -57,7 +57,7 @@ struct Buffer {std::vector<Vertex> vertices;uint32_t available_attributes,basis_
     Buffer():available_attributes(0),basis_vertices(0),tree_fraction_max(0){}
 };
 struct Draw {
-    uint32_t vb,ib,first,count,material;Matrix world;Vec3 low,high;
+    uint32_t vb,ib,first,count,material,available_attributes;Matrix world;Vec3 low,high;
     float tree_scale[5],tree_bias[5];bool tree;
 };
 struct Scene {
@@ -192,7 +192,11 @@ inline void Visuals(Span level,const std::vector<Span>& ibs,const std::vector<Wi
         Check(count<=4u*1024u*1024u,"single visual index limit");Budget(out,uint64_t(count)*4);
         draw.vb=vb;draw.ib=static_cast<uint32_t>(out.indices.size()-1);draw.first=static_cast<uint32_t>(out.indices.back().size());draw.count=count;
         Reader source(Span(indices.p+(ibase+offset)*2,count*2));std::vector<uint32_t>& target=out.indices.back();
-        for(uint32_t i=0;i<count;++i){const uint32_t vertex=source.U16();Check(vertex<vcount,"index addresses outside visual vertex slice");target.push_back(vbase+vertex);}
+        // Only referenced vertices can constrain this draw. Shared VBs often
+        // contain unrelated surfaces with a different or damaged basis.
+        draw.available_attributes=~0u;
+        for(uint32_t i=0;i<count;++i){const uint32_t vertex=source.U16();Check(vertex<vcount,"index addresses outside visual vertex slice");target.push_back(vbase+vertex);
+            draw.available_attributes&=out.vertices[vb].vertices[vbase+vertex].attributes;}
         out.triangles+=count/3;out.draws.push_back(draw);
         for(unsigned a=0;a<3;++a){Axis(out.low,a)=std::min(Axis(out.low,a),Axis(draw.low,a));Axis(out.high,a)=std::max(Axis(out.high,a),Axis(draw.high,a));}
     }
