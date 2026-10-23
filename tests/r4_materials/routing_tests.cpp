@@ -4,6 +4,8 @@
 std::string active_shader,bound_texture;
 uint32_t effect=0,source_element=UINT32_MAX,source_pass=0;
 bool distortion_enabled=true,bound_clamp=false;
+kich_r4_material::Cache native_materials;
+const kich_r4_material::Descriptor* active_material=NULL;
 Backend RCache;
 std::vector<Draw> draws;
 std::vector<SelectionObservation> selections;
@@ -58,5 +60,14 @@ int main(){
     // decoded models remain available to the later per-pass shadow culling.
     flame.vis.sphere.P.x=100;draws.clear();renderer.Submit(&flame,NULL);assert(draws.empty());
     flame.native_model=true;renderer.Submit(&flame,NULL);assert(draws.size()==1);
+    // The native geometry descriptor replaces R1's multipass modulation with a
+    // single GBuffer draw. Forward/distortion above retain their original passes.
+    flame.vis.sphere.P.x=0;fire.passes.push_back(&fire_pass);
+    kich_r4_material::Source source;source.family=kich_r4_material::FAMILY_AREF;
+    source.alpha_reference=200;kich_r4_material::PassState state;
+    const kich_r4_material::Descriptor cutout=kich_r4_material::Build(source,state);
+    native_materials.Register(&fire,std::vector<kich_r4_material::Descriptor>(2,cutout));
+    draws.clear();renderer.Submit(&flame,NULL);assert(draws.size()==1 && active_material && active_material->semantic==kich_r4_material::CUTOUT);
+    native_materials.Forget(&fire);draws.clear();renderer.Submit(&flame,NULL);assert(draws.size()==2);
     std::cout<<"PASS: production Submit/NativeElementPass route xdistort to E[4], selected textures/passes and effect 5; source UV/sampler preserved\n";
 }

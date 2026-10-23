@@ -1,46 +1,70 @@
-// B4.4 experimental diffuse path. Legacy texture values; linear/HDR is later.
+// G3c native deferred materials. DDS channels remain UNORM; no implicit sRGB decode.
 cbuffer Frame : register(b0) {
     row_major float4x4 world,mvp,normal_matrix,inverse_vp,shadow[6];
     float4 camera,screen,sun_direction,sun_color,ambient,hemi,fog;
     float4 light_position,light_direction,light_color,alpha;
+    float4 material,color_scale,color_bias,sun_scale_bias,tree_wave,tree_wind;
 };
 Texture2D image0:register(t0); Texture2D image1:register(t1);
 Texture2D shadow0:register(t2); Texture2D shadow1:register(t3);
 Texture2D shadow2:register(t4); Texture2D shadow3:register(t5);
 Texture2D shadow4:register(t6); Texture2D shadow5:register(t7);
 SamplerState surface:register(s0); SamplerComparisonState shadow_surface:register(s1);
-struct StaticInput {float3 p:POSITION;float2 uv:TEXCOORD0;float4 n:NORMAL;};
+// Material flags: bump=1, baked lightmap=2, hemi map=4, detail=8,
+// vertex baked RGB=16, source sun=32, tree light scale/bias=64.
+struct StaticInput {float3 p:POSITION;float2 uv:TEXCOORD0;float4 n:NORMAL;
+    float3 t:TEXCOORD1;float3 b:TEXCOORD2;float3 uv_sun:TEXCOORD3;float4 light:COLOR0;float2 tree:TEXCOORD4;};
 struct ModelInput {float4 p:POSITION;float2 uv:TEXCOORD0;float4 c:COLOR0;float4 n:NORMAL;float3 w:TEXCOORD1;};
 struct ScreenInput {float3 p:POSITION;float2 uv:TEXCOORD0;};
-struct Varying {float4 p:SV_Position;float2 uv:TEXCOORD0;float4 c:COLOR0;float4 n:TEXCOORD1;float3 w:TEXCOORD2;};
-Varying VSStatic(StaticInput v){Varying o;o.p=mul(float4(v.p,1),mvp);o.uv=v.uv;o.c=1;
-    o.n=float4(mul(float4(v.n.xyz,0),normal_matrix).xyz,v.n.w);o.w=mul(float4(v.p,1),world).xyz;return o;}
-Varying VSModel(ModelInput v){Varying o;o.p=v.p;o.uv=v.uv;o.c=v.c;o.n=v.n;o.w=v.w;return o;}
+struct Varying {float4 p:SV_Position;float2 uv:TEXCOORD0;float4 c:COLOR0;float4 n:TEXCOORD1;float3 w:TEXCOORD2;
+    float3 t:TEXCOORD3;float3 b:TEXCOORD4;float2 uv1:TEXCOORD5;float4 baked_sun:TEXCOORD6;};
+Varying VSStatic(StaticInput v){Varying o=(Varying)0;o.uv=v.uv;o.c=1;
+    float3 position=mul(float4(v.p,1),world).xyz;
+    if(((uint)material.x&128)!=0){float f=2.8284271*frac(dot(float4(position,1),tree_wave))-1.4142136;
+        position.xz+=tree_wind.xz*((position.y-world[3].y)*(f*f-1)*v.tree.y);}
+    o.p=mul(float4(position,1),mvp);
+    o.n=float4(mul(float4(v.n.xyz,0),normal_matrix).xyz,v.n.w);o.w=position;
+    o.t=mul(float4(v.t,0),world).xyz;o.b=mul(float4(v.b,0),world).xyz;o.uv1=v.uv_sun.xy;
+    o.baked_sun=float4(v.light.rgb,v.uv_sun.z);
+    if(((uint)material.x&64)!=0){o.baked_sun.rgb=v.n.www*color_scale.rgb+color_bias.rgb;
+        o.n.w=o.n.w*color_scale.w+color_bias.w;o.baked_sun.w=v.n.w*sun_scale_bias.x+sun_scale_bias.y;}
+    return o;}
+Varying VSModel(ModelInput v){Varying o=(Varying)0;o.p=v.p;o.uv=v.uv;o.c=v.c;o.n=v.n;o.w=v.w;o.baked_sun.w=1;return o;}
 Varying VSModelShadow(ModelInput v){Varying o=VSModel(v);o.p=mul(float4(v.w,1),mvp);return o;}
-// G3b: immutable OGF geometry, a per-instance pose, and one palette for all passes.
-// SourceVertex is 32 bytes. Bone transforms keep the SoC row-vector convention.
-cbuffer ModelPose : register(b1) {row_major float4x4 model_bones[256];uint4 model_header;};
-struct NativeModelInput {float3 p:POSITION;float2 uv:TEXCOORD0;float weight:BLENDWEIGHT0;uint2 bones:BLENDINDICES0;uint packed_normal:NORMAL0;};
+// Header-first class-sized palette: allocation, reflection and shader capacity agree.
+#ifndef KICH_R4_MODEL_BONE_CAPACITY
+#define KICH_R4_MODEL_BONE_CAPACITY 256
+#endif
+cbuffer ModelPose : register(b1) {uint4 model_header;row_major float4x4 model_bones[KICH_R4_MODEL_BONE_CAPACITY];};
+struct NativeModelInput {float3 p:POSITION;float2 uv:TEXCOORD0;float weight:BLENDWEIGHT0;uint2 bones:BLENDINDICES0;
+    uint packed_normal:NORMAL0;uint packed_tangent:TANGENT0;uint packed_binormal:BINORMAL0;
+    float4 uv_hemi_sun:TEXCOORD1;float4 light:COLOR0;uint attributes:TEXCOORD2;};
 float3 ModelNormal(uint bits){
     if(bits==0)return 0;
     float3 n=float3(bits&1023,(bits>>10)&1023,(bits>>20)&1023)*(2.0/1023.0)-1;
     return dot(n,n)>1e-12?normalize(n):float3(0,0,0);
 }
 Varying VSModelGPU(NativeModelInput v){
-    Varying o=(Varying)0;float3 p=v.p,n=ModelNormal(v.packed_normal);
+    Varying o=(Varying)0;float3 p=v.p,n=ModelNormal(v.packed_normal),t=ModelNormal(v.packed_tangent),b=ModelNormal(v.packed_binormal);
     if(model_header.z!=0){
         float3 a=mul(float4(p,1),model_bones[v.bones.x]).xyz;
         float3 na=mul(float4(n,0),model_bones[v.bones.x]).xyz;
+        float3 ta=mul(float4(t,0),model_bones[v.bones.x]).xyz;
+        float3 ba=mul(float4(b,0),model_bones[v.bones.x]).xyz;
         // Equal-bone 2W vertices ignore their unused weight, matching xrSkin2W.
-        if(v.bones.x==v.bones.y){p=a;n=na;}
+        if(v.bones.x==v.bones.y){p=a;n=na;t=ta;b=ba;}
         else{float w=v.weight;
             if(model_header.y==2)w=floor(saturate(w)*255+.5)/255;
             p=a*(1-w)+mul(float4(p,1),model_bones[v.bones.y]).xyz*w;
             n=na*(1-w)+mul(float4(n,0),model_bones[v.bones.y]).xyz*w;
+            t=ta*(1-w)+mul(float4(t,0),model_bones[v.bones.y]).xyz*w;
+            b=ba*(1-w)+mul(float4(b,0),model_bones[v.bones.y]).xyz*w;
         }
     }
     n=mul(float4(n,0),normal_matrix).xyz;
-    o.n=float4(dot(n,n)>1e-12?normalize(n):float3(0,0,0),1);
+    o.n=float4(dot(n,n)>1e-12?normalize(n):float3(0,0,0),(v.attributes&16)!=0?v.uv_hemi_sun.z:1);
+    o.t=mul(float4(t,0),world).xyz;o.b=mul(float4(b,0),world).xyz;o.uv1=v.uv_hemi_sun.xy;
+    o.baked_sun=float4(v.light.rgb,(v.attributes&32)!=0?v.uv_hemi_sun.w:1);
     o.p=mul(float4(p,1),mvp);o.w=mul(float4(p,1),world).xyz;o.uv=v.uv;o.c=1;return o;
 }
 Varying VSScreen(ScreenInput v){Varying o=(Varying)0;o.p=float4(v.p,1);o.uv=v.uv;o.c=1;return o;}
@@ -53,8 +77,9 @@ Varying VSDetail(DetailInput v){Varying o=(Varying)0;float4 local=float4(v.p,1);
         float cyclic=f*f-1;float height=p.y-v.m1.w;
         p.xz+=world[1].xz*(height*cyclic)*v.misc.z;}
     o.p=mul(float4(p,1),mvp);o.w=p;o.uv=v.misc.xy;o.c=1;
-    o.n=float4(normalize(p-float3(v.m0.w,v.m1.w-.75,v.m2.w)),v.light.y);return o;}
+    o.n=float4(normalize(p-float3(v.m0.w,v.m1.w-.75,v.m2.w)),v.light.y);o.baked_sun.w=v.light.x;return o;}
 float4 Base(Varying v){float4 c=image0.Sample(surface,v.uv)*v.c;
+    if(((uint)material.x&8)!=0)c.rgb*=shadow3.Sample(surface,v.uv*material.yz).rgb*2;
     if(alpha.w>9.5 && alpha.w<10.5){float4 mask=shadow0.Sample(surface,v.uv);mask/=max(dot(mask,1),.0001);
         float2 tc=v.uv*50;float3 detail=shadow1.Sample(surface,tc).rgb*mask.r+shadow2.Sample(surface,tc).rgb*mask.g+
             shadow3.Sample(surface,tc).rgb*mask.b+shadow4.Sample(surface,tc).rgb*mask.a;c.rgb*=detail*2;}
@@ -64,10 +89,28 @@ float4 Base(Varying v){float4 c=image0.Sample(surface,v.uv)*v.c;
     if(!keep)discard;return c;}
 float3 Normal(Varying v,bool front){float3 n=v.n.xyz;
     if(dot(n,n)<.05)n=cross(ddy(v.w),ddx(v.w));
-    n=dot(n,n)>.000001?normalize(n):float3(0,1,0);return front?n:-n;}
-struct GeometryOutput {float4 albedo:SV_Target0;float4 normal:SV_Target1;};
+    n=dot(n,n)>.000001?normalize(n):float3(0,1,0);
+    float3 t=v.t-n*dot(n,v.t);float handed=dot(cross(n,t),v.b);
+    if(((uint)material.x&1)!=0 && dot(t,t)>1e-8 && abs(handed)>1e-8){
+        t=normalize(t);float3 b=normalize(cross(n,t))*(handed<0?-1:1);
+        // SoC R2 sload: bump stores gloss,x-normal in alpha,y in B,z in G;
+        // bump# stores signed reconstruction error in RGB, height in alpha.
+        float4 Nu=image1.Sample(surface,v.uv),NuE=shadow0.Sample(surface,v.uv);
+        float3 mapped=Nu.wzy+NuE.xyz-1;mapped.z*=.5;
+        float3 result=t*mapped.x+b*mapped.y+n*mapped.z;
+        if(dot(result,result)>1e-8)n=normalize(result);
+    }
+    // Flip the complete mapped normal on the back face, preserving mirrored UV handedness.
+    return front?n:-n;}
+struct GeometryOutput {float4 albedo:SV_Target0;float4 normal:SV_Target1;float4 baked:SV_Target2;};
 GeometryOutput PSGeometry(Varying v,bool front:SV_IsFrontFace){GeometryOutput o;
-    o.albedo=float4(Base(v).rgb,1);o.normal=float4(Normal(v,front),saturate(v.n.w));return o;}
+    uint flags=(uint)material.x;float h=v.n.w,s=(flags&32)!=0?v.baked_sun.w:.5;float3 baked=0;
+    if((flags&16)!=0)baked=v.baked_sun.rgb;
+    // Compatibility irradiance: keep R1/XRLC lmap0 RGB as a separate raw
+    // additive baked term. This is not R2 material-LUT/specular parity.
+    if((flags&2)!=0){float4 lm=shadow1.Sample(surface,v.uv1);baked+=lm.rgb;s=lm.a;}
+    if((flags&4)!=0){float4 lm=shadow2.Sample(surface,v.uv1);h=dot(lm.rgb,float3(1.0/3,1.0/3,1.0/3));s=lm.a;}
+    o.albedo=float4(Base(v).rgb,saturate(s));o.normal=float4(Normal(v,front),saturate(h));o.baked=float4(baked,0);return o;}
 void PSShadow(Varying v){Base(v);}
 float4 PSPlain(Varying v):SV_Target {return Base(v);}
 float3 WorldPosition(float2 pixel,float depth){float4 p=float4(pixel.x*2/screen.x-1,1-pixel.y*2/screen.y,depth,1);
@@ -81,9 +124,9 @@ float PCF(Texture2D map,float4 projected){if(projected.w<=0)return 0;
     return result/9;
 }
 float SunVisibility(float3 p){return sun_color.w>0?PCF(shadow0,mul(float4(p,1),shadow[0])):0;}
-float3 SunLight(float3 p,float3 n,float h){float sky=saturate(n.y*.5+.5)*h;
+float3 SunLight(float3 p,float3 n,float h,float sun_mask){float sky=saturate(n.y*.5+.5)*h;
     float3 base=ambient.rgb+hemi.rgb*sky;
-    return base+sun_color.rgb*saturate(dot(n,-sun_direction.xyz))*SunVisibility(p);}
+    return base+sun_color.rgb*saturate(dot(n,-sun_direction.xyz))*SunVisibility(p)*sun_mask;}
 uint CubeFace(float3 d){float3 a=abs(d);if(a.x>=a.y && a.x>=a.z)return d.x>=0?0:1;
     if(a.y>=a.z)return d.y>=0?2:3;return d.z>=0?4:5;}
 float LocalVisibility(float3 p){if(alpha.w<.5)return 1;uint face=light_color.w>1.5?0:CubeFace(p-light_position.xyz);
@@ -99,11 +142,12 @@ float3 LocalLight(float3 p,float3 n){float3 delta=light_position.xyz-p;float dis
     return light_color.rgb*(saturate(dot(n,direction))*attenuation*LocalVisibility(p));}
 float4 PSSun(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=image1.Load(int3(at,0)).r;
     if(depth>=1)return 0;float4 n=image0.Load(int3(at,0));float3 p=WorldPosition(v.p.xy,depth);
-    return float4(SunLight(p,n.xyz,n.w),1);}
+    // SoC R2 combine uses raw static occlusion *2; .5 encodes unmasked runtime sun.
+    return float4(SunLight(p,n.xyz,n.w,shadow1.Load(int3(at,0)).a*2),1);}
 float4 PSLocal(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=image1.Load(int3(at,0)).r;
     if(depth>=1)return 0;float3 n=image0.Load(int3(at,0)).xyz;return float4(LocalLight(WorldPosition(v.p.xy,depth),n),0);}
 float4 PSForwardSun(Varying v,bool front:SV_IsFrontFace):SV_Target {float4 c=Base(v);
-    return float4(c.rgb*SunLight(v.w,Normal(v,front),saturate(v.n.w)),c.a);}
+    return float4(c.rgb*SunLight(v.w,Normal(v,front),saturate(v.n.w),1),c.a);}
 float4 PSForwardLocal(Varying v,bool front:SV_IsFrontFace):SV_Target {float4 c=Base(v);
     return float4(c.rgb*LocalLight(v.w,Normal(v,front))*(alpha.z>0?c.a:1),0);}
 // combine: image0 albedo, image1 light; shadow0 normal; shadow1 depth.
@@ -124,7 +168,7 @@ float4 PSWater(Varying v,bool front:SV_IsFrontFace):SV_Target {
     float4 water=image0.Sample(surface,flow);float2 wave=(water.rg-.5)*.012;
     float2 screen_uv=v.p.xy/screen.xy;float3 behind=image1.Sample(surface,saturate(screen_uv+wave)).rgb;
     float3 n=Normal(v,front);float fresnel=pow(1-saturate(dot(n,normalize(camera.xyz-v.w))),5);
-    float3 lit=water.rgb*SunLight(v.w,n,saturate(v.n.w));return float4(lerp(lerp(behind,lit,.35),hemi.rgb,fresnel*.5),.8);
+    float3 lit=water.rgb*SunLight(v.w,n,saturate(v.n.w),1);return float4(lerp(lerp(behind,lit,.35),hemi.rgb,fresnel*.5),.8);
 }
 float4 PSDistortion(Varying v):SV_Target {float4 mask=Base(v);bool menu=alpha.w>29.5 && alpha.w<30.5;
     // Match R2 distort.ps: the menu mask is alpha-blended over neutral 0.5.

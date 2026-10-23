@@ -77,7 +77,7 @@ struct Resource {
     uint32_t buffer_stride;
     bool initialized;
     bool dynamic_instances,model_pose;
-    uint32_t instance_count,model_bones,model_skin_mode;
+    uint32_t instance_count,model_bones,model_skin_mode,model_capacity;
     char shader_entry[96],pixel_entry[96],shader_name[64];
     KichR4Handle vertex_shader,pixel_shader;
     KichR4PipelineDesc input_layout;
@@ -89,7 +89,7 @@ struct Resource {
     std::vector<KichR4ShaderBinding> bindings;
     std::vector<KichR4ShaderVariable> variables;
     Resource() : texture(NULL), buffer(NULL), srv(NULL), rtv(NULL), dsv(NULL),
-        vs(NULL), ps(NULL), bytecode(NULL),buffer_stride(0),initialized(false),dynamic_instances(false),model_pose(false),instance_count(0),model_bones(0),model_skin_mode(0),pipeline_released(NULL)
+        vs(NULL), ps(NULL), bytecode(NULL),buffer_stride(0),initialized(false),dynamic_instances(false),model_pose(false),instance_count(0),model_bones(0),model_skin_mode(0),model_capacity(0),pipeline_released(NULL)
         { handle=0;vertex_shader=pixel_shader=source_hash=bytecode_hash=write_generation=emitted_epoch=last_write_pass=0;
           created_frame=last_write_frame=last_clear_frame=UINT64_MAX;last_clear_flags=last_write_kind=0;last_clear_depth=1;
           memset(&input_layout,0,sizeof(input_layout));memset(last_clear_color,0,sizeof(last_clear_color)); memset(&info,0,sizeof(info)); info.struct_size=sizeof(info);memset(shader_name,0,sizeof(shader_name));memset(shader_entry,0,sizeof(shader_entry));memset(pixel_entry,0,sizeof(pixel_entry));memset(alpha,0,sizeof(alpha)); }
@@ -344,7 +344,7 @@ int32_t KICH_R4_CALL CreateBuffer(KichR4Handle device, const KichR4BufferDesc* d
         hr=d->hw->CreateBuffer(&native,data ? &initial : NULL,&r->buffer); if (FAILED(hr)) return hr;
         r->info.kind=desc->kind; r->info.byte_size=desc->byte_size;
         r->buffer_stride=desc->stride;r->initialized=data!=NULL;
-        if(desc->kind==KICH_R4_CONSTANT_BUFFER && data && bytes==816)memcpy(r->alpha,static_cast<const unsigned char*>(data)+800,16);
+        if(desc->kind==KICH_R4_CONSTANT_BUFFER && data && bytes==912)memcpy(r->alpha,static_cast<const unsigned char*>(data)+800,16);
         *out=d->Add(std::move(r)); return KICH_R4_OK;
     });
 }
@@ -559,12 +559,12 @@ int32_t KICH_R4_CALL DestroyFrameDevice(KichR4Handle device,KichR4FrameStats* ou
     });
 }
 
-int32_t ShaderConstants(const Resource& shader,uint32_t& bytes,bool texture=false,bool advanced=false,bool model=false)
+int32_t ShaderConstants(const Resource& shader,uint32_t& bytes,bool texture=false,bool advanced=false,uint32_t model_capacity=0)
 {
     bytes=0;bool palette=false;
     for(size_t i=0;i<shader.bindings.size();++i) {
         const KichR4ShaderBinding& b=shader.bindings[i];
-        if(model && b.kind==KICH_R4_BIND_CONSTANTS && b.slot==1 && b.count==1 && b.byte_size==sizeof(KichR4ModelPose)){palette=true;continue;}
+        if(model_capacity && b.kind==KICH_R4_BIND_CONSTANTS && b.slot==1 && b.count==1 && b.byte_size==KichR4ModelPaletteBytes(model_capacity)){palette=true;continue;}
         if(advanced && b.count==1 && ((b.kind==KICH_R4_BIND_TEXTURE && b.slot<8) ||
             (b.kind==KICH_R4_BIND_SAMPLER && b.slot<2)))continue;
         if(texture && (b.kind==KICH_R4_BIND_TEXTURE || b.kind==KICH_R4_BIND_SAMPLER) && b.slot==0 && b.count==1)continue;
@@ -572,9 +572,9 @@ int32_t ShaderConstants(const Resource& shader,uint32_t& bytes,bool texture=fals
             return KICH_R4_E_UNSUPPORTED;
         if(b.byte_size>bytes)bytes=b.byte_size;
     }
-    return model && !palette?KICH_R4_E_UNSUPPORTED:KICH_R4_OK;
+    return model_capacity && !palette?KICH_R4_E_UNSUPPORTED:KICH_R4_OK;
 }
-int32_t CreatePipelineImpl(KichR4Handle device,const KichR4PipelineDesc* desc,KichR4Handle* out,bool texture,bool stream=false,bool advanced=false,bool instanced=false,bool model=false)
+int32_t CreatePipelineImpl(KichR4Handle device,const KichR4PipelineDesc* desc,KichR4Handle* out,bool texture,bool stream=false,bool advanced=false,bool instanced=false,uint32_t model_capacity=0)
 {
     if(!out)return KICH_R4_E_ARGUMENT;
     *out=0;if(!desc || !ValidPipeline(*desc))return KICH_R4_E_ARGUMENT;
@@ -584,11 +584,11 @@ int32_t CreatePipelineImpl(KichR4Handle device,const KichR4PipelineDesc* desc,Ki
         if(!vs || !ps)return KICH_R4_E_HANDLE;
         if(vs->info.kind!=KICH_R4_VERTEX_SHADER || ps->info.kind!=KICH_R4_PIXEL_SHADER)return KICH_R4_E_ARGUMENT;
         uint32_t vs_bytes=0,ps_bytes=0;
-        hr=ShaderConstants(*vs,vs_bytes,false,false,model);if(hr<0)return hr;
+        hr=ShaderConstants(*vs,vs_bytes,false,false,model_capacity);if(hr<0)return hr;
         hr=ShaderConstants(*ps,ps_bytes,texture,advanced);if(hr<0)return hr;
         std::unique_ptr<Resource> r(new Resource());r->pipeline.reset(new PipelineDX11());
-        hr=r->pipeline->Create(d->hw,*desc,vs->vs,ps->ps,vs->bytecode,texture,stream,advanced,instanced,model);if(hr<0)return hr;
-        r->pipeline->constant_bytes=vs_bytes>ps_bytes?vs_bytes:ps_bytes;r->info.kind=KICH_R4_GRAPHICS_PIPELINE;
+        hr=r->pipeline->Create(d->hw,*desc,vs->vs,ps->ps,vs->bytecode,texture,stream,advanced,instanced,model_capacity!=0);if(hr<0)return hr;
+        r->pipeline->constant_bytes=vs_bytes>ps_bytes?vs_bytes:ps_bytes;r->pipeline->model_capacity=model_capacity;r->info.kind=KICH_R4_GRAPHICS_PIPELINE;
         CopyName(r->shader_entry,sizeof(r->shader_entry),vs->shader_entry);CopyName(r->pixel_entry,sizeof(r->pixel_entry),ps->shader_entry);
         r->vertex_shader=desc->vertex_shader;r->pixel_shader=desc->pixel_shader;r->input_layout=*desc;
         Resource* saved=r.get();*out=d->Add(std::move(r));
@@ -614,28 +614,33 @@ int32_t KICH_R4_CALL CreateDetailPipeline(KichR4Handle device,const KichR4Detail
 }
 int32_t KICH_R4_CALL CreateModelPipeline(KichR4Handle device,const KichR4ModelPipelineDesc* desc,KichR4Handle* out){
     if(out)*out=0;
-    if(!desc || desc->struct_size!=sizeof(*desc))return KICH_R4_E_ARGUMENT;
+    if(!desc || desc->struct_size!=sizeof(*desc) || !KichR4ModelValidCapacity(desc->bone_capacity))return KICH_R4_E_ARGUMENT;
     KichR4PipelineDesc p={};p.struct_size=sizeof(p);p.vertex_stride=sizeof(KichR4ModelVertex);
     p.vertex_shader=desc->vs;p.pixel_shader=desc->ps;p.element_count=2;
     p.elements[0]={KICH_R4_POSITION,0,KICH_R4_FLOAT3,0};p.elements[1]={KICH_R4_TEXCOORD,0,KICH_R4_FLOAT2,12};
-    return CreatePipelineImpl(device,&p,out,true,true,true,false,true);
+    return CreatePipelineImpl(device,&p,out,true,true,true,false,desc->bone_capacity);
 }
-int32_t KICH_R4_CALL CreateModelPose(KichR4Handle device,KichR4Handle* out){
+int32_t KICH_R4_CALL CreateModelPose(KichR4Handle device,uint32_t capacity,KichR4Handle* out){
     if(!out)return KICH_R4_E_ARGUMENT;
-    *out=0;return Protect([&]()->int32_t{int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;
-        std::unique_ptr<Resource> r(new Resource());D3D11_BUFFER_DESC b={};b.ByteWidth=sizeof(KichR4ModelPose);
+    *out=0;if(!KichR4ModelValidCapacity(capacity))return KICH_R4_E_ARGUMENT;
+    return Protect([&]()->int32_t{int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;
+        std::unique_ptr<Resource> r(new Resource());D3D11_BUFFER_DESC b={};b.ByteWidth=KichR4ModelPaletteBytes(capacity);
         b.Usage=D3D11_USAGE_DYNAMIC;b.BindFlags=D3D11_BIND_CONSTANT_BUFFER;b.CPUAccessFlags=D3D11_CPU_ACCESS_WRITE;
         hr=d->hw->CreateBuffer(&b,NULL,&r->buffer);if(hr<0)return hr;
-        r->info.kind=KICH_R4_CONSTANT_BUFFER;r->info.byte_size=b.ByteWidth;r->model_pose=true;*out=d->Add(std::move(r));return KICH_R4_OK;});
+        r->info.kind=KICH_R4_CONSTANT_BUFFER;r->info.byte_size=b.ByteWidth;r->model_pose=true;r->model_capacity=capacity;*out=d->Add(std::move(r));return KICH_R4_OK;});
 }
 int32_t KICH_R4_CALL UploadModelPose(KichR4Handle device,KichR4Handle handle,const KichR4ModelPose* pose){
     if(!pose || !ValidModelPose(*pose))return KICH_R4_E_ARGUMENT;
     return Protect([&]()->int32_t{int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;
         Resource* r=d->resources.Find(handle);if(!r)return KICH_R4_E_HANDLE;
-        if(!r->model_pose || r->info.byte_size!=sizeof(*pose))return KICH_R4_E_ARGUMENT;
+        if(!r->model_pose || !KichR4ModelValidCapacity(r->model_capacity) || pose->bone_count>r->model_capacity ||
+            r->info.byte_size!=KichR4ModelPaletteBytes(r->model_capacity))return KICH_R4_E_ARGUMENT;
         D3D11_MAPPED_SUBRESOURCE mapped={};hr=d->context->Map(r->buffer,0,D3D11_MAP_WRITE_DISCARD,0,&mapped);if(hr<0)return hr;
-        memcpy(mapped.pData,pose,sizeof(*pose));d->context->Unmap(r->buffer,0);r->initialized=true;
-        r->model_bones=pose->bone_count;r->model_skin_mode=pose->skin_mode;d->Upload(r,sizeof(*pose));++d->geometry_stats.buffer_updates;return KICH_R4_OK;});
+        const uint32_t supplied=16+pose->bone_count*64;
+        memcpy(mapped.pData,pose,supplied);
+        memset(static_cast<unsigned char*>(mapped.pData)+supplied,0,r->info.byte_size-supplied);
+        d->context->Unmap(r->buffer,0);r->initialized=true;
+        r->model_bones=pose->bone_count;r->model_skin_mode=pose->skin_mode;d->Upload(r,r->info.byte_size);++d->geometry_stats.buffer_updates;return KICH_R4_OK;});
 }
 int32_t KICH_R4_CALL CreateDetailInstances(KichR4Handle device,uint32_t capacity,KichR4Handle* out){
     if(!out)return KICH_R4_E_ARGUMENT;
@@ -666,7 +671,7 @@ int32_t KICH_R4_CALL UpdateBuffer(KichR4Handle device,KichR4Handle buffer,const 
         if(!r->buffer || r->dynamic_instances || r->model_pose || r->info.kind<KICH_R4_VERTEX_BUFFER || r->info.kind>KICH_R4_CONSTANT_BUFFER ||
             bytes!=r->info.byte_size)return KICH_R4_E_ARGUMENT;
         d->context->UpdateSubresource(r->buffer,0,NULL,data,0,0);r->initialized=true;
-        if(r->info.kind==KICH_R4_CONSTANT_BUFFER && bytes==816)memcpy(r->alpha,static_cast<const unsigned char*>(data)+800,16);
+        if(r->info.kind==KICH_R4_CONSTANT_BUFFER && bytes==912)memcpy(r->alpha,static_cast<const unsigned char*>(data)+800,16);
         d->Upload(r,bytes);++d->geometry_stats.buffer_updates;return KICH_R4_OK;
     });
 }
@@ -711,7 +716,7 @@ void SnapshotResource(Device* d,KichR4Handle handle){
         d->Number("PIPELINE",id,"vertex_shader_handle",r->vertex_shader);d->Number("PIPELINE",id,"pixel_shader_handle",r->pixel_shader);
         d->Number("PIPELINE",id,"vertex_stride",r->input_layout.vertex_stride);d->Emit("PIPELINE",id,"position_normal_space",r->pipeline->model?"GPU_MODEL_SKINNING; SEE_MODEL_METADATA":r->pipeline->instanced?"DETAIL_INSTANCE_TRANSFORM":"SEE_SOURCE_GEOMETRY_METADATA");
         for(uint32_t i=0;i<r->input_layout.element_count;++i){const KichR4VertexElement& e=r->input_layout.elements[i];char key[32];snprintf(key,sizeof(key),"input_element_%u",i);snprintf(value,sizeof(value),"semantic=%u;index=%u;format=%u;offset=%u",e.semantic,e.semantic_index,e.format,e.byte_offset);d->Emit("PIPELINE",id,key,value);}
-        d->Emit("PIPELINE",id,"additional_input_layout",r->pipeline->model?"slot0:BLENDWEIGHT0_R32_FLOAT@20;BLENDINDICES0_R16G16_UINT@24;NORMAL0_R32_UINT@28":r->pipeline->instanced?"slot1:TEXCOORD1..4_R32G32B32A32_FLOAT@0,16,32,48;step_rate=1":"NONE");
+        d->Emit("PIPELINE",id,"additional_input_layout",r->pipeline->model?"slot0:BLENDWEIGHT0_R32_FLOAT@20;BLENDINDICES0_R16G16_UINT@24;NORMAL0_R32_UINT@28;TANGENT0_R32_UINT@32;BINORMAL0_R32_UINT@36;TEXCOORD1_FLOAT4@40;COLOR0_UNORM8X4@56;TEXCOORD2_UINT@60":r->pipeline->instanced?"slot1:TEXCOORD1..4_R32G32B32A32_FLOAT@0,16,32,48;step_rate=1":"NONE");
         SnapshotResource(d,r->vertex_shader);SnapshotResource(d,r->pixel_shader);
     }
 }
@@ -774,8 +779,9 @@ void SnapshotDraw(Device* d,const KichR4DrawIndexedDesc& desc,Resource* pipeline
     memcpy(event.vertex_shader,pipeline->shader_entry,sizeof(event.vertex_shader));memcpy(event.pixel_shader,pipeline->pixel_entry,sizeof(event.pixel_shader));
     if(textures)memcpy(event.textures,textures,sizeof(event.textures));
     if(detail)strcpy(event.skin,"NONE_INSTANCED_DETAIL");
-    snprintf(event.states,sizeof(event.states),"enum=D3D11;gpu_pass_ordinal=%llu;gpu_draw_ordinal=%llu;depth=%u;depth_write=%u;depth_func=LESS_EQUAL;alpha_shader_func=%.0f;alpha_ref=%.8f;blend=%u;src_legacy=%u;dst_legacy=%u;blend_op=ADD;cull=%u;front=CLOCKWISE;stencil=OFF;scissor=%u;viewport_depth=%.5f/%.5f;raw_topology=TRIANGLELIST",
-        static_cast<unsigned long long>(d->pass_active?d->pass_ordinal:0),static_cast<unsigned long long>(d->draw_ordinal),desc.depth_mode,state?state->depth_write:desc.depth_mode,cb->alpha[1],cb->alpha[0],state?state->blend_enable:0,state?state->source_blend:2,state?state->dest_blend:1,desc.cull_mode==KICH_R4_CULL_BACK?3:desc.cull_mode==KICH_R4_CULL_FRONT?2:1,state?state->scissor_enable:0,state?state->min_depth:0,state?state->max_depth:1);
+    const Resource* vs=d->resources.Find(pipeline->vertex_shader);const Resource* ps=d->resources.Find(pipeline->pixel_shader);
+    snprintf(event.states,sizeof(event.states),"vs_bytecode_hash=%016llx;ps_bytecode_hash=%016llx;model_capacity=%u;enum=D3D11;gpu_pass_ordinal=%llu;gpu_draw_ordinal=%llu;depth=%u;depth_write=%u;depth_func=LESS_EQUAL;alpha_shader_func=%.0f;alpha_ref=%.8f;blend=%u;src_legacy=%u;dst_legacy=%u;blend_op=ADD;cull=%u;front=CLOCKWISE;stencil=OFF;scissor=%u;viewport_depth=%.5f/%.5f;raw_topology=TRIANGLELIST",
+        static_cast<unsigned long long>(vs?vs->bytecode_hash:0),static_cast<unsigned long long>(ps?ps->bytecode_hash:0),pipeline->pipeline->model_capacity,static_cast<unsigned long long>(d->pass_active?d->pass_ordinal:0),static_cast<unsigned long long>(d->draw_ordinal),desc.depth_mode,state?state->depth_write:desc.depth_mode,cb->alpha[1],cb->alpha[0],state?state->blend_enable:0,state?state->source_blend:2,state?state->dest_blend:1,desc.cull_mode==KICH_R4_CULL_BACK?3:desc.cull_mode==KICH_R4_CULL_FRONT?2:1,state?state->scissor_enable:0,state?state->min_depth:0,state?state->max_depth:1);
     snprintf(event.samplers,sizeof(event.samplers),"s0:MIN_MAG_MIP_LINEAR;UVW=%s;s1=%s",state && state->clamp_texture?"CLAMP":"WRAP",pipeline->pipeline->advanced?"COMPARISON_MIN_MAG_LINEAR_MIP_POINT;UVW=BORDER;cmp=LESS_EQUAL":"NOT_BOUND_BY_THIS_PIPELINE");
     /* Callback cannot reenter GPU services; the EXE recorder catches its own
      * allocation failures and copies everything before returning. */
@@ -877,7 +883,7 @@ int32_t DrawDeferredOrDetail(KichR4Handle device,const KichR4DeferredDrawDesc* d
         if(!vb->initialized || !ib->initialized || !cb->initialized)return KICH_R4_E_STATE;
         Resource* pose=NULL;
         if(model){pose=d->resources.Find(model->pose_buffer);if(!pose)return KICH_R4_E_HANDLE;
-            if(!pose->model_pose || pose->info.byte_size!=sizeof(KichR4ModelPose))return KICH_R4_E_ARGUMENT;
+            if(!pose->model_pose || pose->model_capacity!=p->pipeline->model_capacity || pose->info.byte_size!=KichR4ModelPaletteBytes(p->pipeline->model_capacity))return KICH_R4_E_ARGUMENT;
             if(!pose->initialized)return KICH_R4_E_STATE;}
         Resource* instances=NULL;
         if(detail){instances=d->resources.Find(detail->instance_buffer);if(!instances)return KICH_R4_E_HANDLE;

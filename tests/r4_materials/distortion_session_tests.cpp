@@ -24,16 +24,16 @@ int32_t ModelPipeline(KichR4Handle,const KichR4ModelPipelineDesc* d,KichR4Handle
     Require(d->struct_size==sizeof(*d) && f->Find(d->vs).kind==KICH_R4_VERTEX_SHADER && f->Find(d->ps).kind==KICH_R4_PIXEL_SHADER,"native model shader pair valid");
     *out=f->Add(KICH_R4_GRAPHICS_PIPELINE);model_pixel[*out]=d->ps;return 0;
 }
-int32_t ModelPose(KichR4Handle,KichR4Handle* out){*out=f->Add(KICH_R4_CONSTANT_BUFFER);f->Find(*out).bytes.resize(sizeof(KichR4ModelPose));return 0;}
+int32_t ModelPose(KichR4Handle,uint32_t capacity,KichR4Handle* out){Require(KichR4ModelValidCapacity(capacity),"palette capacity class valid");*out=f->Add(KICH_R4_CONSTANT_BUFFER);f->Find(*out).bytes.resize(KichR4ModelPaletteBytes(capacity));return 0;}
 int32_t ModelUpload(KichR4Handle,KichR4Handle pose,const KichR4ModelPose* data){
-    Require(ValidModelPose(*data),"native pose follows production ABI rules");memcpy(f->Find(pose).bytes.data(),data,sizeof(*data));return 0;
+    Require(ValidModelPose(*data) && 16+64*data->bone_count<=f->Find(pose).bytes.size(),"native pose follows production ABI rules");std::fill(f->Find(pose).bytes.begin(),f->Find(pose).bytes.end(),0);memcpy(f->Find(pose).bytes.data(),data,16+64*data->bone_count);return 0;
 }
 int32_t ModelDraw(KichR4Handle,const KichR4ModelDrawDesc* d){
     Require(d->struct_size==sizeof(*d) && ValidDeferredDraw(d->surface) && pass_active,"native model draw inside valid pass");
     const KichR4DrawIndexedDesc& draw=d->surface.state.draw;
     const Object& vb=f->Find(draw.vertex_buffer);const Object& ib=f->Find(draw.index_buffer);
     Require(vb.stride==sizeof(KichR4ModelVertex) && ib.stride==2 && ValidModelRange(draw.start_index,draw.index_count,static_cast<uint32_t>(ib.bytes.size()/2)),"native draw retains immutable model ranges");
-    Require(f->Find(d->pose_buffer).bytes.size()==sizeof(KichR4ModelPose),"native model has explicit pose");
+    Require(f->Find(d->pose_buffer).bytes.size()>=KichR4ModelPaletteBytes(16),"native model has explicit pose");
     Observe(d->surface,shader_entries.at(model_pixel.at(draw.pipeline)),true);return 0;
 }
 kich_r4_capture::Batch SourceBatch(){

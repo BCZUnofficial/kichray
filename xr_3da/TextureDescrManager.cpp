@@ -263,6 +263,14 @@ BOOL CTextureDescrMngr::GetDetailTexture(const shared_str& tex_name, LPCSTR& res
 	}
 	return FALSE;
 }
+float CTextureDescrMngr::GetDetailScale(const shared_str& tex_name) const
+{
+	map_TD::const_iterator I = m_texture_details.find(tex_name);
+	if (I == m_texture_details.end() || !I->second.m_assoc || !I->second.m_assoc->cs)
+		return 1.f;
+	// All associations are created by LoadLTX/LoadTHM as cl_dt_scaler.
+	return static_cast<const cl_dt_scaler*>(I->second.m_assoc->cs)->scale;
+}
 /*
 	// Load detail textures association
 	string256		fname;

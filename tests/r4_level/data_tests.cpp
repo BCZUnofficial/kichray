@@ -12,7 +12,7 @@ bool Near(float a,float b){return fabsf(a-b)<.00001f;}
 Span View(const fixture::Bytes& b){return Span(b.data(),static_cast<uint32_t>(b.size()));}
 void Data(){fixture::Level file;Scene s;Parse(View(file.level),View(file.geometry),s);
     Require(s.visuals==6 && s.skipped==2 && s.draws.size()==4 && s.trees==2 && s.triangles==4,"static/progressive/trees included once, hierarchy/LOD proxy skipped");
-    Require(s.materials.size()==3 && s.materials[1].texture=="base" && s.materials[2].cutout,"material texture list and alpha-cutout mapping");
+    Require(s.materials.size()==3 && s.materials[1].texture=="base" && !s.materials[2].cutout && !s.materials[2].descriptor.unsupported_reason.empty(),"unresolved metadata never guesses cutout from texture or shader name");
     const Vertex& normal=s.vertices[0].vertices[0];Require(Near(normal.uv[0],(-1024.f+128.f/255.f)/1024.f) && Near(normal.uv[1],2049.f/1024.f),"SoC SHORT2 UV fractions from tangent/binormal alpha");
     Require(Near(s.vertices[1].vertices[0].uv[0],.5f) && Near(s.vertices[1].vertices[0].uv[1],1),"tree SHORT4 UV scale is 1/2048");
     const uint32_t expected[]={1,2,3,4,5,6,0,1,2,0,1,2};

@@ -3,6 +3,7 @@
 #include "KichR4Stream.h"
 #include "KichR4Capture.h"
 #include <string.h>
+namespace kich_r4_material {struct Descriptor;}
 /* Small EXE-internal borrowed snapshots. This header has no engine or STL
  * dependency: the old PCH adapter uses the engine's original EH settings,
  * while parsing/allocations and their exception handling live in NoPCH code. */
@@ -16,6 +17,7 @@ struct ModelInput {
     float world[16],vp[16];const float* bones;Style style;
     /* Borrowed only until CaptureSubmitModel returns. Null uses source OGF metadata. */
     const char* shader;const char* texture;const char* secondary;uint32_t effect,shader_element,shader_pass;
+    const kich_r4_material::Descriptor* material;
 };
 struct UIInput {
     void* vb;void* ib;

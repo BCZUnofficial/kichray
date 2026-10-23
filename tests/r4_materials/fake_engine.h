@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include "KichR4MaterialRules.h"
+#include "KichR4MaterialServices.h"
 typedef uint32_t u32;
 typedef int BOOL;
 static const BOOL TRUE=1;
@@ -44,6 +45,9 @@ inline float _sqrt(float value){return std::sqrt(value);}
 extern std::string active_shader,bound_texture;
 extern uint32_t effect,source_element,source_pass;
 extern bool distortion_enabled,bound_clamp;
+extern kich_r4_material::Cache native_materials;
+extern const kich_r4_material::Descriptor* active_material;
+inline const kich_r4_material::Descriptor* KichR4_NativeFindMaterial(const void* element,uint32_t pass){return native_materials.Find(element,pass);}
 void KichR4_NativeElementPass(ShaderElement*,uint32_t);
 void KichR4_NativeElementSource(uint32_t);
 inline bool KichR4_NativeDistortionEnabled(){return distortion_enabled;}

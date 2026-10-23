@@ -53,8 +53,9 @@ struct Constants {
     Matrix world,mvp,normal_matrix,inverse_vp,shadow[6];
     float camera[4],screen[4],sun_direction[4],sun_color[4],ambient[4],hemi[4],fog[4];
     float light_position[4],light_direction[4],light_color[4],alpha[4];
+    float material[4],color_scale[4],color_bias[4],sun_scale_bias[4],tree_wave[4],tree_wind[4];
 };
-static_assert(sizeof(Constants)==816,"B4.4 HLSL cbuffer size");
+static_assert(sizeof(Constants)==912,"B4.4 HLSL cbuffer size");
 static_assert(offsetof(Constants,normal_matrix)==128 && offsetof(Constants,inverse_vp)==192 &&
     offsetof(Constants,shadow)==256 && offsetof(Constants,camera)==640 && offsetof(Constants,alpha)==800,"B4.4 HLSL offsets");
 inline bool ValidLight(const KichR4LocalLight& l){

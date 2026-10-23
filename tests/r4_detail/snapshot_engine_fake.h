@@ -13,8 +13,10 @@
 #define _RELEASE(p) do{if(p){p->Release();p=NULL;}}while(0)
 typedef int HRESULT;
 typedef unsigned long DWORD;
+typedef std::string shared_str;
 template<size_t N>int strcpy_s(char (&out)[N],const char* in){return snprintf(out,N,"%s",in);}
-template<size_t N>int strncpy_s(char (&out)[N],const char* in,int){const size_t length=strlen(in),count=length<N?length:N-1;memcpy(out,in,count);out[count]=0;return length<N?0:1;}
+inline int strncpy_s(char* out,size_t size,const char* in,int){if(!size)return 1;const size_t length=strlen(in),count=length<size?length:size-1;memcpy(out,in,count);out[count]=0;return length<size?0:1;}
+template<size_t N>int strncpy_s(char (&out)[N],const char* in,int count){return strncpy_s(out,N,in,count);}
 inline void Msg(const char*,...){}
 enum D3DRENDERSTATETYPE {D3DRS_ZENABLE=1,D3DRS_ZWRITEENABLE,D3DRS_ZFUNC,D3DRS_ALPHATESTENABLE,D3DRS_ALPHAFUNC,D3DRS_ALPHAREF,
     D3DRS_ALPHABLENDENABLE,D3DRS_SRCBLEND,D3DRS_DESTBLEND,D3DRS_BLENDOP,D3DRS_CULLMODE,D3DRS_STENCILENABLE,D3DRS_STENCILFUNC,

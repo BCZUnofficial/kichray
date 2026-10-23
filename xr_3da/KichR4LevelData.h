@@ -7,6 +7,7 @@
  */
 #include "KichR4TestScene.h"
 #include "KichR4LevelFiles.h"
+#include "KichR4Material.h"
 #include <vector>
 #include <string>
 #include <stdexcept>
@@ -38,14 +39,26 @@ inline bool SafeName(const std::string& s){if(s.empty() || s.size()>120 || s[0]=
     for(size_t i=0;i<s.size();++i){const unsigned char c=static_cast<unsigned char>(s[i]);if(c<32 || c==':' || c=='"' || c=='<' || c=='>' || c=='|' || c=='*' || c=='?')return false;}return true;}
 inline std::string Lower(std::string s){for(size_t i=0;i<s.size();++i){if(s[i]>='A' && s[i]<='Z')s[i]=static_cast<char>(s[i]-'A'+'a');if(s[i]=='/')s[i]='\\';}return s;}
 struct Material {std::string shader,texture;bool cutout;uint32_t kind;std::string layers[4],texture_list;
+    kich_r4_material::Descriptor descriptor;
     uint32_t blend,source,destination,alpha_func;float alpha_ref;
     Material(const std::string& s="",const std::string& t="",bool c=false):shader(s),texture(t),cutout(c),kind(0),blend(0),source(5),destination(6),alpha_func(c?7u:8u),alpha_ref(c?200.f/255.f:0.f){}
 };
-struct Vertex {float position[3],uv[2],normal[3],hemi;};
-static_assert(sizeof(Vertex)==36,"B4.4 static vertex stride");
-struct Buffer {std::vector<Vertex> vertices;};
+/* The source channels are independent. In particular tree tc.z is a wind
+ * fraction, while TEXCOORD1 is the static lightmap UV (XRLC /32768). */
+enum Attribute {ATTR_NORMAL=1,ATTR_TANGENT=2,ATTR_BINORMAL=4,ATTR_UV1=8,
+    ATTR_HEMI=16,ATTR_SUN=32,ATTR_COLOR=64,ATTR_TREE=128};
+struct Vertex {
+    float position[3],uv[2],normal[3],hemi,tangent[3],binormal[3],uv1[2],sun;
+    uint32_t color,attributes;float tree_fraction;
+};
+static_assert(sizeof(Vertex)==84,"G3c static source vertex stride");
+struct Buffer {std::vector<Vertex> vertices;uint32_t available_attributes,basis_vertices;
+    float tree_fraction_max;
+    Buffer():available_attributes(0),basis_vertices(0),tree_fraction_max(0){}
+};
 struct Draw {
     uint32_t vb,ib,first,count,material;Matrix world;Vec3 low,high;
+    float tree_scale[5],tree_bias[5];bool tree;
 };
 struct Scene {
     std::vector<Material> materials;std::vector<Buffer> vertices;
@@ -59,31 +72,70 @@ struct Element {uint32_t offset,type;bool found;Element():offset(0),type(0),foun
 inline float Short(const unsigned char* p){const uint32_t n=uint32_t(p[0])|(uint32_t(p[1])<<8);return static_cast<float>(n>=32768?int32_t(n)-65536:int32_t(n));}
 inline float Half(const unsigned char* p){const uint32_t h=uint32_t(p[0])|(uint32_t(p[1])<<8),ex=(h>>10)&31,m=h&1023;
     Check(ex!=31,"non-finite half UV");const float n=ex?ldexpf(static_cast<float>(1024+m),static_cast<int>(ex)-25):ldexpf(static_cast<float>(m),-24);return h&32768?-n:n;}
+inline bool UnitVector(float* v){
+    if(!Finite(v[0]) || !Finite(v[1]) || !Finite(v[2]))return false;
+    const double length=double(v[0])*v[0]+double(v[1])*v[1]+double(v[2])*v[2];
+    if(!(length>1.e-12) || length>1.e40)return false;
+    const float scale=static_cast<float>(1./sqrt(length));for(unsigned i=0;i<3;++i)v[i]*=scale;return true;
+}
+/* Reject collapsed/invalid bases; do not invent a tangent. Retain the source
+ * binormal's orientation so mirrored UV islands keep their handedness. */
+inline bool Basis(float* n,float* t,float* b){
+    if(!UnitVector(n) || !UnitVector(t) || !UnitVector(b))return false;
+    const float nt=n[0]*t[0]+n[1]*t[1]+n[2]*t[2];for(unsigned i=0;i<3;++i)t[i]-=n[i]*nt;
+    if(!UnitVector(t))return false;
+    const float cross[]={n[1]*t[2]-n[2]*t[1],n[2]*t[0]-n[0]*t[2],n[0]*t[1]-n[1]*t[0]};
+    const float hand=cross[0]*b[0]+cross[1]*b[1]+cross[2]*b[2];if(!Finite(hand) || fabsf(hand)<1.e-4f)return false;
+    for(unsigned i=0;i<3;++i)b[i]=cross[i]*(hand<0?-1.f:1.f);
+    return true;
+}
+inline bool VectorElement(const unsigned char* p,const Element& e,float* out){
+    if(!e.found)return false;
+    p+=e.offset;
+    if(e.type==4){out[0]=p[2]*(2.f/255)-1;out[1]=p[1]*(2.f/255)-1;out[2]=p[0]*(2.f/255)-1;}
+    else if(e.type==2 || e.type==3){memcpy(out,p,12);}else return false;
+    return UnitVector(out);
+}
+inline bool UVElement(const unsigned char* p,const Element& e,float* out,float short_scale){
+    if(!e.found)return false;
+    p+=e.offset;
+    if(e.type==1 || e.type==3){Reader r(Span(p,8));out[0]=r.Float();out[1]=r.Float();}
+    else if(e.type==15 || e.type==16){out[0]=Half(p);out[1]=Half(p+2);}
+    else if(e.type==6 || e.type==7){out[0]=Short(p)/short_scale;out[1]=Short(p+2)/short_scale;}
+    else return false;
+    return true;
+}
 inline void Vertices(Span file,Scene& out){Reader r(Chunk(file,9));const uint32_t count=r.U32();Check(count && count<=4096,"invalid vertex buffer count");out.vertices.resize(count);
-    for(uint32_t b=0;b<count;++b){Element pos,uv,normal,tangent,binormal;uint32_t stride=0;bool end=false;
+    for(uint32_t b=0;b<count;++b){Element pos,uv,uv1,normal,tangent,binormal,color;uint32_t stride=0;bool end=false;
         for(unsigned d=0;d<65;++d){const unsigned char* e=r.Take(8);const uint32_t stream=uint32_t(e[0])|(uint32_t(e[1])<<8),offset=uint32_t(e[2])|(uint32_t(e[3])<<8),type=e[4];
             if(stream==255 && type==17){end=true;break;}
             Check(stream==0 && e[5]==0 && TypeBytes(type),"unsupported vertex declaration");
             Check(offset+TypeBytes(type)<=2048,"vertex stride limit");stride=std::max(stride,offset+TypeBytes(type));
-            Element* target=NULL;if(e[7]==0){if(e[6]==0)target=&pos;else if(e[6]==3)target=&normal;else if(e[6]==5)target=&uv;else if(e[6]==6)target=&tangent;else if(e[6]==7)target=&binormal;}
+            Element* target=NULL;if(e[7]==0){if(e[6]==0)target=&pos;else if(e[6]==3)target=&normal;else if(e[6]==5)target=&uv;else if(e[6]==6)target=&tangent;else if(e[6]==7)target=&binormal;else if(e[6]==10)target=&color;}
+            else if(e[7]==1 && e[6]==5)target=&uv1;
             if(target){Check(!target->found,"duplicate vertex semantic");target->found=true;target->offset=offset;target->type=type;}
         }
         Check(end && stride && pos.found && (pos.type==2 || pos.type==3),"expected FLOAT3/4 position");
         Check(uv.found && (uv.type==1 || uv.type==3 || uv.type==6 || uv.type==7 || uv.type==15 || uv.type==16),"unsupported base UV declaration");
         const uint32_t n=r.U32();Check(n && n<=r.Left()/stride && uint64_t(n)*sizeof(Vertex)<=64u*1024u*1024u,"invalid vertex buffer size");
-        Budget(out,uint64_t(n)*sizeof(Vertex));const unsigned char* source=r.Take(n*stride);Buffer& vb=out.vertices[b];vb.vertices.resize(n);
-        for(uint32_t i=0;i<n;++i){const unsigned char* p=source+i*stride;Vertex& v=vb.vertices[i];Reader xyz(Span(p+pos.offset,12));
-            v.normal[0]=v.normal[1]=v.normal[2]=0;v.hemi=1;
-            if(normal.found){const unsigned char* np=p+normal.offset;
-                if(normal.type==4){v.normal[0]=np[2]*(2.f/255)-1;v.normal[1]=np[1]*(2.f/255)-1;v.normal[2]=np[0]*(2.f/255)-1;v.hemi=np[3]/255.f;}
-                else if(normal.type==2 || normal.type==3){Reader nr(Span(np,12));for(unsigned a=0;a<3;++a)v.normal[a]=nr.Float();}}
+        Budget(out,uint64_t(n)*sizeof(Vertex));const unsigned char* source=r.Take(n*stride);Buffer& vb=out.vertices[b];vb.vertices.resize(n);vb.available_attributes=~0u;
+        for(uint32_t i=0;i<n;++i){const unsigned char* p=source+i*stride;Vertex& v=vb.vertices[i];v={};v.hemi=v.sun=1;v.color=0xffffffffu;Reader xyz(Span(p+pos.offset,12));
+            if(VectorElement(p,normal,v.normal))v.attributes|=ATTR_NORMAL;
+            else for(unsigned a=0;a<3;++a)v.normal[a]=0;
+            if(normal.found && normal.type==4){v.hemi=p[normal.offset+3]/255.f;v.attributes|=ATTR_HEMI;}
+            if(VectorElement(p,tangent,v.tangent) && VectorElement(p,binormal,v.binormal) && Basis(v.normal,v.tangent,v.binormal)){
+                v.attributes|=ATTR_TANGENT|ATTR_BINORMAL;++vb.basis_vertices;
+            }else for(unsigned a=0;a<3;++a)v.tangent[a]=v.binormal[a]=0;
             for(unsigned a=0;a<3;++a){v.position[a]=xyz.Float();Check(fabsf(v.position[a])<=1.e6f,"vertex position limit");}
-            const unsigned char* tc=p+uv.offset;
-            if(uv.type==1 || uv.type==3){Reader rr(Span(tc,8));v.uv[0]=rr.Float();v.uv[1]=rr.Float();}
-            else if(uv.type==15 || uv.type==16){v.uv[0]=Half(tc);v.uv[1]=Half(tc+2);}
-            else{const float quant=uv.type==7?2048.f:1024.f;v.uv[0]=Short(tc)/quant;v.uv[1]=Short(tc+2)/quant;
-                if(uv.type==6 && tangent.found && binormal.found && tangent.type==4 && binormal.type==4){
-                    v.uv[0]+=static_cast<float>(p[tangent.offset+3])/(255.f*quant);v.uv[1]+=static_cast<float>(p[binormal.offset+3])/(255.f*quant);}}
+            Check(UVElement(p,uv,v.uv,uv.type==7?2048.f:1024.f),"unsupported base UV declaration");
+            if(uv.type==6 && tangent.found && binormal.found && tangent.type==4 && binormal.type==4){
+                v.uv[0]+=p[tangent.offset+3]/(255.f*1024.f);v.uv[1]+=p[binormal.offset+3]/(255.f*1024.f);}
+            if(UVElement(p,uv1,v.uv1,32768.f))v.attributes|=ATTR_UV1;
+            if(uv.type==7){v.tree_fraction=Short(p+uv.offset+4)/2048.f;v.attributes|=ATTR_TREE;vb.tree_fraction_max=std::max(vb.tree_fraction_max,fabsf(v.tree_fraction));}
+            if(color.found && color.type==4){const unsigned char* c=p+color.offset;
+                v.color=uint32_t(c[2])|(uint32_t(c[1])<<8)|(uint32_t(c[0])<<16)|(uint32_t(c[3])<<24);
+                v.sun=c[3]/255.f;v.attributes|=ATTR_COLOR|ATTR_SUN;}
+            vb.available_attributes&=v.attributes;
         }
     }Check(!r.Left(),"unexpected vertex buffer tail");
 }
@@ -105,7 +157,8 @@ inline void Materials(Span level,Scene& out){Reader r(Chunk(level,2));const uint
         if(slash!=std::string::npos){m.shader=Lower(entry.substr(0,slash));std::string textures=entry.substr(slash+1);const size_t comma=textures.find(',');
             m.texture_list=textures;m.texture=Lower(textures.substr(0,comma));if(m.texture.size()>4 && m.texture.substr(m.texture.size()-4)==".dds")m.texture.resize(m.texture.size()-4);
             if(!SafeName(m.texture) || m.texture[0]=='$')m.texture.clear();
-            m.cutout=m.shader.find("aref")!=std::string::npos || m.shader.find("flora")!=std::string::npos || m.shader.find("tree")!=std::string::npos;}
+            m.descriptor.shader=m.shader;m.descriptor.base=m.texture;m.descriptor.source="XRLC_SHADER_TABLE";
+            m.descriptor.unsupported_reason="compiled_material_metadata_not_registered";}
         out.materials.push_back(m);
     }Check(!r.Left(),"unexpected shader table tail");
 }
@@ -128,7 +181,10 @@ inline void Visuals(Span level,const std::vector<Span>& ibs,const std::vector<Wi
         if(type==7 || type==11){Reader tree(Chunk(visual,12));
             for(unsigned a=0;a<16;++a){if(a%4==3){tree.Take(4);draw.world.m[a]=a==15?1.f:0.f;}
                 else{draw.world.m[a]=tree.Float();Check(fabsf(draw.world.m[a])<=1.e6f,"tree transform limit");}}
-            ++out.trees;
+            /* FTreeVisual::Load halves both _5color records (rgb/hemi/sun). */
+            for(unsigned a=0;a<5;++a)draw.tree_scale[a]=tree.Float()*.5f;
+            for(unsigned a=0;a<5;++a)draw.tree_bias[a]=tree.Float()*.5f;
+            draw.tree=true;++out.trees;
             if(type==11){Reader link(Chunk(visual,20));const uint32_t sw=link.U32();Check(sw<swis.size(),"tree SWI index out of range");const Window w=swis[sw];offset=w.offset;count=w.triangles*3;Check(w.vertices<=vcount,"tree progressive vertex range");}}
         Check(count && count%3==0 && offset<=icount && count<=icount-offset,"visual triangle range");
         const Span indices=ibs[ib];const uint32_t available=indices.n/2;Check(ibase<=available && icount<=available-ibase,"index container range");

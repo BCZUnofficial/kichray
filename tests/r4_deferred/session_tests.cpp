@@ -16,7 +16,7 @@ int ScenarioDeferred(int failure=0,int32_t error_code=error){Fixture fixture;f=&
     const auto batch=Batch();const int32_t result=game.Render(input,&batch);const int positions=f->calls;
     if(!failure){Require(result==1 && game.deferred.frames==1 && game.frame.rendered==1,"complete deferred frame presented once");
         Require(game.deferred.shadow_passes==8 && game.deferred.local_passes==2,"sun + point six faces + spot shadows and two light passes");
-        Require(passes.size()==12 && passes[8].color_count==2 && passes[8].depth==game.deferred.depth,"shadow -> MRT -> irradiance -> combine -> forward/UI phases");
+        Require(passes.size()==12 && passes[8].color_count==3 && passes[8].depth==game.deferred.depth,"shadow -> MRT -> irradiance -> combine -> forward/UI phases");
         Require(draw_entries.back()=="PSPlain" && game.stream.layer_draws[0]==2 && game.stream.layer_draws[1]==1 && game.stream.layer_draws[2]==1,"HUD last and main counters exclude repeated shadow/light draws");
         const uint32_t created=f->created;const KichR4Handle vb=game.stream.vb,gbuffer=game.deferred.albedo;
         Require(game.Render(input,&batch)==1 && created==f->created && vb==game.stream.vb,"warm frame reuses native targets/shadows/upload buffers");
@@ -46,6 +46,7 @@ void Telemetry(){Fixture fixture;f=&fixture;ResetDeferredRecorder();const KichR4
     const KichR4FrameColor clear={sizeof(clear),{0,0,0,1}};Require(game.frame.BeginClear(clear)==0,"isolated menu postprocess recording frame");
     Require(game.deferred.Process(game.frame,game.level,input,true)==0,"menu postprocess original production path executed");Require(game.frame.Present()==0,"isolated postprocess present");RenderSnapshot_End("COMPLETE");
     std::ifstream file(RenderSnapshot_LastPath());std::ostringstream text;text<<file.rdbuf();const std::string output=text.str();
+    Require(output.find("compiled_material_metadata_not_registered")!=std::string::npos && output.find("route_source=LEGACY_STATIC_FALLBACK")!=std::string::npos && output.find("effective_alpha_func=")!=std::string::npos,"unresolved static descriptor emits bounded source/fallback and effective alpha metadata");
     Require(output.find("controller=NOT_AVAILABLE")!=std::string::npos && output.find("controller=4294967295")==std::string::npos,"unknown controller is absent value with validity rather than uint sentinel");
     Require(output.find("source_light_id=source_93")!=std::string::npos && output.find("ONE_LIGHT_FACE; NOT_ONE_LAMP")!=std::string::npos && output.find("submitted_local_lights=1")!=std::string::npos,"shadow face identity links to unique submitted light");
     Require(output.find("comparison_depth_bias=0.00150000001")!=std::string::npos && output.find("view_projection_row_major=")!=std::string::npos,"actual native shadow matrix and shader comparison bias reported");
@@ -53,12 +54,42 @@ void Telemetry(){Fixture fixture;f=&fixture;ResetDeferredRecorder();const KichR4
     Require(output.find("requested_0_15=1,1,1,0.5,0.75")!=std::string::npos && output.find("applied_gamma_brightness_contrast_gray=1,1,1,0")!=std::string::npos && output.find("execution=DRAW_SUCCEEDED; PIXEL_CONTRIBUTION_NOT_MEASURED")!=std::string::npos,"requested and actual menu postprocess override and completed draw distinguished");
     KichR4GeometryReport report={};game.Stop(report);Require(f->objects.empty(),"telemetry does not retain resource ownership");
 }
+void MaterialExecution(){Fixture fixture;f=&fixture;ResetDeferredRecorder();const KichR4LevelFiles fs={Open,Close};kich_r4_game::Session game(DeferredAPIs(),fs,"l01_escape",NULL);
+    for(const char* name:{"bump","bump#","lmap","hemi","detail"})f->files[std::string("$game_textures$/")+name+".dds"]=fixture::Dds();
+    const auto input=DeferredInput();Require(game.Render(input)==1,"material fixture starts actual planner");
+    kich_r4_material::Descriptor m;m.semantic=kich_r4_material::CUTOUT;m.passes=kich_r4_material::PASS_GEOMETRY|kich_r4_material::PASS_SHADOW;
+    m.base="base";m.bump="bump";m.bump_aux="bump#";m.lightmap="lmap";m.hemi="hemi";m.detail="detail";m.detail_usage=1;m.detail_scale[0]=3;m.detail_scale[1]=5;m.alpha_ref=.33f;m.alpha_func=5;m.cull=KICH_R4_CULL_NONE;
+    auto c=game.deferred.base;KichR4DeferredDrawDesc draw={};
+    kich_r4_material::Bind(game.frame,game.level,m,127,c,draw,false,true);
+    Require((uint32_t(c.material[0])&15)==15 && c.material[1]==3 && c.material[2]==5,"metadata maps enable complete bump/lightmap/hemi/detail path");
+    Require(c.alpha[0]==.33f && c.alpha[1]==5,"source strict cutout comparison retained");
+    for(unsigned i=1;i<=5;++i)Require(draw.textures[i] && draw.textures[i]!=game.level.checker,"all semantic shader slots bind real source DDS");
+    draw={};kich_r4_material::Bind(game.frame,game.level,m,127,c,draw,true,true);
+    Require(c.material[0]==0 && c.alpha[0]==.33f && c.alpha[1]==5,"shadow uses identical base alpha and no optional material sampling");
+    draw={};kich_r4_material::Bind(game.frame,game.level,m,0,c,draw,false);
+    Require(!(uint32_t(c.material[0])&7) && !draw.textures[1] && !draw.textures[3],"missing source TBN/UV1 never enables fabricated normal/lightmap inputs");
+    m.bump_aux="missing";draw={};kich_r4_material::Bind(game.frame,game.level,m,127,c,draw,false);
+    Require(!(uint32_t(c.material[0])&1) && !draw.textures[1] && !draw.textures[2],"missing bump auxiliary checker never reaches normal decoder");
+    m.bump_aux="bump#";
+    for(auto& material:game.level.scene.materials){material.descriptor=m;material.kind=3;}
+    for(auto& vb:game.level.scene.vertices)vb.available_attributes=127;
+    game.deferred.native_mode=true;const KichR4FrameColor clear={sizeof(clear),{0,0,0,1}};Require(game.frame.BeginClear(clear)==0,"begin isolated material passes");
+    const size_t first=draw_descriptions.size();
+    Require(game.deferred.Pass(game.frame,game.level,input.width,input.height,3,game.deferred.albedo,game.deferred.normal,game.deferred.depth,3,NULL,game.deferred.light)==0 && game.deferred.Static(game.frame,game.level,game.deferred.base.mvp,false)==0,"classified cutout enters GBuffer despite legacy transparent kind");
+    const size_t split=draw_descriptions.size();Require(split>first,"cutout main geometry actually submitted");
+    Require(game.deferred.Pass(game.frame,game.level,input.width,input.height,0,0,0,game.deferred.depth,2)==0 && game.deferred.Static(game.frame,game.level,game.deferred.base.mvp,true)==0,"same material enters shadow pass");
+    Require(draw_descriptions.size()-split==split-first,"cutout shadow/main same candidate selection");
+    for(size_t j=0;j<split-first;++j){const auto& main=draw_descriptions[first+j];const auto& shadow=draw_descriptions[split+j];
+        Require(!main.state.blend_enable && main.state.depth_write && main.state.draw.depth_mode && main.state.draw.cull_mode==KICH_R4_CULL_NONE,"cutout uses opaque depth state and source two-sided cull");
+        Require(main.textures[0]==shadow.textures[0] && draw_constants[first+j].alpha[0]==draw_constants[split+j].alpha[0] && draw_constants[first+j].alpha[1]==draw_constants[split+j].alpha[1],"main and shadow preserve same base resource and alpha compare");}
+    Require(game.frame.Present()==0,"material pass frame completed");KichR4GeometryReport report={};game.Stop(report);Require(f->objects.empty(),"material fixture releases maps and targets");
+}
 void Invalid(){
     for(unsigned which=0;which<3;++which){Fixture fixture;f=&fixture;ResetDeferredRecorder();const KichR4LevelFiles fs={Open,Close};kich_r4_game::Session game(DeferredAPIs(),fs,"l01_escape",NULL);
         auto input=DeferredInput();if(which==0)input.lighting.valid=0;else if(which==1)input.lighting.count=9;else memset(input.view_projection,0,64);
         Require(game.Render(input)<0 && !game.frame.rendered,"invalid deferred inputs never present partial image");KichR4GeometryReport r={};game.Stop(r);Require(!f->live && f->objects.empty(),"invalid input cleanup balanced");}
 }
 }
-int main(){try{(void)&Scenario;const int positions=ScenarioDeferred();for(int i=1;i<=positions;++i){ScenarioDeferred(i);ScenarioDeferred(i,7);}Invalid();Telemetry();
+int main(){try{(void)&Scenario;const int positions=ScenarioDeferred();for(int i=1;i<=positions;++i){ScenarioDeferred(i);ScenarioDeferred(i,7);}Invalid();Telemetry();MaterialExecution();
     printf("B4.4 pass planner / lighting / reuse / F8-F9 / failures: %d checks, %d failure positions passed\n",checks,positions);return 0;
 }catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

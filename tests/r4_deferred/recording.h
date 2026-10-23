@@ -9,9 +9,10 @@ std::map<KichR4Handle,KichR4PipelineDesc> native_pipelines;
 std::map<KichR4Handle,std::string> shader_entries;
 std::vector<KichR4PassDesc> passes;
 std::vector<std::string> draw_entries;
+std::vector<KichR4DeferredDrawDesc> draw_descriptions;
 std::vector<kich_r4_lighting::Constants> draw_constants;
 KichR4PassDesc active_pass={};bool pass_active=false;
-void ResetDeferredRecorder(){targets.clear();native_pipelines.clear();shader_entries.clear();passes.clear();draw_entries.clear();draw_constants.clear();pass_active=false;}
+void ResetDeferredRecorder(){targets.clear();native_pipelines.clear();shader_entries.clear();passes.clear();draw_entries.clear();draw_descriptions.clear();draw_constants.clear();pass_active=false;}
 int32_t DCompile(KichR4Handle,const KichR4ShaderDesc* d,const char* source,uint32_t bytes,KichR4Handle* out,char*,uint32_t){*out=0;
     const int32_t hr=f->Call("deferred shader");if(hr)return hr;
     Require(d->struct_size==sizeof(*d) && source && strlen(source)==bytes && d->entry[0],"complete shader source and explicit SM5 entry");
@@ -28,7 +29,7 @@ int32_t DPipeline(KichR4Handle,const KichR4PipelineDesc* d,KichR4Handle* out){*o
     Require(ValidPipeline(*d),"native input layout fields validated");
     const KichR4Handle vs=d->vertex_shader,ps=d->pixel_shader;
     Require(f->Find(vs).kind==KICH_R4_VERTEX_SHADER && f->Find(ps).kind==KICH_R4_PIXEL_SHADER,"pipeline owns valid VS/PS");
-    Require(d->vertex_stride==20 || d->vertex_stride==36 || d->vertex_stride==56,"screen/static/model formats explicit");
+    Require(d->vertex_stride==20 || d->vertex_stride==sizeof(kich_r4_level::Vertex) || d->vertex_stride==56,"screen/static/model formats explicit");
     *out=f->Add(KICH_R4_GRAPHICS_PIPELINE);native_pipelines[*out]=*d;return 0;}
 int32_t DUpdate(KichR4Handle,KichR4Handle handle,const void* data,uint32_t bytes){const int32_t hr=f->Call("deferred update");if(hr)return hr;
     Object& o=f->Find(handle);Require(data && bytes==o.bytes.size(),"whole buffer updated without truncation");memcpy(o.bytes.data(),data,bytes);++f->updates;return 0;}
@@ -49,13 +50,13 @@ int32_t DDraw(KichR4Handle,const KichR4DeferredDrawDesc* d){const int32_t hr=f->
     Require(vb.kind==KICH_R4_VERTEX_BUFFER && ib.kind==KICH_R4_INDEX_BUFFER && vb.stride==p.vertex_stride &&
         ValidDraw(state,static_cast<uint32_t>(ib.bytes.size()),ib.stride),"native draw validates buffer kinds, strides and ranges");
     Require(!state.depth_mode || active_pass.depth,"depth test always has an explicit depth attachment");
-    Require(cb.kind==KICH_R4_CONSTANT_BUFFER && cb.bytes.size()==816,"exact HLSL cbuffer layout");
+    Require(cb.kind==KICH_R4_CONSTANT_BUFFER && cb.bytes.size()==sizeof(kich_r4_lighting::Constants),"exact HLSL cbuffer layout");
     for(unsigned i=0;i<8;++i)if(d->textures[i]){const KichR4Handle texture=d->textures[i];
         Require(f->Find(texture).kind==KICH_R4_TEXTURE_2D && texture!=active_pass.depth,"no depth read/write hazard");
         for(unsigned j=0;j<active_pass.color_count;++j)Require(texture!=active_pass.colors[j],"no color read/write hazard");}
     for(unsigned i=0;i<state.index_count;++i){uint32_t at;memcpy(&at,ib.bytes.data()+(state.start_index+i)*4,4);Require(at<vb.bytes.size()/vb.stride,"all indices inside uploaded vertex stream");}
-    const KichR4Handle ps=p.pixel_shader;draw_entries.push_back(shader_entries.at(ps));
-    kich_r4_lighting::Constants constants;memcpy(&constants,cb.bytes.data(),816);draw_constants.push_back(constants);++f->draws;return 0;}
+    const KichR4Handle ps=p.pixel_shader;draw_entries.push_back(shader_entries.at(ps));draw_descriptions.push_back(*d);
+    kich_r4_lighting::Constants constants;memcpy(&constants,cb.bytes.data(),sizeof(constants));draw_constants.push_back(constants);++f->draws;return 0;}
 int32_t DBegin(KichR4Handle h){pass_active=false;return Begin(h);}
 int32_t DPresent(KichR4Handle h,uint32_t interval){pass_active=false;return Present(h,interval);}
 kich_r4_game::APIs DeferredAPIs(){KichR4LevelSession level;KichR4FrameSession frame={};Configure(level,frame);

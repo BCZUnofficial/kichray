@@ -47,7 +47,17 @@ def main():
         subprocess.run([*flags,*seam,str(main),*host,"-static-libgcc","-static-libstdc++","-luser32","-lgdi32","-Wl,--out-implib,"+str(lib),"-o",str(work/"XR_3DA.exe")],check=True)
         client=work/"client.cpp";client.write_text('#include "KichR4Capture.h"\n#include "KichR4Game.h"\nextern "C" __declspec(dllexport) void CheckImports(){KichR4_CaptureActive();KichR4_CaptureHUD(true);KichR4_CaptureModel(0,0,0,0,0);KichR4_CaptureModel(0,0,0,0,0,KICH_R4_SKIN_HARDWARE);KichR4_CaptureUIDraw(0,0,0,0,0,0,0,0,0,0,false);KichR4_GameSetModal(false);KichR4LocalLight l={};KichR4_CaptureLight(0,l,false);}\n')
         subprocess.run([*flags,"-shared","-I"+str(ROOT/"xr_3da"),str(client),str(lib),"-o",str(work/"client.dll")],check=True)
-        abi=work/"abi.c";abi.write_text('#include "KichR4Renderer.h"\n#include "KichR4Telemetry.h"\nint main(void){return sizeof(KichR4TelemetryAPI)!=24 || sizeof(KichR4TelemetryContext)!=56 || sizeof(KichR4TelemetryRecord)!=584 || sizeof(KichR4TelemetryTiming)!=96 || sizeof(KichR4RendererAPI)!=628 || sizeof(KichR4BuildInfo)!=288 || sizeof(KichR4StreamDrawDesc)!=112 || sizeof(KichR4StreamAPI)!=24 || sizeof(KichR4PassDesc)!=84 || sizeof(KichR4DeferredDrawDesc)!=180 || sizeof(KichR4DeferredAPI)!=28 || sizeof(KichR4DetailAPI)!=32 || sizeof(KichR4ModelAPI)!=32 || sizeof(KichR4ModelPose)!=16400 || sizeof(KichR4ModelVertex)!=32 || sizeof(KichR4ModelDrawDesc)!=192;}\n')
+        abi=work/"abi.c"
+        sizes={"KichR4TelemetryAPI":24,"KichR4TelemetryContext":56,"KichR4TelemetryRecord":584,
+               "KichR4TelemetryTiming":96,"KichR4RendererAPI":628,"KichR4BuildInfo":288,
+               "KichR4StreamDrawDesc":112,"KichR4StreamAPI":24,"KichR4PassDesc":84,
+               "KichR4DeferredDrawDesc":180,"KichR4DeferredAPI":28,"KichR4DetailAPI":32,
+               "KichR4ModelAPI":32,"KichR4ModelPose":16400,"KichR4ModelVertex":64,
+               "KichR4ModelDrawDesc":192,"KichR4ModelPipelineDesc":24}
+        abi.write_text('#include "KichR4Renderer.h"\n#include "KichR4Telemetry.h"\n#include <stddef.h>\n'+
+                       "".join('_Static_assert(sizeof(%s)==%d,"%s x86 ABI");\n'%(name,size,name) for name,size in sizes.items())+
+                       '_Static_assert(offsetof(KichR4ModelPose,bones)==16,"palette header precedes matrices");\n'+
+                       '_Static_assert(KICH_R4_MODEL_ABI==0x00020000,"model capacity contract version");\n')
         subprocess.run([cc,"-std=c11","-Wall","-Wextra","-Werror","-I"+str(ROOT/"xr_3da"),"-c",str(abi),"-o",str(work/"abi.o")],check=True)
         for debug in ([],["-DDEBUG"]):
             subprocess.run([*flags,"-Wno-unknown-pragmas",*debug,"-DENGINE_BUILD","-I"+str(ROOT/"tests/r4_device/win32_sdk"),"-c",str(ROOT/"tests/r4_device/win32_compile.cpp"),"-o",str(work/"dx9.o")],check=True)

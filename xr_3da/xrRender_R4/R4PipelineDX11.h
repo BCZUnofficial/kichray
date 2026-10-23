@@ -17,7 +17,7 @@ class PipelineDX11 {
     PipelineDX11(const PipelineDX11&);
     PipelineDX11& operator=(const PipelineDX11&);
 public:
-    uint32_t stride,constant_bytes;
+    uint32_t stride,constant_bytes,model_capacity;
     bool textured,stream,advanced,instanced,model;
     PipelineDX11();
     ~PipelineDX11();

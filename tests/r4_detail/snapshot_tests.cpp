@@ -19,7 +19,7 @@ std::vector<std::string> DrawAggregates(const std::string& report){std::vector<s
     while((at=report.find("[DRAW_AGGREGATE ",at))!=std::string::npos){const size_t end=report.find("\n[",at+1);result.push_back(report.substr(at,end==std::string::npos?end:end-at));at=end==std::string::npos?report.size():end;}
     return result;}
 void ReconcileDrawAggregates(const std::string& report){const std::vector<std::string> groups=DrawAggregates(report);const std::string total=Section(report,"DRAW_AGGREGATE_TOTALS");
-    const char* keys[]={"draw_records_observed","submitted_draw_calls","skipped_draw_calls","triangles_submitted","instances_observed","instances_submitted","instances_skipped"};
+    const char* keys[]={"draw_records_observed","submitted_draw_calls","skipped_draw_calls","triangles_submitted","instances_observed","instances_submitted","instances_skipped","gpu_draw_ordinals_observed","gpu_pass_ordinals_observed"};
     for(unsigned k=0;k<sizeof(keys)/sizeof(keys[0]);++k){uint64_t sum=0;for(size_t i=0;i<groups.size();++i)sum+=Number(groups[i],keys[k]);Require(sum==Number(total,keys[k]),"bounded draw route totals reconcile with all source callbacks");}
     Require(Number(total,"draw_records_observed")==Number(Section(report,"TRACE_LOSS"),"draw_records_observed"),"aggregate total covers callbacks lost from detailed trace");
     for(size_t i=0;i<groups.size();++i){const std::string& g=groups[i];uint64_t samples=Number(g,"representative_observations_omitted");
@@ -84,6 +84,69 @@ int main(int argc,char** argv){try{Require(argc==2,"output directory");
     Require(Number(Section(partitioned,"DETAIL_RENDERER"),"legacy_capture_vertices")==0 && Number(Section(partitioned,"MEMORY"),"registered_gpu_payload_bytes")==999,"critical summaries survive draw saturation");
     ReconcileDrawAggregates(partitioned);
     Require(Number(Section(partitioned,"DRAW_AGGREGATE_TOTALS"),"instances_submitted")==70035 && Number(Section(partitioned,"DRAW_AGGREGATE_TOTALS"),"triangles_submitted")==140070,"route summaries count all submitted instances after verbose trace quota");
+
+    RenderSnapshot_Request();RenderSnapshot_Begin(info);RenderSnapshot_Pass("GBUFFER");
+    RenderSnapshot_Context("STATIC","level_geometry","material:terrain");RenderSnapshotDraw ordinal_draw=draw;
+    strcpy(ordinal_draw.vertex_shader,"VSStatic");strcpy(ordinal_draw.pixel_shader,"PSGeometry");strcpy(ordinal_draw.texture_names[0],"terrain\\ground");
+    strcpy(ordinal_draw.samplers,"s0:MIN_MAG_MIP_LINEAR;UVW=WRAP");
+    for(unsigned i=0;i<10000;++i){
+        /* Match the production D3D11 fields, moving only identity fields around. */
+        const char* format=i%2?"enum=D3D11;depth=1;depth_write=1;blend=0;src_legacy=2;dst_legacy=1;cull=3;stencil=OFF;gpu_draw_ordinal=%llu;gpu_pass_ordinal=%u":
+            "enum=D3D11;gpu_draw_ordinal=%llu;gpu_pass_ordinal=%u;depth=1;depth_write=1;blend=0;src_legacy=2;dst_legacy=1;cull=3;stencil=OFF";
+        snprintf(ordinal_draw.states,sizeof(ordinal_draw.states),format,9000000000ull+i,i%3);RenderSnapshot_Draw(&ordinal_draw);}
+    RenderSnapshotDraw blended=ordinal_draw;
+    strcpy(blended.states,"enum=D3D11;gpu_draw_ordinal=9000010000;gpu_pass_ordinal=4;depth=1;depth_write=1;blend=1;src_legacy=2;dst_legacy=1;cull=3;stencil=OFF");RenderSnapshot_Draw(&blended);
+    RenderSnapshotDraw textured=ordinal_draw;strcpy(textured.texture_names[7],"lightmaps\\lmap_01");RenderSnapshot_Draw(&textured);
+    RenderSnapshot_Value("MEMORY","registered_gpu_payload_bytes",123456);RenderSnapshot_End("COMPLETE");
+    const std::string ordinals=Read(RenderSnapshot_LastPath()),ordinal_totals=Section(ordinals,"DRAW_AGGREGATE_TOTALS");const std::vector<std::string> ordinal_groups=DrawAggregates(ordinals);
+    Require(ordinal_groups.size()==3 && Number(ordinal_totals,"observations_coalesced")==0 && Number(Section(ordinals,"TRACE_LOSS"),"aggregation_overflow")==0,"GPU event ordinals never consume graphics-state route capacity; blend and texture resource differences remain separate");
+    Require(Number(Section(ordinals,"TRACE_LOSS"),"draw_records_dropped")>0 && Number(ordinal_totals,"submitted_draw_calls")==10002 && Number(ordinal_totals,"triangles_submitted")==140028,"ordinal-heavy trace loss preserves all submission and triangle totals");
+    bool merged_ordinals=false;for(size_t i=0;i<ordinal_groups.size();++i){const std::string& g=ordinal_groups[i];if(Number(g,"draw_records_observed")!=10000)continue;merged_ordinals=true;
+        Require(Number(g,"first_gpu_draw_ordinal")==9000000000ull && Number(g,"last_gpu_draw_ordinal")==9000009999ull && Number(g,"min_gpu_draw_ordinal")==9000000000ull && Number(g,"max_gpu_draw_ordinal")==9000009999ull,"aggregate retains 64-bit source draw ordinal bounds after detailed trace quota");
+        Require(Number(g,"gpu_pass_ordinals_observed")==10000 && Number(g,"first_gpu_pass_ordinal")==0 && Number(g,"last_gpu_pass_ordinal")==0 && Number(g,"min_gpu_pass_ordinal")==0 && Number(g,"max_gpu_pass_ordinal")==2,"pass ordinal range distinguishes known zero and repeated source ordinals");
+        Require(g.find("raw_states=enum=D3D11;depth=1;depth_write=1;blend=0;src_legacy=2;dst_legacy=1;cull=3;stencil=OFF\n")!=std::string::npos,"aggregate state presentation contains graphics fields only");}
+    Require(merged_ordinals && Number(Section(ordinals,"MEMORY"),"registered_gpu_payload_bytes")==123456,"mandatory late summaries survive ordinal-heavy trace saturation");
+    const std::string ordinal_detail=Section(ordinals,"DRAW 000001");
+    Require(Number(ordinal_detail,"gpu_draw_ordinal")==9000000000ull && Number(ordinal_detail,"gpu_pass_ordinal")==0 && ordinal_detail.find("raw_states=enum=D3D11;gpu_draw_ordinal=9000000000;gpu_pass_ordinal=0;")!=std::string::npos,"retained detail preserves both explicit event identity and original raw state payload");
+    ReconcileDrawAggregates(ordinals);
+
+    RenderSnapshot_Request();RenderSnapshot_Begin(info);RenderSnapshot_Pass("GBUFFER");
+    const char* malformed_states[]={"enum=D3D11;gpu_draw_ordinal=18446744073709551616;gpu_pass_ordinal=-1", "enum=D3D11;gpu_draw_ordinal=1;gpu_draw_ordinal=2;gpu_pass_ordinal=",
+        "enum=D3D11;gpu_draw_ordinal=garbage;gpu_pass_ordinal=1x"};
+    for(unsigned i=0;i<3;++i){strcpy(ordinal_draw.states,malformed_states[i]);RenderSnapshot_Draw(&ordinal_draw);}
+    strcpy(ordinal_draw.states,"enum=D3D11;debug_gpu_draw_ordinal=1");RenderSnapshot_Draw(&ordinal_draw);
+    strcpy(ordinal_draw.states,"enum=D3D11;debug_gpu_draw_ordinal=2");RenderSnapshot_Draw(&ordinal_draw);RenderSnapshot_End("COMPLETE");
+    const std::string bad_ordinals=Read(RenderSnapshot_LastPath());
+    Require(DrawAggregates(bad_ordinals).size()==3 && Number(Section(bad_ordinals,"DRAW_AGGREGATE_TOTALS"),"gpu_draw_ordinals_observed")==0 && Number(Section(bad_ordinals,"DRAW_AGGREGATE_TOTALS"),"gpu_pass_ordinals_observed")==0,"malformed identity is unavailable; only exact ordinal field names are excluded from equivalence");
+    Require(Section(bad_ordinals,"DRAW 000001").find("\ngpu_draw_ordinal=NOT_INSTRUMENTED\n")!=std::string::npos,"overflowing source identity cannot silently wrap into a valid draw ordinal");ReconcileDrawAggregates(bad_ordinals);
+
+    RenderSnapshot_Request();RenderSnapshot_Begin(info);RenderSnapshot_Pass("GBUFFER");
+    RenderSnapshotDraw state_draw=draw;strcpy(state_draw.states,"enum=D3D11;gpu_draw_ordinal=1;gpu_pass_ordinal=1;depth=1;blend=0;stencil=OFF;cull=3");
+    strcpy(state_draw.vertex_shader,"VSDetail");strcpy(state_draw.pixel_shader,"PSGeometry");strcpy(state_draw.skin,"NONE_INSTANCED_DETAIL");
+    strcpy(state_draw.samplers,"s0:MIN_MAG_MIP_LINEAR;UVW=WRAP");RenderSnapshot_Draw(&state_draw);
+    const char* changed_state[]={"enum=D3D11;depth=0;blend=0;stencil=OFF;cull=3","enum=D3D11;depth=1;blend=0;stencil=ON;cull=3","enum=D3D11;depth=1;blend=0;stencil=OFF;cull=2",
+        "enum=D3D11;depth=1;blend=0;stencil=OFF;cull=3;vs_bytecode_hash=1234;model_capacity=16",
+        "enum=D3D11;depth=1;blend=0;stencil=OFF;cull=3;vs_bytecode_hash=5678;model_capacity=16",
+        "enum=D3D11;depth=1;blend=0;stencil=OFF;cull=3;vs_bytecode_hash=5678;model_capacity=32"};
+    for(unsigned i=0;i<sizeof(changed_state)/sizeof(changed_state[0]);++i){RenderSnapshotDraw changed=state_draw;strcpy(changed.states,changed_state[i]);RenderSnapshot_Draw(&changed);}
+    RenderSnapshotDraw changed=state_draw;strcpy(changed.samplers,"s0:MIN_MAG_MIP_LINEAR;UVW=CLAMP");RenderSnapshot_Draw(&changed);
+    changed=state_draw;strcpy(changed.skin,"CPU_CAPTURE_STREAM");RenderSnapshot_Draw(&changed);
+    changed=state_draw;strcpy(changed.pixel_shader,"PSShadow");RenderSnapshot_Draw(&changed);
+    RenderSnapshot_DetailVariant(0);RenderSnapshot_Draw(&state_draw);RenderSnapshot_DetailVariant(1);RenderSnapshot_Draw(&state_draw);RenderSnapshot_DetailVariant(UINT32_MAX);
+    RenderSnapshot_Light("local_7","POINT");RenderSnapshot_Draw(&state_draw);RenderSnapshot_Phase("face_1");RenderSnapshot_Draw(&state_draw);
+    RenderSnapshot_Light("NONE","NONE");RenderSnapshot_Phase("NONE");RenderSnapshot_Pass("LOCAL_SHADOW");RenderSnapshot_Draw(&state_draw);RenderSnapshot_End("COMPLETE");
+    const std::string state_routes=Read(RenderSnapshot_LastPath());Require(DrawAggregates(state_routes).size()==15,"graphics depth stencil cull sampler shader bytecode skinning capacity geometry variant light phase and pass distinctions survive event identity removal");ReconcileDrawAggregates(state_routes);
+
+    RenderSnapshot_Request();RenderSnapshot_Begin(info);
+    for(unsigned i=0;i<80;++i){const std::string id="other_"+std::to_string(i);RenderSnapshot_Record("UNRELATED",id.c_str(),"value","other");}
+    for(unsigned i=0;i<129;++i){const std::string id="material_"+std::to_string(i);
+        RenderSnapshot_Record("NATIVE_MATERIAL",id.c_str(),"source","SOC_BLENDER_METADATA");RenderSnapshot_Record("MATERIAL_EXECUTION",id.c_str(),"shader_flags","15");}
+    RenderSnapshot_Record("NATIVE_MATERIAL","material_0","source","UPDATED_SOURCE_AFTER_LIMIT");RenderSnapshot_End("COMPLETE");
+    const std::string material_limits=Read(RenderSnapshot_LastPath());
+    Require(Number(Section(material_limits,"DICTIONARY OTHER"),"records")==64 && Number(Section(material_limits,"DICTIONARY OTHER"),"updates_dropped")==16,"unrelated dictionary pressure remains bounded");
+    const char* material_dictionaries[]={"NATIVE_MATERIAL","MATERIAL_EXECUTION"};for(unsigned i=0;i<2;++i){const std::string part=Section(material_limits,std::string("DICTIONARY ")+material_dictionaries[i]);
+        Require(Number(part,"records")==128 && Number(part,"fields_per_record_limit")==48 && Number(part,"updates_dropped")==1,"native material metadata and actual execution have independent bounded reservations after OTHER saturation");}
+    Require(material_limits.find("source=UPDATED_SOURCE_AFTER_LIMIT")!=std::string::npos,"admitted material source metadata remains updateable after its own record limit");
 
     RenderSnapshot_Request();RenderSnapshot_Begin(info);RenderSnapshot_Pass("FORWARD_TRANSPARENCY");RenderSnapshot_Context("MODEL","flood","opaque");
     for(unsigned i=0;i<4000;++i)RenderSnapshot_Draw(&draw);
@@ -174,5 +237,5 @@ int main(int argc,char** argv){try{Require(argc==2,"output directory");
     Require(Read(RenderSnapshot_LastPath()).find("status=INCOMPLETE")!=std::string::npos,"failed submission never reports a complete capture");
     strcpy(info.directory,"/does/not/exist/kich-snapshot");RenderSnapshot_Request();RenderSnapshot_Begin(info);RenderSnapshot_End("COMPLETE");
     Require(!g_render_snapshot_active && std::string(RenderSnapshot_LastPath()).find("ERROR:")==0,"I/O failure does not retain capture or throw into renderer");
-    printf("G3b real snapshot recorder: %u checks passed\n",checks);return 0;
+    printf("G3c real snapshot recorder: %u checks passed\n",checks);return 0;
 }catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

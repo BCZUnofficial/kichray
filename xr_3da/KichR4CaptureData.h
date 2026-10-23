@@ -6,6 +6,7 @@
 #include "KichR4LightingMath.h"
 #include "RenderSnapshot.h"
 #include "KichR4TelemetryText.h"
+#include "KichR4Material.h"
 #include <memory>
 #include <set>
 #include <map>
@@ -15,8 +16,11 @@ using kich_r4_level::Span;using kich_r4_level::Reader;using kich_r4_level::Check
 using kich_r4_level::Chunk;using kich_r4_level::Finite;using kich_r4_scene::Matrix;
 struct Vertex {float p[4],uv[2];uint32_t color;float normal[4],world[3];};
 static_assert(sizeof(Vertex)==56,"B4.4 native vertex stride");
-struct SourceVertex {float p[3],uv[2],weight;uint16_t bone[2];uint32_t normal;};
-static_assert(sizeof(SourceVertex)==32,"B4.4 compact CPU source vertex");
+struct SourceVertex {
+    float p[3],uv[2],weight;uint16_t bone[2];uint32_t normal,tangent,binormal;
+    float uv1[2],hemi,sun;uint32_t color,attributes;
+};
+static_assert(sizeof(SourceVertex)==64,"G3c source model GPU vertex");
 struct Bounds {
     float min[3],max[3];bool valid;
     Bounds():valid(false){for(unsigned i=0;i<3;++i)min[i]=max[i]=0;}
@@ -24,22 +28,20 @@ struct Bounds {
         for(unsigned i=0;i<3;++i){min[i]=std::min(min[i],p[i]);max[i]=std::max(max[i],p[i]);}}
 };
 inline uint32_t PackNormal(float x,float y,float z){
-    if(!Finite(x) || !Finite(y) || !Finite(z))return 0;
-    const kich_r4_scene::Vec3 n=kich_r4_scene::Normalize(kich_r4_scene::Vec3{x,y,z});
-    if(kich_r4_scene::Dot(n,n)<.1f)return 0;
-    const float values[]={n.x,n.y,n.z};uint32_t bits=0;
+    float values[]={x,y,z};if(!kich_r4_level::UnitVector(values))return 0;
+    uint32_t bits=0;
     for(unsigned i=0;i<3;++i)bits|=static_cast<uint32_t>(std::max(0.f,std::min(1023.f,(values[i]+1)*511.5f+.5f)))<<(i*10);
     return bits;
 }
 inline kich_r4_scene::Vec3 UnpackNormal(uint32_t bits){if(!bits)return kich_r4_scene::Vec3{0,0,0};
     return kich_r4_scene::Normalize(kich_r4_scene::Vec3{(bits&1023)*(2.f/1023)-1,((bits>>10)&1023)*(2.f/1023)-1,((bits>>20)&1023)*(2.f/1023)-1});}
 struct Mesh {
-    std::vector<SourceVertex> vertices;std::vector<uint16_t> indices;std::string texture,shader;
+    std::vector<SourceVertex> vertices;std::vector<uint16_t> indices;std::string texture,shader,texture_list;
     Bounds source_bounds;std::vector<Bounds> bone_bounds;
-    uint32_t bones,ignored_weights,outside_weights,diagnostic_modes;bool skinned,two_weights,hardware_weights_safe;
+    uint32_t bones,ignored_weights,outside_weights,diagnostic_modes,available_attributes,basis_vertices,derived_basis_vertices;bool skinned,two_weights,hardware_weights_safe;
     std::string first_weight_detail;
     mutable uint64_t snapshot_hash;mutable bool snapshot_hashed;
-    Mesh():bones(0),ignored_weights(0),outside_weights(0),diagnostic_modes(0),skinned(false),two_weights(false),hardware_weights_safe(true),snapshot_hash(0),snapshot_hashed(false){}
+    Mesh():bones(0),ignored_weights(0),outside_weights(0),diagnostic_modes(0),available_attributes(0),basis_vertices(0),derived_basis_vertices(0),skinned(false),two_weights(false),hardware_weights_safe(true),snapshot_hash(0),snapshot_hashed(false){}
     uint64_t Bytes()const{return uint64_t(vertices.size())*sizeof(SourceVertex)+uint64_t(indices.size())*2;}
 };
 inline std::string WeightDetail(uint32_t vertex,uint32_t b0,uint32_t b1,uint32_t bits,const char* why){
@@ -66,30 +68,36 @@ inline std::shared_ptr<Mesh> Decode(Span source) {
     if(type!=0 && type!=2 && type!=4 && type!=5)return std::shared_ptr<Mesh>();
     if(Chunk(source,21,false).p || Chunk(source,7,false).p)return std::shared_ptr<Mesh>();
     std::shared_ptr<Mesh> mesh(new Mesh());mesh->skinned=type==4 || type==5;
-    Reader texture(Chunk(source,2));mesh->texture=kich_r4_level::Lower(texture.Z());
+    Reader texture(Chunk(source,2));mesh->texture=kich_r4_level::Lower(texture.Z());mesh->texture_list=mesh->texture;
     if(texture.Left())mesh->shader=texture.Z();
     const size_t comma=mesh->texture.find(',');if(comma!=std::string::npos)mesh->texture.resize(comma);
     if(mesh->texture.size()>4 && mesh->texture.substr(mesh->texture.size()-4)==".dds")mesh->texture.resize(mesh->texture.size()-4);
     Check(mesh->texture.empty() || (kich_r4_level::SafeName(mesh->texture) && mesh->texture[0]!='$'),"model texture name");
     Reader vertices(Chunk(source,3));const uint32_t format=vertices.U32(),count=vertices.U32();
-    Check(count && count<=65536,"model vertex limit");uint32_t stride=0,uv=0,pos=0;
+    Check(count && count<=65536,"model vertex limit");uint32_t stride=0,uv=0,uv1=0,pos=0,color=0;
     if(mesh->skinned){Check(format==0x12071980u || format==0x240e3300u,"model bone format");
         stride=format==0x12071980u?60:64;pos=stride==64?4:0;uv=stride==64?56:48;mesh->two_weights=stride==64;
     }else {
         /* SoC inline FVF: XYZ, optional normal/point size/color, float UVs. */
         Check((format&0x400eu)==2 && !(format&0x8000u),"model position FVF");stride=12;
         if(format&0x10u){stride+=12;}if(format&0x20u){stride+=4;}
-        if(format&0x40u){stride+=4;}if(format&0x80u){stride+=4;}
+        if(format&0x40u){color=stride;stride+=4;}if(format&0x80u){stride+=4;}
         uv=stride;const uint32_t sets=(format>>8)&15;Check(sets && sets<=8,"model UV sets");
         for(uint32_t s=0;s<sets;++s){const uint32_t dims=(format>>(16+s*2))&3;
-            Check(!s?dims==0:true,"model base UV format");stride+=dims==0?8:dims==1?12:dims==2?16:4;}
+            Check(!s?dims==0:true,"model base UV format");if(s==1 && dims==0)uv1=stride;stride+=dims==0?8:dims==1?12:dims==2?16:4;}
     }
     Check(count<=vertices.Left()/stride,"truncated model vertices");mesh->vertices.resize(count);
-    for(uint32_t i=0;i<count;++i){const unsigned char* p=vertices.Take(stride);SourceVertex& v=mesh->vertices[i];v={};
+    for(uint32_t i=0;i<count;++i){const unsigned char* p=vertices.Take(stride);SourceVertex& v=mesh->vertices[i];v={};v.hemi=v.sun=1;v.color=0xffffffffu;
         Reader xyz(Span(p+pos,12)),tc(Span(p+uv,8));for(unsigned a=0;a<3;++a)v.p[a]=xyz.Float();
         v.uv[0]=tc.Float();v.uv[1]=tc.Float();
-        if(mesh->skinned || (format&0x10u)){Reader normal(Span(p+(mesh->skinned?pos+12:12),12));
-            const float nx=normal.Float(),ny=normal.Float(),nz=normal.Float();v.normal=PackNormal(nx,ny,nz);}
+        if(mesh->skinned || (format&0x10u)){float normal[3];memcpy(normal,p+(mesh->skinned?pos+12:12),12);
+            v.normal=PackNormal(normal[0],normal[1],normal[2]);if(v.normal)v.attributes|=kich_r4_level::ATTR_NORMAL;
+            if(mesh->skinned){float tangent[3],binormal[3];memcpy(tangent,p+pos+24,12);memcpy(binormal,p+pos+36,12);
+                if(kich_r4_level::Basis(normal,tangent,binormal)){
+                    v.tangent=PackNormal(tangent[0],tangent[1],tangent[2]);v.binormal=PackNormal(binormal[0],binormal[1],binormal[2]);
+                    v.attributes|=kich_r4_level::ATTR_TANGENT|kich_r4_level::ATTR_BINORMAL;}}}
+        if(uv1){Reader tc1(Span(p+uv1,8));v.uv1[0]=tc1.Float();v.uv1[1]=tc1.Float();v.attributes|=kich_r4_level::ATTR_UV1;}
+        if(color){const unsigned char* c=p+color;v.color=uint32_t(c[2])|(uint32_t(c[1])<<8)|(uint32_t(c[0])<<16)|(uint32_t(c[3])<<24);v.attributes|=kich_r4_level::ATTR_COLOR;}
         if(mesh->skinned){if(stride==60){Reader b(Span(p+56,4));const uint32_t id=b.U32();Check(id<256,"1W model bone limit");v.bone[0]=v.bone[1]=static_cast<uint16_t>(id);}
             else {Reader b(Span(p,4)),w(Span(p+52,4));v.bone[0]=b.U16();v.bone[1]=b.U16();const uint32_t bits=w.U32();memcpy(&v.weight,&bits,4);
                 if(v.bone[0]>=256 || v.bone[1]>=256)Check(false,WeightDetail(i,v.bone[0],v.bone[1],bits,"2W bone index outside 0..255").c_str());
@@ -110,6 +118,34 @@ inline std::shared_ptr<Mesh> Decode(Span source) {
     }
     Reader indices(Chunk(source,4));const uint32_t n=indices.U32();Check(n && n%3==0 && n<=3u*1024u*1024u && n<=indices.Left()/2,"model index limit");
     mesh->indices.resize(n);for(uint32_t i=0;i<n;++i){mesh->indices[i]=indices.U16();Check(mesh->indices[i]<count,"model index range");}
+    /* Rigid FVF has no tangent semantics. Reconstruct at load from indexed
+     * triangles only; a UV seam with conflicting handedness remains an explicit
+     * flat-normal fallback instead of averaging the mirrored bases together. */
+    if(!mesh->skinned){
+        struct Tangents {float t[3],b[3];int sign;bool conflict;Tangents():sign(0),conflict(false){for(unsigned a=0;a<3;++a)t[a]=b[a]=0;}};
+        std::vector<Tangents> basis(count);
+        for(uint32_t i=0;i<n;i+=3){const uint16_t ids[]={mesh->indices[i],mesh->indices[i+1],mesh->indices[i+2]};
+            const SourceVertex& a=mesh->vertices[ids[0]];const SourceVertex& b=mesh->vertices[ids[1]];const SourceVertex& c=mesh->vertices[ids[2]];
+            const float du1=b.uv[0]-a.uv[0],dv1=b.uv[1]-a.uv[1],du2=c.uv[0]-a.uv[0],dv2=c.uv[1]-a.uv[1];
+            const float determinant=du1*dv2-du2*dv1;if(!Finite(determinant) || fabsf(determinant)<1.e-10f)continue;
+            float t[3],bn[3],area[3];const float e1[]={b.p[0]-a.p[0],b.p[1]-a.p[1],b.p[2]-a.p[2]},e2[]={c.p[0]-a.p[0],c.p[1]-a.p[1],c.p[2]-a.p[2]};
+            area[0]=e1[1]*e2[2]-e1[2]*e2[1];area[1]=e1[2]*e2[0]-e1[0]*e2[2];area[2]=e1[0]*e2[1]-e1[1]*e2[0];if(!kich_r4_level::UnitVector(area))continue;
+            for(unsigned axis=0;axis<3;++axis){t[axis]=(e1[axis]*dv2-e2[axis]*dv1)/determinant;bn[axis]=(e2[axis]*du1-e1[axis]*du2)/determinant;}
+            for(unsigned corner=0;corner<3;++corner){Tangents& target=basis[ids[corner]];
+                const kich_r4_scene::Vec3 normal=UnpackNormal(mesh->vertices[ids[corner]].normal);
+                const float orientation=(normal.y*t[2]-normal.z*t[1])*bn[0]+(normal.z*t[0]-normal.x*t[2])*bn[1]+(normal.x*t[1]-normal.y*t[0])*bn[2];
+                if(!Finite(orientation) || fabsf(orientation)<1.e-10f)continue;
+                const int sign=orientation<0?-1:1;
+                if(target.sign && target.sign!=sign)target.conflict=true;
+                target.sign=sign;
+                for(unsigned axis=0;axis<3;++axis){target.t[axis]+=t[axis];target.b[axis]+=bn[axis];}}
+        }
+        for(uint32_t i=0;i<count;++i){SourceVertex& v=mesh->vertices[i];Tangents& t=basis[i];const kich_r4_scene::Vec3 unpacked=UnpackNormal(v.normal);float normal[]={unpacked.x,unpacked.y,unpacked.z};
+            if(!t.conflict && t.sign && kich_r4_level::Basis(normal,t.t,t.b)){
+                v.tangent=PackNormal(t.t[0],t.t[1],t.t[2]);v.binormal=PackNormal(t.b[0],t.b[1],t.b[2]);v.attributes|=kich_r4_level::ATTR_TANGENT|kich_r4_level::ATTR_BINORMAL;++mesh->derived_basis_vertices;}}
+    }
+    mesh->available_attributes=~0u;
+    for(uint32_t i=0;i<count;++i){mesh->available_attributes&=mesh->vertices[i].attributes;if(mesh->vertices[i].attributes&kich_r4_level::ATTR_TANGENT)++mesh->basis_vertices;}
     if(mesh->skinned)mesh->bone_bounds.resize(mesh->bones);
     for(uint32_t i=0;i<count;++i){const SourceVertex& v=mesh->vertices[i];mesh->source_bounds.Add(v.p);
         if(mesh->skinned){mesh->bone_bounds[v.bone[0]].Add(v.p);mesh->bone_bounds[v.bone[1]].Add(v.p);}}
@@ -134,10 +170,11 @@ struct NativeModelCommand {
     std::shared_ptr<const Mesh> mesh;Matrix world,vp;std::vector<Matrix> bones;
     uint32_t vertex_count,first,count,layer,skin_mode,effect,shader_element,shader_pass;Style style;
     std::string resource,shader,texture,secondary;
+    kich_r4_material::Descriptor material;bool has_material;
     std::shared_ptr<RenderSnapshotProvenance> provenance;
     Bounds bounds;bool bounds_known;
     uint64_t visual_id,skeleton_id,pose_hash;uint32_t source_frame;bool identity_measured,pose_hash_valid;
-    NativeModelCommand():vertex_count(0),first(0),count(0),layer(0),skin_mode(KICH_R4_SKIN_UNKNOWN),effect(0),shader_element(UINT32_MAX),shader_pass(UINT32_MAX),bounds_known(false),visual_id(0),skeleton_id(0),pose_hash(0),source_frame(0),identity_measured(false),pose_hash_valid(false){}
+    NativeModelCommand():vertex_count(0),first(0),count(0),layer(0),skin_mode(KICH_R4_SKIN_UNKNOWN),effect(0),shader_element(UINT32_MAX),shader_pass(UINT32_MAX),has_material(false),bounds_known(false),visual_id(0),skeleton_id(0),pose_hash(0),source_frame(0),identity_measured(false),pose_hash_valid(false){}
 };
 inline void ValidateModelMatrix(const Matrix& matrix){for(unsigned i=0;i<16;++i)Check(Finite(matrix.m[i]),"nonfinite native model matrix");}
 inline bool AddTransformedBounds(Bounds& out,const Bounds& source,const Matrix& matrix){
@@ -169,7 +206,9 @@ inline void SnapshotModelID(const Mesh& mesh,char* out,size_t size,uint32_t firs
     if(!mesh.snapshot_hashed){uint64_t h=UINT64_C(14695981039346656037);
         for(size_t i=0;i<mesh.vertices.size();++i){const SourceVertex& v=mesh.vertices[i];
             h=SnapshotHash(h,v.p,sizeof(v.p));h=SnapshotHash(h,v.uv,sizeof(v.uv));h=SnapshotHash(h,&v.weight,sizeof(v.weight));
-            h=SnapshotHash(h,v.bone,sizeof(v.bone));h=SnapshotHash(h,&v.normal,sizeof(v.normal));}
+            h=SnapshotHash(h,v.bone,sizeof(v.bone));h=SnapshotHash(h,&v.normal,sizeof(v.normal));
+            h=SnapshotHash(h,&v.tangent,sizeof(v.tangent));h=SnapshotHash(h,&v.binormal,sizeof(v.binormal));h=SnapshotHash(h,v.uv1,sizeof(v.uv1));
+            h=SnapshotHash(h,&v.hemi,sizeof(v.hemi));h=SnapshotHash(h,&v.sun,sizeof(v.sun));h=SnapshotHash(h,&v.color,sizeof(v.color));h=SnapshotHash(h,&v.attributes,sizeof(v.attributes));}
         h=SnapshotHash(h,mesh.indices.data(),mesh.indices.size()*sizeof(uint16_t));mesh.snapshot_hash=h;mesh.snapshot_hashed=true;}
     snprintf(out,size,"OGF_DECODED_FNV64:%016llx:first=%u:indices=%u",static_cast<unsigned long long>(mesh.snapshot_hash),first,count);
 }
@@ -264,7 +303,7 @@ struct Batch {
     void NativeModel(const void* identity,const std::shared_ptr<Mesh>& mesh,const Matrix& world,const Matrix& vp,
         const Matrix* bones,uint32_t bone_count,uint32_t count,uint32_t first,uint32_t tris,const Style& style,
         uint32_t skin_mode,const char* name,const char* shader=NULL,const char* texture=NULL,const char* secondary=NULL,uint32_t effect=0,
-        uint32_t shader_element=UINT32_MAX,uint32_t shader_pass=UINT32_MAX,const void* skeleton=NULL){
+        uint32_t shader_element=UINT32_MAX,uint32_t shader_pass=UINT32_MAX,const void* skeleton=NULL,const kich_r4_material::Descriptor* material=NULL){
         Check(mesh.get()!=NULL,"native model geometry missing");
         Check(count && count<=mesh->vertices.size() && tris && uint64_t(first)+uint64_t(tris)*3<=mesh->indices.size(),"native model draw range");
         Check(bone_count<=256 && (!mesh->skinned || (bones && mesh->bones<=bone_count)),"native model bone pose range");
@@ -275,6 +314,7 @@ struct Batch {
         Check(!mesh->two_weights || skin_mode!=KICH_R4_SKIN_HARDWARE || mesh->hardware_weights_safe,"2W hardware weight exceeds safe quantization range");
         NativeModelCommand cmd;cmd.mesh=mesh;cmd.world=world;cmd.vp=vp;cmd.vertex_count=count;cmd.first=first;cmd.count=tris*3;
         cmd.layer=style.max_z<.1f?1:0;cmd.style=style;cmd.skin_mode=skin_mode;cmd.effect=effect;
+        if(material){cmd.material=*material;cmd.has_material=true;kich_r4_material::Apply(cmd.material,cmd.style);}
         cmd.shader_element=shader_element;cmd.shader_pass=shader_pass;
         cmd.resource=name?name:"<unnamed model>";cmd.shader=shader?shader:mesh->shader;cmd.texture=texture?texture:mesh->texture;cmd.secondary=secondary?secondary:"";
         std::string key(reinterpret_cast<const char*>(&identity),sizeof(identity));const Mesh* source=mesh.get();key.append(reinterpret_cast<const char*>(&source),sizeof(source));
@@ -285,13 +325,14 @@ struct Batch {
         key.append(reinterpret_cast<const char*>(&style.scissor),sizeof(style.scissor));if(style.scissor)key.append(reinterpret_cast<const char*>(style.rect),sizeof(style.rect));
         if(mesh->skinned)key.append(reinterpret_cast<const char*>(bones),mesh->bones*sizeof(Matrix));
         key.append(cmd.shader);key.push_back('\0');key.append(cmd.texture);key.push_back('\0');key.append(cmd.secondary);
+        if(cmd.has_material){const uint64_t material_key=kich_r4_material::Key(cmd.material);key.push_back('\0');key.append(reinterpret_cast<const char*>(&material_key),sizeof(material_key));}
         if(model_keys.find(key)!=model_keys.end())return;
         const uint64_t bytes=mesh->skinned?uint64_t(mesh->bones)*sizeof(Matrix):0;
         Check(native_models.size()+commands.size()<16384,"native model frame draw limit");Check(pose_bytes+bytes<=16u*1024u*1024u,"native model frame palette budget");
         if(mesh->skinned)cmd.bones.assign(bones,bones+mesh->bones);
         cmd.bounds_known=NativeModelBounds(cmd);
-        if(g_render_snapshot_active){cmd.identity_measured=true;cmd.visual_id=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(identity));cmd.skeleton_id=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(skeleton));cmd.source_frame=engine_frame;
-            if(mesh->skinned && RenderSnapshot_Detailed()){cmd.pose_hash=SnapshotHash(UINT64_C(14695981039346656037),cmd.bones.data(),cmd.bones.size()*sizeof(Matrix));cmd.pose_hash_valid=true;}}
+        cmd.identity_measured=true;cmd.visual_id=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(identity));cmd.skeleton_id=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(skeleton));cmd.source_frame=engine_frame;
+            if(g_render_snapshot_active && mesh->skinned && RenderSnapshot_Detailed()){cmd.pose_hash=SnapshotHash(UINT64_C(14695981039346656037),cmd.bones.data(),cmd.bones.size()*sizeof(Matrix));cmd.pose_hash_valid=true;}
         if(g_render_snapshot_active && RenderSnapshot_Detailed()){try{cmd.provenance.reset(new RenderSnapshotProvenance());RenderSnapshotProvenance& p=*cmd.provenance;RenderSnapshot_GetProvenance(&p);
             snprintf(p.semantic_type,sizeof(p.semantic_type),"%s",mesh->skinned?"SKINNED_MODEL":"RIGID_MODEL");
             snprintf(p.evidence,sizeof(p.evidence),"OGF_SHARED_GPU_MODEL");SnapshotModelID(*mesh,p.mesh_id,sizeof(p.mesh_id),first,cmd.count);
@@ -331,7 +372,7 @@ struct State {
     std::map<const void*,KichR4LightIdentity> light_sources;
     struct LightObservation {KichR4LocalLight value;bool active,valid;uint32_t frame;};
     std::map<const void*,LightObservation> light_observations;
-    uint64_t light_observation_overflow=0;
+    uint64_t light_observation_overflow=0,light_identity_rejections=0;
     uint64_t stream_bytes;bool native_models;
     uint32_t diagnostics;void (*log)(const char*);
     State():stream_bytes(0),native_models(false),diagnostics(0),log(NULL){}
@@ -346,9 +387,17 @@ struct State {
             LightObservation o={light,active,valid,frame.engine_frame};light_observations[id]=o;
         }else ++light_observation_overflow;}catch(...){++light_observation_overflow;}
     }
-    void SelectLights(const float* camera,KichR4LightingFrame& out)const {
+    bool StaticLightDisabled(const void* id,bool r1_lights_enabled)const {
+        const auto source=light_sources.find(id);
+        // Match R2 CLight_DB::add_light. Neither position, controller nor
+        // numerical equality establishes bStatic for a runtime registration.
+        return !r1_lights_enabled && source!=light_sources.end() && (source->second.flags&KICH_R4_LIGHT_STATIC)!=0;
+    }
+    void SelectLights(const float* camera,KichR4LightingFrame& out,bool r1_lights_enabled=false)const {
         struct Choice {float score;KichR4LocalLight light;bool shadow;const void* source;};std::vector<Choice> choices;out.count=0;out.shadow_mask=0;memset(out.sources,0,sizeof(out.sources));
+        out.r1_lights_requested=out.r1_lights_applied=r1_lights_enabled?1u:0u;
         for(std::map<const void*,KichR4LocalLight>::const_iterator it=lights.begin();it!=lights.end();++it){
+            if(StaticLightDisabled(it->first,r1_lights_enabled))continue;
             const KichR4LocalLight& l=it->second;float distance=0;
             for(unsigned a=0;a<3;++a){const float d=l.position[a]-camera[a];distance+=d*d;}
             const float brightness=std::max(l.color[0],std::max(l.color[1],l.color[2]));
@@ -363,7 +412,9 @@ struct State {
     void SnapshotLights(const float* camera,const KichR4LightingFrame& selected)const {
         if(!g_render_snapshot_active || !camera)return;
         using namespace kich_r4_telemetry;
-        uint64_t active=0,valid=0,candidates=0,selected_count=0;
+        uint64_t active=0,valid=0,admitted=0,selected_count=0,policy_rejected=0;
+        uint64_t rejected_inactive=0,rejected_invalid=0,rejected_capacity=0,rejected_distance=0,rejected_color=0,rejected_budget=0;
+        uint64_t selected_level=0,selected_runtime=0,selected_unknown=0,selected_shadow=0;
         for(auto it=light_observations.begin();it!=light_observations.end();++it){
             const LightObservation& o=it->second;const KichR4LocalLight& l=o.value;
             const auto source=light_sources.find(it->first);KichR4LightIdentity identity={};
@@ -372,18 +423,27 @@ struct State {
             float distance=0;for(unsigned a=0;a<3;++a){const float d=l.position[a]-camera[a];distance+=d*d;}
             const float brightness=std::max(l.color[0],std::max(l.color[1],l.color[2]));
             const bool in_registry=lights.count(it->first)!=0;
-            const bool candidate=in_registry && !(distance>(150+l.range)*(150+l.range) || brightness<=0);
-            bool chosen=false;for(unsigned i=0;i<selected.count && i<8;++i)if(selected.sources[i].process_handle==identity.process_handle && selected.sources[i].serial==identity.serial){chosen=true;break;}
+            const bool policy_passed=in_registry && !StaticLightDisabled(it->first,selected.r1_lights_applied!=0);
+            const bool candidate=policy_passed && !(distance>(150+l.range)*(150+l.range) || brightness<=0);
+            unsigned slot=8;for(unsigned i=0;i<selected.count && i<8;++i)if(selected.sources[i].process_handle==identity.process_handle && selected.sources[i].serial==identity.serial){slot=i;break;}
+            const bool chosen=slot<8;
+            const char* reason=!o.active?"INACTIVE":!o.valid?"INVALID_DESCRIPTOR":!in_registry?"REGISTRY_CAPACITY_LIMIT":!policy_passed?"STATIC_LIGHT_DISABLED_R2FLAG_R1LIGHTS":distance>(150+l.range)*(150+l.range)?"OUTSIDE_DISTANCE_LIMIT":brightness<=0?"NONPOSITIVE_COLOR":!chosen?"BELOW_TOP_8_SCORE":"SELECTED_TOP_8_SCORE";
             if(o.active)++active;
             if(in_registry)++valid;
-            if(candidate)++candidates;
-            if(chosen)++selected_count;
+            if(candidate)++admitted;
+            if(!o.active)++rejected_inactive;else if(!o.valid)++rejected_invalid;else if(!in_registry)++rejected_capacity;
+            else if(!policy_passed)++policy_rejected;else if(distance>(150+l.range)*(150+l.range))++rejected_distance;
+            else if(brightness<=0)++rejected_color;else if(!chosen)++rejected_budget;
+            if(chosen){++selected_count;if(identity.role==KICH_R4_LIGHT_ROLE_LEVEL)++selected_level;else if(identity.role==KICH_R4_LIGHT_ROLE_RUNTIME)++selected_runtime;else ++selected_unknown;
+                if(selected.shadow_mask&(1u<<slot))++selected_shadow;}
             if(!RenderSnapshot_Detailed())continue;
             char id[64];if(identity.serial)Handle(id,sizeof(id),"source",identity.serial);else Handle(id,sizeof(id),"process_handle",identity.process_handle);
             Text("LIGHT",id,"registry","R4_NATIVE");Text("LIGHT",id,"id_scope",identity.serial?"PROCESS_LIFETIME_SOURCE_SERIAL":"PROCESS_POINTER; REUSE_NOT_RESOLVED");
             U64("LIGHT",id,"source_serial",identity.serial);U64("LIGHT",id,"process_handle",identity.process_handle);
             U64("LIGHT",id,"registration_observed",1);Text("LIGHT",id,"lifetime_status","NO_CAPTURE_FORGET_OBSERVED; ACTIVE_STATE_SEPARATE");U64("LIGHT",id,"active",o.active?1:0);U64("LIGHT",id,"descriptor_valid",o.valid?1:0);
-            U64("LIGHT",id,"candidate",candidate?1:0);U64("LIGHT",id,"policy_passed",candidate?1:0);U64("LIGHT",id,"selected",chosen?1:0);
+            U64("LIGHT",id,"candidate",in_registry?1:0);U64("LIGHT",id,"policy_passed",policy_passed?1:0);U64("LIGHT",id,"admitted",candidate?1:0);U64("LIGHT",id,"selected",chosen?1:0);
+            if(chosen)U64("LIGHT",id,"selected_slot",slot);else Text("LIGHT",id,"selected_slot","NOT_SELECTED");
+            U64("LIGHT",id,"static_source",(identity.flags&KICH_R4_LIGHT_STATIC)!=0);
             U64("LIGHT",id,"submitted",0);Text("LIGHT",id,"submission_status","NOT_YET_SUBMITTED");
             Text("LIGHT",id,"role",identity.role==KICH_R4_LIGHT_ROLE_LEVEL?"LEVEL_RECORD":identity.role==KICH_R4_LIGHT_ROLE_RUNTIME?"RUNTIME_REGISTERED":"UNKNOWN");
             const bool level_valid=identity.role==KICH_R4_LIGHT_ROLE_LEVEL && identity.level_record!=UINT32_MAX;
@@ -394,16 +454,26 @@ struct State {
             Text("LIGHT",id,"type",l.type==2?"SPOT":l.type==1?"POINT":"UNSUPPORTED");
             Vector("LIGHT",id,"position",l.position,3);Vector("LIGHT",id,"direction",l.direction,3);Vector("LIGHT",id,"color",l.color,3);
             Float("LIGHT",id,"range",l.range);Float("LIGHT",id,"cone",l.cone);Float("LIGHT",id,"camera_distance_squared",distance);
-            Text("LIGHT",id,"selection_reason",!o.active?"INACTIVE":!o.valid?"INVALID_DESCRIPTOR":!in_registry?"REGISTRY_CAPACITY_LIMIT":distance>(150+l.range)*(150+l.range)?"OUTSIDE_DISTANCE_LIMIT":brightness<=0?"NONPOSITIVE_COLOR":!chosen?"BELOW_TOP_8_SCORE":"SELECTED_TOP_8_SCORE");
-            Text("LIGHT",id,"policy","ALL_REGISTERED_VALID_ACTIVE_ROLES; R1LIGHTS_FLAG_NOT_APPLIED; NO_NUMERIC_DEDUP");
+            Text("LIGHT",id,"selection_reason",reason);
+            Text("LIGHT",id,"policy","BSTATIC_REQUIRES_R2FLAG_R1LIGHTS_BEFORE_RANGE_AND_TOP8; NO_NUMERIC_DEDUP");
             U64("LIGHT",id,"shadow_requested",unshadowed_lights.count(it->first)==0);U64("LIGHT",id,"last_update_frame",o.frame);
         }
         RenderSnapshot_U64("LIGHT_REGISTRY","registered_observed",light_observations.size());RenderSnapshot_U64("LIGHT_REGISTRY","identity_records",light_sources.size());
-        RenderSnapshot_U64("LIGHT_REGISTRY","active",active);RenderSnapshot_U64("LIGHT_REGISTRY","valid_active",valid);RenderSnapshot_U64("LIGHT_REGISTRY","candidate",candidates);
-        RenderSnapshot_U64("LIGHT_REGISTRY","policy_passed",candidates);RenderSnapshot_U64("LIGHT_REGISTRY","selected",selected_count);
+        RenderSnapshot_U64("LIGHT_POLICY","R2FLAG_R1LIGHTS_requested",selected.r1_lights_requested);RenderSnapshot_U64("LIGHT_POLICY","R2FLAG_R1LIGHTS_applied",selected.r1_lights_applied);
+        RenderSnapshot_U64("LIGHT_REGISTRY","active",active);RenderSnapshot_U64("LIGHT_REGISTRY","valid_active",valid);RenderSnapshot_U64("LIGHT_REGISTRY","candidate",valid);
+        RenderSnapshot_U64("LIGHT_REGISTRY","policy_passed",valid-policy_rejected);RenderSnapshot_U64("LIGHT_REGISTRY","policy_rejected",policy_rejected);
+        RenderSnapshot_U64("LIGHT_REGISTRY","rejected_STATIC_LIGHT_DISABLED_R2FLAG_R1LIGHTS",policy_rejected);
+        RenderSnapshot_U64("LIGHT_REGISTRY","rejected_INACTIVE",rejected_inactive);RenderSnapshot_U64("LIGHT_REGISTRY","rejected_INVALID_DESCRIPTOR",rejected_invalid);
+        RenderSnapshot_U64("LIGHT_REGISTRY","rejected_REGISTRY_CAPACITY_LIMIT",rejected_capacity);RenderSnapshot_U64("LIGHT_REGISTRY","rejected_OUTSIDE_DISTANCE_LIMIT",rejected_distance);
+        RenderSnapshot_U64("LIGHT_REGISTRY","rejected_NONPOSITIVE_COLOR",rejected_color);RenderSnapshot_U64("LIGHT_REGISTRY","rejected_BELOW_TOP_8_SCORE",rejected_budget);
+        RenderSnapshot_U64("LIGHT_REGISTRY","admitted",admitted);RenderSnapshot_U64("LIGHT_REGISTRY","selected",selected_count);
+        RenderSnapshot_U64("LIGHT_REGISTRY","selected_LEVEL_RECORD",selected_level);RenderSnapshot_U64("LIGHT_REGISTRY","selected_RUNTIME_REGISTERED",selected_runtime);RenderSnapshot_U64("LIGHT_REGISTRY","selected_UNKNOWN",selected_unknown);
+        RenderSnapshot_U64("LIGHT_REGISTRY","slots_used",selected.count);RenderSnapshot_U64("LIGHT_REGISTRY","slots_capacity",8);RenderSnapshot_U64("LIGHT_REGISTRY","selected_shadow_requested",selected_shadow);
         RenderSnapshot_U64("LIGHT_REGISTRY","observation_overflow_events",light_observation_overflow);
+        RenderSnapshot_U64("LIGHT_REGISTRY","identity_registration_rejections",light_identity_rejections);
         RenderSnapshot_Text("LIGHT_REGISTRY","counter_scope","BOUNDED_OBSERVATION_REGISTRY_AT_CALCULATE; RETAINS_INACTIVE_UNTIL_FORGET; BEFORE_DICTIONARY_LIMIT");
-        RenderSnapshot_Text("LIGHT_REGISTRY","policy","NATIVE_TOP_8_SCORE; DISTANCE_150_PLUS_RANGE; POSITIVE_COLOR; R1LIGHTS_NOT_APPLIED; NO_DEDUP");
+        RenderSnapshot_Text("LIGHT_REGISTRY","policy","BSTATIC_REQUIRES_R2FLAG_R1LIGHTS; THEN_DISTANCE_150_PLUS_RANGE_POSITIVE_COLOR_TOP_8_SCORE; ENVIRONMENT_SUN_SEPARATE; NO_DEDUP");
+        RenderSnapshot_Text("LIGHT_REGISTRY","visibility_filter","DISTANCE_150_PLUS_RANGE; CAMERA_FRUSTUM_NOT_APPLIED; RETAINED_CONSERVATIVE_POLICY");
     }
     void Diagnostic(const std::string& message){if(log && diagnostics<64){++diagnostics;log(("[R4 bridge B4.3b.1] "+message).c_str());}}
     void Begin(uint32_t w,uint32_t h,uint32_t f){frame.Begin(w,h,f);stream_bytes=0;

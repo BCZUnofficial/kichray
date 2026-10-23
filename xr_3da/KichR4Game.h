@@ -12,6 +12,7 @@ struct KichR4GameFrame {
     bool allowed,active,toggle_down,debug_down;
     KichR4LightingFrame lighting;
     float time,prepare_ms;
+    float tree_wave[4],tree_wind[4],tree_sbc;
     float postprocess[24];
 };
 bool KichR4_GameInitialize(const char*,KichR4LogFn,const KichR4LevelFiles*);

@@ -39,7 +39,7 @@ struct Flags {bool enabled;bool test(unsigned){return enabled;}} psDeviceFlags={
 Flags ps_r2_ls_flags={false};enum{R2FLAG_R1LIGHTS=1u<<10};u32 native_level_light_records=0,native_level_directional_skips=0;
 KichR4LightingFrame lights={};
 void KichR4_CaptureLightingDiagnostics(const float*,const KichR4LightingFrame&){}
-void KichR4_CaptureLighting(const float*,KichR4LightingFrame& out){out=lights;}
+void KichR4_CaptureLighting(const float*,KichR4LightingFrame& out,bool r1_lights_enabled){out=lights;out.r1_lights_requested=out.r1_lights_applied=r1_lights_enabled?1u:0u;}
 class CRender {
 public:
     enum{PHASE_NORMAL=0};unsigned phase;bool loaded;std::vector<int> queue;std::vector<CFrustum> shadow_views;CFrustum ViewBase,*View;

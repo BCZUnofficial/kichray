@@ -90,12 +90,21 @@ std::map<std::string,Group> groups;
 std::map<std::string,Visibility> visibility;
 /* G3b: a bounded route summary survives loss of verbose DRAW records. Mesh IDs
  * are representatives, never map keys. Pass reservations protect late routes. */
+struct DrawOrdinal {uint64_t value=0;bool known=false;};
+struct DrawEventIdentity {DrawOrdinal draw,pass;};
+struct OrdinalRange {uint64_t observed=0,first=0,last=0,minimum=0,maximum=0;
+    void Add(const DrawOrdinal& value){if(!value.known)return;
+        if(!observed){first=minimum=maximum=value.value;}++observed;last=value.value;
+        minimum=std::min(minimum,value.value);maximum=std::max(maximum,value.value);}
+};
 struct DrawTotals {uint64_t observed=0,submitted=0,skipped=0,triangles=0,instances=0,submitted_instances=0,skipped_instances=0,first=0,last=0;
-    void Add(const RenderSnapshotDraw& d,uint64_t tris,uint64_t event){++observed;submitted+=d.submitted?1:0;skipped+=d.submitted?0:1;
+    OrdinalRange gpu_draw,gpu_pass;
+    void Add(const RenderSnapshotDraw& d,uint64_t tris,uint64_t event,const DrawEventIdentity* identity=NULL){++observed;submitted+=d.submitted?1:0;skipped+=d.submitted?0:1;
         triangles+=d.submitted?tris:0;instances+=d.instance_count;submitted_instances+=d.submitted?d.instance_count:0;skipped_instances+=d.submitted?0:d.instance_count;
-        if(!first){first=event;}last=event;}
+        if(!first){first=event;}last=event;if(identity){gpu_draw.Add(identity->draw);gpu_pass.Add(identity->pass);}}
 };
 struct DrawRoute {std::string pass,light,scope,phase,semantic,category,queue,material,material_route,vs,ps,skin,textures[8],states,samplers;
+    std::vector<std::pair<std::string,std::string> > state_fields;
     uint32_t flags=0,mask=0,mask_known=0,variant=~uint32_t(0),topology=0;};
 struct DrawSample {char mesh[160],resource[257],evidence[65],uv_source[49],material[160],semantic[32],vs[96],ps[96],texture0[128],geometry[64],widget[192],ui_origin[64];
     uint32_t uv_count=0,start_index=0,index_count=0;float uv[8];uint64_t first=0,last=0,observations=0;};
@@ -122,9 +131,44 @@ Budget& TraceBudget(const std::string& name){
 }
 void FixedText(char* out,size_t size,const char* value){size_t n=0;if(!value)value="UNKNOWN";
     for(;n+1<size && value[n];++n){const unsigned char c=static_cast<unsigned char>(value[n]);out[n]=(c<32 || c==127)?' ':char(c);}out[n]=0;}
-std::string DrawRouteKey(const DrawRoute& r){std::string key;const std::string* fields[]={&r.pass,&r.light,&r.scope,&r.phase,&r.semantic,&r.category,&r.queue,&r.material,&r.material_route,&r.vs,&r.ps,&r.skin,&r.states,&r.samplers};
+bool StateName(const char* begin,size_t size,const char* name){return size==strlen(name) && !memcmp(begin,name,size);}
+bool EventStateName(const char* begin,size_t size){return StateName(begin,size,"gpu_draw_ordinal") || StateName(begin,size,"gpu_pass_ordinal");}
+/* The existing fixed DLL contract carries event identity beside graphics state.
+ * Decode only its exact field names; no substring filtering, GPU handles or
+ * inferred state. Invalid/duplicate ordinals remain unavailable, never zero. */
+DrawEventIdentity DrawIdentity(const RenderSnapshotDraw& d){DrawEventIdentity identity;bool draw_seen=false,pass_seen=false;
+    for(size_t begin=0;begin<sizeof(d.states) && d.states[begin];){size_t end=begin;
+        while(end<sizeof(d.states) && d.states[end] && d.states[end]!=';')++end;
+        size_t equal=begin;while(equal<end && d.states[equal]!='=')++equal;
+        const bool is_draw=StateName(d.states+begin,equal-begin,"gpu_draw_ordinal");
+        const bool is_pass=StateName(d.states+begin,equal-begin,"gpu_pass_ordinal");
+        if(is_draw || is_pass){DrawOrdinal& ordinal=is_draw?identity.draw:identity.pass;bool& seen=is_draw?draw_seen:pass_seen;
+            bool valid=equal+1<end && !seen;uint64_t value=0;
+            for(size_t i=equal+1;i<end && valid;++i){const unsigned char c=static_cast<unsigned char>(d.states[i]);
+                if(c<'0' || c>'9' || value>(~uint64_t(0)-(c-'0'))/10)valid=false;else value=value*10+(c-'0');}
+            ordinal.known=valid;ordinal.value=valid?value:0;seen=true;}
+        if(end==sizeof(d.states) || !d.states[end])break;
+        begin=end+1;
+    }return identity;
+}
+void GraphicsState(DrawRoute& route,const RenderSnapshotDraw& d){const std::string raw=Clean(d.states,sizeof(d.states));
+    for(size_t begin=0;begin<raw.size();){const size_t separator=raw.find(';',begin),end=separator==std::string::npos?raw.size():separator;
+        const std::string field=raw.substr(begin,end-begin);const size_t equal=field.find('=');
+        const size_t name_size=equal==std::string::npos?field.size():equal;
+        if(!field.empty() && !EventStateName(field.data(),name_size)){
+            route.state_fields.push_back(std::make_pair(equal==std::string::npos?std::string():field.substr(0,equal),equal==std::string::npos?field:field.substr(equal+1)));
+            if(!route.states.empty()){route.states+=';';}route.states+=field;}
+        begin=end+1;
+    }
+}
+std::string DrawRouteKey(const DrawRoute& r){std::string key;const std::string* fields[]={&r.pass,&r.light,&r.scope,&r.phase,&r.semantic,&r.category,&r.queue,&r.material,&r.material_route,&r.vs,&r.ps,&r.skin,&r.samplers};
     for(unsigned i=0;i<sizeof(fields)/sizeof(fields[0]);++i)key+=std::to_string(fields[i]->size())+":"+*fields[i];
     for(unsigned i=0;i<8;++i)key+=std::to_string(r.textures[i].size())+":"+r.textures[i];
+    /* Named state fields are key data; the serialized raw_states presentation
+     * and uint64 event identity are not. Preserve unknown state fields too. */
+    key+="/state_fields="+std::to_string(r.state_fields.size())+":";
+    for(size_t i=0;i<r.state_fields.size();++i){const std::pair<std::string,std::string>& field=r.state_fields[i];
+        key+=std::to_string(field.first.size())+":"+field.first+std::to_string(field.second.size())+":"+field.second;}
     return key+"/flags="+std::to_string(r.flags)+"/mask="+std::to_string(r.mask)+"/known="+std::to_string(r.mask_known)+"/variant="+std::to_string(r.variant)+"/topology="+std::to_string(r.topology);
 }
 void DrawRepresentative(DrawAggregate& aggregate,const DrawRoute& route,const RenderSnapshotDraw& d){DrawSample sample={};
@@ -165,14 +209,14 @@ void ProtectedDraw(const DrawRoute& route,const RenderSnapshotDraw& d){
     RenderSnapshot_Record(kind,id,"visible_pixels","NOT_MEASURED; backend submission is not pixel execution");
     for(unsigned i=0;i<8;++i){char key[16];snprintf(key,sizeof(key),"texture%u",i);RenderSnapshot_Record(kind,id,key,route.textures[i].c_str());}
 }
-void AggregateDraw(const RenderSnapshotDraw& d,uint64_t tris){draw_aggregate_totals.Add(d,tris,draws);try{
+void AggregateDraw(const RenderSnapshotDraw& d,uint64_t tris,const DrawEventIdentity& identity){draw_aggregate_totals.Add(d,tris,draws,&identity);try{
     DrawRoute route;route.pass=pass;route.light=light_id;route.scope=light_scope;route.phase=phase;
     route.semantic=provenance.semantic_type[0]?Clean(provenance.semantic_type,sizeof(provenance.semantic_type)):"UNKNOWN";route.category=category;
     route.queue=provenance.queue[0]?Clean(provenance.queue,sizeof(provenance.queue)):"UNKNOWN";
     route.material=provenance.material_id[0]?Clean(provenance.material_id,sizeof(provenance.material_id)):material;
     route.material_route=provenance.material_route_id[0]?Clean(provenance.material_route_id,sizeof(provenance.material_route_id)):"NOT_INSTRUMENTED";
     route.vs=d.vertex_shader[0]?Clean(d.vertex_shader,sizeof(d.vertex_shader)):vertex_shader;route.ps=d.pixel_shader[0]?Clean(d.pixel_shader,sizeof(d.pixel_shader)):pixel_shader;
-    route.skin=d.skin[0]?Clean(d.skin,sizeof(d.skin)):skin;route.states=Clean(d.states,sizeof(d.states));route.samplers=Clean(d.samplers,sizeof(d.samplers));
+    route.skin=d.skin[0]?Clean(d.skin,sizeof(d.skin)):skin;GraphicsState(route,d);route.samplers=Clean(d.samplers,sizeof(d.samplers));
     for(unsigned i=0;i<8;++i)route.textures[i]=d.texture_names[i][0]?Clean(d.texture_names[i],sizeof(d.texture_names[i])):texture_names[i];
     route.flags=provenance.flags;route.mask=provenance.pass_mask;route.mask_known=provenance.pass_mask_known;route.variant=detail_variant;route.topology=d.topology;
     ProtectedDraw(route,d);const std::string key=DrawRouteKey(route);auto found=draw_aggregates.find(key);
@@ -184,11 +228,16 @@ void AggregateDraw(const RenderSnapshotDraw& d,uint64_t tris){draw_aggregate_tot
                 value.route.light=value.route.scope=value.route.phase=value.route.semantic=value.route.category=value.route.queue=value.route.material=value.route.material_route=value.route.vs=value.route.ps=value.route.skin=value.route.states=value.route.samplers="MULTIPLE";
                 for(unsigned i=0;i<8;++i){value.route.textures[i]="MULTIPLE";}found=draw_aggregates.insert(std::make_pair(other,value)).first;}
             ++draw_aggregate_coalesced;aggregation_overflow=incomplete=true;}}
-    found->second.totals.Add(d,tris,draws);DrawRepresentative(found->second,route,d);
+    found->second.totals.Add(d,tris,draws,&identity);DrawRepresentative(found->second,route,d);
 }catch(...){++draw_aggregate_failures;aggregation_overflow=incomplete=true;}}
+void WriteOrdinalRange(std::ostream& out,const char* kind,const OrdinalRange& range){out<<"gpu_"<<kind<<"_ordinals_observed="<<range.observed
+    <<"\nfirst_gpu_"<<kind<<"_ordinal="<<(range.observed?std::to_string(range.first):"NOT_INSTRUMENTED")
+    <<"\nlast_gpu_"<<kind<<"_ordinal="<<(range.observed?std::to_string(range.last):"NOT_INSTRUMENTED")
+    <<"\nmin_gpu_"<<kind<<"_ordinal="<<(range.observed?std::to_string(range.minimum):"NOT_INSTRUMENTED")
+    <<"\nmax_gpu_"<<kind<<"_ordinal="<<(range.observed?std::to_string(range.maximum):"NOT_INSTRUMENTED")<<"\n";}
 void WriteDrawTotals(std::ostream& out,const DrawTotals& t){out<<"draw_records_observed="<<t.observed<<"\nsubmitted_draw_calls="<<t.submitted<<"\nskipped_draw_calls="<<t.skipped
     <<"\ntriangles_submitted="<<t.triangles<<"\ninstances_observed="<<t.instances<<"\ninstances_submitted="<<t.submitted_instances<<"\ninstances_skipped="<<t.skipped_instances
-    <<"\nfirst_draw_event="<<t.first<<"\nlast_draw_event="<<t.last<<"\n";}
+    <<"\nfirst_draw_event="<<t.first<<"\nlast_draw_event="<<t.last<<"\n";WriteOrdinalRange(out,"draw",t.gpu_draw);WriteOrdinalRange(out,"pass",t.gpu_pass);}
 Pass& CurrentPass(){auto found=passes.find(pass);if(found!=passes.end())return found->second;
     if(passes.size()<max_passes)return passes[pass];
     aggregation_overflow=incomplete=true;return passes["OTHER_PASSES"];}
@@ -237,7 +286,9 @@ Dictionary dictionaries[]={
     {"UI_ROUTE",128,48,384*1024,0,0,0,0,0,{}},{"DECAL_ROUTE",128,48,384*1024,0,0,0,0,0,{}},{"DISTORTION_ROUTE",64,48,192*1024,0,0,0,0,0,{}},
     {"R2_BINDING",128,128,768*1024,0,0,0,0,0,{}},{"R2_UI_BINDING",128,128,768*1024,0,0,0,0,0,{}},
     {"R2_DECAL_BINDING",128,128,768*1024,0,0,0,0,0,{}},{"R2_MODEL_BINDING",128,128,768*1024,0,0,0,0,0,{}},
-    {"DETAIL_GEOMETRY",128,48,384*1024,0,0,0,0,0,{}},{"OTHER",64,48,192*1024,0,0,0,0,0,{}}};
+    {"DETAIL_GEOMETRY",128,48,384*1024,0,0,0,0,0,{}},
+    {"NATIVE_MATERIAL",128,48,384*1024,0,0,0,0,0,{}},{"MATERIAL_EXECUTION",128,48,384*1024,0,0,0,0,0,{}},
+    {"OTHER",64,48,192*1024,0,0,0,0,0,{}}};
 const size_t dictionary_count=sizeof(dictionaries)/sizeof(dictionaries[0]);
 bool dictionary_overflow=false;uint64_t profile_dictionary_skips=0;
 Dictionary& PickDictionary(const std::string& category){std::string name=category;
@@ -416,7 +467,7 @@ void SNAPSHOT_CALL RenderSnapshot_Draw(const RenderSnapshotDraw* d){
         try{Pass& p=CurrentPass();++p.observed;p.calls+=d->submitted?1:0;p.triangles+=d->submitted?tris:0;++p.dropped;++dropped_draws;
             if(!p.first_lost){p.first_lost=draws;}p.last_lost=draws;}
         catch(...){incomplete=summary_overflow=true;}return;}
-    AggregateDraw(*d,tris);
+    const DrawEventIdentity identity=DrawIdentity(*d);AggregateDraw(*d,tris,identity);
     try{if(!d->submitted)incomplete=true;
         triangles+=d->submitted?tris:0;Pass& p=CurrentPass();current=&p;++p.observed;p.calls+=d->submitted?1:0;p.triangles+=d->submitted?tris:0;
         Group& g=CurrentGroup();++g.observed;g.submitted+=d->submitted?1:0;g.skipped+=d->submitted?0:1;g.triangles+=d->submitted?tris:0;
@@ -447,6 +498,8 @@ void SNAPSHOT_CALL RenderSnapshot_Draw(const RenderSnapshotDraw* d){
             <<"\nvertices="<<(d->vertex_count_known?std::to_string(d->vertex_count):"NOT_AVAILABLE")
             <<"\nvb_capacity_vertices="<<(d->vertex_capacity?std::to_string(d->vertex_capacity):"NOT_AVAILABLE")<<"\nindices="<<d->index_count<<"\ninstances="<<d->instance_count
             <<"\ntriangles_submitted="<<(d->submitted?tris:0)<<"\ntopology_raw="<<d->topology<<"\nstart_index="<<d->start_index<<"\nfirst_instance="<<d->first_instance
+            <<"\ngpu_draw_ordinal="<<(identity.draw.known?std::to_string(identity.draw.value):"NOT_INSTRUMENTED")
+            <<"\ngpu_pass_ordinal="<<(identity.pass.known?std::to_string(identity.pass.value):"NOT_INSTRUMENTED")
             <<"\npipeline="<<d->pipeline<<"\nvb="<<d->vb<<"\nib="<<d->ib<<"\ncb="<<d->cb<<"\ninstance_buffer="<<d->instances
             <<"\nvs_handle="<<d->vs<<"\nps_handle="<<d->ps<<"\nskin_mode="<<(d->skin[0]?Clean(d->skin,sizeof(d->skin)):skin)
             <<"\nraw_states="<<Clean(d->states,sizeof(d->states))<<"\nsamplers="<<Clean(d->samplers,sizeof(d->samplers))<<"\n";
@@ -571,6 +624,8 @@ void RenderSnapshot_End(const char* status){
             <<"semantic_type=SOURCE_PROVENANCE; UNKNOWN when not instrumented\nuv_samples=AT_MOST_FOUR_SOURCE_PAIRS; not texture-coordinate bounds\n"
             <<"draw_aggregates=PASS_LIGHT_PHASE_SEMANTIC_MATERIAL_ACTUAL_SHADER_TEXTURE_STATE_ROUTE; mesh IDs are samples only\n"
             <<"draw_aggregate_identity=NO_GPU_HANDLES; unnamed texture/shader identities remain UNKNOWN\n"
+            <<"draw_aggregate_state=EXACT_NAMED_GRAPHICS_FIELDS; gpu_draw_ordinal and gpu_pass_ordinal excluded from equivalence\n"
+            <<"gpu_ordinal_ranges=KNOWN_SOURCE_VALUES_ONLY; min/max are bounds, not a claim of contiguous retained events\n"
             <<"draw_aggregate_samples=FIRST_FOUR_DISTINCT_MESH_RESOURCE_ROUTE_UV_REPRESENTATIVES; not all geometry\n";
         out<<"\n[FRAME_IDENTITY]\nsession_id="<<session_id<<"\ncapture_id="<<capture_request.id<<"\nrequest_id="<<capture_request.id
             <<"\ngroup_id="<<capture_request.group<<"\nrequest_reason="<<capture_request.reason<<"\nscenario_role="<<capture_request.role

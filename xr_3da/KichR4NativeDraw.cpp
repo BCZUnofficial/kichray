@@ -10,6 +10,7 @@
 #include "KichR4LevelOption.h"
 #include "KichR4DetailData.h"
 #include "KichR4MaterialRules.h"
+#include "KichR4MaterialServices.h"
 #include "RenderSnapshot.h"
 #include <map>
 #include <string>
@@ -24,6 +25,7 @@ CTexture* textures[16]={};
 uint32_t effect=0;
 uint32_t source_element=UINT32_MAX,source_pass=0;
 std::string active_shader,model_texture,model_secondary;
+const kich_r4_material::Descriptor* active_material=NULL;
 float Float(const unsigned char* p){float v;memcpy(&v,p,4);kich_r4_level::Check(kich_r4_level::Finite(v),"native nonfinite vertex");return v;}
 uint32_t Word(const unsigned char* p){uint32_t v;memcpy(&v,p,4);return v;}
 bool Has(const char* value,const char* part){return value && strstr(value,part)!=NULL;}
@@ -36,8 +38,9 @@ uint64_t material_metadata_errors=0;
 void MaterialError(){++material_metadata_errors;if(g_render_snapshot_active)RenderSnapshot_U64("MATERIAL_REGISTRY","metadata_errors",material_metadata_errors);}
 }
 void RenderSnapshot_RegisterMaterialElement(const void* element,uint32_t index,const char* shader,const char* texture_list,const char* origin,const char* bump,const char* detail,uint32_t usage,uint64_t class_id){
-    try{snapshot_material::Source s;s.element=index;s.usage=usage;s.class_id=class_id;s.shader=snapshot_material::Text(shader);s.textures=snapshot_material::Text(texture_list,1024);s.origin=snapshot_material::Text(origin);s.bump=snapshot_material::Text(bump);s.detail=snapshot_material::Text(detail);MaterialRegistry().AddSource(element,s);}catch(...){MaterialError();}}
-void RenderSnapshot_ForgetMaterialElement(const void* element){try{MaterialRegistry().sources.erase(element);}catch(...){MaterialError();}}
+    try{KichR4_NativeRegisterMaterial(element,index,shader,texture_list,origin,bump,detail,usage,class_id);
+        snapshot_material::Source s;s.element=index;s.usage=usage;s.class_id=class_id;s.shader=snapshot_material::Text(shader);s.textures=snapshot_material::Text(texture_list,1024);s.origin=snapshot_material::Text(origin);s.bump=snapshot_material::Text(bump);s.detail=snapshot_material::Text(detail);MaterialRegistry().AddSource(element,s);}catch(...){MaterialError();}}
+void RenderSnapshot_ForgetMaterialElement(const void* element){try{KichR4_NativeForgetMaterial(element);MaterialRegistry().sources.erase(element);}catch(...){MaterialError();}}
 void RenderSnapshot_CompilerBegin(const void* compiler){try{MaterialRegistry().Begin(compiler);}catch(...){MaterialError();}}
 void RenderSnapshot_CompilerSampler(const void* compiler,const char* semantic,const char* texture,uint32_t slot,uint32_t address,uint32_t min_filter,uint32_t mip_filter,uint32_t mag_filter){
     try{snapshot_material::Sampler s;s.semantic=snapshot_material::Text(semantic);s.texture=snapshot_material::Text(texture);s.slot=slot;s.address=address;s.min_filter=min_filter;s.mip_filter=mip_filter;s.mag_filter=mag_filter;MaterialRegistry().AddSampler(compiler,s);}catch(...){MaterialError();}}
@@ -93,8 +96,9 @@ bool KichR4_NativeStyle(kich_r4_capture::Style& out){out=style;out.blend=states[
 void KichR4_NativeElement(ShaderElement* e){KichR4_NativeElementPass(e,0);}
 void KichR4_NativeElementSource(uint32_t element){source_element=element;}
 void KichR4_NativeElementPass(ShaderElement* e,uint32_t pass){
-    active_shader.clear();effect=0;source_element=UINT32_MAX;source_pass=pass;
+    active_shader.clear();active_material=NULL;effect=0;source_element=UINT32_MAX;source_pass=pass;
     if(!e || pass>=e->passes.size())return;
+    active_material=KichR4_NativeFindMaterial(e,pass);
     const SPass* selected_pass=e->passes[pass]._get();
     if(selected_pass && selected_pass->ps)active_shader=selected_pass->ps->cName.c_str();
     effect=kich_r4_material::Effect(active_shader.c_str(),e->flags.bDistort!=0,e->flags.bWmark!=0);
@@ -104,11 +108,12 @@ void KichR4_NativeModelMaterial(kich_r4_capture::ModelInput& input){
     try{model_texture=TextureName(0);model_secondary=TextureName(1);
         input.shader=active_shader.c_str();input.texture=model_texture.c_str();input.secondary=model_secondary.c_str();
         input.effect=effect;input.shader_element=source_element;input.shader_pass=source_pass;
-    }catch(...){KichR4_CaptureFail("G3b model material snapshot failed");}
+        input.material=active_material;if(active_material)kich_r4_material::Apply(*active_material,input.style);
+    }catch(...){KichR4_CaptureFail("G3c model material snapshot failed");}
 }
 double KichR4_NativeQueueTime(){return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-queue_begin).count();}
 void KichR4_NativeBegin(uint32_t width,uint32_t height,uint32_t frame){menu_pp=menu_overlay=false;queue_begin=std::chrono::steady_clock::now();memset(states,0,sizeof(states));style=kich_r4_capture::Style();states[D3DRS_ZENABLE]=states[D3DRS_ZWRITEENABLE]=1;
-    KichR4_DetailFrame().ClearFrame(frame);
+    KichR4_DetailFrame().ClearFrame(frame);active_material=NULL;
     states[D3DRS_CULLMODE]=D3DCULL_CCW;states[D3DRS_SRCBLEND]=D3DBLEND_SRCALPHA;states[D3DRS_DESTBLEND]=D3DBLEND_INVSRCALPHA;states[D3DRS_ALPHAFUNC]=D3DCMP_GREATER;
     states[D3DRS_COLORWRITEENABLE]=15;states[255]=D3DTADDRESS_WRAP;effect=0;source_element=UINT32_MAX;source_pass=0;active_shader.clear();model_texture.clear();model_secondary.clear();memset(textures,0,sizeof(textures));
     KichR4_CaptureBeginFrame(width,height,frame);kich_r4_capture::State* s=KichR4_CaptureState();if(s){s->native_models=true;s->frame.renderer_seen=true;s->frame.ui_seen=true;}

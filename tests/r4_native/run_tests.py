@@ -39,7 +39,8 @@ def main():
         subprocess.run([str(output)], check=True)
         # Check exact Win32 packing without depending on a 32-bit C runtime.
         x86 = work/"x86.c"
-        x86.write_text('#include "KichR4Renderer.h"\n')
+        layout = (HERE/"abi_c_test.c").read_text().split('int main(void)', 1)[0]
+        x86.write_text(layout.replace('../../xr_3da/KichR4RendererContract.h', 'KichR4Renderer.h'))
         subprocess.run([os.environ.get("CC", "gcc"), "-m32", "-ffreestanding", "-std=c11", "-Wall", "-Wextra", "-Werror",
                         "-I"+str(ROOT/"xr_3da"), "-c", str(x86), "-o", str(work/"x86.o")], check=True)
     ns={"m":"http://schemas.microsoft.com/developer/msbuild/2003"}

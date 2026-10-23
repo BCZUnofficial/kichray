@@ -77,7 +77,7 @@ void SkeletonIdentity(){const fixture::Bytes raw=capture_fixture::Model(1);auto 
     bones[0].m[12]=1;batch.NativeModel(reinterpret_cast<void*>(3),mesh,m,m,bones,2,3,3,1,style,KICH_R4_SKIN_SOFTWARE,"part_c",NULL,NULL,NULL,0,UINT32_MAX,UINT32_MAX,skeleton);
     Require(batch.native_models[2].pose_hash!=batch.native_models[0].pose_hash,"changed copied palette changes pose version without altering engine animation");RenderSnapshot_End("COMPLETE");
     batch.Begin(800,600,78);batch.NativeModel(reinterpret_cast<void*>(1),mesh,m,m,bones,2,3,3,1,style,KICH_R4_SKIN_SOFTWARE,"off",NULL,NULL,NULL,0,UINT32_MAX,UINT32_MAX,skeleton);
-    Require(!batch.native_models[0].identity_measured && !batch.native_models[0].pose_hash,"telemetry-off path does not hash pose matrices");
+    Require(batch.native_models[0].identity_measured && batch.native_models[0].skeleton_id==100 && batch.native_models[0].source_frame==78 && !batch.native_models[0].pose_hash_valid,"telemetry-off path retains cheap frame-local palette identity without hashing pose matrices");
     mesh=Decode(View(raw));batch.Begin(800,600,79);Require(RenderSnapshot_ProfileRequest(1),"minimal profile request");RenderSnapshot_Begin(info);
     batch.NativeModel(reinterpret_cast<void*>(1),mesh,m,m,bones,2,3,3,1,style,KICH_R4_SKIN_SOFTWARE,"profile",NULL,NULL,NULL,0,UINT32_MAX,UINT32_MAX,skeleton);
     Require(batch.native_models[0].identity_measured && !batch.native_models[0].pose_hash_valid && !mesh->snapshot_hashed,"minimal profile preserves cheap identity but does not scan pose or source mesh");RenderSnapshot_End("COMPLETE");
@@ -89,22 +89,49 @@ void LightSelectionTelemetry(){State state;KichR4LocalLight light={};light.type=
     RenderSnapshotInfo info={};strcpy(info.directory,"/tmp");strcpy(info.renderer,"R4");strcpy(info.api,"D3D11");Require(RenderSnapshot_Request(),"light exclusion telemetry request");RenderSnapshot_Begin(info);state.SnapshotLights(camera,selected);RenderSnapshot_End("COMPLETE");
     state.SelectLights(camera,after);Require(!memcmp(&selected,&after,sizeof(selected)),"light diagnostics do not reorder deduplicate or change selected descriptors");
     std::ifstream file(RenderSnapshot_LastPath());std::ostringstream text;text<<file.rdbuf();const std::string output=text.str();
-    Require(output.find("registered_observed=16")!=std::string::npos && output.find("valid_active=14")!=std::string::npos && output.find("candidate=12")!=std::string::npos && output.find("selected=8")!=std::string::npos,"complete observation active candidate and selected counts recorded before dictionary limits");
+    Require(output.find("registered_observed=16")!=std::string::npos && output.find("valid_active=14")!=std::string::npos && output.find("candidate=14")!=std::string::npos && output.find("admitted=12")!=std::string::npos && output.find("selected=8")!=std::string::npos,"complete observation active candidate admitted and selected counts recorded before dictionary limits");
     Require(output.find("selection_reason=INACTIVE")!=std::string::npos && output.find("selection_reason=INVALID_DESCRIPTOR")!=std::string::npos && output.find("selection_reason=OUTSIDE_DISTANCE_LIMIT")!=std::string::npos && output.find("selection_reason=NONPOSITIVE_COLOR")!=std::string::npos && output.find("selection_reason=BELOW_TOP_8_SCORE")!=std::string::npos,"every excluded source has its actual distinct selection reason");
     Require(output.find("controller=4294967295")==std::string::npos && output.find("controller_valid=0")!=std::string::npos,"unknown controller remains invalid absent value in registry dictionaries");
 }
 void LightIdentity(){KichR4_CaptureEnable(true);State* state=KichR4_CaptureState();const void* a=reinterpret_cast<void*>(1);const void* b=reinterpret_cast<void*>(2);
     KichR4LocalLight light={};light.range=10;light.type=1;light.color[0]=light.color[1]=light.color[2]=1;light.direction[2]=1;light.cone=1;
-    KichR4LightIdentity first={1,10,KICH_R4_LIGHT_ROLE_LEVEL,3,4,0},second={2,11,KICH_R4_LIGHT_ROLE_RUNTIME,UINT32_MAX,UINT32_MAX,0};
+    KichR4LightIdentity first={1,10,KICH_R4_LIGHT_ROLE_LEVEL,3,4,KICH_R4_LIGHT_STATIC},second={2,11,KICH_R4_LIGHT_ROLE_RUNTIME,UINT32_MAX,UINT32_MAX,0};
     KichR4_CaptureLightIdentity(a,first);KichR4_CaptureLightIdentity(b,second);KichR4_CaptureLight(a,light,true);KichR4_CaptureLight(b,light,true);
-    const float camera[]={0,0,0};KichR4LightingFrame frame={};KichR4_CaptureLighting(camera,frame);
+    const float camera[]={0,0,0};KichR4LightingFrame frame={};KichR4_CaptureLighting(camera,frame,true);
     Require(frame.count==2 && frame.sources[0].serial!=frame.sources[1].serial,"equal numeric lights retain distinct source identities");
+    KichR4_CaptureLighting(camera,frame,false);Require(frame.count==1 && frame.sources[0].serial==11,"capture API applies static policy without suppressing co-located runtime light");
     KichR4_CaptureLight(a,light,false);Require(state->light_observations.count(a) && !state->light_observations[a].active && !state->lights.count(a),"inactive source remains diagnostic but cannot illuminate");
     KichR4LocalLight invalid=light;invalid.range=0;KichR4_CaptureLight(a,invalid,true);Require(!state->light_observations[a].valid && !state->lights.count(a),"invalid descriptor retained only for exclusion reason");
-    KichR4_CaptureLight(a,light,true);KichR4_CaptureLighting(camera,frame);
+    KichR4_CaptureLight(a,light,true);KichR4_CaptureLighting(camera,frame,true);
     Require(frame.sources[0].serial==10,"source serial survives deactivate/reactivate");KichR4_CaptureLightForget(a);
-    Require(!state->light_sources.count(a) && !state->lights.count(a) && !state->light_observations.count(a),"destruction removes light source payload and diagnostics");KichR4_CaptureEnable(false);
+    Require(!state->light_sources.count(a) && !state->lights.count(a) && !state->light_observations.count(a),"destruction removes light source payload and diagnostics");
+    bool registered=true;for(uintptr_t i=3;i<4098;++i){KichR4LightIdentity source=second;source.process_handle=i;source.serial=10000+i;
+        if(!KichR4_CaptureLightIdentity(reinterpret_cast<const void*>(i),source))registered=false;}
+    Require(registered && state->light_sources.size()==4096,"native identity registration reports bounded capacity accurately");
+    Require(!KichR4_CaptureLightIdentity(reinterpret_cast<const void*>(5000),first) && state->light_identity_rejections==1,"identity overflow reports rejection before native light admission");
+    Require(KichR4_CaptureLightIdentity(b,second),"existing source identity updates remain accepted at capacity");KichR4_CaptureEnable(false);
+}
+void StaticLightPolicy(){State state;KichR4LocalLight light={};light.type=1;light.range=10;light.direction[2]=1;light.color[0]=1;
+    for(uintptr_t i=1;i<=17;++i){const void* id=reinterpret_cast<const void*>(i);const bool level=i<=9;
+        KichR4LightIdentity source={i,200+i,level?KICH_R4_LIGHT_ROLE_LEVEL:KICH_R4_LIGHT_ROLE_RUNTIME,level?static_cast<uint32_t>(i):UINT32_MAX,0,level?static_cast<uint32_t>(KICH_R4_LIGHT_STATIC):0u};
+        state.light_sources[id]=source;KichR4LocalLight value=light;if(level)value.color[0]=100;state.Light(id,value,true);}
+    state.unshadowed_lights.insert(reinterpret_cast<const void*>(10));
+    const float camera[]={0,0,0};KichR4LightingFrame off={},on={},again={};off.sun_color[0]=.75f;off.sun_direction[1]=-1;
+    state.SelectLights(camera,off,false);Require(off.count==8 && off.r1_lights_requested==0 && off.r1_lights_applied==0,"R1LIGHTS off selects full runtime budget after static rejection");
+    Require(off.sun_color[0]==.75f && off.sun_direction[1]==-1,"local policy leaves environment sun unchanged");
+    for(unsigned i=0;i<8;++i)Require(off.sources[i].serial==210+i && off.sources[i].role==KICH_R4_LIGHT_ROLE_RUNTIME,"bright co-located static records never displace runtime sources when disabled");
+    Require(off.shadow_mask==254,"shadow flags follow selected runtime slot identities after filtering");
+    state.SelectLights(camera,on,true);Require(on.count==8 && on.r1_lights_requested==1 && on.r1_lights_applied==1,"R1LIGHTS on restores static eligibility before existing priority");
+    for(unsigned i=0;i<8;++i)Require(on.sources[i].serial==201+i && on.sources[i].level_record==i+1,"equal level records remain distinct and preserve stable top8 order");
+    Require(state.light_observations.size()==17 && state.light_sources.size()==17 && state.lights.size()==17,"policy toggle preserves complete active registration rather than disabling sources");
+    again.sun_color[0]=.75f;again.sun_direction[1]=-1;state.SelectLights(camera,again,false);Require(!memcmp(&off,&again,sizeof(off)),"repeated policy toggle restores the same runtime set and slots");
+    RenderSnapshotInfo info={};strcpy(info.directory,"/tmp");strcpy(info.renderer,"R4");strcpy(info.api,"D3D11");Require(RenderSnapshot_Request(),"static policy telemetry request");RenderSnapshot_Begin(info);state.SnapshotLights(camera,off);RenderSnapshot_End("COMPLETE");
+    std::ifstream file(RenderSnapshot_LastPath());std::ostringstream text;text<<file.rdbuf();const std::string output=text.str();
+    Require(output.find("R2FLAG_R1LIGHTS_requested=0")!=std::string::npos && output.find("R2FLAG_R1LIGHTS_applied=0")!=std::string::npos,"telemetry records actual requested and applied toggle");
+    Require(output.find("candidate=17")!=std::string::npos && output.find("policy_rejected=9")!=std::string::npos && output.find("admitted=8")!=std::string::npos && output.find("slots_used=8")!=std::string::npos,"policy telemetry separates pre-policy candidates rejected sources admitted sources and slots");
+    Require(output.find("selected_LEVEL_RECORD=0")!=std::string::npos && output.find("selected_RUNTIME_REGISTERED=8")!=std::string::npos && output.find("selected_shadow_requested=7")!=std::string::npos,"selected origin and shadow request counts refer to runtime slots");
+    Require(output.find("selection_reason=STATIC_LIGHT_DISABLED_R2FLAG_R1LIGHTS")!=std::string::npos && output.find("selected_slot=7")!=std::string::npos && output.find("static_source=1")!=std::string::npos,"per-source policy exclusion static semantics and selected slot are explicit");
 }
 }
-int main(){try{NativeModes();WeightBounds();OwnershipAndRouting();SkeletonIdentity();LightIdentity();LightSelectionTelemetry();printf("G3b native model frontend: %u checks passed\n",checks);return 0;}
+int main(){try{NativeModes();WeightBounds();OwnershipAndRouting();SkeletonIdentity();LightIdentity();LightSelectionTelemetry();StaticLightPolicy();printf("G3c native model frontend: %u checks passed\n",checks);return 0;}
 catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

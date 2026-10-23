@@ -47,6 +47,7 @@ class CTextureDescrMngr
 	float GetMaterial(const shared_str& tex_name) const;
 	void GetTextureUsage(const shared_str& tex_name, BOOL& bDiffuse, BOOL& bBump) const;
 	BOOL GetDetailTexture(const shared_str& tex_name, LPCSTR& res, R_constant_setup*& CS) const;
+	float GetDetailScale(const shared_str& tex_name) const;
 #ifdef _EDITOR
 	u32 GetTextureType(const shared_str& tex_name) const;
 #endif

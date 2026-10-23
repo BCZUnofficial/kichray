@@ -6,6 +6,7 @@
 #include "KichR4Lighting.h"
 #include "KichR4Visibility.h"
 #include "KichR4MaterialRules.h"
+#include "KichR4MaterialServices.h"
 #include "RenderSnapshot.h"
 #include "KichR4TelemetryText.h"
 #include "RenderSnapshotMaterial.h"
@@ -36,7 +37,7 @@ class R4ROS:public IRender_ObjectSpecific {
             exposure=0;for(u32 i=0;i<5;++i)if(!g_pGameLevel->ObjectSpace.RayTest(p,directions[i],32,collide::rqtStatic,NULL,NULL))exposure+=.2f;}
         sky=clampr((e.ambient.x+e.ambient.y+e.ambient.z)/3.f+(e.hemi_color.x+e.hemi_color.y+e.hemi_color.z)*exposure/3.f,0.f,1.f);total=sky;
         Fvector sun;sun.invert(e.sun_dir);if(!trace || !g_pGameLevel->ObjectSpace.RayTest(p,sun,256,collide::rqtStatic,NULL,NULL))total+=(e.sun_color.x+e.sun_color.y+e.sun_color.z)/3.f;
-        KichR4LightingFrame lights={};KichR4_CaptureLighting(&p.x,lights);
+        KichR4LightingFrame lights={};KichR4_CaptureLighting(&p.x,lights,ps_r2_ls_flags.test(R2FLAG_R1LIGHTS)!=0);
         for(u32 i=0;i<lights.count;++i){const KichR4LocalLight& l=lights.lights[i];Fvector d;d.set(l.position[0]-p.x,l.position[1]-p.y,l.position[2]-p.z);const float distance=d.magnitude();if(distance>=l.range || distance<EPS_L)continue;d.div(distance);
             if(l.type==IRender_Light::SPOT && -(d.x*l.direction[0]+d.y*l.direction[1]+d.z*l.direction[2])<cosf(l.cone*.5f))continue;
             if(trace && g_pGameLevel->ObjectSpace.RayTest(p,d,distance,collide::rqtStatic,NULL,NULL))continue;const float fade=1-distance/l.range;total+=(l.color[0]+l.color[1]+l.color[2])*fade*fade/3.f;}
@@ -52,13 +53,13 @@ xr_vector<ref_light> static_lights;
 u32 native_level_light_records=0,native_level_directional_skips=0;
 class R4Light:public IRender_Light {
     KichR4LocalLight value;KichR4LightIdentity identity;bool active,shadow;
-    void Update(){KichR4_CaptureLightIdentity(this,identity);KichR4_CaptureLight(this,value,active);KichR4_CaptureLightShadow(this,shadow);}
+    void Update(){const bool registered=KichR4_CaptureLightIdentity(this,identity);KichR4_CaptureLight(this,value,active && registered);KichR4_CaptureLightShadow(this,shadow);}
 public:
     R4Light():active(false),shadow(false){static uint64_t next_serial=0;ZeroMemory(&identity,sizeof(identity));
         identity.process_handle=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(this));identity.serial=++next_serial;identity.role=KICH_R4_LIGHT_ROLE_RUNTIME;
         identity.level_record=identity.controller=UINT32_MAX;ZeroMemory(&value,sizeof(value));value.type=POINT;value.range=8;value.cone=PI_DIV_2;value.direction[2]=1;}
     ~R4Light(){KichR4_CaptureLightForget(this);}
-    void SetLevelIdentity(uint32_t record,uint32_t controller){identity.role=KICH_R4_LIGHT_ROLE_LEVEL;identity.level_record=record;identity.controller=controller;Update();}
+    void SetLevelIdentity(uint32_t record,uint32_t controller){identity.role=KICH_R4_LIGHT_ROLE_LEVEL;identity.flags|=KICH_R4_LIGHT_STATIC;identity.level_record=record;identity.controller=controller;Update();}
     void set_type(LT v){value.type=v;Update();}void set_active(bool v){active=v;Update();}bool get_active(){return active;}
     void set_shadow(bool v){shadow=v;Update();}void set_position(const Fvector& p){CopyMemory(value.position,&p.x,12);Update();}
     void set_rotation(const Fvector& d,const Fvector&){CopyMemory(value.direction,&d.x,12);Update();}
@@ -175,7 +176,11 @@ void CRender::Submit(IRender_Visual* v,CKinematics* parent){if(!v)return;CKinema
     const uint32_t indices[2]={selected.normal,selected.distortion};
     for(u32 route=0;route<2;++route){const uint32_t index=indices[route];if(index==UINT32_MAX)continue;
         ShaderElement* element=v->shader->E[index]._get();
-        for(u32 pass=0;pass<element->passes.size();++pass){
+        const kich_r4_material::Descriptor* material=KichR4_NativeFindMaterial(element,0);
+        // R1 multipass modulation is represented once by native material data.
+        // Special/unknown sources keep every original pass and binding.
+        const u32 pass_count=material && kich_r4_material::Geometry(*material)?1:element->passes.size();
+        for(u32 pass=0;pass<pass_count;++pass){
             RCache.set_xform_world(original);RCache.set_Element(element,pass);KichR4_NativeElementSource(index);
             if(RenderSnapshot_Detailed())RenderSnapshot_MaterialSelection(element,pass,index,available_elements,
                 route?(index==4?"SPECIAL_E4_FLAGGED_DISTORTION_ENABLED":index==0?"SPECIAL_E4_UNAVAILABLE_FLAGGED_E0_FALLBACK":"SPECIAL_E4_E0_UNAVAILABLE_FLAGGED_E1_FALLBACK"):index==1?"NORMAL_E0_UNAVAILABLE_OR_DISTORT_FALLBACK_E1":"NORMAL_E0_AVAILABLE");
@@ -196,13 +201,13 @@ void CRender::Calculate(){queue.clear();shadow_views.clear();if(!loaded || !g_pG
     // Camera and shadow subspaces are independent in the donor renderer. The
     // native path gathers their conservative union, then culls immutable model
     // commands against the actual pass matrix in the backend.
-    KichR4LightingFrame lighting={};KichR4_CaptureLighting(&Device.vCameraPosition.x,lighting);
+    KichR4LightingFrame lighting={};KichR4_CaptureLighting(&Device.vCameraPosition.x,lighting,ps_r2_ls_flags.test(R2FLAG_R1LIGHTS)!=0);
     KichR4_CaptureLightingDiagnostics(&Device.vCameraPosition.x,lighting);
     if(g_render_snapshot_active){RenderSnapshot_U64("LIGHT_POLICY","R2FLAG_R1LIGHTS_requested",ps_r2_ls_flags.test(R2FLAG_R1LIGHTS)?1:0);
-        RenderSnapshot_Text("LIGHT_POLICY","R2FLAG_R1LIGHTS_applied","NOT_USED_BY_NATIVE_R4");
+        RenderSnapshot_U64("LIGHT_POLICY","R2FLAG_R1LIGHTS_applied",lighting.r1_lights_applied);
         RenderSnapshot_U64("LIGHT_POLICY","level_file_records",native_level_light_records);RenderSnapshot_U64("LIGHT_POLICY","level_directional_records_skipped",native_level_directional_skips);
         RenderSnapshot_Text("LIGHT_POLICY","level_directional_skip_reason","NATIVE_LOADER_USES_ENVIRONMENT_SUN; EXISTING_POLICY");
-        RenderSnapshot_Text("LIGHT_POLICY","native_level_light_policy","REGISTER_ALL_NONDIRECTIONAL_LEVEL_RECORDS; DISTANCE_COLOR_SCORE_TOP_8; NO_DEDUP");}
+        RenderSnapshot_Text("LIGHT_POLICY","native_level_light_policy","REGISTER_ALL_NONDIRECTIONAL_LEVEL_RECORDS; BSTATIC_REQUIRES_R2FLAG_R1LIGHTS_BEFORE_DISTANCE_COLOR_SCORE_TOP_8; NO_DEDUP");}
     if(g_pGamePersistent){const CEnvDescriptor& e=g_pGamePersistent->Environment().CurrentEnv;
         CopyMemory(lighting.sun_direction,&e.sun_dir.x,12);CopyMemory(lighting.sun_color,&e.sun_color.x,12);}
     if(kich_r4_visibility::SunEnabled(lighting)){const kich_r4_scene::Matrix vp=kich_r4_lighting::SunShadow(&Device.vCameraPosition.x,lighting.sun_direction);

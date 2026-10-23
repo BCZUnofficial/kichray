@@ -4,6 +4,9 @@
 #include "../../xr_3da/RenderSnapshotMaterialData.h"
 #include "../../xr_3da/RenderSnapshotGeometryData.h"
 #include "../../xr_3da/KichR4CaptureData.h"
+#include "../../xr_3da/KichR4MaterialServices.h"
+inline void KichR4_NativeRegisterMaterial(const void*,uint32_t,const char*,const char*,const char*,const char*,const char*,uint32_t,uint64_t){}
+inline void KichR4_NativeForgetMaterial(const void*){}
 struct D3DVERTEXELEMENT9 {uint16_t Stream,Offset;uint8_t Type,Method,Usage,UsageIndex;};
 enum {D3DDECLTYPE_FLOAT3=2,D3DDECLTYPE_FLOAT4=3,D3DDECLTYPE_D3DCOLOR=4};
 extern uint32_t effect;

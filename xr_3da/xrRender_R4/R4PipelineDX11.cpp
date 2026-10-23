@@ -11,7 +11,7 @@ DXGI_FORMAT Format(uint32_t f){switch(f){case KICH_R4_FLOAT2:return DXGI_FORMAT_
 case KICH_R4_FLOAT3:return DXGI_FORMAT_R32G32B32_FLOAT;case KICH_R4_FLOAT4:return DXGI_FORMAT_R32G32B32A32_FLOAT;
 case KICH_R4_UNORM8X4:return DXGI_FORMAT_R8G8B8A8_UNORM;default:return DXGI_FORMAT_UNKNOWN;}}
 }
-PipelineDX11::PipelineDX11():layout_(NULL),vs_(NULL),ps_(NULL),shadow_sampler_(NULL),stride(0),constant_bytes(0),textured(false),stream(false),advanced(false),instanced(false),model(false)
+PipelineDX11::PipelineDX11():layout_(NULL),vs_(NULL),ps_(NULL),shadow_sampler_(NULL),stride(0),constant_bytes(0),model_capacity(0),textured(false),stream(false),advanced(false),instanced(false),model(false)
 {for(unsigned i=0;i<6;++i)raster_[i]=NULL;for(unsigned i=0;i<3;++i)depth_[i]=NULL;
  for(unsigned i=0;i<2;++i){sampler_[i]=NULL;}for(unsigned i=0;i<100;++i){blends_[i]=NULL;}}
 PipelineDX11::~PipelineDX11(){
@@ -25,7 +25,7 @@ PipelineDX11::~PipelineDX11(){
 HRESULT PipelineDX11::Create(ID3D11Device* hw,const KichR4PipelineDesc& d,
     ID3D11VertexShader* vs,ID3D11PixelShader* ps,ID3DBlob* code,bool with_texture,bool with_stream,bool with_advanced,bool with_instances,bool with_model)
 {
-    D3D11_INPUT_ELEMENT_DESC elements[8]={};
+    D3D11_INPUT_ELEMENT_DESC elements[16]={};
     for(uint32_t i=0;i<d.element_count;++i){const KichR4VertexElement& e=d.elements[i];
         elements[i].SemanticName=Semantic(e.semantic);elements[i].SemanticIndex=e.semantic_index;
         elements[i].Format=Format(e.format);elements[i].AlignedByteOffset=e.byte_offset;
@@ -38,12 +38,17 @@ HRESULT PipelineDX11::Create(ID3D11Device* hw,const KichR4PipelineDesc& d,
         for(unsigned i=0;i<4;++i)elements[i+2]={"TEXCOORD",i+1,DXGI_FORMAT_R32G32B32A32_FLOAT,1,i*16,D3D11_INPUT_PER_INSTANCE_DATA,1};
     }
     if(with_model){
-        element_count=5;
+        element_count=10;
         elements[0]={"POSITION",0,DXGI_FORMAT_R32G32B32_FLOAT,0,0,D3D11_INPUT_PER_VERTEX_DATA,0};
         elements[1]={"TEXCOORD",0,DXGI_FORMAT_R32G32_FLOAT,0,12,D3D11_INPUT_PER_VERTEX_DATA,0};
         elements[2]={"BLENDWEIGHT",0,DXGI_FORMAT_R32_FLOAT,0,20,D3D11_INPUT_PER_VERTEX_DATA,0};
         elements[3]={"BLENDINDICES",0,DXGI_FORMAT_R16G16_UINT,0,24,D3D11_INPUT_PER_VERTEX_DATA,0};
         elements[4]={"NORMAL",0,DXGI_FORMAT_R32_UINT,0,28,D3D11_INPUT_PER_VERTEX_DATA,0};
+        elements[5]={"TANGENT",0,DXGI_FORMAT_R32_UINT,0,32,D3D11_INPUT_PER_VERTEX_DATA,0};
+        elements[6]={"BINORMAL",0,DXGI_FORMAT_R32_UINT,0,36,D3D11_INPUT_PER_VERTEX_DATA,0};
+        elements[7]={"TEXCOORD",1,DXGI_FORMAT_R32G32B32A32_FLOAT,0,40,D3D11_INPUT_PER_VERTEX_DATA,0};
+        elements[8]={"COLOR",0,DXGI_FORMAT_R8G8B8A8_UNORM,0,56,D3D11_INPUT_PER_VERTEX_DATA,0};
+        elements[9]={"TEXCOORD",2,DXGI_FORMAT_R32_UINT,0,60,D3D11_INPUT_PER_VERTEX_DATA,0};
     }
     HRESULT hr=hw->CreateInputLayout(elements,element_count,code->GetBufferPointer(),code->GetBufferSize(),&layout_);
     if(FAILED(hr))return hr;

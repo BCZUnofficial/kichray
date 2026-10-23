@@ -14,6 +14,7 @@
 #include "KichR4BuildIdentity.h"
 #include "RenderSnapshot.h"
 #include "KichR4Telemetry.h"
+#include "KichR4MaterialServices.h"
 bool KichR4_NativeTerrain(const char* shader,char (*layers)[128]);
 bool KichR4_NativeMaterialState(const char*,const char*,kich_r4_capture::Style&);
 bool KichR4_NativeNeedScreenshot();
@@ -206,9 +207,17 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
         LARGE_INTEGER start,end,submitted,frequency;QueryPerformanceCounter(&start);const uint32_t shadows_before=c.deferred.shadow_passes;QueryPerformanceFrequency(&frequency);
         if(!c.loaded && !c.name.empty() && input.allowed){if(c.level.Start(c.frame,c.name.c_str())!=0)return false;c.loaded=true;
             for(size_t i=0;i<c.level.scene.materials.size();++i){kich_r4_level::Material& m=c.level.scene.materials[i];char layers[4][128]={};if(KichR4_NativeTerrain(m.shader.c_str(),layers)){m.kind=1;for(unsigned j=0;j<4;++j)m.layers[j]=layers[j];}
-                if(m.shader.find("water")!=std::string::npos)m.kind=2;
-                if(!m.shader.empty()){kich_r4_capture::Style style;if(KichR4_NativeMaterialState(m.shader.c_str(),m.texture_list.c_str(),style)){
-                    m.blend=style.blend;m.source=style.src;m.destination=style.dst;m.alpha_func=style.alpha_func;m.alpha_ref=style.alpha_ref;if(style.blend && m.kind!=2)m.kind=3;}}}
+                if(!m.shader.empty() && KichR4_NativeResolveMaterial(m.shader.c_str(),m.texture_list.c_str(),m.descriptor)){
+                    kich_r4_capture::Style style;
+                    if(m.descriptor.semantic==kich_r4_material::UNKNOWN)KichR4_NativeMaterialState(m.shader.c_str(),m.texture_list.c_str(),style);
+                    else kich_r4_material::Apply(m.descriptor,style);
+                    m.cutout=m.descriptor.semantic==kich_r4_material::CUTOUT || (m.descriptor.semantic==kich_r4_material::UNKNOWN && style.alpha_func!=8);m.blend=style.blend;m.source=style.src;m.destination=style.dst;m.alpha_func=style.alpha_func;m.alpha_ref=style.alpha_ref;
+                    if(m.descriptor.special==kich_r4_material::SPECIAL_WATER)m.kind=2;
+                    else if(m.descriptor.special==kich_r4_material::SPECIAL_TERRAIN)m.kind=1;
+                    else m.kind=m.descriptor.semantic==kich_r4_material::UNKNOWN?(style.blend?3u:m.kind):kich_r4_material::Geometry(m.descriptor)?0u:3u;
+                    const std::string* maps[]={&m.descriptor.base,&m.descriptor.bump,&m.descriptor.bump_aux,&m.descriptor.lightmap,&m.descriptor.hemi,&m.descriptor.detail};
+                    for(unsigned j=0;j<6;++j)if(!maps[j]->empty())c.level.Texture(c.frame,*maps[j]);
+                }}
         }
         const kich_r4_capture::Batch* batch=KichR4_CapturedFrame();if(!batch || !batch->Ready()){Write("[R4 native B5] rejected CPU frame: %s",batch?batch->error.c_str():"queue unavailable");return false;}
         if(input.debug_down && !native.debug_key){native.debug=(native.debug+1)%6;}native.debug_key=input.debug_down;
