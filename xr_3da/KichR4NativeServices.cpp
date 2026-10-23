@@ -5,6 +5,7 @@
 #include "KichR4CaptureInput.h"
 #include "KichR4MaterialServices.h"
 #include "blenders/Blender.h"
+#include "blenders/Blender_CLSID.h"
 #include "xrRender/Blender_BmmD.h"
 #include "xrRender/Blender_tree.h"
 #include "xrRender/Blender_Model_EbB.h"
