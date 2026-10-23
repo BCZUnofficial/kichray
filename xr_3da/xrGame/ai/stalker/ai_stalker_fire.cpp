@@ -900,6 +900,11 @@ void CAI_Stalker::on_weapon_shot_start(CWeapon* weapon)
 {
 	weapon_shot_effector().SetRndSeed(m_weapon_shot_random_seed);
 	weapon_shot_effector().Shot(weapon->camDispersion + weapon->camDispersionInc * float(weapon->ShotsFired()));
+	// A dead stalker may still fire with a clutched hammer. Its squad memory
+	// is already detached, so only the legacy recoil effect is valid here.
+	if (!g_Alive())
+		return;
+
 	const CEntityAlive* enemy = memory().enemy().selected();
 	if (enemy && enemy->ID() == m_combat_fire_enemy_id && !memory().visual().visible_right_now(enemy))
 	{
