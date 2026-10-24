@@ -570,6 +570,9 @@
     <ClInclude Include="KichR4DeferredShaders.h" />
     <ClInclude Include="KichR4Lighting.h" />
     <ClInclude Include="KichR4LightTransitions.h" />
+    <ClInclude Include="KichR4LightAdmission.h" />
+    <ClInclude Include="KichR4FramePhases.h" />
+    <ClInclude Include="KichR4CandidateScratch.h" />
     <ClInclude Include="KichR4RosExposure.h" />
     <ClInclude Include="KichR4ShadowPoolPolicy.h" />
     <ClInclude Include="KichR4LightingMath.h" />

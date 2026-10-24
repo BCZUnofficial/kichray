@@ -55,19 +55,21 @@ void KichR4_GamePrepareEngineFrame()
 }
 
 void KichR4_NativePostprocess(float*);
-void KichR4_NativePresentEngineFrame(bool loading)
+void KichR4_NativePresentEngineFrame(bool loading,bool precaching)
 {
     KichR4GameFrame input={};input.window=Device.m_hWnd;input.width=Device.dwWidth;input.height=Device.dwHeight;input.engine_frame=Device.dwFrame;input.time=Device.fTimeGlobal;KichR4_GameTreeFrame(input);
     CopyMemory(input.view_projection,Device.mFullTransform.m,64);CopyMemory(input.position,&Device.vCameraPosition.x,12);input.active=Device.b_is_Active!=FALSE;
     input.prepare_ms=static_cast<float>(KichR4_NativeQueueTime());input.time=Device.fTimeGlobal;KichR4_NativePostprocess(input.postprocess);input.allowed=!loading && g_pGameLevel && g_pGameLevel->bReady && !(g_pGamePersistent && g_pGamePersistent->OnRenderPPUI_query());input.debug_down=(GetAsyncKeyState(VK_F9)&0x8000)!=0;
-    const int path=loading?0:input.allowed?2:1;static int previous_path=-1;
+    input.warmup=loading && precaching && g_pGameLevel && g_pGameLevel->bReady && g_pGameLevel->CurrentViewEntity() &&
+        !(g_pGamePersistent && g_pGamePersistent->OnRenderPPUI_query());
+    const int path=input.warmup?3:loading?0:input.allowed?2:1;static int previous_path=-1;
     if(path!=previous_path){previous_path=path;Msg("[R4 native B5] output path=%s level_ready=%u precache=%u loading_events=%u",
-        loading?"loading/UI":input.allowed?"game":"menu/UI",g_pGameLevel && g_pGameLevel->bReady?1u:0u,Device.dwPrecacheFrame,static_cast<u32>(g_loading_events.size()));}
+        input.warmup?"precache/world+loading_UI":loading?"loading/UI":input.allowed?"game":"menu/UI",g_pGameLevel && g_pGameLevel->bReady?1u:0u,Device.dwPrecacheFrame,static_cast<u32>(g_loading_events.size()));}
     input.lighting.valid=1;input.lighting.sun_direction[1]=-1;input.lighting.ambient[0]=input.lighting.ambient[1]=input.lighting.ambient[2]=.2f;
     if(g_pGamePersistent){const CEnvDescriptorMixer& env=g_pGamePersistent->Environment().CurrentEnv;
         CopyMemory(input.lighting.sun_direction,&env.sun_dir.x,12);CopyMemory(input.lighting.sun_color,&env.sun_color.x,12);CopyMemory(input.lighting.ambient,&env.ambient.x,12);
         CopyMemory(input.lighting.hemi,&env.hemi_color.x,12);CopyMemory(input.lighting.fog,&env.fog_color.x,12);}
-    if(!loading && input.allowed){
+    if(input.allowed || input.warmup){
         if(!KichR4_CopyFrozenLighting(input.engine_frame,input.position,input.view_projection,input.lighting))
             KichR4_FreezeLighting(input.engine_frame,Device.dwTimeGlobal,input.position,input.lighting,ps_r2_ls_flags.test(R2FLAG_R1LIGHTS)!=0,input.view_projection);
     }else KichR4_CaptureLighting(input.position,input.lighting,ps_r2_ls_flags.test(R2FLAG_R1LIGHTS)!=0,input.view_projection);

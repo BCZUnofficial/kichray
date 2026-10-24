@@ -281,7 +281,19 @@ IDirect3DIndexBuffer9* CRender::getIB(int id){if(vertices.empty())LoadBuffers();
 FSlideWindowItem* CRender::getSWI(int id){if(vertices.empty())LoadBuffers();R_ASSERT(id>=0 && id<(int)windows.size());return &windows[id];}
 void CRender::set_Transform(Fmatrix* v){transform=v?*v:Fidentity;RCache.set_xform_world(transform);}
 void CRender::set_HUD(BOOL v){val_bHUD=v;}
-void CRender::add_Visual(IRender_Visual* v){if(!v || invisible)return;Fvector center;transform.transform_tiny(center,v->vis.sphere.P);Queued q={v,transform,val_bHUD!=FALSE,center.distance_to_sqr(Device.vCameraPosition),false,1,1};
+static void NativePrepareVisualPose(IRender_Visual* visual){
+    if(!visual)return;
+    CKinematics* skeleton=visual->dcast_PKinematics();
+    // Like R2 add_leafs_Dynamic, finish attachment callbacks before the caller
+    // submits held items. Their world matrices are copied into the queue below.
+    // Submit retains its guard and wallmark work; same-time bones are cached.
+    if(skeleton)skeleton->CalculateBones(TRUE);
+    if(skeleton || visual->Type==MT_HIERRARHY || visual->Type==MT_LOD){
+        FHierrarhyVisual* hierarchy=static_cast<FHierrarhyVisual*>(visual);
+        for(u32 i=0;i<hierarchy->children.size();++i)NativePrepareVisualPose(hierarchy->children[i]);
+    }
+}
+void CRender::add_Visual(IRender_Visual* v){if(!v || invisible)return;NativePrepareVisualPose(v);Fvector center;transform.transform_tiny(center,v->vis.sphere.P);Queued q={v,transform,val_bHUD!=FALSE,center.distance_to_sqr(Device.vCameraPosition),false,1,1};
     const float radius=v->vis.sphere.R*_sqrt(transform.i.square_magnitude()+transform.j.square_magnitude()+transform.k.square_magnitude());
     // Off-camera shadow-only commands do not consume object irradiance. They
     // must not trigger ray work for an exposure their depth pass never uses.
@@ -374,20 +386,22 @@ void CRender::Calculate(){queue.clear();shadow_views.clear();native_lod_shadow_v
         const NativeLodView near_view={kich_r4_lighting::SunShadow(&Device.vCameraPosition.x,lighting.sun_direction,128.f),2048};native_lod_shadow_views.push_back(near_view);
         const NativeLodView far_view={vp,2048};native_lod_shadow_views.push_back(far_view);
         Fmatrix matrix;CopyMemory(&matrix,vp.m,sizeof(matrix));CFrustum view;view.CreateFromMatrix(matrix,FRUSTUM_P_ALL);shadow_views.push_back(view);}
-    std::vector<uint8_t> selected;kich_r4_visibility::SelectShadowLights(lighting,true,selected);
-    for(u32 i=0;i<lighting.count;++i)if(selected[i]){const u32 faces=lighting.lights[i].type==2?1:6;
+    kich_r4_visibility::SelectShadowLights(lighting,true,selected_shadow_lights);
+    for(u32 i=0;i<lighting.count;++i)if(selected_shadow_lights[i]){const u32 faces=lighting.lights[i].type==2?1:6;
         for(u32 face=0;face<faces;++face){const kich_r4_scene::Matrix vp=kich_r4_lighting::LocalShadow(lighting.lights[i],face,lighting.local_shadow_size);
             const NativeLodView lod_view={vp,lighting.local_shadow_size};native_lod_shadow_views.push_back(lod_view);
             Fmatrix matrix;CopyMemory(&matrix,vp.m,sizeof(matrix));CFrustum view;view.CreateFromMatrix(matrix,FRUSTUM_P_ALL);shadow_views.push_back(view);}}
     if(g_pGameLevel->pHUD){g_pGameLevel->pHUD->Render_First();g_pGameLevel->pHUD->Render_Last();}
-    if(psDeviceFlags.test(rsDrawDynamic)){std::set<IRenderable*> seen;u32 camera_sources=0,shadow_sources=0;
-        for(u32 pass=0;pass<=shadow_views.size();++pass){xr_vector<ISpatial*> objects;
+    if(psDeviceFlags.test(rsDrawDynamic)){candidate_seen.Begin();u32 camera_sources=0,shadow_sources=0;
+        xr_vector<ISpatial*>& objects=candidate_objects;
+        for(u32 pass=0;pass<=shadow_views.size();++pass){objects.clear_not_free();
             g_SpatialSpace->q_frustum(objects,ISpatial_DB::O_ORDERED,STYPE_RENDERABLE,pass?shadow_views[pass-1]:ViewBase);
             for(u32 i=0;i<objects.size();++i){IRenderable* r=objects[i]->dcast_Renderable();if(!r)continue;
                 if(pass==1 && sun_enabled && !sun_casters.VisibleSphere(&objects[i]->spatial.sphere.P.x,objects[i]->spatial.sphere.R))continue;
-                if(!seen.insert(r).second)continue;
+                if(!candidate_seen.Insert(r))continue;
                 if(pass)++shadow_sources;else ++camera_sources;objects[i]->spatial_updatesector();set_Object(r);r->renderable_Render();}}
-        set_Object(NULL);
+        set_Object(NULL);candidate_seen.Finish();objects.clear_not_free();
+        if(objects.capacity()>65536)xr_vector<ISpatial*>().swap(objects);
         if(g_render_snapshot_active){RenderSnapshot_Text("MODEL_CANDIDATES","scope","SPATIAL_CAMERA_UNION_SELECTED_SHADOW_FRUSTUMS; UNIQUE_RENDERABLE_SOURCE");
             RenderSnapshot_U64("MODEL_CANDIDATES","camera_sources",camera_sources);RenderSnapshot_U64("MODEL_CANDIDATES","additional_shadow_sources",shadow_sources);
             RenderSnapshot_U64("MODEL_CANDIDATES","shadow_frustums",shadow_views.size());}}

@@ -19,7 +19,7 @@ with tempfile.TemporaryDirectory(prefix="kich-g3b-visibility-") as directory:
     sector_start = source.index("uint32_t KichR4_NativeSector(")
     sector_end = source.index("\nIRender_Sector* CRender::detectSector(", sector_start)
     (work / "native_sector_under_test.cpp").write_text(source[sector_start:sector_end])
-    for name in ("visibility", "native_candidates", "native_lights", "native_sector"):
+    for name in ("visibility", "native_candidates", "native_lights", "native_sector", "candidate_scratch"):
         output = work / name
         subprocess.run([os.environ.get("CXX", "g++"), "-std=c++11", "-O2", "-Wall", "-Wextra", "-Werror",
                         "-I" + str(work), str(HERE / (name + "_tests.cpp")),

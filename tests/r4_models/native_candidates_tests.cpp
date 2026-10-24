@@ -1,4 +1,5 @@
 #include "../../xr_3da/KichR4Visibility.h"
+#include "../../xr_3da/KichR4CandidateScratch.h"
 #include "../../xr_3da/RenderSnapshot.h"
 #include <vector>
 #include <set>
@@ -6,7 +7,7 @@
 #include <stdexcept>
 #include <stdio.h>
 typedef uint32_t u32;
-template<class T>using xr_vector=std::vector<T>;
+template<class T>struct xr_vector:std::vector<T>{void clear_not_free(){this->erase(this->begin(),this->end());}};
 #define CopyMemory std::memcpy
 #define FRUSTUM_P_ALL 63
 #define STYPE_RENDERABLE 1
@@ -32,18 +33,20 @@ struct ISpatial_DB {
 ISpatial_DB* g_SpatialSpace=&spatial;
 struct HUD {unsigned calls;HUD():calls(0){}void Render_First(){++calls;}void Render_Last(){++calls;}} hud;
 struct Level {HUD* pHUD;} level={&hud};Level* g_pGameLevel=&level;
-struct CEnvDescriptor {Fvector sun_dir,sun_color;};
-struct Weather {CEnvDescriptor CurrentEnv;} weather={{{0,-1,0},{0,0,0}}};
+struct CEnvDescriptor {Fvector sun_dir,sun_color,ambient,hemi_color,fog_color;};
+struct Weather {CEnvDescriptor CurrentEnv;} weather={{{0,-1,0},{0,0,0},{0,0,0},{0,0,0},{0,0,0}}};
 struct Persistent {Weather& Environment(){return weather;}} persistent;Persistent* g_pGamePersistent=&persistent;
-struct DeviceState {Fmatrix mFullTransform;Fvector vCameraPosition;} Device;
+struct DeviceState {Fmatrix mFullTransform;Fvector vCameraPosition;u32 dwFrame,dwTimeGlobal;} Device;
 struct Flags {bool enabled;bool test(unsigned){return enabled;}} psDeviceFlags={true};
 Flags ps_r2_ls_flags={false};enum{R2FLAG_R1LIGHTS=1u<<10};u32 native_level_light_records=0,native_level_directional_skips=0;
 KichR4LightingFrame lights={};bool light_visibility_requested=false;
 void KichR4_CaptureLightingDiagnostics(const float*,const KichR4LightingFrame&){}
-void KichR4_CaptureLighting(const float*,KichR4LightingFrame& out,bool r1_lights_enabled,const float* camera_vp){light_visibility_requested=camera_vp && !memcmp(camera_vp,Device.mFullTransform.m,64);out=lights;out.r1_lights_requested=out.r1_lights_applied=r1_lights_enabled?1u:0u;}
+void KichR4_FreezeLighting(uint32_t,uint32_t,const float*,KichR4LightingFrame& out,bool r1_lights_enabled,const float* camera_vp){light_visibility_requested=camera_vp && !memcmp(camera_vp,Device.mFullTransform.m,64);out=lights;out.r1_lights_requested=out.r1_lights_applied=r1_lights_enabled?1u:0u;}
 class CRender {
 public:
     enum{PHASE_NORMAL=0};unsigned phase;bool loaded;std::vector<int> queue;std::vector<CFrustum> shadow_views;CFrustum ViewBase,*View;
+    xr_vector<ISpatial*> candidate_objects;kich_r4_candidates::UniquePointers<IRenderable> candidate_seen;
+    std::vector<uint8_t> selected_shadow_lights;
     IRenderable* object;CRender():phase(0),loaded(true),View(NULL),object(NULL){}
     struct FakeHOM {void Prepare(CFrustum&){} } HOM;
     void set_Object(IRenderable* p){object=p;}void Calculate();
@@ -66,8 +69,11 @@ int main(){try{
     Require(inside.rendered==1 && shadow.rendered==1 && outside.rendered==0,"production Calculate retains off-camera caster and culls outside all volumes");
     Require(camera.updates==1 && caster.updates+duplicate.updates==1,"renderable identity deduplicates across views and spatial aliases");
     Require(renderer.object==NULL && renderer.View==&renderer.ViewBase && hud.calls==2,"camera View and HUD path preserved");
+    const size_t object_capacity=renderer.candidate_objects.capacity(),seen_capacity=renderer.candidate_seen.Capacity();
     lights.shadow_mask=0;renderer.Calculate();
     Require(inside.rendered==2 && shadow.rendered==1 && renderer.shadow_views.empty(),"disabled shadow source does not retain off-camera model");
+    Require(renderer.candidate_objects.capacity()==object_capacity && renderer.candidate_seen.Capacity()==seen_capacity,"next frame reuses spatial and deduplication capacity");
+    Require(renderer.candidate_objects.empty() && renderer.candidate_seen.Size()==1,"previous frame identities/results are not reused as visibility");
     psDeviceFlags.enabled=false;renderer.Calculate();Require(inside.rendered==2 && hud.calls==6,"dynamic toggle leaves HUD calls active");
     renderer.loaded=false;renderer.queue.push_back(1);renderer.Calculate();Require(renderer.queue.empty() && renderer.shadow_views.empty(),"inactive level clears old candidate volumes");
     printf("G3b production native candidate collection: %u checks passed\n",checks);return 0;

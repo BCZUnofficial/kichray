@@ -16,6 +16,7 @@
 #include "KichR4Telemetry.h"
 #include "KichR4MaterialServices.h"
 #include "KichR4TexturePreflight.h"
+#include "KichR4FramePhases.h"
 bool KichR4_NativeTerrain(const char* shader,char (*layers)[128]);
 bool KichR4_NativeMaterialState(const char*,const char*,kich_r4_capture::Style&);
 bool KichR4_NativeNeedScreenshot();
@@ -34,6 +35,7 @@ struct Context {
     bool loaded;std::string name;
     kich_r4_metrics::Window metrics;uint32_t last_created=0,last_released=0;unsigned gpu_quarantine=4;
     uint64_t created_window=0,meshes_window=0;double submit_peak_ms=0;
+    uint32_t warmup_frames=0;
     Context():loaded(false){memset(&frame,0,sizeof(frame));}
 };
 struct NativeState {
@@ -98,6 +100,8 @@ void BeginTelemetry(const KichR4GameFrame& input,bool menu){
         RenderSnapshot_Text("FRAME_PASSPORT","r4_dll_revision",native.api.build.revision);RenderSnapshot_Text("FRAME_PASSPORT","r4_dll_source_sha256",native.api.build.source_id);
         RenderSnapshot_Text("FRAME_PASSPORT","r4_dll_shader_sha256",native.api.build.shader_id);RenderSnapshot_Text("FRAME_PASSPORT","r4_dll_compiled",native.api.build.compiled);
         RenderSnapshot_U64("FRAME_PASSPORT","native_present_attempt_ordinal",capture.present_frame);RenderSnapshot_U64("FRAME_PASSPORT","native_device_generation",capture.device_generation);RenderSnapshot_U64("FRAME_PASSPORT","native_level_generation",capture.level_generation);
+        RenderSnapshot_U64("FRAME_PASSPORT","native_precache_warmup",input.warmup?1:0);
+        if(input.warmup)RenderSnapshot_Text("GPU_TIMING","warmup_scope","SCENE_PLUS_LOADING_UI; EXCLUDED_FROM_GAMEPLAY_PERFORMANCE");
     }
     if(native.telemetry.set_capture){const int32_t hr=native.telemetry.set_capture(native.context->frame.device,&capture,RenderSnapshot_Detailed()?TelemetryRecord:NULL);
         if(hr<0 && capture.capture_id){RenderSnapshot_GPUTiming(capture.capture_id,capture.engine_frame,capture.render_frame,"UNSUPPORTED",NULL,0);ForgetTiming(capture.capture_id);}}
@@ -125,7 +129,7 @@ bool ReadAPIs(){
     return true;
 }
 
-void StopContext(){if(!native.context)return;CancelTimings("CANCELLED");Context& c=*native.context;if(c.frame.device){KichR4GeometryReport report={};const int32_t hr=c.level.bridge.Stop(c.frame,&report);
+void StopContext(){kich_r4_phases::Global().Reset();if(!native.context)return;CancelTimings("CANCELLED");Context& c=*native.context;if(c.frame.device){KichR4GeometryReport report={};const int32_t hr=c.level.bridge.Stop(c.frame,&report);
     Write("[R4 native B5] cleanup: HRESULT=0x%08X resources=%u/%u live=%u payload=%llu views=%u/%u",static_cast<uint32_t>(hr),report.resources.created,report.resources.released,report.resources.live_resources,static_cast<unsigned long long>(report.resources.payload_bytes),report.frame.views_created,report.frame.views_released);}
     native.context.reset();
 }
@@ -167,7 +171,7 @@ bool CreateContext(){native.context.reset(new Context());Context& c=*native.cont
     ++native.device_generation;++native.level_generation;
     return CreatePlaceholders(c);
 }
-bool ResetContext(){CancelTimings("DEVICE_RESET");Context& previous=*native.context;
+bool ResetContext(){kich_r4_phases::Global().Reset();CancelTimings("DEVICE_RESET");Context& previous=*native.context;
     std::unique_ptr<Context> next(new Context());next->frame=previous.frame;next->name=native.desired;ConfigureContext(*next);
     KichR4ResourceStats report={};const int32_t hr=native.api.tools.reset_resources(previous.frame.device,&report,sizeof(report));
     if(hr!=0){previous.frame.Record("native reset scene resources",hr<0?hr:KICH_R4_E_STATE);
@@ -205,16 +209,22 @@ bool KichR4_NativeReadPixels(std::vector<unsigned char>& out,uint32_t& w,uint32_
     out.resize(size_t(w)*h*4);
     return native.api.tools.read_pixels(c.frame.device,out.data(),static_cast<uint32_t>(out.size()),&w,&h)==0;
 }
-bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)return false;PollTimings();Context* context=native.context.get();
+bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)return false;
+    const int64_t prelude_started=kich_r4_phases::Counter();
+    struct PhaseTail {uint32_t frame;int64_t started;explicit PhaseTail(uint32_t f):frame(f),started(0){}
+        ~PhaseTail(){if(started)kich_r4_phases::Global().Span(frame,kich_r4_phases::PostPresent,kich_r4_phases::Counter()-started);}} phase_tail(input.engine_frame);
+    PollTimings();Context* context=native.context.get();
     struct SnapshotFailureGuard {bool complete;SnapshotFailureGuard():complete(false){}~SnapshotFailureGuard(){if(!complete && g_render_snapshot_active){RenderSnapshot_PresentID(native.successful_presents,false);RenderSnapshot_End("NATIVE_FRAME_FAILED");}}} snapshot_guard;
     if(g_render_snapshot_active){RenderSnapshot_Text("MEMORY","registered_gpu_payload_bytes","NOT_AVAILABLE");RenderSnapshot_Text("MEMORY","resource_stats_status","NOT_QUERIED");
         RenderSnapshot_Text("MEMORY","registered_gpu_payload_scope","DEVICE_RESOURCE_REGISTRY_PAYLOAD; NOT_VRAM_RESIDENCY");RenderSnapshot_Text("MEMORY","cpu_capture_bytes","NOT_AVAILABLE");
         RenderSnapshot_Text("MODEL_RENDERER","frame_status","NOT_SUBMITTED");
         context->deferred.details.SnapshotSummary(input.engine_frame,false);}
     try{if(context->name!=native.desired){if(!ResetContext())return false;context=native.context.get();}
-        Context& c=*context;c.level.texture_registry.Begin();BeginTelemetry(input,c.name.empty() || !input.allowed);TelemetryGuard telemetry_guard(c.frame.device);
+        Context& c=*context;c.level.texture_registry.Begin();BeginTelemetry(input,c.name.empty() || !(input.allowed || input.warmup));TelemetryGuard telemetry_guard(c.frame.device);
         LARGE_INTEGER start,end,submitted,frequency;QueryPerformanceCounter(&start);const uint32_t shadows_before=c.deferred.shadow_passes;QueryPerformanceFrequency(&frequency);
-        if(!c.loaded && !c.name.empty() && input.allowed){if(c.level.Start(c.frame,c.name.c_str())!=0)return false;c.loaded=true;
+        kich_r4_phases::Global().Span(input.engine_frame,kich_r4_phases::NativePrelude,start.QuadPart-prelude_started);
+        const bool scene_requested=input.allowed || input.warmup;
+        if(!c.loaded && !c.name.empty() && scene_requested){if(c.level.Start(c.frame,c.name.c_str())!=0)return false;c.loaded=true;
             for(size_t i=0;i<c.level.scene.materials.size();++i){kich_r4_level::Material& m=c.level.scene.materials[i];char layers[4][128]={};if(KichR4_NativeTerrain(m.shader.c_str(),layers)){m.kind=1;for(unsigned j=0;j<4;++j)m.layers[j]=layers[j];}
                 if(!m.shader.empty() && KichR4_NativeResolveMaterial(m.shader.c_str(),m.texture_list.c_str(),m.descriptor)){
                     kich_r4_capture::Style style;
@@ -231,10 +241,16 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
         }
         const kich_r4_capture::Batch* batch=KichR4_CapturedFrame();if(!batch || !batch->Ready()){Write("[R4 native B5] rejected CPU frame: %s",batch?batch->error.c_str():"queue unavailable");return false;}
         const kich_r4_metrics::Clock::time_point plan_started=kich_r4_metrics::Clock::now();
-        if(c.loaded && input.allowed)c.deferred.BeginFramePlan(c.level,input);
+        if(c.loaded && scene_requested)c.deferred.BeginFramePlan(c.level,input);
         const double plan_ms=kich_r4_metrics::Elapsed(plan_started);
         const kich_r4_metrics::Clock::time_point preflight_started=kich_r4_metrics::Clock::now();
-        if(kich_r4_texture::Preflight(c.frame,c.level,*batch,input,c.deferred.details,c.loaded && input.allowed,c.loaded && input.allowed?&c.deferred.visibility_plan:NULL)<0)return false;
+        const int32_t preflight=kich_r4_texture::Preflight(c.frame,c.level,*batch,input,c.deferred.details,c.loaded && scene_requested,c.loaded && scene_requested?&c.deferred.visibility_plan:NULL,input.warmup);
+        if(preflight==KICH_R4_FRAME_SUSPENDED){
+            c.metrics.Gap();c.gpu_quarantine=4;
+            kich_r4_phases::Global().MarkEligible(input.engine_frame,false);
+            if(g_render_snapshot_active){RenderSnapshot_GPUTiming(RenderSnapshot_CaptureID(),input.engine_frame,RenderSnapshot_RenderFrameID(),"CANCELLED",NULL,0);ForgetTiming(RenderSnapshot_CaptureID());}
+            RenderSnapshot_PresentID(native.successful_presents,false);RenderSnapshot_End("PRECACHE_CANCELLED");snapshot_guard.complete=true;return true;}
+        if(preflight!=KICH_R4_OK)return false;
         const double preflight_ms=kich_r4_metrics::Elapsed(preflight_started);
         if(c.stream.PrepareUI(c.frame,c.level,*batch)<0)return false;
         if(input.debug_down && !native.debug_key){native.debug=(native.debug+1)%kich_r4_optics::DebugViewCount;
@@ -250,7 +266,11 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
             c.metrics.Gap();c.gpu_quarantine=4;
             if(g_render_snapshot_active){RenderSnapshot_GPUTiming(RenderSnapshot_CaptureID(),input.engine_frame,RenderSnapshot_RenderFrameID(),"CANCELLED",NULL,0);ForgetTiming(RenderSnapshot_CaptureID());}
             RenderSnapshot_PresentID(native.successful_presents,false);RenderSnapshot_End("PRESENT_SUSPENDED");snapshot_guard.complete=true;return true;}
-        if(hr==0 && c.loaded && input.allowed)hr=c.deferred.Draw(c.frame,c.level,c.stream,input,batch,native.debug);
+        if(hr==0 && c.loaded && scene_requested){hr=c.deferred.Draw(c.frame,c.level,c.stream,input,batch,input.warmup?0:native.debug);
+            // The existing rotating precache camera exercises the real scene
+            // dependency union and lazy pipelines under normal budgets. Keep
+            // loading/UI as the final output; no readback, wait or asset sweep.
+            if(hr==0 && input.warmup){hr=c.deferred.DrawMenu(c.frame,c.level,c.stream,input,*batch,true);if(hr==0)++c.warmup_frames;}}
         else if(hr==0){if(native.telemetry.set_capture && tracing)native.api.tools.profile_mark(c.frame.device,0);hr=c.deferred.DrawMenu(c.frame,c.level,c.stream,input,*batch);
             if(native.telemetry.set_capture && tracing)for(uint32_t marker=1;marker<8;++marker)native.api.tools.profile_mark(c.frame.device,marker);}
         if(hr==0 && c.frame.failure<0)hr=c.frame.failure;
@@ -259,6 +279,9 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
         QueryPerformanceCounter(&submitted);
         if(hr==0){hr=c.frame.api.present(c.frame.device,native.interval);if(!hr){++c.frame.rendered;++native.successful_presents;}}
         QueryPerformanceCounter(&end);
+        kich_r4_phases::Global().Span(input.engine_frame,kich_r4_phases::NativeSubmit,submitted.QuadPart-start.QuadPart);
+        kich_r4_phases::Global().Span(input.engine_frame,kich_r4_phases::Present,end.QuadPart-submitted.QuadPart);
+        phase_tail.started=end.QuadPart;
         RenderSnapshot_PresentID(native.successful_presents,hr==0);
         sink_guard.Reset();telemetry_guard.Reset();
         if(g_render_snapshot_active){
@@ -316,6 +339,9 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
         }
         if(hr<0){Write("[R4 native B5] frame failed: step=%s HRESULT=0x%08X shader=%s",c.frame.step?c.frame.step:"present",static_cast<uint32_t>(hr),c.level.bridge.shader_error);return false;}
         const bool eligible=hr==0 && c.loaded && input.allowed && !tracing && !native.debug && !screenshot;
+        kich_r4_phases::Global().MarkEligible(input.engine_frame,eligible);
+        if(eligible && c.warmup_frames){Write("[R4 E1.6 warmup] precache_scene_frames=%u DDS_loaded=%u resident_bytes=%llu; actual_view_union; loading_UI_preserved; no_GPU_wait",
+            c.warmup_frames,c.level.textures_loaded,static_cast<unsigned long long>(c.level.texture_registry.bytes));c.warmup_frames=0;}
         c.metrics.Add(end.QuadPart,frequency.QuadPart,eligible);
         if(!eligible)c.gpu_quarantine=4;else if(c.gpu_quarantine)--c.gpu_quarantine;
         KichR4GPUProfile profile={};if(c.loaded)native.api.tools.get_profile(c.frame.device,&profile,sizeof(profile));
@@ -323,6 +349,14 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
         if(eligible){c.created_window+=stats_ok?resources.created-c.last_created:0;c.meshes_window+=c.deferred.native_models.mesh_uploads;
             c.submit_peak_ms=(std::max)(c.submit_peak_ms,double(submitted.QuadPart-start.QuadPart)*1000.0/double(frequency.QuadPart));}
         if(eligible && c.metrics.ReportDue()){
+            kich_r4_phases::Report phase_report;
+            if(kich_r4_phases::Global().TakeReport(phase_report)){
+                Write("[R4 E1.6 hitches] completed_frames=%u slow_frames=%u retained=%u threshold_ms=50; CPU_wall_clock; render_contains_native_spans; completed_previous_frames; report_period_ms=2000",
+                    phase_report.samples,phase_report.slow_count,phase_report.stored);
+                for(unsigned i=0;i<phase_report.stored;++i){const kich_r4_phases::Sample& p=phase_report.slow[i];
+                    Write("[R4 E1.6 hitch] frame=%u cycle_ms=%.3f device_ms=%.3f message_gap_ms=%.3f frame_move_ms=%.3f render_ms=%.3f worker_wait_ms=%.3f worker_fallback_ms=%.3f native_prelude_ms=%.3f native_submit_ms=%.3f present_ms=%.3f post_present_ms=%.3f measured_mask=0x%X",
+                        p.frame,p.Milliseconds(p.CycleTicks()),p.Milliseconds(p.device_ticks),p.Milliseconds(p.gap_ticks),p.PhaseMS(kich_r4_phases::FrameMove),p.PhaseMS(kich_r4_phases::Render),p.PhaseMS(kich_r4_phases::WorkerWait),p.PhaseMS(kich_r4_phases::WorkerFallback),p.PhaseMS(kich_r4_phases::NativePrelude),p.PhaseMS(kich_r4_phases::NativeSubmit),p.PhaseMS(kich_r4_phases::Present),p.PhaseMS(kich_r4_phases::PostPresent),p.measured);}
+            }
             KichR4_ReportLightingTransitions(input.engine_frame,native.log);
             Write("[R4 E1.4 status] frame=%u fps_current=%.2f fps_recent=%.2f present_interval_ms=%.3f recent_samples=%u recent_ms=%.0f shadow_submission=%s sun_cascades=%u sun_map_size=%u spot_shadow_lights=%u point_shadow_lights=%u local_shadow_faces=%u local_map_size=%u; CPU_submission_counts_not_visible_pixels; report_period_ms=2000",
                 input.engine_frame,c.metrics.Current(),c.metrics.Recent(),c.metrics.interval,c.metrics.report_count,c.metrics.report_ms,

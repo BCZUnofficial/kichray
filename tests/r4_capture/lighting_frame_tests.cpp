@@ -23,6 +23,27 @@ void Require(bool value,const char* why){++checks;if(!value)throw std::runtime_e
 bool Visible(const KichR4LocalLight&,const float*){++queries;return !reject_light;}
 void Log(const char* value){messages.push_back(value);}
 bool Contains(size_t line,const char* text){return line<messages.size() && messages[line].find(text)!=std::string::npos;}
+void AdmissionGates(const float* camera,const float* vp,int* id,KichR4LocalLight light){
+    KichR4LightingFrame value;reject_light=true;
+    KichR4_FreezeLighting(126,4248,camera,value,false,vp);
+    Require(value.count==1,"single raw rejection keeps current active source");
+    KichR4_CaptureLight(id,light,false);KichR4_FreezeLighting(127,4264,camera,value,false,vp);
+    Require(!value.count && value.occlusion_rejected.empty(),"inactive source is removed immediately, not retained by HOM history");
+    KichR4_CaptureLight(id,light,true);KichR4_FreezeLighting(128,4280,camera,value,false,vp);
+    Require(!value.count,"reactivation begins fresh observation history without admitting a hidden source");
+    light.color[0]=0;KichR4_CaptureLight(id,light,true);KichR4_FreezeLighting(129,4296,camera,value,false,vp);
+    Require(!value.count && value.occlusion_rejected.empty(),"zero intensity is not prolonged by visibility history");
+    light.color[0]=.3f;KichR4_CaptureLight(id,light,true);KichR4_FreezeLighting(130,4312,camera,value,false,vp);
+    Require(!value.count,"restored intensity uses current HOM without stale visible history");
+    light.position[0]=100;KichR4_CaptureLight(id,light,true);KichR4_FreezeLighting(131,4328,camera,value,false,vp);
+    Require(!value.count && value.occlusion_rejected.empty(),"frustum exclusion is immediate");
+    light.position[0]=0;KichR4_CaptureLight(id,light,true);KichR4_FreezeLighting(132,4344,camera,value,false,vp);
+    Require(!value.count,"re-entry uses current HOM after old camera coverage is invalidated");
+    light.range=0;KichR4_CaptureLight(id,light,true);KichR4_FreezeLighting(133,4360,camera,value,false,vp);
+    Require(!value.count && value.occlusion_rejected.empty(),"invalid source is removed immediately");
+    light.range=10;KichR4_CaptureLight(id,light,true);reject_light=false;
+    KichR4_FreezeLighting(134,4376,camera,value,false,vp);Require(value.count==1,"valid visible source admitted immediately");
+}
 void AllocationFailures(const float* camera,const float* vp,int* ids,KichR4LocalLight light){
     int extra[2]={};
     for(unsigned i=0;i<66;++i)KichR4_CaptureLight(&ids[i],light,true);
@@ -107,12 +128,17 @@ int main(){try{
     const size_t reset_start=messages.size();KichR4_ReportLightingTransitions(121,Log);
     Require(messages.size()==reset_start+1 && Contains(reset_start,"transitions=0 ") && Contains(reset_start,"pool_resizes_total=0 "),"reset removes prior-level history and pending transition examples");
     reject_light=true;KichR4_FreezeLighting(122,4100,camera,present,false,vp.m);const size_t hom_start=messages.size();KichR4_ReportLightingTransitions(122,Log);
-    Require(messages.size()==hom_start+2 && Contains(hom_start,"selected_to_hom=1 ") && Contains(hom_start+1,"to=HOM_REJECTED"),"HOM rejection has its actual selection reason");
-    reject_light=false;KichR4_FreezeLighting(123,4200,camera,present,false,vp.m);const size_t visible_start=messages.size();KichR4_ReportLightingTransitions(123,Log);
+    Require(present.count==1 && messages.size()==hom_start+1 && Contains(hom_start,"selected_to_hom=0 ") && Contains(hom_start,"hom_raw_rejected=1 ") && Contains(hom_start,"hom_retained=1 "),"one raw HOM rejection is retained without an effective transition");
+    KichR4_CaptureLighting(camera,ai,false,vp.m);
+    Require(ai.count==0 && ai.occlusion_rejected.size()==1,"legacy live selection keeps immediate HOM rejection without native history");
+    KichR4_FreezeLighting(123,4200,camera,present,false,vp.m);const size_t hidden_start=messages.size();KichR4_ReportLightingTransitions(123,Log);
+    Require(!present.count && messages.size()==hidden_start+2 && Contains(hidden_start,"selected_to_hom=1 ") && Contains(hidden_start,"hom_effective_rejected=1 ") && Contains(hidden_start+1,"to=HOM_REJECTED"),"sustained HOM rejection has its effective selection reason");
+    reject_light=false;KichR4_FreezeLighting(124,4216,camera,present,false,vp.m);const size_t visible_start=messages.size();KichR4_ReportLightingTransitions(124,Log);
     Require(messages.size()==visible_start+2 && Contains(visible_start,"hom_to_selected=1 "),"HOM recovery observed without source recreation");
-    light.color[0]=.3f;KichR4_CaptureLight(&ids[0],light,true);KichR4_FreezeLighting(124,4300,camera,present,false,vp.m);
-    const size_t color_start=messages.size();KichR4_ReportLightingTransitions(124,Log);
+    light.color[0]=.3f;KichR4_CaptureLight(&ids[0],light,true);KichR4_FreezeLighting(125,4232,camera,present,false,vp.m);
+    const size_t color_start=messages.size();KichR4_ReportLightingTransitions(125,Log);
     Require(messages.size()==color_start+1 && Contains(color_start,"transitions=0 "),"animated intensity changes are not misreported as visibility flicker");
+    AdmissionGates(camera,vp.m,&ids[0],light);
     AllocationFailures(camera,vp.m,ids,light);
     KichR4_CaptureEnable(false);
     Require(!KichR4_CopyFrozenLighting(121,camera,vp.m,present),"disabled capture cannot reuse previous game");

@@ -280,14 +280,17 @@ float4 DirectLight(float3 p,float3 n,float3 direction,float3 color,float gloss,f
     float2 response=MaterialResponse(dot(n,direction),dot(n,half_vector),m);
     return float4(color*response.x,SpecularIntensity(color)*response.y*gloss);
 }
-float4 SunLighting(float3 p,float3 n,float h,float sun_mask,float gloss,float m,float3 dx,float3 dy){
+float4 SunLighting(float3 p,float3 n,float h,float gloss,float m,float3 dx,float3 dy){
     // Source hemi already encodes visibility; R2 hmodel does not multiply it
     // by a second world-up term. Weather hemi RGB remains the env approximation.
     float3 indirect=ambient.rgb+hemi.rgb*MaterialResponse(saturate(h),0,m).x;
-    float4 direct=DirectLight(p,n,-sun_direction.xyz,sun_color.rgb,gloss,m)*SunVisibility(p,dx,dy)*sun_mask;
+    // R2/1.6 use baked/ROS sun occlusion only in static-sun mode, where the
+    // dynamic sun pass is disabled. Here the current shadow maps own visibility;
+    // a baked zero must not suppress sunlight and moving shadows on a receiver.
+    float4 direct=DirectLight(p,n,-sun_direction.xyz,sun_color.rgb,gloss,m)*SunVisibility(p,dx,dy);
     return float4(indirect,0)+direct;
 }
-float3 SunLight(float3 p,float3 n,float h,float sun_mask,float3 dx,float3 dy){return SunLighting(p,n,h,sun_mask,0,material.w,dx,dy).rgb;}
+float3 SunLight(float3 p,float3 n,float h,float3 dx,float3 dy){return SunLighting(p,n,h,0,material.w,dx,dy).rgb;}
 uint CubeFace(float3 d){float3 a=abs(d);if(a.x>=a.y && a.x>=a.z)return d.x>=0?0:1;
     if(a.y>=a.z)return d.y>=0?2:3;return d.z>=0?4:5;}
 float LocalVisibility(float3 p,float3 dx,float3 dy){if(alpha.w<.5)return 1;uint face=light_color.w>1.5?0:CubeFace(p-light_position.xyz);
@@ -312,14 +315,14 @@ float4 PSSun(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=image1.Load(
     float3 p=WorldPosition(v.p.xy,depth),dx,dy;ShadowDerivatives(p,dx,dy);
     if(depth>=1)return 0;float4 n=image0.Load(int3(at,0));
     if((int)screen.z==8)return float4(SunVisibility(p,dx,dy).xxx,0);
-    // SoC R2 combine uses raw static occlusion *2; .5 encodes unmasked runtime sun.
-    return SunLighting(p,DecodeNormal(n.xy),n.z,shadow2.Load(int3(at,0)).a*2,MaterialGloss(n.w),MaterialClass(n.w),dx,dy);}
+    // Albedo alpha retains source sun occlusion for diagnostics, not dynamic lighting.
+    return SunLighting(p,DecodeNormal(n.xy),n.z,MaterialGloss(n.w),MaterialClass(n.w),dx,dy);}
 float4 PSLocal(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=image1.Load(int3(at,0)).r;
     float3 p=WorldPosition(v.p.xy,depth),dx,dy;ShadowDerivatives(p,dx,dy);
     if(depth>=1)return 0;float4 n=image0.Load(int3(at,0));
     return LocalLight(p,DecodeNormal(n.xy),MaterialGloss(n.w),MaterialClass(n.w),dx,dy);}
 float4 PSForwardSun(Varying v,bool front:SV_IsFrontFace):SV_Target {float3 dx,dy;ShadowDerivatives(v.w,dx,dy);float4 c=Base(v);
-    float4 light=SunLighting(v.w,Normal(v,front),saturate(v.n.w),1,Gloss(v),material.w,dx,dy);
+    float4 light=SunLighting(v.w,Normal(v,front),saturate(v.n.w),Gloss(v),material.w,dx,dy);
     return float4(c.rgb*light.rgb+light.aaa,c.a);}
 float4 PSForwardLocal(Varying v,bool front:SV_IsFrontFace):SV_Target {float3 dx,dy;ShadowDerivatives(v.w,dx,dy);float4 c=Base(v);
     float4 light=LocalLight(v.w,Normal(v,front),Gloss(v),material.w,dx,dy);
@@ -344,7 +347,7 @@ float4 PSWater(Varying v,bool front:SV_IsFrontFace):SV_Target {
     float4 water=image0.Sample(surface,flow);float2 wave=(water.rg-.5)*.012;
     float2 screen_uv=v.p.xy/screen.xy;float3 behind=image1.Sample(surface1,saturate(screen_uv+wave)).rgb;
     float3 n=Normal(v,front);float fresnel=pow(1-saturate(dot(n,normalize(camera.xyz-v.w))),5);
-    float3 lit=water.rgb*SunLight(v.w,n,saturate(v.n.w),1,dx,dy);return float4(lerp(lerp(behind,lit,.35),hemi.rgb,fresnel*.5),.8);
+    float3 lit=water.rgb*SunLight(v.w,n,saturate(v.n.w),dx,dy);return float4(lerp(lerp(behind,lit,.35),hemi.rgb,fresnel*.5),.8);
 }
 float4 PSDistortion(Varying v):SV_Target {float4 mask=Base(v);bool menu=alpha.w>29.5 && alpha.w<30.5;
     // Match R2 distort.ps: the menu mask is alpha-blended over neutral 0.5.

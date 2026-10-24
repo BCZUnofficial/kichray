@@ -7,7 +7,8 @@
 #include <math.h>
 #include <stdint.h>
 namespace {
-int checks=0,prepared=0,native_presented=0;bool armed=false,key=false;
+int checks=0,prepared=0,native_presented=0,light_copies=0,light_freezes=0,light_captures=0;bool armed=false,key=false,frozen_available=false,g_appLoaded=true;
+KichR4LightingFrame frozen_lighting;
 KichR4GameFrame captured={},native_captured={};
 struct Entity {} entity;
 struct Level {bool bReady;Entity* view;Entity* CurrentViewEntity(){return view;}} level={true,&entity};
@@ -16,10 +17,10 @@ struct Menu {bool active;bool IsActive(){return active;}} menu={false};
 struct WeatherVector {float x,y,z,w;};
 struct CEnvDescriptorMixer {WeatherVector sun_dir,sun_color,ambient,hemi_color,fog_color;};
 struct EnvironmentType {CEnvDescriptorMixer CurrentEnv;} environment={};
-struct Persistent {Menu* m_pMainMenu;EnvironmentType& Environment(){return environment;}bool OnRenderPPUI_query(){return false;}} persistent={&menu};
+struct Persistent {Menu* m_pMainMenu;bool ppui;EnvironmentType& Environment(){return environment;}bool OnRenderPPUI_query(){return ppui;}} persistent={&menu,false};
 Persistent* g_pGamePersistent=&persistent;
 struct ConsoleType {bool bVisible;} console={false};ConsoleType* Console=&console;
-struct EngineDevice {void* m_hWnd;unsigned dwWidth,dwHeight,dwFrame,dwPrecacheFrame;float fTimeGlobal,fFOV;
+struct EngineDevice {void* m_hWnd;unsigned dwWidth,dwHeight,dwFrame,dwPrecacheFrame,dwTimeGlobal;float fTimeGlobal,fFOV;
     struct {float m[4][4];} mFullTransform;struct {float x,y,z;} vCameraPosition;int b_is_Active;bool paused;bool Paused(){return paused;}} Device={};
 std::vector<int> g_loading_events;
 const int FALSE=0,VK_F8=119,VK_F9=120;
@@ -41,8 +42,18 @@ void Msg(const char*,...){}
 double KichR4_NativeQueueTime(){return 1.5;}
 void KichR4_NativePostprocess(float* output){memset(output,0,24*sizeof(float));}
 bool KichR4_NativePresent(const KichR4GameFrame& input){++native_presented;native_captured=input;return true;}
-void KichR4_CaptureLighting(const float*,KichR4LightingFrame& out,bool r1_lights_enabled,const float* camera_vp){Require(camera_vp && !memcmp(camera_vp,Device.mFullTransform.m,64),"both engine frame adapters provide the current camera for light culling");out.count=0;out.r1_lights_requested=out.r1_lights_applied=r1_lights_enabled?1u:0u;}
+void KichR4_CaptureLighting(const float*,KichR4LightingFrame& out,bool r1_lights_enabled,const float* camera_vp){++light_captures;Require(camera_vp && !memcmp(camera_vp,Device.mFullTransform.m,64),"both engine frame adapters provide the current camera for light culling");out.count=0;out.r1_lights_requested=out.r1_lights_applied=r1_lights_enabled?1u:0u;}
+bool KichR4_CopyFrozenLighting(uint32_t frame,const float* camera,const float* vp,KichR4LightingFrame& out){++light_copies;Require(frame==Device.dwFrame && camera && vp && !memcmp(vp,Device.mFullTransform.m,64),"frozen snapshot uses this engine frame and camera");if(!frozen_available)return false;out=frozen_lighting;return true;}
+void KichR4_FreezeLighting(uint32_t frame,uint32_t now,const float* camera,KichR4LightingFrame& out,bool r1,const float* vp){++light_freezes;Require(frame==Device.dwFrame && now==Device.dwTimeGlobal,"native frame freezes at engine time");KichR4_CaptureLighting(camera,out,r1,vp);out.selection_frame=frame;out.local_shadow_size=512;}
 void KichR4_GamePrepare(const KichR4GameFrame& in){++prepared;captured=in;}
+void KichR4_NativePresentEngineFrame(bool loading,bool precaching);
+LightFlags psDeviceFlags={true};enum {rsVSync=1};
+void KichR4_NativeSetInterval(bool){}
+struct {unsigned ends=0;void OnFrameEnd(){++ends;}} RCache;
+struct NativeEndState {bool loading=false,precaching=false;
+// NATIVE_PREPARE_FRAME_END
+// NATIVE_END_FRAME
+};
 // PRODUCTION_FUNCTION
 int main(){try {
     KichR4_GamePrepareEngineFrame();Require(!prepared,"unarmed engine does not touch bridge input");armed=true;
@@ -67,11 +78,32 @@ int main(){try {
     ps_r__Tree_Wave={.3f,.2f,.1f,0};KichR4_GamePrepareEngineFrame();
     Require(fabsf(captured.tree_wind[0]-.25f)<1.e-6f && fabsf(captured.tree_wind[2])<1.e-6f && captured.tree_wind[1]==0,"tree wind follows source normalized sine/cosine rotation and console amplitude");
     Require(fabsf(captured.tree_wave[0]-.3f/PI_MUL_2)<1.e-6f && fabsf(captured.tree_wave[3]-7.5f/PI_MUL_2)<1.e-6f && captured.tree_sbc==2*1.3333f,"tree spatial/time phase and R2 color correction copied from current console settings");
-    KichR4_NativePresentEngineFrame(false);
+    KichR4_NativePresentEngineFrame(false,false);
     Require(native_presented==1 && !memcmp(native_captured.tree_wave,captured.tree_wave,16) && !memcmp(native_captured.tree_wind,captured.tree_wind,16) && native_captured.tree_sbc==captured.tree_sbc,"native presenter and prepared path share exact tree frame parameters");
     Require(!memcmp(native_captured.geometry_lod,captured.geometry_lod,sizeof(captured.geometry_lod)),"native and prepared frame paths share LOD policy");
-    Device.fTimeGlobal=5;ps_r__Tree_w_amp=.5f;KichR4_NativePresentEngineFrame(true);
+    Device.fTimeGlobal=5;ps_r__Tree_w_amp=.5f;KichR4_NativePresentEngineFrame(true,false);
     Require(native_presented==2 && fabsf(native_captured.tree_wind[2]+.5f)<1.e-6f && native_captured.tree_wave[3]!=captured.tree_wave[3],"live tree time and settings are resampled without per-frame geometry generation");
+    Require(!native_captured.allowed && !native_captured.warmup,"ordinary loading remains UI only");
+    NativeEndState end_state;
+    Device.dwPrecacheFrame=1;end_state.PrepareFrameEnd(0,0);Device.dwPrecacheFrame=0;
+    Require(end_state.loading && end_state.precaching,"native gate preserves the last precache frame before End decrements it");
+    frozen_available=true;frozen_lighting.valid=1;frozen_lighting.local_shadow_size=256;frozen_lighting.hemi[0]=.75f;
+    const int freezes_before=light_freezes,captures_before=light_captures;
+    end_state.EndFrame();
+    Require(native_captured.warmup && !native_captured.allowed,"final precache frame warms the scene without becoming gameplay");
+    Require(RCache.ends==1,"native EndFrame forwards captured flags before completing cache frame");
+    Require(native_captured.lighting.local_shadow_size==256 && native_captured.lighting.hemi[0]==.75f && light_freezes==freezes_before && light_captures==captures_before,"warmup reuses frozen geometry lighting and does not reselect sources");
+    KichR4_GamePrepareEngineFrame();Require(!captured.warmup,"R2 bridge never opts into native precache warmup");
+    frozen_available=false;
+    for(unsigned blocked=0;blocked<6;++blocked){
+        level.bReady=true;level.view=&entity;g_pGameLevel=&level;g_appLoaded=true;g_loading_events.clear();persistent.ppui=false;Device.dwPrecacheFrame=1;
+        switch(blocked){case 0:g_appLoaded=false;break;case 1:g_loading_events.push_back(1);break;case 2:level.bReady=false;break;case 3:level.view=NULL;break;case 4:persistent.ppui=true;break;case 5:g_pGameLevel=NULL;break;}
+        end_state.PrepareFrameEnd(0,0);end_state.EndFrame();
+        Require(!native_captured.warmup,"loading events, absent level/camera and menu postprocess block world warmup");
+    }
+    level.bReady=true;level.view=&entity;g_pGameLevel=&level;g_appLoaded=true;g_loading_events.clear();persistent.ppui=false;Device.dwPrecacheFrame=0;
+    end_state.PrepareFrameEnd(0,0);Require(!end_state.loading && !end_state.precaching,"normal gameplay clears both captured flags");
+    end_state.EndFrame();Require(native_captured.allowed && !native_captured.warmup,"normal gameplay returns to its original presentation path");
     for(unsigned blocked=0;blocked<7;++blocked) {
         level.bReady=true;level.view=&entity;menu.active=false;console.bVisible=false;Device.dwPrecacheFrame=0;Device.paused=false;g_loading_events.clear();
         switch(blocked) {case 0:level.bReady=false;break;case 1:level.view=NULL;break;case 2:menu.active=true;break;case 3:console.bVisible=true;break;

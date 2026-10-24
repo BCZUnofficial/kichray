@@ -1,6 +1,19 @@
 #include "../../xr_3da/KichR4LevelVisibility.h"
 #include <stdio.h>
 #include <limits>
+#include <cstdlib>
+#include <new>
+static bool count_allocations=false;
+static size_t allocations=0;
+#ifdef _MSC_VER
+#define TEST_NOINLINE __declspec(noinline)
+#else
+#define TEST_NOINLINE __attribute__((noinline))
+#endif
+TEST_NOINLINE void* operator new(size_t n){if(count_allocations)++allocations;if(void* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
+TEST_NOINLINE void operator delete(void* p)noexcept{std::free(p);}
+void* operator new[](size_t n){return ::operator new(n);}
+void operator delete[](void* p)noexcept{::operator delete(p);}
 using namespace kich_r4_level;
 namespace {
 unsigned checks=0;
@@ -51,5 +64,32 @@ void Sun(){Scene s;s.materials.resize(1);s.draws.push_back(Box(0,0,.5f,.1f));s.d
     Require(plan.views.size()==2 && &sun!=&local,"identical shadow matrix has distinct sun and local cache entries");
     plan.Begin(s,1,0,0);plan.sun_casters=kich_r4_visibility::SunCasterVolume();Require(plan.Select(shadow,UINT32_MAX,true).selected.size()==2,"invalid sun volume fails open");
 }
+void Reuse(){Scene s;s.materials.resize(1);s.topology.valid=true;s.topology.sectors.resize(2);
+    s.draws.resize(2048);s.sector_owned.assign(s.draws.size(),1);
+    for(size_t i=0;i<s.draws.size();++i){s.draws[i]=Box(float(i%4)*.2f,0,.5f,.05f);s.topology.sectors[i%2].draws.push_back(static_cast<uint32_t>(i));}
+    Portal p;p.front=0;p.back=1;p.vertices={{-.1f,-.1f,.2f},{.1f,-.1f,.2f},{.1f,.1f,.2f},{-.1f,.1f,.2f}};
+    s.topology.portals.push_back(p);s.topology.sectors[0].portals.push_back(0);s.topology.sectors[1].portals.push_back(0);
+    StaticFramePlan plan;plan.Begin(s,1,0,0);const Matrix identity=kich_r4_scene::Identity();
+    const StaticVisibility& first=plan.Select(identity,0);const unsigned char* mask=first.draws.data();const uint32_t* indices=first.selected.data();
+    std::vector<Matrix> matrices(48,identity);
+    for(size_t i=0;i<matrices.size();++i){matrices[i].m[12]=float(i)*.01f;plan.Select(matrices[i],0);}
+    Require(&first==&plan.Select(identity,0) && first.draws.data()==mask && first.selected.data()==indices,"adding view slots cannot invalidate a returned camera result");
+    allocations=0;count_allocations=true;plan.Begin(s,1,0,0);
+    for(size_t i=0;i<matrices.size();++i)plan.Select(matrices[i],0);
+    count_allocations=false;
+    Require(allocations==0,"warmed frame performs no BVH, per-view mask, index, key or portal scratch allocations");
+    Require(plan.view_slots.front().draws.data()==mask && plan.view_slots.front().selected.data()==indices,"warm frames retain buffer storage");
+    s.draws[0]=Box(1000,1000,.5f,.1f);plan.Begin(s,1,0,0);
+    Require(!plan.Select(identity,0).draws[0],"retained capacity never retains stale visibility decisions");
+    const StaticVisibility* stable=&plan.Select(identity,0);
+    const size_t per_view=sizeof(StaticVisibility)+sizeof(StaticFramePlan::Key)+s.draws.size()*5;
+    const size_t limit=(std::max)(size_t(1),size_t(16u*1024u*1024u)/per_view);
+    Matrix far=identity;far.m[12]=10000;
+    for(size_t i=0;i<limit+8;++i){far.m[13]=float(i);plan.Select(far,0);}
+    Require(plan.view_slots.size()==limit && plan.views.size()==limit,"view storage stays within the existing cache budget");
+    Require(&plan.Select(identity,0)==stable && !stable->draws[0],"cache overflow does not move or overwrite cached references");
+    s.draws.resize(1);s.sector_owned.clear();plan.Begin(s,2,0,0);
+    Require(plan.view_slots.empty() && plan.views.empty() && plan.allowed.empty(),"level revision releases prior level high-water scratch");
 }
-int main(){try{Spatial();PortalsAndWind();Sun();printf("E1.3 shared static frame plan: %u checks passed\n",checks);return 0;}catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}
+}
+int main(){try{Spatial();PortalsAndWind();Sun();Reuse();printf("E1.3/E1.6 shared static frame plan: %u checks passed\n",checks);return 0;}catch(const std::exception& e){count_allocations=false;fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

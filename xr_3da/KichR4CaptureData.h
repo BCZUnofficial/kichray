@@ -5,6 +5,7 @@
 #include "KichR4CaptureInput.h"
 #include "KichR4LightingMath.h"
 #include "KichR4Visibility.h"
+#include "KichR4LightAdmission.h"
 #include "RenderSnapshot.h"
 #include "KichR4TelemetryText.h"
 #include "KichR4Material.h"
@@ -452,7 +453,7 @@ struct State {
         // numerical equality establishes bStatic for a runtime registration.
         return !r1_lights_enabled && source!=light_sources.end() && (source->second.flags&KICH_R4_LIGHT_STATIC)!=0;
     }
-    void SelectLights(const float* camera,KichR4LightingFrame& out,bool r1_lights_enabled=false,const float* camera_vp=NULL,KichR4LightVisibility occlusion=NULL)const {
+    void SelectLights(const float* camera,KichR4LightingFrame& out,bool r1_lights_enabled=false,const float* camera_vp=NULL,KichR4LightVisibility occlusion=NULL,kich_r4_light_admission::Policy* admission=NULL)const {
         struct Choice {float score;KichR4LocalLight light;bool shadow;const void* source;};std::vector<Choice> choices;
         out.count=0;out.shadow_mask=0;out.shadows.clear();out.sources.clear();out.lights.clear();out.visibility_valid=camera_vp?1u:0u;
         if(camera_vp)memcpy(out.visibility_vp,camera_vp,sizeof(out.visibility_vp));
@@ -469,10 +470,11 @@ struct State {
             if(brightness<=0 || (camera_vp && !kich_r4_visibility::VisibleSphere(l.position,l.range,vp)))continue;
             if(out.occlusion_enabled){++out.occlusion_tested;bool visible=true;
                 try{visible=occlusion(l,camera_vp);}catch(...){visible=true;}
-                if(!visible){KichR4LightIdentity identity={};const auto source=light_sources.find(it->first);
-                    if(source!=light_sources.end())identity=source->second;
-                    else identity.process_handle=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(it->first));
-                    out.occlusion_rejected.push_back(identity);continue;}}
+                KichR4LightIdentity identity={};const auto source=light_sources.find(it->first);
+                if(source!=light_sources.end())identity=source->second;
+                else identity.process_handle=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(it->first));
+                if(admission)visible=admission->Observe(identity,visible,unshadowed_lights.count(it->first)?0u:l.type==2?1u:6u);
+                if(!visible){out.occlusion_rejected.push_back(identity);continue;}}
             Choice c={brightness*l.range*l.range/(distance+1)+(l.type==2 && distance<4?1.e10f:0),l,unshadowed_lights.count(it->first)==0,it->first};choices.push_back(c);
         }
         // Sorting is deterministic scheduling only. Every visible source is

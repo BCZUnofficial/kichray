@@ -3,7 +3,7 @@
 #include "KichR4LevelCamera.h"
 #include "KichR4Visibility.h"
 #include <array>
-#include <map>
+#include <deque>
 #include <cstring>
 namespace kich_r4_level {
 // The same result is used for texture residency and draw submission. A caller
@@ -13,6 +13,14 @@ struct StaticVisibility {
     std::vector<uint32_t> selected;
     uint32_t sectors,portal_tests,sector_rejected,frustum_rejected,bounds_tests,node_tests;bool portal_used;
     StaticVisibility():sectors(0),portal_tests(0),sector_rejected(0),frustum_rejected(0),bounds_tests(0),node_tests(0),portal_used(false){}
+    void Reset(size_t count,unsigned char value){
+        draws.assign(count,value);selected.clear();
+        sectors=portal_tests=sector_rejected=frustum_rejected=bounds_tests=node_tests=0;portal_used=false;
+    }
+};
+struct StaticSectorScratch {
+    std::vector<unsigned char> reached,tested,visible;
+    std::vector<uint32_t> pending;
 };
 inline Draw WindBounds(const Scene& scene,const Draw& draw,float wind_x,float wind_z){
     Draw bounds=draw;
@@ -38,14 +46,17 @@ inline bool PortalVisible(const Portal& portal,const Matrix& vp){
     for(unsigned i=0;i<5;++i)if(outside[i])return false;
     return true;
 }
-inline void SelectStaticSectors(const Scene& scene,const Matrix& vp,uint32_t seed_sector,StaticVisibility& result){
-    result=StaticVisibility();result.draws.assign(scene.draws.size(),1);
+inline void SelectStaticSectors(const Scene& scene,const Matrix& vp,uint32_t seed_sector,StaticVisibility& result,StaticSectorScratch* reusable=NULL){
+    result.Reset(scene.draws.size(),1);
     const Topology& t=scene.topology;
     if(t.valid && seed_sector<t.sectors.size() && scene.sector_owned.size()==scene.draws.size()){
         result.portal_used=true;
         for(size_t i=0;i<result.draws.size();++i)result.draws[i]=scene.sector_owned[i]?0:1;
-        std::vector<unsigned char> reached(t.sectors.size(),0),tested(t.portals.size(),0),visible(t.portals.size(),0);
-        std::vector<uint32_t> pending(1,seed_sector);reached[seed_sector]=1;
+        StaticSectorScratch local;StaticSectorScratch& scratch=reusable?*reusable:local;
+        std::vector<unsigned char>& reached=scratch.reached;std::vector<unsigned char>& tested=scratch.tested;std::vector<unsigned char>& visible=scratch.visible;
+        std::vector<uint32_t>& pending=scratch.pending;
+        reached.assign(t.sectors.size(),0);tested.assign(t.portals.size(),0);visible.assign(t.portals.size(),0);
+        pending.clear();pending.push_back(seed_sector);reached[seed_sector]=1;
         // Every edge uses the ORIGINAL view. No first-path portal narrowing:
         // a cycle or second wider entrance cannot hide previously missed draws.
         for(size_t at=0;at<pending.size();++at){const uint32_t current=pending[at];const Sector& sector=t.sectors[current];++result.sectors;
@@ -77,8 +88,13 @@ struct StaticFramePlan {
     std::vector<Draw> bounds;
     std::vector<uint32_t> order;
     std::vector<Node> nodes;
-    std::map<Key,StaticVisibility> views;
+    // Keys describe THIS frame only. Slots keep their buffers across frames;
+    // deque growth preserves references held by residency/submission callers.
+    std::vector<Key> views;
+    std::deque<StaticVisibility> view_slots;
     StaticVisibility uncached;
+    StaticSectorScratch sector_scratch;
+    std::vector<unsigned char> allowed;
     kich_r4_visibility::SunCasterVolume sun_casters;
     float wind_x=0,wind_z=0;
     uint32_t queries=0,cache_hits=0;
@@ -113,6 +129,10 @@ struct StaticFramePlan {
         const Draw* data=value.draws.empty()?NULL:&value.draws[0];
         const bool rebuild=scene!=&value || storage!=data || revision!=generation || bounds.size()!=value.draws.size();
         scene=&value;storage=data;revision=generation;wind_x=x;wind_z=z;views.clear();queries=cache_hits=0;bounds_tests=node_tests=0;
+        // A new level/revision must not retain the old level's view/portal
+        // scratch. Normal camera/light changes only reset the active keys.
+        if(rebuild){std::deque<StaticVisibility>().swap(view_slots);uncached=StaticVisibility();
+            sector_scratch=StaticSectorScratch();std::vector<unsigned char>().swap(allowed);std::vector<Key>().swap(views);}
         bounds.resize(value.draws.size());for(size_t i=0;i<bounds.size();++i)bounds[i]=WindBounds(value,value.draws[i],x,z);
         if(rebuild){order.resize(bounds.size());for(size_t i=0;i<order.size();++i)order[i]=static_cast<uint32_t>(i);nodes.clear();nodes.reserve(order.size()*2);
             if(!order.empty())Build(0,static_cast<uint32_t>(order.size()));}
@@ -137,13 +157,18 @@ struct StaticFramePlan {
     }
     const StaticVisibility& Select(const Matrix& vp,uint32_t sector,bool sun=false){
         ++queries;Key key;memcpy(key.data(),vp.m,64);key[16]=sector;key[17]=sun?1u:0u;
-        const auto found=views.find(key);if(found!=views.end()){++cache_hits;return found->second;}
+        for(size_t i=0;i<views.size();++i)if(views[i]==key){++cache_hits;return view_slots[i];}
         // Bound cache memory without imposing a draw/light limit. Extremely
         // large working sets fall back to correct uncached selection.
         const size_t per_view=sizeof(StaticVisibility)+sizeof(Key)+bounds.size()*5;
         const size_t limit=(std::max)(size_t(1),size_t(16u*1024u*1024u)/per_view);
-        StaticVisibility& result=views.size()<limit?views[key]:uncached;SelectStaticSectors(*scene,vp,sector,result);
-        std::vector<unsigned char> allowed;allowed.swap(result.draws);result.draws.assign(bounds.size(),0);
+        StaticVisibility* slot=&uncached;
+        if(views.size()<limit){const size_t index=views.size();if(index==view_slots.size())view_slots.emplace_back();
+            views.push_back(key);slot=&view_slots[index];}
+        StaticVisibility& result=*slot;
+        result.selected.reserve(bounds.size());
+        SelectStaticSectors(*scene,vp,sector,result,&sector_scratch);
+        allowed.assign(result.draws.begin(),result.draws.end());std::fill(result.draws.begin(),result.draws.end(),0);
         for(size_t i=0;i<allowed.size();++i)if(!allowed[i])++result.sector_rejected;
         if(!nodes.empty())Visit(0,vp,allowed,result,sun);
         std::sort(result.selected.begin(),result.selected.end());

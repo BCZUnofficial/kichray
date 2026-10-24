@@ -3,6 +3,8 @@
 #include "frustum.h"
 #include "KichRenderDevice.h"
 #include "KichR4Game.h"
+#include "KichR4Native.h"
+#include "KichR4FramePhases.h"
 #include "RenderSnapshot.h"
 
 #pragma warning(disable : 4995)
@@ -204,14 +206,25 @@ void CRenderDevice::Run()
 					g_bEnableStatGather = FALSE;
 				if (g_loading_events.size())
 				{
+					kich_r4_phases::Global().Gap();
 					if (g_loading_events.front()())
 						g_loading_events.pop_front();
 
 					pApp->LoadDraw();
 					continue;
 				}
+				kich_r4_phases::Tracker* phase_clock = 0;
+				if (KichR4_NativeActive() && b_is_Active && g_pGameLevel && !dwPrecacheFrame)
+				{
+					phase_clock = &kich_r4_phases::Global();
+					phase_clock->Begin(dwFrame + 1, kich_r4_phases::Counter(), kich_r4_phases::Frequency());
+				}
 				else
-					FrameMove();
+					kich_r4_phases::Global().Gap();
+				int64_t phase_started = phase_clock ? kich_r4_phases::Counter() : 0;
+				FrameMove();
+				if (phase_clock)
+					phase_clock->Span(dwFrame, kich_r4_phases::FrameMove, kich_r4_phases::Counter() - phase_started);
 
 				// Precache
 				if (dwPrecacheFrame)
@@ -238,6 +251,8 @@ void CRenderDevice::Run()
 				Sleep(0);
 
 #ifndef DEDICATED_SERVER
+				if (phase_clock)
+					phase_started = kich_r4_phases::Counter();
 				KichRenderDevice().BeginFrameTiming(Statistic->RenderTOTAL_Real);
 				if (b_is_Active)
 				{
@@ -251,12 +266,22 @@ void CRenderDevice::Run()
 					}
 				}
 				KichRenderDevice().EndFrameTiming(Statistic->RenderTOTAL_Real, Statistic->RenderTOTAL);
+				if (phase_clock)
+					phase_clock->Span(dwFrame, kich_r4_phases::Render, kich_r4_phases::Counter() - phase_started);
 #endif
 				// *** Suspend threads
 				// Capture startup point
 				// Release end point - allow thread to wait for startup point
+				if (phase_clock)
+					phase_started = kich_r4_phases::Counter();
 				mt_csEnter.Enter();
 				mt_csLeave.Leave();
+				if (phase_clock)
+				{
+					const int64_t waited = kich_r4_phases::Counter();
+					phase_clock->Span(dwFrame, kich_r4_phases::WorkerWait, waited - phase_started);
+					phase_started = waited;
+				}
 
 				// Ensure, that second thread gets chance to execute anyway
 				if (dwFrame != mt_Thread_marker)
@@ -265,6 +290,12 @@ void CRenderDevice::Run()
 						Device.seqParallel[pit]();
 					Device.seqParallel.clear_not_free();
 					seqFrameMT.Process(rp_Frame);
+				}
+				if (phase_clock)
+				{
+					const int64_t finished = kich_r4_phases::Counter();
+					phase_clock->Span(dwFrame, kich_r4_phases::WorkerFallback, finished - phase_started);
+					phase_clock->End(dwFrame, finished);
 				}
 #ifdef DEDICATED_SERVER
 				u32 FrameEndTime = TimerGlobal.GetElapsed_ms();
@@ -299,6 +330,7 @@ void CRenderDevice::Run()
 			}
 			else
 			{
+				kich_r4_phases::Global().Gap();
 				Sleep(100);
 			}
 			if (!b_is_Active)

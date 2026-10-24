@@ -578,11 +578,11 @@ struct KichR4DeferredSession {
             Text("POSTPROCESS",id,"output","SEE_BACKEND_PASS_RENDER_TARGET_HANDLES");U64("POSTPROCESS",id,"additive",add?1:0);}
         return result;
     }
-    int32_t DrawMenu(KichR4FrameSession& s,KichR4LevelSession& l,KichR4StreamSession& stream,const KichR4GameFrame& input,const kich_r4_capture::Batch& batch){
-        SnapshotCPU(&batch);native_models.ResetFrame();details.ResetFrame(input.engine_frame);SnapshotPass("MENU_UI",RENDER_SNAPSHOT_PASS_MENU_UI,"menu");
+    int32_t DrawMenu(KichR4FrameSession& s,KichR4LevelSession& l,KichR4StreamSession& stream,const KichR4GameFrame& input,const kich_r4_capture::Batch& batch,bool after_scene=false){
+        SnapshotCPU(&batch);if(!after_scene){native_models.ResetFrame();details.ResetFrame(input.engine_frame);}SnapshotPass("MENU_UI",RENDER_SNAPSHOT_PASS_MENU_UI,"menu");
         base.screen[0]=static_cast<float>(input.width);base.screen[1]=static_cast<float>(input.height);
         if(!cb && Start(s,l)<0)return s.failure;
-        if(ScreenTargets(s,l,input.width,input.height)<0 || stream.Upload(s,l,batch)<0)return s.failure;
+        if(ScreenTargets(s,l,input.width,input.height)<0 || (!after_scene && stream.Upload(s,l,batch)<0))return s.failure;
         if(Pass(s,l,input.width,input.height,1,native_mode?scene_color:final_color,0,0,KICH_R4_CLEAR_COLOR)<0 || Models(s,l,stream,&batch,HUD,base)<0)return s.failure;
         if(native_mode){kich_r4_lighting::Constants copy=base;copy.alpha[1]=8;copy.alpha[3]=0;
             // Sample a separate menu image: the lens must never read its own render target.

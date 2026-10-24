@@ -10,6 +10,9 @@ struct KichR4GameFrame {
     uint32_t width,height,engine_frame;
     float view_projection[16],position[3];
     bool allowed,active,toggle_down,debug_down;
+    // EXE-only: collect/upload the actual scene during the existing precache
+    // frames, while the loading/UI image remains the displayed output.
+    bool warmup;
     KichR4LightingFrame lighting;
     float time,prepare_ms;
     float tree_wave[4],tree_wind[4],tree_sbc;

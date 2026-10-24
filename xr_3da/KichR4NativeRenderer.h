@@ -6,6 +6,8 @@
 #include "xrRender/WallmarksEngine.h"
 #include "Fmesh.h"
 #include "KichR4NativeHOM.h"
+#include "KichR4CandidateScratch.h"
+class ENGINE_API ISpatial;
 
 class CR4Target:public IRender_Target {
 public:
@@ -22,6 +24,9 @@ class CRender:public IRender_interface,public pureFrame {
     struct Queued {IRender_Visual* visual;Fmatrix world;bool hud;float distance;bool light_valid;float hemi,sun;};
     xr_vector<Queued> queue;
     xr_vector<CFrustum> shadow_views;
+    xr_vector<ISpatial*> candidate_objects;
+    kich_r4_candidates::UniquePointers<IRenderable> candidate_seen;
+    std::vector<uint8_t> selected_shadow_lights;
     Fmatrix transform;
     IRenderable* object;
     bool invisible,loaded;

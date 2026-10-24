@@ -26,7 +26,10 @@ def main():
         # helper so camera/shadow deformation receives the same source values.
         function = production[production.index("static void KichR4_GameTreeFrame("):]
         engine_source = Path(folder)/"engine_frame.cpp"
-        engine_source.write_text((HERE/"engine_frame_tests.cpp").read_text().replace("// PRODUCTION_FUNCTION", function))
+        device11 = (ROOT/"xr_3da/KichRenderDevice_DX11.cpp").read_text()
+        start=device11.index("void PrepareFrameEnd(");end=device11.index("\n    void EndFrame()",start)
+        end_method=device11.index("void EndFrame()",end);end_end=device11.index("\n    void OverdrawBegin()",end_method)
+        engine_source.write_text((HERE/"engine_frame_tests.cpp").read_text().replace("// PRODUCTION_FUNCTION", function).replace("// NATIVE_PREPARE_FRAME_END",device11[start:end]).replace("// NATIVE_END_FRAME",device11[end_method:end_end]))
         cxx = os.environ.get("CXX", "g++")
         for guards in ([], ["-DDEDICATED_SERVER"], ["-D_EDITOR"]):
             output = Path(folder)/"engine_frame"
@@ -45,7 +48,8 @@ def main():
             output=Path(folder)/"presenter"
             subprocess.run([*common,str(device_source),str(HERE/"presenter_tests.cpp"),str(scenarios),"-o",str(output)],check=True)
             subprocess.run([str(output)],check=True)
-    print("PASS: B4.3a game session / loader / lifecycle; native Windows presentation requires the game test")
+    subprocess.run([sys.executable,str(HERE/"run_warmup_tests.py")],check=True)
+    print("PASS: B4.3a game session / loader / lifecycle and E1.6 native precache gating; native Windows presentation requires the game test")
 
 if __name__ == "__main__":
     main()

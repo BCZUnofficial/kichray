@@ -78,11 +78,11 @@ inline void Bind(KichR4FrameSession& s,KichR4LevelSession& level,const Descripto
         kich_r4_telemetry::U64(category,id,"shader_flags",flags);
         kich_r4_telemetry::Text(category,id,"semantic",Name(m.semantic));
         kich_r4_telemetry::Text(category,id,"normal_path",flags&SHADER_BUMP?"SOC_R2_BUMP_WZY_PLUS_BUMP_AUX_RGB_MINUS_ONE; TBN; GBUFFER_NORMAL":"GEOMETRIC_NORMAL");
-        kich_r4_telemetry::Text(category,id,"lightmap_path",flags&SHADER_LIGHTMAP?"UV1; RGB_BAKED_ADDED_BEFORE_DIRECT_LIGHT; ALPHA_SUN":"NO_BAKED_LIGHTMAP");
-        kich_r4_telemetry::Text(category,id,"lighting_model","SOC_R2_ANALYTIC_MATERIAL_LUT; BUMP_R_SQUARED_GLOSS; LOCAL_Q_LINEAR_RANGE_0_95; STATIC_SUN_RAW_MASK_TIMES_2; SOURCE_BAKED_RGB_ADDITIVE");
+        kich_r4_telemetry::Text(category,id,"lightmap_path",flags&SHADER_LIGHTMAP?"UV1; RGB_BAKED_ADDED_BEFORE_DIRECT_LIGHT; ALPHA_SUN_DIAGNOSTIC_ONLY":"NO_BAKED_LIGHTMAP");
+        kich_r4_telemetry::Text(category,id,"lighting_model","SOC_R2_ANALYTIC_MATERIAL_LUT; BUMP_R_SQUARED_GLOSS; LOCAL_Q_LINEAR_RANGE_0_95; DYNAMIC_SUN_CURRENT_SHADOW_MAPS; SOURCE_SUN_MASK_DIAGNOSTIC_ONLY; SOURCE_BAKED_RGB_ADDITIVE");
         kich_r4_telemetry::Text(category,id,"lighting_limits","WEATHER_HEMI_RGB_ENV_APPROXIMATION; NO_ENV_CUBEMAP_SPECULAR; NO_LUT_TEXEL_QUANTIZATION");
         kich_r4_telemetry::Text(category,id,"gbuffer_layout","NORMAL_XY_OCT; Z_HEMI; W_GLOSS7_MATERIAL4_EXACT_HALF_INTEGER");
-        kich_r4_telemetry::Text(category,id,"hemi_path",flags&SHADER_HEMI?"UV1; MEAN_RGB_HEMI; ALPHA_SUN":"SOURCE_VERTEX_HEMI");
+        kich_r4_telemetry::Text(category,id,"hemi_path",flags&SHADER_HEMI?"UV1; MEAN_RGB_HEMI; ALPHA_SUN_DIAGNOSTIC_ONLY":"SOURCE_VERTEX_HEMI");
         kich_r4_telemetry::Text(category,id,"fallback_reason",fallback.empty()?"NONE":fallback.c_str());
         kich_r4_telemetry::Text(category,id,"pass",shadow?"SHADOW; OPTIONAL_MAPS_INTENTIONALLY_UNUSED":"MAIN_MATERIAL; GBUFFER_OR_FORWARD");
         if(!shadow){const std::string* names[]={&m.bump,&m.bump_aux,&m.lightmap,&m.hemi,&m.detail};

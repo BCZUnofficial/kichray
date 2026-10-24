@@ -50,7 +50,8 @@ inline bool AnyView(const kich_r4_capture::NativeModelCommand& model,const std::
 // a visible material reserves every texture slot, including late forward/UI.
 inline int32_t Preflight(KichR4FrameSession& frame,KichR4LevelSession& level,
                         const kich_r4_capture::Batch& batch,const KichR4GameFrame& input,
-                        KichR4DetailSession& details,bool scene,kich_r4_level::StaticFramePlan* shared_plan=NULL){
+                        KichR4DetailSession& details,bool scene,kich_r4_level::StaticFramePlan* shared_plan=NULL,bool pump_loading=false){
+    KichR4LevelSession::PreparedScope prepared(level);
     FrameDemand demand(level);
     kich_r4_level::StaticFramePlan fallback;
     if(!shared_plan){if(scene)fallback.Begin(level.scene,level.revision,input.tree_wind[0],input.tree_wind[2]);shared_plan=&fallback;}
@@ -121,7 +122,7 @@ inline int32_t Preflight(KichR4FrameSession& frame,KichR4LevelSession& level,
     // evict world textures late in Process, and never request noise for menus.
     if(scene && kich_r4_noise::Amount(input.postprocess[7])>0 && input.postprocess[9]>0 && std::isfinite(input.postprocess[9]))
         demand.NeedTexture(kich_r4_noise::Texture(),EFFECT);
-    return level.CommitTexturePlan(frame);
+    return level.CommitTexturePlan(frame,pump_loading);
 }
 }
 #endif
