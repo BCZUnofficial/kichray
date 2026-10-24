@@ -18,6 +18,9 @@ struct KichR4GameFrame {
     void* window;
     uint32_t width,height,engine_frame;
     float view_projection[16],position[3];
+    // Actual engine projection, including the first-person near-plane change.
+    // Kept separate for diagnostics; raster/reconstruction share full VP above.
+    float camera_projection[16];
     bool allowed,active,toggle_down,debug_down;
     // EXE-only: collect/upload the actual scene during the existing precache
     // frames, while the loading/UI image remains the displayed output.

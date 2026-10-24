@@ -295,6 +295,7 @@ Dictionary dictionaries[]={
     {"NATIVE_MATERIAL",128,48,384*1024,0,0,0,0,0,{}},{"MATERIAL_EXECUTION",128,48,384*1024,0,0,0,0,0,{}},
     {"MATERIAL_SHADOW_EXECUTION",32,48,128*1024,0,0,0,0,0,{}},
     {"MODEL_MATERIAL_EXECUTION",64,56,192*1024,0,0,0,0,0,{}},{"MODEL_LIGHTING",32,16,32*1024,0,0,0,0,0,{}},
+    {"HUD_MATERIAL_EXECUTION",16,24,32*1024,0,0,0,0,0,{}},
     {"CELESTIAL",16,48,32*1024,0,0,0,0,0,{}},{"GLOW",32,24,32*1024,0,0,0,0,0,{}},
     // Texture recovery evidence must survive the early world/material flood.
     {"DDS_RESIDENCY",256,16,128*1024,0,0,0,0,0,{}},{"UI_TEXTURE",128,16,64*1024,0,0,0,0,0,{}},

@@ -26,6 +26,13 @@ struct Mesh {
             if(!Finite(v.misc[2])){bounds_known=false;return;}height_factor=std::max(height_factor,std::fabs(v.misc[2]));}}
 };
 struct Group {uint32_t mesh,variant,first,count;};
+// EXE-side provenance only. A cache slot remains the same spatial cell while
+// fade/SSA/variant changes repack its accepted instances into different groups.
+// sx/sz distinguish a recycled cache slot; no item pointer crosses the frame.
+struct ShadowCell {
+    int32_t sx,sz;float center[3];bool ready;
+    ShadowCell():sx(0),sz(0),ready(false){center[0]=center[1]=center[2]=0;}
+};
 struct Frame {
     uint64_t generation;
     uint32_t engine_frame;
@@ -37,6 +44,8 @@ struct Frame {
      * The camera arrays above preserve the original camera fade/SSA choices. */
     std::vector<Group> shadow_groups;
     std::vector<KichR4DetailInstance> shadow_instances;
+    std::vector<ShadowCell> shadow_cells;
+    std::vector<uint32_t> shadow_instance_cells;
     float wave[3][4],wind[3][4];
     uint32_t variants[3];
     uint32_t legacy_draws;
@@ -44,14 +53,14 @@ struct Frame {
     double prepare_ms;
     Frame():generation(0),engine_frame(0),legacy_draws(0),legacy_vertices(0),legacy_indices(0),prepare_ms(0){ClearFrame(0);source_frame_known=false;}
     void ClearFrame(uint32_t frame){if(engine_frame!=frame){legacy_draws=0;legacy_vertices=legacy_indices=0;}
-        engine_frame=frame;source_frame_known=true;groups.clear();instances.clear();shadow_groups.clear();shadow_instances.clear();prepare_ms=0;
+        engine_frame=frame;source_frame_known=true;groups.clear();instances.clear();shadow_groups.clear();shadow_instances.clear();shadow_cells.clear();shadow_instance_cells.clear();prepare_ms=0;
         for(unsigned i=0;i<3;++i){variants[i]=0;for(unsigned j=0;j<4;++j)wave[i][j]=wind[i][j]=0;}}
     void Reset(){meshes.clear();ClearFrame(0);legacy_draws=0;legacy_vertices=legacy_indices=0;++generation;source_frame_known=false;}
     static void Validate(const KichR4DetailInstance& v){
         for(unsigned r=0;r<3;++r)for(unsigned c=0;c<4;++c)if(!Finite(v.row[r][c]))throw std::runtime_error("nonfinite detail transform");
         for(unsigned c=0;c<4;++c)if(!Finite(v.lighting[c]))throw std::runtime_error("nonfinite detail lighting");}
     void Append(const KichR4DetailInstance& v){if(instances.size()>=KICH_R4_MAX_DETAIL_INSTANCES)throw std::runtime_error("detail instance safety limit");Validate(v);instances.push_back(v);}
-    void AppendShadow(const KichR4DetailInstance& v){if(shadow_instances.size()>=KICH_R4_MAX_DETAIL_INSTANCES)throw std::runtime_error("detail shadow candidate safety limit");Validate(v);shadow_instances.push_back(v);}
+    void AppendShadow(const KichR4DetailInstance& v,uint32_t cell=UINT32_MAX){if(shadow_instances.size()>=KICH_R4_MAX_DETAIL_INSTANCES)throw std::runtime_error("detail shadow candidate safety limit");Validate(v);shadow_instances.push_back(v);shadow_instance_cells.push_back(cell);}
 };
 }
 /* EXE-only frontend store. Contains compact instances, never expanded or

@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include "xr_3da/xrRender_R4/R4ResourceRules.h"
 #include "xr_3da/KichR4Geometry.h"
+#include "xr_3da/xrRender_R4/R4DeferredRules.h"
 using namespace kich_r4;
 enum {D3D11_USAGE_DEFAULT=0,D3D11_USAGE_DYNAMIC=2,D3D11_BIND_VERTEX_BUFFER=1,D3D11_BIND_INDEX_BUFFER=2,D3D11_BIND_CONSTANT_BUFFER=4,D3D11_CPU_ACCESS_WRITE=65536,D3D11_MAP_WRITE_DISCARD=4};
 #define FAILED(value) ((value)<0)

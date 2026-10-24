@@ -27,6 +27,7 @@ def function(signature):
 signatures = (
     "float PackMaterial(", "float MaterialGloss(", "float MaterialClass(",
     "float2 MaterialSlice(", "float2 MaterialResponse(", "float SpecularIntensity(",
+    "float FogTransmittance(", "float3 ForwardFog(",
     "float4 DirectLight(", "float4 SunLighting(", "float4 PSSun(",
     "float4 PSForwardSun(",
 )

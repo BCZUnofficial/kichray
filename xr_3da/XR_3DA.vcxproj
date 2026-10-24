@@ -573,6 +573,8 @@
     <ClInclude Include="KichR4LightAdmission.h" />
     <ClInclude Include="KichR4FramePhases.h" />
     <ClInclude Include="KichR4RecordControl.h" />
+    <ClInclude Include="KichR4UpdateProbe.h" />
+    <ClInclude Include="KichR4LightProjector.h" />
     <ClInclude Include="KichR4RecordSession.h" />
     <ClInclude Include="KichR4RecordTiming.h" />
     <ClInclude Include="KichR4ShadowRecord.h" />

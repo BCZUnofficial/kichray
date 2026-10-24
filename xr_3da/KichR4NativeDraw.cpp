@@ -114,6 +114,7 @@ bool KichR4_NativeStyle(kich_r4_capture::Style& out){out=style;out.blend=states[
     out.surface=KichR4ReadSurface([&](uint32_t key,uint32_t){return states[key];});
     for(unsigned i=0;i<8;++i)out.surface.samplers[i]=KichR4ReadSampler([&](uint32_t key,uint32_t){return sampler_states[i][key];});
     out.depth=states[D3DRS_ZENABLE]!=0;out.write=states[D3DRS_ZWRITEENABLE]!=0;out.alpha_func=states[D3DRS_ALPHATESTENABLE]?states[D3DRS_ALPHAFUNC]:8;
+    out.fog_enabled=states[D3DRS_FOGENABLE]!=0;
     out.alpha_ref=float(states[D3DRS_ALPHAREF]&255)/255.f;out.clamp=0;
     out.cull=states[D3DRS_CULLMODE]==D3DCULL_CW?KICH_R4_CULL_FRONT:states[D3DRS_CULLMODE]==D3DCULL_CCW?KICH_R4_CULL_BACK:KICH_R4_CULL_NONE;return true;}
 void KichR4_NativeElement(ShaderElement* e){KichR4_NativeElementPass(e,0);}
@@ -272,7 +273,9 @@ void KichR4_NativeDraw(void* declaration,void* vb,void* ib,uint32_t stride,uint3
         cmd.shader=active_shader;cmd.shader_element=source_element;cmd.shader_pass=source_pass;
         if(g_render_snapshot_active){cmd.resource=texture;cmd.skin="CPU_CAPTURE_STREAM";}
         cmd.console=g_render_snapshot_console;
-        if(effect==2){cmd.style.depth=1;cmd.style.write=0;cmd.style.cull=KICH_R4_CULL_NONE;}
+        // R2 combine blends distant geometry onto a complete sky background.
+        // Celestial source masking remains a separate opaque-depth predicate.
+        if(effect==2){cmd.style.depth=0;cmd.style.write=0;cmd.style.cull=KICH_R4_CULL_NONE;}
         SnapshotGeneratedGeometry(decl,dn,stride,topology,vertices,reused,normal,tangent,binormal,uv,batch,vbase,world,nm,screen,cmd);
         SnapshotCommand(cmd,batch.vertices,batch.indices,celestial_source && !screen?"CELESTIAL_SOURCE":screen?"UI_GEOMETRY":"UNKNOWN",NULL,0,uv!=NULL);
         batch.commands.push_back(cmd);if(layer==2)++batch.ui;else if(layer==1)++batch.hands;else ++batch.models;

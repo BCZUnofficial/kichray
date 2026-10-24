@@ -144,7 +144,7 @@ int main(){try{
     int ids[66]={};KichR4LocalLight light={};light.type=2;light.range=10;light.direction[2]=1;light.cone=1;light.color[0]=1;
     for(unsigned i=0;i<66;++i){KichR4LightIdentity source={};source.process_handle=uint64_t(reinterpret_cast<uintptr_t>(&ids[i]));source.serial=i+1;
         KichR4_CaptureLightIdentity(&ids[i],source);KichR4_CaptureLight(&ids[i],light,true);KichR4_CaptureLightShadow(&ids[i],true);}
-    KichR4LightingFrame first;first.valid=1;first.hemi[1]=.3f;first.sun_direction[1]=-1;
+    KichR4LightingFrame first;first.valid=1;first.hemi[1]=.3f;first.sun_direction[1]=-1;first.fog_valid=1;first.fog_near=31;first.fog_far=190;
     KichR4_FreezeLighting(100,1000,camera,first,false,vp.m);
     Require(first.count==66 && queries==66,"one volume selection for complete frozen source list");
     Require(first.selection_frame==100 && first.local_shadow_size==256 && first.shadow_plan_faces==66,"shadow pressure planned before caster collection");
@@ -158,6 +158,7 @@ int main(){try{
     light.color[0]=.2f;KichR4_CaptureLight(&ids[0],light,true);
     KichR4LightingFrame present;present.hemi[1]=.9f;
     Require(KichR4_CopyFrozenLighting(100,camera,vp.m,present),"same frame consumer reuses captured source/weather state");
+    Require(present.fog_valid && present.fog_near==31 && present.fog_far==190,"frozen lighting retains fog from the early environment producer");
     Require(present.count==66 && present.hemi[1]==.3f && present.lights[0].color[0]==1 && queries==66,"late mutation cannot change already-collected frame");
     KichR4_FreezeLighting(100,1100,camera,present,true,vp.m);
     Require(present.count==66 && !present.r1_lights_applied && queries==66,"repeat publication does not reselect or advance recovery");

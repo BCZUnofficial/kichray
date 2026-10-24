@@ -43,17 +43,25 @@ bool KichR4_CaptureLightIdentity(const void* id,const KichR4LightIdentity& sourc
     try{if(capture->light_sources.size()<KICH_R4_LIGHT_REGISTRY_CAPACITY || capture->light_sources.find(id)!=capture->light_sources.end()){capture->light_sources[id]=source;return true;}}catch(...){}
     ++capture->light_identity_rejections;return false;
 }
+void KichR4_CaptureLightProjector(const void* id,const KichR4LightProjector& source){
+    if(!capture || !id)return;
+    try{if(capture->light_projectors.size()<KICH_R4_LIGHT_REGISTRY_CAPACITY || capture->light_projectors.count(id)){
+        KichR4LightProjector& target=capture->light_projectors[id];
+        if(target.texture!=source.texture)target.texture=source.texture;
+        memcpy(target.right,source.right,sizeof(target.right));
+    }}catch(...){capture->light_projectors.erase(id);} // An optional cookie cannot disable numeric illumination.
+}
 void KichR4_CaptureLightForget(const void* id){if(!capture)return;
     if(frozen_lighting.admission){KichR4LightIdentity source={};const auto found=capture->light_sources.find(id);
         if(found!=capture->light_sources.end())source=found->second;else source.process_handle=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(id));
         frozen_lighting.admission->Forget(source);}
-    capture->lights.erase(id);capture->light_sources.erase(id);capture->unshadowed_lights.erase(id);capture->light_observations.erase(id);}
+    capture->lights.erase(id);capture->light_sources.erase(id);capture->light_projectors.erase(id);capture->unshadowed_lights.erase(id);capture->light_observations.erase(id);}
 void KichR4_CaptureLightShadow(const void* id,bool shadow){if(!capture)return;if(shadow)capture->unshadowed_lights.erase(id);else capture->unshadowed_lights.insert(id);}
 void KichR4_SetLightVisibility(KichR4LightVisibility query){light_visibility=query;}
 void KichR4_CaptureLighting(const float* camera,KichR4LightingFrame& frame,bool r1_lights_enabled,const float* camera_vp){
     frame.selection_frame=frame.local_shadow_size=frame.shadow_plan_faces=0;
     frame.shadow_resolution_changes=frame.shadow_resolution_reason=0;
-    frame.count=0;frame.shadow_mask=0;frame.occlusion_enabled=frame.occlusion_tested=0;frame.occlusion_rejected.clear();
+    frame.count=0;frame.shadow_mask=0;frame.projectors.clear();frame.occlusion_enabled=frame.occlusion_tested=0;frame.occlusion_rejected.clear();
     frame.r1_lights_requested=frame.r1_lights_applied=r1_lights_enabled?1u:0u;if(!capture || !camera)return;
     try{capture->SelectLights(camera,frame,r1_lights_enabled,camera_vp,light_visibility);}catch(...){frame.count=0;frame.shadow_mask=0;}
 }

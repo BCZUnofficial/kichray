@@ -17,6 +17,7 @@
 #include "KichR4MaterialServices.h"
 #include "KichR4TexturePreflight.h"
 #include "KichR4FramePhases.h"
+#include "KichR4UpdateProbe.h"
 #include "KichR4RecordSession.h"
 #include "KichR4RecordTiming.h"
 #include "KichR4Watch.h"
@@ -482,6 +483,7 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
                     observation.current_entity_position[0],observation.current_entity_position[1],observation.current_entity_position[2],unsigned(observation.view_entity_valid),observation.view_entity_id,
                     observation.view_entity_position[0],observation.view_entity_position[1],observation.view_entity_position[2]);
                 kich_r4_phases::Report phase_report;kich_r4_phases::Global().TakeReport(phase_report);
+                kich_r4_update::EmitReport(native.record);
                 native.record.Emit("[R4 E1.7 cpu] completed_frames=%u cycle_mean_ms=%.3f cycle_min_ms=%.3f cycle_max_ms=%.3f device_mean_ms=%.3f message_gap_mean_ms=%.3f frames_ge_16_667ms=%u frames_ge_33_333ms=%u frames_ge_50ms=%u slow_retained=%u; completed_previous_normal_frames; CPU_wall_clock; nested_spans_not_additive",
                     phase_report.samples,phase_report.samples?phase_report.Milliseconds(phase_report.total_cycle_ticks)/phase_report.samples:0,
                     phase_report.Milliseconds(phase_report.cycle_min_ticks),phase_report.Milliseconds(phase_report.cycle_max_ticks),
@@ -496,6 +498,19 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
                         p.frame,p.Milliseconds(p.CycleTicks()),p.Milliseconds(p.device_ticks),p.Milliseconds(p.gap_ticks),p.PhaseMS(kich_r4_phases::FrameMove),p.PhaseMS(kich_r4_phases::Render),p.PhaseMS(kich_r4_phases::WorkerWait),p.PhaseMS(kich_r4_phases::WorkerFallback),p.PhaseMS(kich_r4_phases::NativePrelude),p.PhaseMS(kich_r4_phases::NativeSubmit),p.PhaseMS(kich_r4_phases::Present),p.PhaseMS(kich_r4_phases::PostPresent),p.measured);
                 }
                 KichR4_ReportLightingTransitions(input.engine_frame,RecordOutput);
+                const double projection_a=input.camera_projection[10],projection_b=input.camera_projection[14];
+                const bool projection_valid=kich_r4_lighting::Finite(float(projection_a)) && kich_r4_lighting::Finite(float(projection_b)) && projection_a>1.0 && projection_b<0;
+                native.record.Emit("[R4 E1.8 projection] frame=%u valid=%u near_m=%.7g far_m=%.7g depth_a=%.9g depth_b=%.9g; source=Device_mProject; receiver=camera_relative_inverse_exact_raster_VP",
+                    input.engine_frame,unsigned(projection_valid),projection_valid?-projection_b/projection_a:0,projection_valid?-projection_b/(projection_a-1):0,projection_a,projection_b);
+                native.record.Emit("[R4 E1.8 projectors] frame=%u current_world=%u spots=%u named=%u ready=%u fallback=%u; selected_opaque_lights_once; named_unavailable_uses_analytic_light; not_visible_pixels",
+                    input.engine_frame,unsigned(world_current),world_current?c.deferred.frame_projector_spots:0,world_current?c.deferred.frame_projector_named:0,
+                    world_current?c.deferred.frame_projector_ready:0,world_current?c.deferred.frame_projector_fallback:0);
+                const auto& hud=c.deferred.native_models;
+                native.record.Emit("[R4 E1.8 HUD] frame=%u current_world=%u recorded_draws=%llu valid_exposure_draws=%llu mapped_draws=%llu unlit_draws=%llu hemi_min=%.6g hemi_max=%.6g local_add_draws=%u; visual_part_submissions_not_pixels; no_per_bone_light_queries",
+                    input.engine_frame,unsigned(world_current),static_cast<unsigned long long>(world_current?hud.hud_recorded_draws:0),
+                    static_cast<unsigned long long>(world_current?hud.hud_exposure_valid_draws:0),static_cast<unsigned long long>(world_current?hud.hud_mapped_draws:0),
+                    static_cast<unsigned long long>(world_current?hud.hud_unlit_draws:0),world_current && hud.hud_exposure_valid_draws?hud.hud_hemi_min:0,
+                    world_current && hud.hud_exposure_valid_draws?hud.hud_hemi_max:0,world_current?hud.draw_calls[KichR4ModelSession::HUDAdd]:0);
                 native.record.Emit("[R4 E1.7 status] frame=%u fps_current=%.2f fps_recent=%.2f present_interval_ms=%.3f recent_samples=%u recent_ms=%.0f shadow_submission=%s sun_cascades=%u spot_shadow_lights=%u point_shadow_lights=%u local_shadow_faces=%u; FPS_normal_frames_only; CPU_submission_not_visible_pixels; report_period_ms=2000",
                     input.engine_frame,eligible?c.metrics.Current():0,c.metrics.Recent(),eligible?c.metrics.interval:0,c.metrics.report_count,c.metrics.report_ms,
                     !world_current?"NO_CURRENT_WORLD_FRAME":c.deferred.frame_sun_cascades || c.deferred.frame_local_shadow_faces?"ON":"NONE",world_current?c.deferred.frame_sun_cascades:0,world_current?c.deferred.frame_spot_shadow_lights:0,world_current?c.deferred.frame_point_shadow_lights:0,world_current?c.deferred.frame_local_shadow_faces:0);
@@ -504,6 +519,13 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
                 native.record.Emit("[R4 E1.7 stability] normal_created=%llu normal_released=%llu normal_mesh_uploads=%llu normal_submit_peak_ms=%.3f model_prepare_current_ms=%.3f GPU_payload_bytes=%llu live_resources=%u DDS_bytes=%llu DDS_budget=%llu; payload_not_VRAM; interval_window=120; low=reciprocal_mean_slowest_ceil_1pct",
                     static_cast<unsigned long long>(c.created_window),static_cast<unsigned long long>(c.released_window),static_cast<unsigned long long>(c.meshes_window),c.submit_peak_ms,world_current?c.deferred.model_prepare_ms:0,
                     static_cast<unsigned long long>(resources.payload_bytes),resources.live_resources,static_cast<unsigned long long>(c.level.texture_registry.bytes),static_cast<unsigned long long>(c.level.texture_registry.budget));
+                native.record.Emit("[R4 E1.8 resource_classes] frame=%u model_meshes=%llu model_vertex_bytes=%llu model_source_index_bytes=%llu model_partition_buffers=%llu model_partition_bytes=%llu partition_created_current=%llu pose_capacity_bytes=%llu DDS_bytes=%llu; registered_payload_not_VRAM; immutable_LOD_ranges_share_partitions",
+                    input.engine_frame,static_cast<unsigned long long>(c.deferred.native_models.meshes.size()),
+                    static_cast<unsigned long long>(c.deferred.native_models.vertex_bytes),
+                    static_cast<unsigned long long>(c.deferred.native_models.index_bytes-c.deferred.native_models.basis_bytes),
+                    static_cast<unsigned long long>(c.deferred.native_models.basis_buffers),static_cast<unsigned long long>(c.deferred.native_models.basis_bytes),
+                    static_cast<unsigned long long>(world_current?c.deferred.native_models.basis_creations:0),
+                    static_cast<unsigned long long>(c.deferred.native_models.AllocatedPoseBytes()),static_cast<unsigned long long>(c.level.texture_registry.bytes));
                 if(c.peak.frame){const auto& peak=c.peak;
                     native.record.Emit("[R4 E1.7 heavy_frame] frame=%u camera=[%.3f %.3f %.3f] CPU_queue_ms=%.3f submit_ms=%.3f plan_ms=%.3f preflight_ms=%.3f model_prepare_ms=%.3f detail_bounds=%llu bounds_ms=%.3f BVH_build_ms=%.3f BVH_refit_ms=%.3f sun_select_ms=%.3f local_select_ms=%.3f io_ms=%.3f parse_ms=%.3f upload_api_ms=%.3f opens=%llu uploads=%llu created=%u lights=%u local_shadow_faces=%u; maximum_queue_plus_submit_in_normal_window; nested_not_additive",
                         peak.frame,peak.camera[0],peak.camera[1],peak.camera[2],peak.queue,peak.submit,peak.plan,peak.preflight,peak.model,static_cast<unsigned long long>(peak.detail_bounds),peak.bounds,peak.bvh_build,peak.bvh_refit,peak.sun_select,peak.local_select,peak.io,peak.parse,peak.upload,static_cast<unsigned long long>(peak.opens),static_cast<unsigned long long>(peak.uploads),peak.created,peak.lights,peak.shadow_faces);
@@ -513,10 +535,12 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
                     input.lighting.count,input.lighting.occlusion_tested,static_cast<unsigned>(input.lighting.occlusion_rejected.size()),c.deferred.visibility_plan.queries,c.deferred.visibility_plan.cache_hits,
                     static_cast<unsigned long long>(c.deferred.visibility_plan.bounds_tests),static_cast<unsigned long long>(c.deferred.visibility_plan.node_tests),c.deferred.forward_sorts,plan_ms,preflight_ms);
                 const auto& details=c.deferred.details;
-                native.record.Emit("[R4 E1.7 details] shadow_bounds=%llu shadow_queries=%llu shadow_reuses=%llu leaf_tests=%llu node_tests=%llu index_builds=%u index_refits=%u rebuild_reasons=0x%X bounds_ms=%.3f BVH_build_ms=%.3f BVH_refit_ms=%.3f sun_select_ms=%.3f local_select_ms=%.3f; CPU_current_frame; reasons=1_source,2_count,4_order_origin,8_bounds,16_empty_or_invalid,32_no_topology",
+                native.record.Emit("[R4 E1.7 details] shadow_bounds=%llu shadow_queries=%llu shadow_reuses=%llu leaf_tests=%llu node_tests=%llu index_builds=%u index_refits=%u rebuild_reasons=0x%X bounds_ms=%.3f BVH_build_ms=%.3f BVH_refit_ms=%.3f sun_select_ms=%.3f local_select_ms=%.3f; CPU_current_frame; reasons=1_source,2_count,4_order_origin,8_bounds,16_empty_or_invalid,32_no_topology,64_cell_layout",
                     static_cast<unsigned long long>(details.shadow_bounds_built),static_cast<unsigned long long>(details.shadow_queries),static_cast<unsigned long long>(details.shadow_cache_hits),
                     static_cast<unsigned long long>(details.shadow_visibility_tests),static_cast<unsigned long long>(details.shadow_node_tests),details.shadow_index_builds,details.shadow_index_refits,details.shadow_rebuild_reasons,
                     details.shadow_bounds_ms,details.shadow_bvh_build_ms,details.shadow_bvh_refit_ms,details.shadow_sun_select_ms,details.shadow_local_select_ms);
+                native.record.Emit("[R4 E1.8 detail_index] frame=%u spatial_unit=%s cells=%llu; packed_order_is_not_cell_identity",
+                    input.engine_frame,details.shadow_cell_mode?"CACHE_CELL":"LEGACY_INSTANCE",static_cast<unsigned long long>(details.shadow_cells.size()));
                 }else native.record.Emit("[R4 E1.7 work] frame=%u state=NO_CURRENT_WORLD_FRAME; scene_work_not_reused_from_previous_frame",input.engine_frame);
                 const auto& preflight=c.level.preflight_probe;
                 native.record.Emit("[R4 E1.7 preflight] measured=%u traversal_ms=%.3f planning_ms=%.3f commit_ms=%.3f io_ms=%.3f parse_ms=%.3f upload_api_ms=%.3f opens=%llu open_failures=%llu source_bytes=%llu prepared_hits=%llu prepared_bytes=%llu metadata_hits=%llu retries_skipped=%llu resident_hits=%llu uploads=%llu uploaded_bytes=%llu upload_failures=%llu evictions=%llu; traversal_commit_include_nested_IO_parse_upload; opens_are_logical_sources",
@@ -526,7 +550,7 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
                     static_cast<unsigned long long>(preflight.uploads),static_cast<unsigned long long>(preflight.upload_bytes),static_cast<unsigned long long>(preflight.upload_failures),static_cast<unsigned long long>(preflight.evictions));
                 if(world_current){const auto& shadows=c.deferred.shadow_record;
                 for(unsigned cascade=0;cascade<2;++cascade){const auto& pass=shadows.sun[cascade];
-                    native.record.Emit("[R4 E1.7 sun] frame=%u cascade=%u valid=%u begun=%u completed=%u map=%llu map_generation=%llu resolution=%u span_m=%.3f texel_m=%.5f; world_to_shadow; blend_near_clip_edge=0.9..1.0; point_comparison_9tap_PCF",
+                    native.record.Emit("[R4 E1.7 sun] frame=%u cascade=%u valid=%u begun=%u completed=%u map=%llu map_generation=%llu resolution=%u span_m=%.3f texel_m=%.5f; world_to_shadow; blend_near_clip_edge=0.9..1.0; point_comparison_valid_plane_9tap_invalid_plane_1tap_PCF",
                         input.engine_frame,cascade,unsigned(shadows.valid && shadows.frame==input.engine_frame && scene_requested),unsigned(pass.begun),unsigned(pass.completed),static_cast<unsigned long long>(pass.map),static_cast<unsigned long long>(pass.generation),pass.resolution,pass.span,pass.texel_size);
                     native.record.Emit("[R4 E1.7 sun_matrix] frame=%u cascade=%u m=[%.9g %.9g %.9g %.9g; %.9g %.9g %.9g %.9g; %.9g %.9g %.9g %.9g; %.9g %.9g %.9g %.9g]",
                         input.engine_frame,cascade,pass.matrix[0],pass.matrix[1],pass.matrix[2],pass.matrix[3],pass.matrix[4],pass.matrix[5],pass.matrix[6],pass.matrix[7],pass.matrix[8],pass.matrix[9],pass.matrix[10],pass.matrix[11],pass.matrix[12],pass.matrix[13],pass.matrix[14],pass.matrix[15]);

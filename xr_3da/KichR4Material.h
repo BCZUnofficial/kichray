@@ -25,10 +25,10 @@ struct Descriptor {
     float detail_scale[2],material,alpha_ref,emissive_gain,emissive_specular;
     uint32_t alpha_func,cull,src_blend,dst_blend,required_attributes,passes,detail_usage,source_flags,source_alpha_reference;
     uint32_t base_uv,bump_uv,detail_uv,lightmap_uv,hemi_uv;
-    bool depth_test,depth_write,tree_wave;
+    bool depth_test,depth_write,tree_wave,fog_enabled;
     Descriptor():semantic(UNKNOWN),special(SPECIAL_NONE),source_family(FAMILY_UNKNOWN),class_id(UINT64_MAX),material(1),alpha_ref(0),emissive_gain(0),emissive_specular(0),alpha_func(8),cull(0),
         src_blend(2),dst_blend(1),required_attributes(ATTR_NORMAL),passes(0),detail_usage(0),source_flags(0),source_alpha_reference(0),base_uv(0),bump_uv(0),detail_uv(0),lightmap_uv(1),hemi_uv(1),
-        depth_test(true),depth_write(true),tree_wave(false){detail_scale[0]=detail_scale[1]=1;}
+        depth_test(true),depth_write(true),tree_wave(false),fog_enabled(false){detail_scale[0]=detail_scale[1]=1;}
 };
 struct Source {
     Descriptor descriptor;
@@ -39,9 +39,9 @@ struct Source {
 };
 struct PassState {
     KichR4SurfaceState surface=KichR4DefaultSurface();
-    bool blend,alpha_test,depth_test,depth_write,distortion,emissive,wallmark,unlit,authored_wallmark;
+    bool blend,alpha_test,depth_test,depth_write,distortion,emissive,wallmark,unlit,authored_wallmark,fog_enabled;
     uint32_t src,dst,alpha_func,alpha_reference,cull;
-    PassState():blend(false),alpha_test(false),depth_test(true),depth_write(true),distortion(false),emissive(false),wallmark(false),unlit(false),authored_wallmark(false),
+    PassState():blend(false),alpha_test(false),depth_test(true),depth_write(true),distortion(false),emissive(false),wallmark(false),unlit(false),authored_wallmark(false),fog_enabled(false),
         src(2),dst(1),alpha_func(8),alpha_reference(0),cull(0){}
 };
 inline bool AuthoredWallmarkSource(uint32_t element,const char* vertex_shader){
@@ -61,7 +61,7 @@ inline uint64_t Key(const Descriptor& d){
     for(unsigned s=0;s<sizeof(strings)/sizeof(strings[0]);++s){for(size_t i=0;i<strings[s]->size();++i){key^=static_cast<unsigned char>((*strings[s])[i]);key*=UINT64_C(1099511628211);}key^=255;key*=UINT64_C(1099511628211);}
     const uint64_t integers[]={uint64_t(d.semantic),uint64_t(d.special),uint64_t(d.source_family),d.class_id,d.alpha_func,d.cull,d.src_blend,d.dst_blend,d.required_attributes,d.passes,d.detail_usage,d.source_flags,d.source_alpha_reference,
         d.base_uv,d.bump_uv,d.detail_uv,d.lightmap_uv,d.hemi_uv,
-        uint64_t(d.depth_test),uint64_t(d.depth_write),uint64_t(d.tree_wave)};
+        uint64_t(d.depth_test),uint64_t(d.depth_write),uint64_t(d.tree_wave),uint64_t(d.fog_enabled)};
     for(unsigned v=0;v<sizeof(integers)/sizeof(integers[0]);++v)for(unsigned b=0;b<8;++b){key^=(integers[v]>>(b*8))&255;key*=UINT64_C(1099511628211);}
     const float floats[]={d.detail_scale[0],d.detail_scale[1],d.material,d.alpha_ref,d.emissive_gain,d.emissive_specular};
     const unsigned char* bytes=reinterpret_cast<const unsigned char*>(floats);
@@ -76,7 +76,7 @@ inline Descriptor Build(const Source& source,const PassState& state) {
     d.source_alpha_reference=source.alpha_reference;
     d.alpha_ref=float(state.alpha_reference&255)/255.f;d.alpha_func=state.alpha_test?state.alpha_func:8;
     d.cull=state.cull;d.src_blend=state.src;d.dst_blend=state.dst;
-    d.depth_test=state.depth_test;d.depth_write=state.depth_write;
+    d.depth_test=state.depth_test;d.depth_write=state.depth_write;d.fog_enabled=state.fog_enabled;
     const bool true_blend=state.blend && !(state.src==2 && state.dst==1);
     // Exact compiled wmark VS on E0/E1 identifies authored coplanar overlays.
     // Keep forward compatibility for non-level consumers; static submission
@@ -148,7 +148,7 @@ template<class Style> inline void Apply(const Descriptor& d,Style& s) {
     s.blend=d.semantic==BLENDED || d.semantic==ADDITIVE || d.semantic==DISTORTION ||
         (d.semantic==EMISSIVE && !(d.src_blend==2 && d.dst_blend==1));
     s.src=d.src_blend;s.dst=d.dst_blend;s.alpha_func=d.alpha_func;s.alpha_ref=d.alpha_ref;
-    s.depth=d.depth_test;s.write=d.depth_write;s.cull=d.cull;s.surface=d.surface;
+    s.depth=d.depth_test;s.write=d.depth_write;s.cull=d.cull;s.surface=d.surface;s.fog_enabled=d.fog_enabled;
 }
 class Cache {
     std::map<const void*,std::vector<Descriptor> > entries;

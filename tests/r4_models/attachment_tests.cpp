@@ -47,8 +47,11 @@ struct CKinematics:FHierrarhyVisual {
     void CalculateWallmarks(){++wallmarks;}
 };
 struct ROS {virtual ~ROS(){}};
-struct R4ROS:ROS {unsigned calls=0;void Exposure(float& hemi,float& sun){++calls;hemi=sun=1;}};
-struct IRenderable {ROS* ros=NULL;ROS* renderable_ROS(){return ros;}};
+struct R4ROS:ROS {unsigned calls=0;float hemi_value=1,sun_value=1;void Exposure(float& hemi,float& sun){++calls;hemi=hemi_value;sun=sun_value;}};
+struct IRenderable {virtual ~IRenderable(){}ROS* ros=NULL;ROS* renderable_ROS(){return ros;}};
+struct CObject:IRenderable {CObject* parent=NULL;CObject* H_Root(){return parent?parent->H_Root():this;}};
+struct Level {CObject* view=NULL;CObject* CurrentViewEntity(){return view;}};
+Level* g_pGameLevel=NULL;
 struct CRender {
     struct Queued {IRender_Visual* visual;Fmatrix world;bool hud;float distance;bool light_valid;float hemi,sun;};
     std::vector<Queued> queue;Fmatrix transform;bool invisible=false;int val_bHUD=FALSE;IRenderable* object=NULL;
@@ -99,10 +102,27 @@ void AdmissionAndNestedSkeletons(){
     IRender_Visual plain;renderer.add_Visual(&plain);
     Require(renderer.queue.size()==3,"ordinary visuals still enqueue normally");
 }
+void HUDExposure(){
+    CRender renderer;renderer.val_bHUD=TRUE;renderer.ViewBase.visible=false;
+    CObject carrier,item;item.parent=&carrier;R4ROS carrier_ros,item_ros;
+    carrier_ros.hemi_value=.2f;carrier_ros.sun_value=0;item_ros.hemi_value=.9f;
+    carrier.ros=&carrier_ros;item.ros=&item_ros;renderer.object=&item;
+    IRender_Visual hands;renderer.add_Visual(&hands);
+    Require(renderer.queue.back().hud && renderer.queue.back().light_valid && renderer.queue.back().hemi==.2f && renderer.queue.back().sun==0,"HUD receives carrier exposure even outside world camera frustum");
+    Require(carrier_ros.calls==1 && item_ros.calls==0 && renderer.object==&item,"lighting owner does not replace item identity or sample stale item bounds");
+    carrier_ros.hemi_value=.7f;renderer.add_Visual(&hands);
+    Require(renderer.queue.back().hemi==.7f,"new HUD capture follows the existing owner exposure");
+    Level level;level.view=&carrier;g_pGameLevel=&level;renderer.object=NULL;renderer.add_Visual(&hands);
+    Require(renderer.queue.back().light_valid && renderer.queue.back().hemi==.7f,"HUD with no item owner can reuse view entity exposure");
+    g_pGameLevel=NULL;renderer.add_Visual(&hands);
+    Require(!renderer.queue.back().light_valid,"missing HUD owner stays explicitly unmeasured");
+    renderer.object=&item;renderer.invisible=true;const unsigned before=carrier_ros.calls;renderer.add_Visual(&hands);
+    Require(carrier_ros.calls==before,"invisible HUD performs no exposure work");
+}
 int main(){try{
     for(unsigned hierarchy=0;hierarchy<2;++hierarchy)
         for(unsigned gameplay=0;gameplay<2;++gameplay)
             for(unsigned shadow=0;shadow<2;++shadow)Attachments(hierarchy!=0,gameplay!=0,shadow!=0);
-    AdmissionAndNestedSkeletons();
+    AdmissionAndNestedSkeletons();HUDExposure();
     std::printf("E1.6 attachment ordering: %u checks passed\n",checks);return 0;
 }catch(const std::exception& e){std::fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

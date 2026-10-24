@@ -16,11 +16,11 @@ with tempfile.TemporaryDirectory(prefix='kich-b44-hlsl-') as folder:
         if result.returncode:
             raise SystemExit(result.stdout+result.stderr)
         reflection+=result.stdout+'\n'
-    offsets={'world':0,'mvp':64,'normal_matrix':128,'inverse_vp':192,'shadow':256,'camera':640,'screen':656,'sun_direction':672,'sun_color':688,'ambient':704,'hemi':720,'fog':736,'light_position':752,'light_direction':768,'light_color':784,'alpha':800,'material':816,'color_scale':832,'color_bias':848,'sun_scale_bias':864,'tree_wave':880,'tree_wind':896}
+    offsets={'world':0,'mvp':64,'normal_matrix':128,'inverse_vp':192,'shadow':256,'camera':640,'screen':656,'sun_direction':672,'sun_color':688,'ambient':704,'hemi':720,'fog':736,'light_position':752,'light_direction':768,'light_color':784,'alpha':800,'material':816,'color_scale':832,'color_bias':848,'sun_scale_bias':864,'tree_wave':880,'tree_wind':896,'fog_params':912,'fog_plane':928}
     for name,offset in offsets.items():
         if not re.search(r'\b'+name+r'(?:\[0\])?: offset '+str(offset)+r'\b',reflection):
             raise SystemExit('Missing/wrong HLSL member offset: '+name)
-    if not re.search(r'Frame: .*size 912\b',reflection):
+    if not re.search(r'Frame: .*size 944\b',reflection):
         raise SystemExit('Wrong HLSL cbuffer size')
     if not re.search(r'\bmodel_header: offset 0\b',reflection) or not re.search(r'ModelPose: .*size 16400\b',reflection):
         raise SystemExit('Wrong G3c model palette packing')
@@ -28,4 +28,4 @@ with tempfile.TemporaryDirectory(prefix='kich-b44-hlsl-') as folder:
         result=subprocess.run([tool,'-D','-DKICH_R4_MODEL_BONE_CAPACITY='+str(capacity),'-V','--hlsl-iomap','--hlsl-offsets','-l','-q','-S','vert','-e','VSModelGPU',str(source),'-o',str(Path(folder)/('model'+str(capacity)+'.spv'))],text=True,capture_output=True)
         if result.returncode or not re.search(r'ModelPose: .*size '+str(16+64*capacity)+r'\b',result.stdout) or not re.search(r'\bmodel_bones(?:\[0\])?: offset 16\b',result.stdout):
             raise SystemExit('Wrong class-sized palette '+str(capacity)+'\n'+result.stdout+result.stderr)
-print('PASS: HLSL entries, 912-byte frame, five header-first palette classes (glslang, not FXC/GPU)')
+print('PASS: HLSL entries, 944-byte frame, five header-first palette classes (glslang, not FXC/GPU)')

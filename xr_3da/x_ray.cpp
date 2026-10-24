@@ -6,6 +6,7 @@
 //	AlexMX		- Alexander Maksimchuk
 //-----------------------------------------------------------------------------
 #include "stdafx.h"
+#include "KichR4UpdateProbe.h"
 #include "KichR4Native.h"
 #include "igame_level.h"
 #include "igame_persistent.h"
@@ -1019,11 +1020,20 @@ void CApplication::SetLoadLogo(ref_shader NewLoadLogo){
 // Sequential
 void CApplication::OnFrame()
 {
-	Engine.Event.OnFrame();
-	g_SpatialSpace->update();
-	g_SpatialSpacePhysic->update();
+	{
+		kich_r4_update::Scope<> probe(kich_r4_update::ApplicationEvents);
+		Engine.Event.OnFrame();
+	}
+	{
+		kich_r4_update::Scope<> probe(kich_r4_update::SpatialUpdate);
+		g_SpatialSpace->update();
+		g_SpatialSpacePhysic->update();
+	}
 	if (g_pGameLevel)
+	{
+		kich_r4_update::Scope<> probe(kich_r4_update::SoundDispatch);
 		g_pGameLevel->SoundEvent_Dispatch();
+	}
 }
 
 void CApplication::Level_Append(LPCSTR folder)

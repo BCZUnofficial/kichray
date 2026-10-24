@@ -9,8 +9,8 @@ static DrawBindingsDX11 Bindings(DrawStateDX11& cache){
     b.indices=Pointer<ID3D11Buffer>(4);b.constants=Pointer<ID3D11Buffer>(5);b.pose=Pointer<ID3D11Buffer>(6);
     b.vertex_stride=64;b.instance_stride=64;b.index_stride=2;b.vs=Pointer<ID3D11VertexShader>(7);b.ps=Pointer<ID3D11PixelShader>(8);
     b.raster=Pointer<ID3D11RasterizerState>(9);b.depth=Pointer<ID3D11DepthStencilState>(10);b.blend=Pointer<ID3D11BlendState>(11);b.stencil_ref=3;
-    for(unsigned i=0;i<8;++i)b.textures[i]=Pointer<ID3D11ShaderResourceView>(20+i);
-    for(unsigned i=0;i<9;++i)b.samplers[i]=Pointer<ID3D11SamplerState>(40+i);
+    for(unsigned i=0;i<DrawTextureSlots;++i)b.textures[i]=Pointer<ID3D11ShaderResourceView>(20+i);
+    for(unsigned i=0;i<DrawSamplerSlots;++i)b.samplers[i]=Pointer<ID3D11SamplerState>(40+i);
     b.viewport=cache.Viewport();return b;
 }
 int main(){
@@ -27,6 +27,10 @@ int main(){
     context.calls.clear();b.textures[1]=NULL;b.textures[7]=NULL;cache.Apply(&context,b);
     Require(context.calls.size()==1 && context.calls[0].first==1 && context.calls[0].count==7 && context.textures[5]==a.textures[5],"spanning SRV range lost unchanged slots");
     b.samplers[8]=NULL;context.calls.clear();cache.Apply(&context,b);Require(context.calls.size()==1 && context.calls[0].first==8,"sampler dirty range");
+    // Model-only bump inputs cannot leak into ordinary world, UI or point-light draws.
+    b.textures[8]=b.textures[9]=NULL;b.samplers[9]=b.samplers[10]=NULL;context.calls.clear();cache.Apply(&context,b);
+    Require(context.calls.size()==2 && context.calls[0].first==8 && context.calls[0].count==2 && context.calls[1].first==9 && context.calls[1].count==2,"model material extra dirty ranges");
+    Require(!context.textures[8] && !context.textures[9] && !context.samplers[9] && !context.samplers[10],"model material extras not cleared");
     // GPU model/detail -> ordinary geometry must clear the secondary VB and palette.
     b.pose=NULL;b.instances=NULL;b.vertex_stride=32;b.index_stride=4;cache.Apply(&context,b);
     Require(!context.vcb[1] && !context.vb[1] && context.stride[0]==32 && context.index_format==DXGI_FORMAT_R32_UINT,"geometry transition stale binding");

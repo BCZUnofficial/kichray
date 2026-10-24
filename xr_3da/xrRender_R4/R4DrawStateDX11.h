@@ -5,6 +5,7 @@
 #include <string.h>
 
 namespace kich_r4 {
+enum {DrawTextureSlots=10,DrawSamplerSlots=11};
 // Immediate-context state, shared by ALL pipelines on one device. These are
 // borrowed pointers: the owner invalidates before releasing resources, and
 // whenever a pass/frame/reset changes context state outside Apply().
@@ -18,8 +19,8 @@ struct DrawBindingsDX11 {
     UINT vertex_stride,instance_stride,index_stride;
     ID3D11VertexShader* vs;
     ID3D11PixelShader* ps;
-    ID3D11ShaderResourceView* textures[8];
-    ID3D11SamplerState* samplers[9];
+    ID3D11ShaderResourceView* textures[DrawTextureSlots];
+    ID3D11SamplerState* samplers[DrawSamplerSlots];
     ID3D11RasterizerState* raster;
     ID3D11DepthStencilState* depth;
     ID3D11BlendState* blend;

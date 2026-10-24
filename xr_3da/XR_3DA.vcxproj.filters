@@ -494,6 +494,8 @@
     <ClInclude Include="KichR4LightAdmission.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="KichR4FramePhases.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="KichR4RecordControl.h"><Filter>Interfaces\Render</Filter></ClInclude>
+    <ClInclude Include="KichR4UpdateProbe.h"><Filter>Interfaces\Render</Filter></ClInclude>
+    <ClInclude Include="KichR4LightProjector.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="KichR4RecordSession.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="KichR4RecordTiming.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="KichR4ShadowRecord.h"><Filter>Interfaces\Render</Filter></ClInclude>

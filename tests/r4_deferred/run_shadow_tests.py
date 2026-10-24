@@ -13,8 +13,10 @@ def function(signature):
     while depth:
         depth+=(source[at]=='{')-(source[at]=='}');at+=1
     return source[start:at]
-helpers='\n'.join(function(x) for x in ('bool ShadowPlaneStable(', 'float2 ShadowGradient(', 'float ShadowTent(', 'float3 ShadowDerivative(', 'float PCF('))
+helpers='\n'.join(function(x) for x in ('float3 RelativePosition(', 'float3 WorldPosition(', 'bool ShadowPlaneStable(', 'float ShadowPlaneErrorSquared(', 'bool ShadowGradient(', 'float ShadowTent(', 'float3 ShadowDerivative(', 'float PCF('))
 helpers=helpers.replace('[unroll]','').replace('projected.xyz','xyz(projected)').replace('derivative.xyz','xyz(derivative)')
+helpers=helpers.replace('p.xyz','xyz(p)').replace('camera.xyz','xyz(camera)')
+helpers=helpers.replace('out float2 gradient','float2& gradient')
 # The vector arithmetic shims preserve the production branch/sample order.
 fixture=(root/'tests/r4_deferred/shadow_filter_tests.cpp').read_text().replace('// PRODUCTION_SHADOW_HELPERS',helpers)
 with tempfile.TemporaryDirectory(prefix='kich-e15-shadow-') as directory:

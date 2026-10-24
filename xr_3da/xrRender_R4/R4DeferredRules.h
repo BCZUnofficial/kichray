@@ -4,6 +4,8 @@
 #include "R4StreamRules.h"
 #include <float.h>
 namespace kich_r4 {
+// HLSL cbuffer wire layout; keep the DLL independent of EXE scene types.
+enum {DeferredConstantsBytes=944,DeferredAlphaOffset=800};
 inline bool PassFinite(float v){return v==v && v>=-FLT_MAX && v<=FLT_MAX;}
 inline bool ValidPass(const KichR4PassDesc& p){
     if(p.struct_size!=sizeof(p) || p.flags || p.color_count>4 ||

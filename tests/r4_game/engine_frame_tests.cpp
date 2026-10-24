@@ -26,13 +26,13 @@ struct Level {bool bReady;CObject* view;CObject* current;
 } level={true,&entity,&entity};
 Level* g_pGameLevel=&level;
 struct Menu {bool active;bool IsActive(){return active;}} menu={false};
-struct CEnvDescriptorMixer {WeatherVector sun_dir,sun_color,ambient,hemi_color,fog_color;};
+struct CEnvDescriptorMixer {WeatherVector sun_dir,sun_color,ambient,hemi_color,fog_color;float fog_near,fog_far;};
 struct EnvironmentType {CEnvDescriptorMixer CurrentEnv;} environment={};
 struct Persistent {Menu* m_pMainMenu;bool ppui;EnvironmentType& Environment(){return environment;}bool OnRenderPPUI_query(){return ppui;}} persistent={&menu,false};
 Persistent* g_pGamePersistent=&persistent;
 struct ConsoleType {bool bVisible;} console={false};ConsoleType* Console=&console;
 struct EngineDevice {void* m_hWnd;unsigned dwWidth,dwHeight,dwFrame,dwPrecacheFrame,dwTimeGlobal;float fTimeGlobal,fFOV;
-    struct {float m[4][4];} mFullTransform;struct {float x,y,z;} vCameraPosition,vCameraDirection;int b_is_Active;bool paused;bool Paused(){return paused;}} Device={};
+    struct {float m[4][4];} mFullTransform,mProject;struct {float x,y,z;} vCameraPosition,vCameraDirection;int b_is_Active;bool paused;bool Paused(){return paused;}} Device={};
 std::vector<int> g_loading_events;
 const int FALSE=0,VK_F8=119,VK_F9=120;
 short GetAsyncKeyState(int which){return which==VK_F8 && key?static_cast<short>(0x8000):0;}
@@ -71,6 +71,7 @@ int main(){try {
     KichR4_GamePrepareEngineFrame();Require(!prepared,"unarmed engine does not touch bridge input");armed=true;
     Device.m_hWnd=reinterpret_cast<void*>(1);Device.dwWidth=1280;Device.dwHeight=720;Device.dwFrame=123;Device.b_is_Active=1;Device.fFOV=67.5f;
     for(unsigned i=0;i<16;++i)(&Device.mFullTransform.m[0][0])[i]=static_cast<float>(i)+.25f;
+    for(unsigned i=0;i<16;++i)(&Device.mProject.m[0][0])[i]=static_cast<float>(i)+.75f;
     Device.vCameraPosition={1.f,2.f,3.f};key=true;KichR4_GamePrepareEngineFrame();
 #if defined(DEDICATED_SERVER) || defined(_EDITOR)
     Require(!prepared,"dedicated and editor builds skip experimental game input");
@@ -81,10 +82,13 @@ int main(){try {
     Require(captured.width==1280 && captured.height==720 && captured.engine_frame==123 && captured.window==Device.m_hWnd,"game window and frame dimensions forwarded");
     Require(captured.geometry_lod[0]==ps_r__LOD && captured.geometry_lod[1]==ps_r__GLOD_ssa_start && captured.geometry_lod[2]==ps_r__GLOD_ssa_end && captured.geometry_lod[3]==Device.fFOV,"progressive detail follows current R2 console settings and camera FOV");
     Require(!memcmp(captured.view_projection,Device.mFullTransform.m,64) && captured.position[0]==1 && captured.position[2]==3,"camera matrix passed byte-for-byte without a viewer camera");
+    Require(!memcmp(captured.camera_projection,Device.mProject.m,64),"actual projection passes to sparse near-plane diagnostics");
     environment.CurrentEnv.sun_dir={.1f,-.9f,.2f,0};environment.CurrentEnv.sun_color={.5f,.6f,.7f,0};
     environment.CurrentEnv.ambient={.04f,.05f,.06f,0};environment.CurrentEnv.hemi_color={.2f,.3f,.4f,1};environment.CurrentEnv.fog_color={.6f,.5f,.4f,0};
+    environment.CurrentEnv.fog_near=87;environment.CurrentEnv.fog_far=190;
     KichR4_GamePrepareEngineFrame();Require(captured.lighting.valid && captured.lighting.sun_direction[1]==-.9f && captured.lighting.sun_color[2]==.7f,"weather sun copied from engine");
     Require(captured.lighting.ambient[1]==.05f && captured.lighting.hemi[2]==.4f && captured.lighting.fog[0]==.6f,"ambient/hemi/fog copied without alpha padding");
+    Require(captured.lighting.fog_valid && captured.lighting.fog_near==87 && captured.lighting.fog_far==190,"prepared environment includes the actual mixed weather fog range");
     Require(!captured.lighting.r1_lights_applied,"engine forwards disabled static light policy");ps_r2_ls_flags.enabled=true;KichR4_GamePrepareEngineFrame();
     Require(captured.lighting.r1_lights_requested && captured.lighting.r1_lights_applied,"engine forwards current R1LIGHTS value on the next frame");
     Device.fTimeGlobal=2.5f;ps_r__Tree_w_amp=.25f;ps_r__Tree_w_speed=3;ps_r__Tree_SBC=2;
@@ -94,6 +98,8 @@ int main(){try {
     KichR4_NativePresentEngineFrame(false,false);
     Require(native_presented==1 && !memcmp(native_captured.tree_wave,captured.tree_wave,16) && !memcmp(native_captured.tree_wind,captured.tree_wind,16) && native_captured.tree_sbc==captured.tree_sbc,"native presenter and prepared path share exact tree frame parameters");
     Require(!memcmp(native_captured.geometry_lod,captured.geometry_lod,sizeof(captured.geometry_lod)),"native and prepared frame paths share LOD policy");
+    Require(!memcmp(native_captured.camera_projection,Device.mProject.m,64),"native adapter preserves the same actual projection");
+    Require(native_captured.lighting.fog_valid && native_captured.lighting.fog_near==87 && native_captured.lighting.fog_far==190,"native adapter shares the same fog environment helper");
     Device.fTimeGlobal=5;ps_r__Tree_w_amp=.5f;KichR4_NativePresentEngineFrame(true,false);
     Require(native_presented==2 && fabsf(native_captured.tree_wind[2]+.5f)<1.e-6f && native_captured.tree_wave[3]!=captured.tree_wave[3],"live tree time and settings are resampled without per-frame geometry generation");
     Require(!native_captured.allowed && !native_captured.warmup,"ordinary loading remains UI only");
@@ -101,11 +107,13 @@ int main(){try {
     Device.dwPrecacheFrame=1;end_state.PrepareFrameEnd(0,0);Device.dwPrecacheFrame=0;
     Require(end_state.loading && end_state.precaching,"native gate preserves the last precache frame before End decrements it");
     frozen_available=true;frozen_lighting.valid=1;frozen_lighting.local_shadow_size=256;frozen_lighting.hemi[0]=.75f;
+    frozen_lighting.fog_valid=1;frozen_lighting.fog_near=61;frozen_lighting.fog_far=177;
     const int freezes_before=light_freezes,captures_before=light_captures;
     end_state.EndFrame();
     Require(native_captured.warmup && !native_captured.allowed,"final precache frame warms the scene without becoming gameplay");
     Require(RCache.ends==1,"native EndFrame forwards captured flags before completing cache frame");
     Require(native_captured.lighting.local_shadow_size==256 && native_captured.lighting.hemi[0]==.75f && light_freezes==freezes_before && light_captures==captures_before,"warmup reuses frozen geometry lighting and does not reselect sources");
+    Require(native_captured.lighting.fog_near==61 && native_captured.lighting.fog_far==177,"frozen frame owns environment range as well as selected lights");
     KichR4_GamePrepareEngineFrame();Require(!captured.warmup,"R2 bridge never opts into native precache warmup");
     frozen_available=false;
     for(unsigned blocked=0;blocked<6;++blocked){

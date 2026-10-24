@@ -9,7 +9,7 @@
 // feature explicitly; a checker texture must never be decoded as a normal/map.
 namespace kich_r4_material {
 enum ShaderFlag { SHADER_BUMP=1,SHADER_LIGHTMAP=2,SHADER_HEMI=4,SHADER_DETAIL=8,
-    SHADER_VERTEX_LIGHT=16,SHADER_SUN=32,SHADER_TREE_LIGHT=64,SHADER_TREE_WIND=128,SHADER_EMISSIVE=256 };
+    SHADER_VERTEX_LIGHT=16,SHADER_SUN=32,SHADER_TREE_LIGHT=64,SHADER_TREE_WIND=128,SHADER_EMISSIVE=256,SHADER_MODEL_MAPS=1024 };
 inline void SnapshotMetadata(const Descriptor& m,const char* category,const char* id) {
     if(!g_render_snapshot_active)return;
     using namespace kich_r4_telemetry;
@@ -34,6 +34,20 @@ inline void SnapshotMetadata(const Descriptor& m,const char* category,const char
 inline void ExecutionID(const Descriptor& m,uint32_t attributes,uint32_t flags,bool shadow,char* out,size_t size) {
     snprintf(out,size,"mx_%016llx_%x_%x_%u",static_cast<unsigned long long>(Key(m)),attributes,flags,shadow?1:0);
 }
+inline bool BindBump(KichR4FrameSession& s,KichR4LevelSession& level,const Descriptor& m,uint32_t attributes,
+    KichR4Handle& bump,KichR4Handle& auxiliary,std::string& fallback,bool& auxiliary_dummy){
+    bump=auxiliary=0;auxiliary_dummy=false;
+    const uint32_t basis=ATTR_NORMAL|ATTR_TANGENT|ATTR_BINORMAL;
+    if(m.bump.empty())return false;
+    if((attributes&basis)!=basis){fallback+=";bump_missing_valid_source_basis";return false;}
+    if(m.bump_aux.empty()){fallback+=";bump_missing_auxiliary_metadata";return false;}
+    bump=level.Texture(s,m.bump);auxiliary=level.Texture(s,m.bump_aux);
+    if(auxiliary==level.checker && level.texture_registry.entries[kich_r4_texture::Key(m.bump_aux)].reason==kich_r4_texture::SourceUnavailable){
+        auxiliary=level.Texture(s,"ed\\ed_dummy_bump#");auxiliary_dummy=auxiliary && auxiliary!=level.checker;
+        fallback+=auxiliary_dummy?";auxiliary_uses_soc_dummy":";auxiliary_dummy_unavailable";}
+    if(bump && auxiliary && bump!=level.checker && auxiliary!=level.checker)return true;
+    bump=auxiliary=0;fallback+=";bump_dds_unavailable";return false;
+}
 inline void Bind(KichR4FrameSession& s,KichR4LevelSession& level,const Descriptor& m,
     uint32_t attributes,kich_r4_lighting::Constants& c,KichR4DeferredDrawDesc& draw,
     bool shadow,bool vertex_baked=false,uint32_t extra_flags=0,const char* main_category="MATERIAL_EXECUTION") {
@@ -41,16 +55,7 @@ inline void Bind(KichR4FrameSession& s,KichR4LevelSession& level,const Descripto
     c.alpha[0]=m.alpha_ref;c.alpha[1]=static_cast<float>(m.alpha_func);
     uint32_t flags=extra_flags;std::string fallback=m.unsupported_reason;bool auxiliary_dummy=false;
     if(!shadow){
-        const uint32_t basis=ATTR_NORMAL|ATTR_TANGENT|ATTR_BINORMAL;
-        if(!m.bump.empty()){
-            if((attributes&basis)!=basis)fallback+=";bump_missing_valid_source_basis";
-            else if(m.bump_aux.empty())fallback+=";bump_missing_auxiliary_metadata";
-            else {draw.textures[1]=level.Texture(s,m.bump);draw.textures[2]=level.Texture(s,m.bump_aux);
-                if(draw.textures[2]==level.checker && level.texture_registry.entries[kich_r4_texture::Key(m.bump_aux)].reason==kich_r4_texture::SourceUnavailable){
-                    draw.textures[2]=level.Texture(s,"ed\\ed_dummy_bump#");auxiliary_dummy=draw.textures[2] && draw.textures[2]!=level.checker;fallback+=auxiliary_dummy?";auxiliary_uses_soc_dummy":";auxiliary_dummy_unavailable";}
-                if(draw.textures[1] && draw.textures[2] && draw.textures[1]!=level.checker && draw.textures[2]!=level.checker)flags|=SHADER_BUMP;
-                else {draw.textures[1]=draw.textures[2]=0;fallback+=";bump_dds_unavailable";}}
-        }
+        if(!m.bump.empty() && BindBump(s,level,m,attributes,draw.textures[1],draw.textures[2],fallback,auxiliary_dummy))flags|=SHADER_BUMP;
         const std::string* names[]={&m.lightmap,&m.hemi};const unsigned bits[]={SHADER_LIGHTMAP,SHADER_HEMI};
         for(unsigned i=0;i<2;++i)if(!names[i]->empty()){
             if(!(attributes&ATTR_UV1))fallback+=";lightmap_missing_source_uv1";

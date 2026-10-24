@@ -35,7 +35,7 @@ public:
     PipelineDX11();
     ~PipelineDX11();
     HRESULT Create(ID3D11Device*,const KichR4PipelineDesc&,ID3D11VertexShader*,ID3D11PixelShader*,ID3DBlob*,bool=false,bool=false,bool=false,bool=false,bool=false);
-    HRESULT Draw(ID3D11DeviceContext*,DrawStateDX11&,const KichR4DrawIndexedDesc&,ID3D11Buffer*,ID3D11Buffer*,ID3D11Buffer*,uint32_t,ID3D11ShaderResourceView* = NULL,const KichR4StreamDrawDesc* = NULL,ID3D11ShaderResourceView* const* = NULL,ID3D11Buffer* = NULL,uint32_t=0,uint32_t=0,ID3D11Buffer* = NULL);
+    HRESULT Draw(ID3D11DeviceContext*,DrawStateDX11&,const KichR4DrawIndexedDesc&,ID3D11Buffer*,ID3D11Buffer*,ID3D11Buffer*,uint32_t,ID3D11ShaderResourceView* = NULL,const KichR4StreamDrawDesc* = NULL,ID3D11ShaderResourceView* const* = NULL,ID3D11Buffer* = NULL,uint32_t=0,uint32_t=0,ID3D11Buffer* = NULL,const KichR4SamplerState* = NULL);
 };
 }
 #endif

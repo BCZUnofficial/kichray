@@ -33,7 +33,9 @@ float3 operator*(float3 a,float3 b){return float3(a.x*b.x,a.y*b.y,a.z*b.z);}
 float4 operator+(float4 a,float4 b){return float4(a.x+b.x,a.y+b.y,a.z+b.z,a.w+b.w);}
 float4 operator*(float4 a,float b){return float4(a.x*b,a.y*b,a.z*b,a.w*b);}
 float2 lerp(float2 a,float2 b,float t){return float2(a.x+(b.x-a.x)*t,a.y+(b.y-a.y)*t);}
+float3 lerp(float3 a,float3 b,float t){return a+(b-a)*t;}
 float dot(float3 a,float3 b){return a.x*b.x+a.y*b.y+a.z*b.z;}
+float dot(float4 a,float4 b){return a.x*b.x+a.y*b.y+a.z*b.z+a.w*b.w;}
 float length(float3 a){return std::sqrt(dot(a,a));}
 float2 xy(float4 a){return float2(a.x,a.y);}
 float3 xyz(float4 a){return float3(a.x,a.y,a.z);}
@@ -43,10 +45,11 @@ struct Texture2D {
     float4 value;unsigned loads=0;
     float4 Load(int3){++loads;return value;}
 }image0,image1,shadow2;
-float4 camera,screen,sun_direction,sun_color,ambient,hemi,material;
+float4 camera,screen,sun_direction,sun_color,ambient,hemi,material,fog,fog_params,fog_plane;
 float visibility=1,surface_gloss=0;
 float3 surface_normal(0,1,0);
 float3 WorldPosition(float2,float){return float3(0,0,0);}
+float3 RelativePosition(float2,float){return -xyz(camera);}
 void ShadowDerivatives(float3,float3& dx,float3& dy){dx=float3(.01f,0,0);dy=float3(0,0,.01f);}
 float SunVisibility(float3,float3,float3){return visibility;}
 float3 DecodeNormal(float2){return surface_normal;}

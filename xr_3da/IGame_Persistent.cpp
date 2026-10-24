@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "KichR4UpdateProbe.h"
 #pragma hdrstop
 
 #include "IGame_Persistent.h"
@@ -148,11 +149,15 @@ void IGame_Persistent::OnFrame()
 {
 #ifndef DEDICATED_SERVER
 	if (!Device.Paused() || Device.dwPrecacheFrame)
+	{
+		kich_r4_update::Scope<> probe(kich_r4_update::EnvironmentUpdate);
 		Environment().OnFrame();
+	}
 #endif
 
 #ifndef _EDITOR
 
+	kich_r4_update::Scope<> particles_probe(kich_r4_update::ParticleLifecycle);
 	Device.Statistic->Particles_starting = ps_needtoplay.size();
 	Device.Statistic->Particles_active = ps_active.size();
 	Device.Statistic->Particles_destroy = ps_destroy.size();

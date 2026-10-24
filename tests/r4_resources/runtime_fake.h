@@ -6,6 +6,9 @@
 #include <stdio.h>
 #include "../../xr_3da/KichR4NativeTools.h"
 #include "../../xr_3da/KichR4Model.h"
+#include "../../xr_3da/xrRender_R4/R4DrawStateDX11.h"
+using kich_r4::DrawTextureSlots;
+using kich_r4::DrawSamplerSlots;
 enum {D3D11_USAGE_DYNAMIC=2,DXGI_FORMAT_R8G8B8A8_UNORM=28,D3D11_BIND_SHADER_RESOURCE=8,D3D11_CPU_ACCESS_WRITE=65536,D3D11_MAP_WRITE_DISCARD=4};
 #define FAILED(x) ((x)<0)
 struct D3D11_TEXTURE2D_DESC {uint32_t Width,Height,MipLevels,ArraySize,Format;struct {uint32_t Count,Quality;} SampleDesc;uint32_t Usage,BindFlags,CPUAccessFlags;};

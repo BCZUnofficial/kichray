@@ -55,6 +55,9 @@ int main(){
     Descriptor bump=Build(source,pass);assert(Bumped(bump));assert((bump.required_attributes&15)==15);
     assert(bump.bump_aux=="walls\\stone_bump#" && bump.detail_scale[0]==4.f);
     const uint64_t key=Key(bump);assert(key==Key(bump));Descriptor changed=bump;changed.alpha_ref=.5f;assert(key!=Key(changed));
+    changed=bump;changed.fog_enabled=!bump.fog_enabled;assert(key!=Key(changed));
+    pass.fog_enabled=true;Descriptor fogged=Build(source,pass);Apply(fogged,geometry);
+    assert(fogged.fog_enabled && geometry.fog_enabled);pass.fog_enabled=false;
     // Exact compiled VS identity, never texture-name or bWmark guessing.
     assert(AuthoredWallmarkSource(0,"wmark") && AuthoredWallmarkSource(1,"wmark"));
     assert(!AuthoredWallmarkSource(2,"wmark") && !AuthoredWallmarkSource(0,"wmark_spot"));

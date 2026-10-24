@@ -6,7 +6,10 @@
 #include "KichR4Native.h"
 #include "KichR4FramePhases.h"
 #include "KichR4RecordControl.h"
+#include "KichR4UpdateProbe.h"
 #include "RenderSnapshot.h"
+#include "XR_IOConsole.h"
+#include <typeinfo>
 
 #pragma warning(disable : 4995)
 // mmsystem.h
@@ -354,6 +357,24 @@ void CRenderDevice::Run()
 }
 
 void ProcessLoading(RP_FUNC* f);
+// Only selected by FrameMove when opt-in recording is active. Copy the name
+// before dispatch: a callback may remove or destroy its own object.
+void __fastcall KichR4_MeasuredFrame(void* object)
+{
+	const char* type = "frame_callback_RTTI_unavailable";
+	if (object && kich_r4_update::Current() && kich_r4_update::Current()->TopCallback())
+	{
+#if defined(_MSC_VER) && defined(_CPPRTTI)
+		type = typeid(*static_cast<pureFrame*>(object)).raw_name();
+#elif defined(__GXX_RTTI)
+		type = typeid(*static_cast<pureFrame*>(object)).name();
+#endif
+	}
+	kich_r4_update::CallbackScope<> probe(type);
+	rp_Frame(object);
+	probe.Complete();
+}
+
 void CRenderDevice::FrameMove()
 {
 	dwFrame++;
@@ -388,17 +409,24 @@ void CRenderDevice::FrameMove()
 	}
 
 	// Frame move
+	const bool record_updates = kich_r4_record::Enabled() && KichR4_NativeActive();
+	const unsigned update_mode = record_updates ?
+		(dwPrecacheFrame ? 1u : 0u) | (g_render_snapshot_active ? 2u : 0u) |
+		(KichR4_RecordView() ? 4u : 0u) | (Paused() ? 8u : 0u) |
+		(Console && Console->bVisible ? 16u : 0u) | (!b_is_Active ? 32u : 0u) : 0;
+	kich_r4_update::FrameScope<> update_scope(record_updates, kich_r4_record::Epoch(), dwFrame, update_mode);
+	RP_FUNC* frame_callback = record_updates ? KichR4_MeasuredFrame : rp_Frame;
 	Statistic->EngineTOTAL.Begin();
 	if (!g_bLoaded)
-		ProcessLoading(rp_Frame);
+		ProcessLoading(frame_callback);
 	else
-		seqFrame.Process(rp_Frame);
+		seqFrame.Process(frame_callback);
 	Statistic->EngineTOTAL.End();
 }
 
 void ProcessLoading(RP_FUNC* f)
 {
-	Device.seqFrame.Process(rp_Frame);
+	Device.seqFrame.Process(f);
 	g_bLoaded = TRUE;
 }
 

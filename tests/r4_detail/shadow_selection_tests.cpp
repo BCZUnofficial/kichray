@@ -165,5 +165,101 @@ void ProbeGating(){
         details.shadow_sun_select_ms==0 && details.shadow_local_select_ms==0,"OFF starts a clean probe after snapshot or recording ends");
 }
 
+void CellProvenance(Frame& source){
+    std::map<std::pair<int,int>,uint32_t> ids;source.shadow_cells.clear();source.shadow_instance_cells.clear();
+    for(const auto& instance:source.shadow_instances){
+        const std::pair<int,int> key(int(std::floor(instance.row[0][3]/2)),int(std::floor(instance.row[2][3]/2)));
+        auto found=ids.find(key);
+        if(found==ids.end()){
+            kich_r4_detail::ShadowCell cell;cell.ready=true;cell.sx=key.first;cell.sz=key.second;
+            cell.center[0]=float(key.first)*2+1;cell.center[1]=0;cell.center[2]=float(key.second)*2+1;
+            const uint32_t id=static_cast<uint32_t>(source.shadow_cells.size());source.shadow_cells.push_back(cell);found=ids.emplace(key,id).first;
+        }
+        source.shadow_instance_cells.push_back(found->second);
+    }
 }
-int main(){try{SpatialEquivalence();BoundaryAndUnknown();Lifecycle();Benchmark();ProbeGating();printf("E1.4 detail shadow selection: %u checks passed\n",checks);return 0;}catch(const std::exception& error){fprintf(stderr,"FAIL: %s\n",error.what());return 1;}}
+
+void StableCells(){
+    auto source=Source();Grid(source,100);CellProvenance(source);KichR4DetailSession details;details.source=&source;
+    const float sun_direction[3]={.4f,-1,.3f};const auto volume=kich_r4_visibility::BuildSunCasterVolume(Box(0,0,0,8),sun_direction);
+    kich_r4_record::Request(true);kich_r4_record::BeginFrame(source.engine_frame);details.BeginVisibilityFrame(source.engine_frame,volume);
+    Require(details.shadow_cell_mode,"production cell provenance selects coarse hierarchy");
+    const unsigned views=32;
+    for(unsigned i=0;i<views;++i)Equivalent(details,Box(float((i*17)%61)-30,0,float((i*13)%61)-30,float(1+i%5)),i<2);
+    Require(details.shadow_index_builds==1 && details.shadow_order.size()==source.shadow_cells.size(),"tree partitions cache cells, not packed instance ordinals");
+    Require(details.shadow_visibility_tests+details.shadow_node_tests<uint64_t(source.shadow_instances.size())*views/8,"coarse cells reduce exact narrow-view checks without a draw quota");
+    const auto original_instances=source.shadow_instances;const auto original_cells=source.shadow_instance_cells;
+    const double initial_build=details.shadow_bvh_build_ms;double refill_peak=0,refit_peak=0,legacy_build_peak=0;
+    Frame legacy_source;KichR4DetailSession legacy;legacy.source=&legacy_source;
+    // Recreate producer behavior: reverse traversal, change SSA admission and
+    // migrate the same plants between wind/still buckets with changing scales.
+    for(unsigned pass=1;pass<=20;++pass){
+        source.shadow_instances.clear();source.shadow_instance_cells.clear();source.shadow_groups.clear();
+        for(unsigned variant=0;variant<3;++variant){Group group={0,variant,static_cast<uint32_t>(source.shadow_instances.size()),0};
+            for(size_t offset=0;offset<original_instances.size();++offset){const size_t i=pass%2?original_instances.size()-1-offset:offset;
+                if((i+pass)%7==0 || (i+pass)%3!=variant)continue;
+                auto instance=original_instances[i];const float scale=.4f+.025f*float(pass);
+                for(unsigned row=0;row<3;++row)for(unsigned column=0;column<3;++column)instance.row[row][column]*=scale;
+                source.shadow_instances.push_back(instance);source.shadow_instance_cells.push_back(original_cells[i]);++group.count;}
+            source.shadow_groups.push_back(group);
+        }
+        source.wind[1][0]=float(pass)*.1f;source.wind[2][2]=-float(pass)*.13f;++source.engine_frame;
+        details.BeginVisibilityFrame(source.engine_frame,volume);
+        Require(details.shadow_topology_valid && details.shadow_rebuild_reasons==0,"SSA count, group order, variant and fade changes preserve cell topology");
+        for(unsigned i=0;i<views;++i)Equivalent(details,Box(float((i*17+pass)%61)-30,0,float((i*13)%61)-30,float(1+i%5)),i<2);
+        KichR4LocalLight point={};point.type=1;point.range=15;point.position[0]=5;point.position[1]=2;point.position[2]=-3;
+        for(unsigned face=0;face<6;++face)Equivalent(details,kich_r4_lighting::LocalShadow(point,face),false);
+        point.type=2;point.direction[0]=.3f;point.direction[1]=-.2f;point.direction[2]=1;point.cone=1;
+        Equivalent(details,kich_r4_lighting::LocalShadow(point,0),false);
+        Require(details.shadow_index_builds==0 && details.shadow_index_refits==1,"camera repacking pays one coarse refit, never a full item rebuild");
+        refill_peak=(std::max)(refill_peak,details.shadow_bounds_ms);refit_peak=(std::max)(refit_peak,details.shadow_bvh_refit_ms);
+        if(pass<=3){legacy_source=source;legacy_source.shadow_cells.clear();legacy_source.shadow_instance_cells.clear();
+            legacy.BeginVisibilityFrame(source.engine_frame,volume);
+            for(unsigned i=0;i<3;++i)Equivalent(legacy,Box(float(i*10),0,0,4),false);
+            Require(legacy.shadow_index_builds==1,"same repacked geometry reproduces old item-tree rebuild");
+            legacy_build_peak=(std::max)(legacy_build_peak,legacy.shadow_bvh_build_ms);}
+    }
+    printf("E1.8 stable detail cells: source_items=%zu cells=%zu repacked_frames=20 initial_build_ms=%.3f bounds_peak_ms=%.3f refit_peak_ms=%.3f legacy_repack_build_peak_ms=%.3f\n",
+        original_instances.size(),source.shadow_cells.size(),initial_build,refill_peak,refit_peak,legacy_build_peak);
+
+    // Camera admission may become empty and return without replacing the cache.
+    source.shadow_instances.clear();source.shadow_instance_cells.clear();source.shadow_groups.clear();++source.engine_frame;
+    details.BeginVisibilityFrame(source.engine_frame,volume);Equivalent(details,Box(0,0,0,10),true);
+    Require(details.shadow_topology_valid && details.shadow_index_builds==0,"empty accepted list retains ready-cache topology");
+    source.shadow_instances=original_instances;source.shadow_instance_cells=original_cells;source.shadow_groups={{0,1,0,static_cast<uint32_t>(original_instances.size())}};
+    ++source.engine_frame;details.BeginVisibilityFrame(source.engine_frame,volume);Equivalent(details,Box(0,0,0,10),false);
+    Require(details.shadow_index_builds==0 && details.shadow_index_refits==1,"reappearing candidates remap onto existing cell tree");
+
+    // Unknown authoring/wind bounds fail open outside the coarse hierarchy.
+    source.shadow_groups.push_back({1,2,0,2});++source.engine_frame;details.BeginVisibilityFrame(source.engine_frame,volume);
+    Equivalent(details,Box(1000,1000,1000,1),true);Require(details.SelectShadow(Box(1000,1000,1000,1),true).instances.size()==2,"unknown bounds retain overlapping group duplicates");
+    source.wind[1][0]=std::numeric_limits<float>::infinity();++source.engine_frame;details.BeginVisibilityFrame(source.engine_frame,volume);
+    Equivalent(details,Box(1000,1000,1000,1),false);Require(details.shadow_index_builds==0,"known-to-unknown wind bounds do not invalidate cell structure");
+    source.wind[1][0]=.5f;source.shadow_instances[0].row[0][3]=std::numeric_limits<float>::quiet_NaN();++source.engine_frame;
+    details.BeginVisibilityFrame(source.engine_frame,volume);Equivalent(details,Box(1000,1000,1000,1),false);
+    source.shadow_instances[0]=original_instances[0];
+    auto nonfinite=Box(0,0,0,1);nonfinite.m[3]=std::numeric_limits<float>::quiet_NaN();Equivalent(details,nonfinite,false);
+
+    // Recycled pool slot: topology is rebuilt once, membership uses only the
+    // replacement frame. No old SlotItem pointer or packed index can survive.
+    source.shadow_cells[3].sx+=1000;source.shadow_cells[3].center[0]+=2000;
+    for(size_t i=0;i<source.shadow_instances.size();++i)if(source.shadow_instance_cells[i]==3)source.shadow_instances[i].row[0][3]+=2000;
+    ++source.engine_frame;details.BeginVisibilityFrame(source.engine_frame,volume);
+    Require(!details.shadow_topology_valid && (details.shadow_rebuild_reasons & KichR4DetailSession::CellLayoutChanged),"cache slot coordinate reuse is structural invalidation");
+    Equivalent(details,Box(2000,0,0,100),false);Equivalent(details,Box(0,0,0,100),true);
+    Require(details.shadow_index_builds==1,"slot recycling rebuilds only the coarse cell hierarchy");
+
+    // Optional provenance can never turn a valid geometry frame into a drop.
+    source.shadow_instance_cells[0]=UINT32_MAX;++source.engine_frame;details.BeginVisibilityFrame(source.engine_frame,volume);
+    Require(!details.shadow_cell_mode,"bad cell mapping falls back to exact legacy selection");
+    for(unsigned i=0;i<4;++i)Equivalent(details,Box(float(i)*5,0,0,10),false);
+    source.shadow_instance_cells[0]=original_cells[0];source.shadow_cells[0].center[0]=std::numeric_limits<float>::infinity();
+    ++source.engine_frame;details.BeginVisibilityFrame(source.engine_frame,volume);Require(!details.shadow_cell_mode,"nonfinite cell anchors cannot poison hierarchy bounds");
+    Equivalent(details,Box(0,0,0,10),false);
+    source.Reset();++source.engine_frame;details.BeginVisibilityFrame(source.engine_frame,volume);Equivalent(details,Box(0,0,0,10),false);
+    Require(!details.shadow_cell_mode && details.shadow_cells.empty() && details.shadow_nodes.empty(),"level reset retires all cell topology");
+    kich_r4_record::Request(false);kich_r4_record::BeginFrame(source.engine_frame);
+}
+
+}
+int main(){try{SpatialEquivalence();BoundaryAndUnknown();Lifecycle();Benchmark();ProbeGating();StableCells();printf("E1.8 detail shadow selection: %u checks passed\n",checks);return 0;}catch(const std::exception& error){fprintf(stderr,"FAIL: %s\n",error.what());return 1;}}

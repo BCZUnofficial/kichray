@@ -433,6 +433,7 @@ struct State {
     Batch frame;std::map<const void*,Entry> models;std::map<void*,Buffer> buffers;
     std::map<const void*,KichR4LocalLight> lights;std::set<const void*> unshadowed_lights;
     std::map<const void*,KichR4LightIdentity> light_sources;
+    std::map<const void*,KichR4LightProjector> light_projectors;
     struct LightObservation {KichR4LocalLight value;bool active,valid;uint32_t frame;};
     std::map<const void*,LightObservation> light_observations;
     uint64_t light_observation_overflow=0,light_identity_rejections=0;
@@ -458,7 +459,7 @@ struct State {
     }
     void SelectLights(const float* camera,KichR4LightingFrame& out,bool r1_lights_enabled=false,const float* camera_vp=NULL,KichR4LightVisibility occlusion=NULL,kich_r4_light_admission::Policy* admission=NULL)const {
         struct Choice {float score;KichR4LocalLight light;bool shadow;const void* source;};std::vector<Choice> choices;
-        out.count=0;out.shadow_mask=0;out.shadows.clear();out.sources.clear();out.lights.clear();out.visibility_valid=camera_vp?1u:0u;
+        out.count=0;out.shadow_mask=0;out.shadows.clear();out.sources.clear();out.projectors.clear();out.lights.clear();out.visibility_valid=camera_vp?1u:0u;
         if(camera_vp)memcpy(out.visibility_vp,camera_vp,sizeof(out.visibility_vp));
         else memset(out.visibility_vp,0,sizeof(out.visibility_vp));
         out.r1_lights_requested=out.r1_lights_applied=r1_lights_enabled?1u:0u;
@@ -483,8 +484,9 @@ struct State {
         // Sorting is deterministic scheduling only. Every visible source is
         // admitted; the bounded registry is not a global gameplay light quota.
         std::stable_sort(choices.begin(),choices.end(),[](const Choice& a,const Choice& b){return a.score>b.score;});
-        out.lights.resize(choices.size());out.sources.resize(choices.size());out.shadows.resize(choices.size());
+        out.lights.resize(choices.size());out.sources.resize(choices.size());out.projectors.resize(choices.size());out.shadows.resize(choices.size());
         for(unsigned i=0;i<choices.size();++i){out.lights[i]=choices[i].light;out.shadows[i]=choices[i].shadow?1:0;
+            const auto projector=light_projectors.find(choices[i].source);if(projector!=light_projectors.end())out.projectors[i]=projector->second;
             if(choices[i].shadow && i<32)out.shadow_mask|=1u<<i;
             const auto source=light_sources.find(choices[i].source);if(source!=light_sources.end())out.sources[i]=source->second;
             else out.sources[i].process_handle=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(choices[i].source));}

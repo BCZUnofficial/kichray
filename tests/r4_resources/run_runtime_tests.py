@@ -13,5 +13,5 @@ with tempfile.TemporaryDirectory(prefix="kich-e1-runtime-") as directory:
     work = Path(directory)
     (work / "runtime_under_test.cpp").write_text('#include "runtime_fake.h"\n' + body)
     binary = work / "runtime"
-    subprocess.run([os.environ.get("CXX", "g++"), "-std=c++11", "-Wall", "-Wextra", "-Werror", "-I"+str(here), "-I"+str(work), str(here / "runtime_tests.cpp"), "-o", str(binary)], check=True)
+    subprocess.run([os.environ.get("CXX", "g++"), "-std=c++11", "-Wall", "-Wextra", "-Werror", "-I"+str(here), "-I"+str(root / "tests/r4_submission/fake"), "-I"+str(work), str(here / "runtime_tests.cpp"), "-o", str(binary)], check=True)
     subprocess.run([str(binary)], check=True)

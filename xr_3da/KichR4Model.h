@@ -6,7 +6,7 @@
  * one skeleton in one capture frame, independently of world transforms.
  * No engine/STL/D3D pointers cross this boundary; upload_pose consumes only
  * its 16-byte header and bone_count matrices before returning. */
-#define KICH_R4_MODEL_ABI UINT32_C(0x00030000)
+#define KICH_R4_MODEL_ABI UINT32_C(0x00040000)
 #define KICH_R4_MAX_MODEL_BONES UINT32_C(256)
 #define KICH_R4_MODEL_POSE_BUDGET_BYTES UINT32_C(16777216)
 #define KICH_R4_MAX_MODEL_POSE_SLOTS UINT32_C(16384)
@@ -28,6 +28,11 @@ typedef struct KichR4ModelPose {
 typedef struct KichR4ModelPipelineDesc {uint32_t struct_size;KichR4Handle vs,ps;uint32_t bone_capacity;} KichR4ModelPipelineDesc;
 typedef struct KichR4ModelDrawDesc {
     uint32_t struct_size;KichR4DeferredDrawDesc surface;KichR4Handle pose_buffer;
+    /* E1.8 model-only normal/gloss inputs. Keep t0..t7 available for the base
+     * and all six point-shadow faces; do not alias a shadow/projector slot.
+     * t8/t9 use s9/s10 respectively. Zero handles explicitly unbind them. */
+    KichR4Handle material_textures[2];
+    KichR4SamplerState material_samplers[2];
 } KichR4ModelDrawDesc;
 typedef struct KichR4ModelAPI {
     uint32_t struct_size,abi_version,pointer_size,flags;
@@ -39,7 +44,7 @@ typedef struct KichR4ModelAPI {
 #pragma pack(pop)
 typedef char KichR4ModelVertex_size[(sizeof(KichR4ModelVertex)==64)?1:-1];
 typedef char KichR4ModelPose_size[(sizeof(KichR4ModelPose)==16400)?1:-1];
-typedef char KichR4ModelDrawDesc_size[(sizeof(KichR4ModelDrawDesc)==576)?1:-1];
+typedef char KichR4ModelDrawDesc_size[(sizeof(KichR4ModelDrawDesc)==672)?1:-1];
 #ifdef __cplusplus
 extern "C" {
 #endif

@@ -1,11 +1,12 @@
 #include "KichR4NativePrelude.h"
 #include "KichR4DetailData.h"
 #include "KichR4Native.h"
-#include <chrono>
+#include "KichR4FrameMetrics.h"
+#include "RenderSnapshot.h"
 extern float r_ssaDISCARD;
 
 namespace {
-struct ShadowDetailItem {const CDetailManager::SlotItem* item;float scale;};
+struct ShadowDetailItem {const CDetailManager::SlotItem* item;float scale;uint32_t cell;};
 KichR4DetailInstance DetailInstance(const CDetailManager::SlotItem& item,float scale,unsigned variant){
     const Fmatrix& m=item.mRotY;KichR4DetailInstance instance={};
     const float rows[3][4]={{m._11*scale,m._21*scale,m._31*scale,m._41},
@@ -47,7 +48,7 @@ void KichR4_DetailLoad(CDetailManager& manager){
 }
 void KichR4_DetailPrepare(CDetailManager& manager){
     using namespace kich_r4_detail;
-    const auto start=std::chrono::steady_clock::now();Frame& frame=KichR4_DetailFrame();frame.ClearFrame(Device.dwFrame);
+    const auto start=kich_r4_metrics::Start(g_render_snapshot_active);Frame& frame=KichR4_DetailFrame();frame.ClearFrame(Device.dwFrame);
     const CDetailManager::SSwingValue& swing=manager.swing_current;
     if(!Finite(swing.rot1) || !Finite(swing.rot2) || swing.rot1<=0 || swing.rot2<=0 || !Finite(swing.speed) || !Finite(swing.amp1) || !Finite(swing.amp2))
         throw std::runtime_error("invalid detail swing settings");
@@ -77,8 +78,12 @@ void KichR4_DetailPrepare(CDetailManager& manager){
     const float radius=std::max(20.f,std::min(dm_fade,ps_r__Detail_radius));
     const float limit=radius*radius,fade_range=limit-1.f;
     std::vector<std::vector<ShadowDetailItem> > buckets(manager.objects.size()*3);
+    frame.shadow_cells.resize(dm_cache_size);
     size_t candidates=0;
     for(unsigned slot=0;slot<dm_cache_size;++slot){const CDetailManager::Slot& cell=manager.cache_pool[slot];
+        ShadowCell& provenance=frame.shadow_cells[slot];provenance.sx=cell.sx;provenance.sz=cell.sz;
+        provenance.ready=!cell.empty && cell.type==CDetailManager::stReady;
+        provenance.center[0]=cell.vis.sphere.P.x;provenance.center[1]=cell.vis.sphere.P.y;provenance.center[2]=cell.vis.sphere.P.z;
         if(cell.empty || cell.type!=CDetailManager::stReady)continue;
         const float dx=cell.vis.sphere.P.x-Device.vCameraPosition.x,dy=cell.vis.sphere.P.y-Device.vCameraPosition.y,dz=cell.vis.sphere.P.z-Device.vCameraPosition.z;
         const float distance=dx*dx+dy*dy+dz*dz;if(!Finite(distance) || distance>limit)continue;
@@ -91,13 +96,13 @@ void KichR4_DetailPrepare(CDetailManager& manager){
                 const float scale=item.scale*fade,ssa=scale*scale*projected;if(ssa<r_ssaDISCARD)continue;
                 const unsigned variant=ssa>16*r_ssaDISCARD?std::min(2u,item.vis_ID):0u;
                 if(++candidates>KICH_R4_MAX_DETAIL_INSTANCES)throw std::runtime_error("detail shadow candidate safety limit");
-                const ShadowDetailItem candidate={&item,scale};buckets[source.id*3+variant].push_back(candidate);}
+                const ShadowDetailItem candidate={&item,scale,slot};buckets[source.id*3+variant].push_back(candidate);}
         }
     }
     for(size_t mesh=0;mesh<manager.objects.size();++mesh)for(unsigned variant=0;variant<3;++variant){const auto& items=buckets[mesh*3+variant];
         if(items.empty())continue;
         kich_r4_detail::Group group={static_cast<uint32_t>(mesh),variant,static_cast<uint32_t>(frame.shadow_instances.size()),static_cast<uint32_t>(items.size())};
-        for(size_t i=0;i<items.size();++i)frame.AppendShadow(DetailInstance(*items[i].item,items[i].scale,variant));
+        for(size_t i=0;i<items.size();++i)frame.AppendShadow(DetailInstance(*items[i].item,items[i].scale,variant),items[i].cell);
         frame.shadow_groups.push_back(group);}
-    frame.prepare_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+    frame.prepare_ms=kich_r4_metrics::Elapsed(start);
 }

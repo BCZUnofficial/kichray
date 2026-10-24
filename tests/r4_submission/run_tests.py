@@ -23,3 +23,10 @@ with tempfile.TemporaryDirectory(prefix="kich-e13-submission-") as directory:
     exe = work / "buffer"
     subprocess.run([*flags, str(buffer), "-o", str(exe)], check=True)
     subprocess.run([str(exe)], check=True)
+
+    model = work / "model.cpp"
+    draw = source[source.index("int32_t DrawDeferredOrDetail("):source.index("int32_t KICH_R4_CALL DrawDeferred(")]
+    model.write_text((HERE / "model_bind_fixture.h").read_text() + draw + (HERE / "model_bind_cases.cpp").read_text())
+    exe = work / "model"
+    subprocess.run([*flags, "-I" + str(HERE / "fake"), str(model), "-o", str(exe)], check=True)
+    subprocess.run([str(exe)], check=True)

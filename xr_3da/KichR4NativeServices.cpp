@@ -86,6 +86,7 @@ kich_r4_material::PassState NativePassState(const ShaderElement& element,const S
     out.blend=state.get_RS(D3DRS_ALPHABLENDENABLE,0)!=0;out.src=state.get_RS(D3DRS_SRCBLEND,D3DBLEND_ONE);out.dst=state.get_RS(D3DRS_DESTBLEND,D3DBLEND_ZERO);
     out.alpha_test=state.get_RS(D3DRS_ALPHATESTENABLE,0)!=0;out.alpha_func=state.get_RS(D3DRS_ALPHAFUNC,D3DCMP_ALWAYS);out.alpha_reference=state.get_RS(D3DRS_ALPHAREF,0);
     out.depth_test=state.get_RS(D3DRS_ZENABLE,1)!=0;out.depth_write=state.get_RS(D3DRS_ZWRITEENABLE,1)!=0;
+    out.fog_enabled=state.get_RS(D3DRS_FOGENABLE,0)!=0;
     const uint32_t cull=state.get_RS(D3DRS_CULLMODE,D3DCULL_CCW);
     out.cull=cull==D3DCULL_CW?KICH_R4_CULL_FRONT:cull==D3DCULL_CCW?KICH_R4_CULL_BACK:KICH_R4_CULL_NONE;
     return out;

@@ -45,8 +45,8 @@ typedef unsigned uint;
 struct Varying{float2 uv;};
 struct MaterialConstants{float x;float2 yz;MaterialConstants():x(0),yz(1,1){}}material;
 struct SampleValue{float r,a;};
-struct SampleTexture{SampleValue value;SampleValue Sample(int,float2){return value;}}image1,shadow3;
-int surface1=0,surface5=0;
+struct SampleTexture{SampleValue value;SampleValue Sample(int,float2){return value;}}image1,shadow3,model_bump;
+int surface1=0,surface5=0,model_bump_surface=0;
 '''
 for name in ("NormalSign", "EncodeNormal", "DecodeNormal", "PackMaterial", "MaterialGloss",
              "MaterialClass", "MaterialSlice", "MaterialResponse", "SpecularIntensity", "LocalAttenuation", "Gloss"):
@@ -57,6 +57,7 @@ for name in ("NormalSign", "EncodeNormal", "DecodeNormal", "PackMaterial", "Mate
     body = body.replace("max(dot(abs(n),float3(1,1,1)),1e-8)", "max(dot(abs(n),float3(1,1,1)),1e-8f)")
     body = body.replace("max(range*.95,.0001)", "max(range*.95f,.0001f)")
     body = body.replace("max(0,dot(color", "max(0.f,dot(color")
+    body = body.replace("[branch]", "")
     adapter += body + "\n"
 
 adapter += r'''
@@ -67,6 +68,7 @@ int main(){
     material.x=9;assert(abs(Gloss(sample)-.08f)<1e-6); // Bumped sload detail alpha*2.
     material.x=8;assert(abs(Gloss(sample)-2.f/255)<1e-6); // Flat deffer keeps def_gloss.
     material.x=9;image1.value.r=1;shadow3.value.a=1;assert(Gloss(sample)==1);
+    model_bump.value={.6f,1};material.x=1025;assert(abs(Gloss(sample)-.36f)<1e-6); // HUD samples t8, not any shadow/legacy slot.
     for(int gloss=0;gloss<128;++gloss)for(int material=0;material<16;++material){
         float packed=PackMaterial(float(gloss)/127,float(material)/5);
         assert(packed==gloss*16+material);

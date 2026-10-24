@@ -8,6 +8,7 @@
 #include <algorithm>
 using std::isfinite;
 float max(float a,float b){return std::max(a,b);}
+float min(float a,float b){return std::min(a,b);}
 using std::abs;
 float saturate(float a){return std::max(0.f,std::min(1.f,a));}
 struct float2 {float x,y;float2(float a=0,float b=0):x(a),y(b){} };
@@ -19,6 +20,7 @@ float2 operator-(float2 a,float2 b){return float2(a.x-b.x,a.y-b.y);}
 float2 operator*(float2 a,float b){return float2(a.x*b,a.y*b);}
 float2 operator/(float2 a,float b){return a*(1.f/b);}
 float3 operator-(float3 a,float3 b){return float3(a.x-b.x,a.y-b.y,a.z-b.z);}
+float3 operator+(float3 a,float3 b){return float3(a.x+b.x,a.y+b.y,a.z+b.z);}
 float3 operator*(float3 a,float b){return float3(a.x*b,a.y*b,a.z*b);}
 float3 operator/(float3 a,float b){return a*(1.f/b);}
 bool operator<(float2 a,float b){return a.x<b || a.y<b;}
@@ -28,8 +30,12 @@ bool all(bool v){return v;}
 bool isfinite(float2 v){return std::isfinite(v.x) && std::isfinite(v.y);}
 float2 floor(float2 v){return float2(std::floor(v.x),std::floor(v.y));}
 float dot(float2 a,float2 b){return a.x*b.x+a.y*b.y;}
+float dot(float3 a,float3 b){return a.x*b.x+a.y*b.y+a.z*b.z;}
+float3 cross(float3 a,float3 b){return float3(a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x);}
 float3 xyz(float4 v){return float3(v.x,v.y,v.z);}
-float4 screen;int shadow_surface=0;
+float4 screen,camera;int shadow_surface=0;
+kich_r4_scene::Matrix inverse_vp;
+float4 mul(float4 p,const kich_r4_scene::Matrix& m);
 unsigned checks=0,comparisons=0;
 void Require(bool v,const char* message){++checks;if(!v)throw std::runtime_error(message);}
 struct Texture2D {
@@ -48,6 +54,49 @@ float4 Transform(float3 p,float w,const kich_r4_scene::Matrix& m){
         p.x*m.m[1]+p.y*m.m[5]+p.z*m.m[9]+w*m.m[13],
         p.x*m.m[2]+p.y*m.m[6]+p.z*m.m[10]+w*m.m[14],
         p.x*m.m[3]+p.y*m.m[7]+p.z*m.m[11]+w*m.m[15]);
+}
+float4 mul(float4 p,const kich_r4_scene::Matrix& m){return Transform(xyz(p),p.w,m);}
+// Independent plane/clip intersection: solve X/Z directly at a fixed world Y,
+// rather than copying the production 4x4 inverse/reconstruction algorithm.
+float PlaneDepth(float2 pixel,double ground,const kich_r4_scene::Matrix& vp){
+    const double nx=double(pixel.x)*2/screen.x-1,ny=1-double(pixel.y)*2/screen.y;
+    const double ax=vp.m[0]-nx*vp.m[3],az=vp.m[8]-nx*vp.m[11];
+    const double bx=vp.m[1]-ny*vp.m[3],bz=vp.m[9]-ny*vp.m[11];
+    const double ac=ground*(vp.m[4]-nx*vp.m[7])+vp.m[12]-nx*vp.m[15];
+    const double bc=ground*(vp.m[5]-ny*vp.m[7])+vp.m[13]-ny*vp.m[15];
+    const double determinant=ax*bz-az*bx,x=(az*bc-ac*bz)/determinant,z=(ac*bx-ax*bc)/determinant;
+    const double depth=(x*vp.m[2]+ground*vp.m[6]+z*vp.m[10]+vp.m[14])/(x*vp.m[3]+ground*vp.m[7]+z*vp.m[11]+vp.m[15]);
+    return float(std::round(depth*16777215)/16777215); // actual D24 UNORM screen depth
+}
+void ReceiverReconstruction(){using namespace kich_r4_lighting;
+    const float direction[3]={-.898962140083313f,-.3120878040790558f,-.3073570132255554f};
+    const float3 sun(direction[0],direction[1],direction[2]);
+    for(float pitch:{-.03f,.0119f,.04f})for(float near_plane:{.2f,.01f})for(float translation:{0.f,1.f,4.f}){
+        const Vec3 forward=Normalize(Vec3{-.954f,pitch,-.2994f});
+        const float origin[3]={-238.471f*translation,-18.532f*translation,-149.789f*translation};
+        camera=float4(origin[0],origin[1],origin[2],0);screen=float4(1920,1080,0,2048);
+        Matrix projection=Projection(67.5f*3.14159265358979323846f/180,near_plane,150);projection.m[0]*=1080.f/1920;
+        const Matrix vp=Multiply(StableView(Vec3{origin[0],origin[1],origin[2]},forward),projection);
+        Require(Inverse(vp,inverse_vp,origin),"relative inverse exists at both actual engine near planes");
+        const double ground=double(origin[1])-1.7;
+        const Matrix sm=SunShadow(origin,direction,128,2048);Matrix sm_inverse;Require(Inverse(sm,sm_inverse),"shadow oracle inverse");
+        const double a=-2*double(sm_inverse.m[1])/sm_inverse.m[9],b=2*double(sm_inverse.m[5])/sm_inverse.m[9];
+        const double c=(ground+sm_inverse.m[1]-sm_inverse.m[5]-sm_inverse.m[13])/sm_inverse.m[9];
+        Texture2D plane={a,b,c,false};
+        for(unsigned y=566;y<1000;y+=13)for(unsigned x=700;x<1300;x+=71){
+            float3 relative[4];
+            for(unsigned k=0;k<4;++k){const float2 pixel(float(x)+.5f+float(k&1),float(y)+.5f+float(k>>1));
+                relative[k]=RelativePosition(pixel,PlaneDepth(pixel,ground,vp));}
+            const float3 p=relative[0]+xyz(camera),dx=relative[1]-relative[0],dy=relative[2]-relative[0];
+            const float3 mixed=relative[3]-relative[1]-relative[2]+relative[0];
+            const float distance_squared=dot(relative[0],relative[0]);
+            if(distance_squared>150*150 || dot(relative[0],float3(forward.x,forward.y,forward.z))<=0)continue;
+            Require(std::fabs(double(relative[0].y)+origin[1]-ground)<.002,"relative reconstruction keeps planar height within2mm including near0.01 and translated cameras");
+            Require(ShadowPlaneStable(distance_squared,max(dot(dx,dx),dot(dy,dy)),ShadowPlaneErrorSquared(dx,dy,mixed)),"continuous quantized ground quad retains its receiver plane");
+            const float4 q=Transform(p-sun*.01f,1,sm);if(std::max(std::fabs(q.x),std::fabs(q.y))>=.9f)continue;
+            Require(PCF(plane,q,Transform(dx,0,sm),Transform(dy,0,sm))>.9999f,"full D24-relative-reconstruction-to-PCF chain must not shadow unobstructed ground");
+        }
+    }
 }
 void PlaneCases(){using namespace kich_r4_lighting;
     for(unsigned size:{16u,256u,512u,2048u})for(float degrees:{0.f,35.f,60.f,80.f})for(bool perspective:{false,true}){
@@ -82,7 +131,7 @@ void PlaneCases(){using namespace kich_r4_lighting;
 void Continuity(){
     screen.w=512;Texture2D edge={0,0,0,true};float previous=-1;
     for(unsigned step=0;step<=2000;++step){const float u=.495f+.01f*step/2000;
-        const float current=PCF(edge,float4(u*2-1,0,.5f,1),float4(),float4());
+        const float current=PCF(edge,float4(u*2-1,0,.5f,1),float4(.01f,0,0,0),float4(0,.01f,0,0));
         Require(current>=0 && current<=1,"normalized filter stays in visibility range");
         if(previous>=0)Require(std::fabs(current-previous)<.004f,"visibility must remain continuous across texel/window boundaries");
         previous=current;
@@ -104,11 +153,31 @@ void CubeGuard(){using namespace kich_r4_lighting;KichR4LocalLight light={};ligh
         }
     }
 }
+void GrazingReceiver(){using namespace kich_r4_lighting;
+    const float camera_position[3]={-238.4709930419922f,-18.531999588012695f,-149.78900146484375f};
+    const float direction[3]={-.898962140083313f,-.3120878040790558f,-.3073570132255554f};
+    const Matrix projection=SunShadow(camera_position,direction,128,2048);
+    const float3 p(-332.83056640625f,-20.23200035095215f,-157.55050659179688f);
+    const float3 dx(-.034210205078125f,0,.1090087890625f),dy(5.940216064453125f,0,.4883270263671875f);
+    const float3 relative=p-float3(camera_position[0],camera_position[1],camera_position[2]);
+    Require(ShadowPlaneStable(dot(relative,relative),max(dot(dx,dx),dot(dy,dy)),ShadowPlaneErrorSquared(dx,dy,float3(.01f,0,.02f))),
+        "continuous grazing ground stays a valid plane despite a six-metre pixel step");
+    Texture2D plane={8.287288059063833e-10,-.38052325836786677,.695527551319455,false};screen.w=2048;
+    const float3 sun(direction[0],direction[1],direction[2]);
+    Require(PCF(plane,Transform(p-sun*.01f,1,projection),Transform(dx,0,projection),Transform(dy,0,projection))>.9999f,
+        "logged-camera grazing-plane counterexample remains fully lit");
+    // A noncoplanar background corner cannot masquerade as the same receiver.
+    const float3 small_x(.01f,0,0),small_y(0,.01f,0),jump(0,0,2);
+    Require(!ShadowPlaneStable(100,.0001f,ShadowPlaneErrorSquared(small_x,small_y,jump)),"depth-discontinuous quad is rejected");
+    comparisons=0;Texture2D blocker={0,0,.4,false};
+    Require(PCF(blocker,float4(0,0,.5f,1),float4(),float4())==0 && comparisons==1,
+        "invalid-plane fallback preserves a blocker without nine-texel extrapolation");
+}
 int main(){try{
-    PlaneCases();Continuity();CubeGuard();
-    float2 gradient=ShadowGradient(float3(0,0,1),float3(0,0,2));Require(gradient.x==0 && gradient.y==0,"singular UV Jacobian fails conservatively");
-    gradient=ShadowGradient(float3(1,0,std::numeric_limits<float>::infinity()),float3(0,1,1));Require(gradient.x==0 && gradient.y==0,"nonfinite slope fails conservatively");
-    Require(ShadowPlaneStable(4,.01f) && !ShadowPlaneStable(4,10000),"foreground to background jump does not become a receiver plane");
-    Require(!ShadowPlaneStable(1,std::numeric_limits<float>::infinity()),"nonfinite derivative rejected");
+    PlaneCases();Continuity();CubeGuard();GrazingReceiver();ReceiverReconstruction();
+    float2 gradient;Require(!ShadowGradient(float3(0,0,1),float3(0,0,2),gradient),"singular UV Jacobian requests bounded fallback");
+    Require(!ShadowGradient(float3(1,0,std::numeric_limits<float>::infinity()),float3(0,1,1),gradient),"nonfinite slope requests bounded fallback");
+    Require(ShadowPlaneStable(4,.01f,0) && !ShadowPlaneStable(4,10000,10000),"noncoplanar jump does not become a receiver plane");
+    Require(!ShadowPlaneStable(1,std::numeric_limits<float>::infinity(),0),"nonfinite derivative rejected");
     std::printf("E1.5 production PCF plane/contact/continuity/cube guard: %u checks passed\n",checks);return 0;
 }catch(const std::exception& e){std::fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

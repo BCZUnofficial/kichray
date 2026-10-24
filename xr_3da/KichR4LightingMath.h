@@ -7,7 +7,7 @@
 namespace kich_r4_lighting {
 using namespace kich_r4_scene;
 inline bool Finite(float v){return v==v && v>=-1.e20f && v<=1.e20f;}
-inline bool Inverse(const Matrix& a,Matrix& out){
+inline bool Inverse(const Matrix& a,Matrix& out,const float* relative_origin=NULL){
     double row[4][8]={};
     for(unsigned i=0;i<4;++i)for(unsigned j=0;j<4;++j){
         if(!Finite(a.m[i*4+j]))return false;
@@ -20,7 +20,14 @@ inline bool Inverse(const Matrix& a,Matrix& out){
         const double divisor=row[c][c];for(unsigned j=0;j<8;++j)row[c][j]/=divisor;
         for(unsigned r=0;r<4;++r)if(r!=c){const double factor=row[r][c];for(unsigned j=0;j<8;++j)row[r][j]-=factor*row[c][j];}
     }
-    for(unsigned i=0;i<4;++i)for(unsigned j=0;j<4;++j){out.m[i*4+j]=static_cast<float>(row[i][j+4]);if(!Finite(out.m[i*4+j]))return false;}
+    // Remove the camera translation before rounding the inverse to float.
+    // Inverting a separately recomposed view/projection would not match the
+    // exact full matrix used by the rasterizer. This keeps that matrix while
+    // avoiding large absolute coordinates divided by a small homogeneous w.
+    for(unsigned i=0;i<4;++i)for(unsigned j=0;j<4;++j){
+        const double value=row[i][j+4]-(relative_origin && j<3?double(relative_origin[j])*row[i][7]:0);
+        out.m[i*4+j]=static_cast<float>(value);if(!Finite(out.m[i*4+j]))return false;
+    }
     return true;
 }
 inline Matrix NormalMatrix(const Matrix& world){Matrix inv;
@@ -75,10 +82,29 @@ struct Constants {
     float camera[4],screen[4],sun_direction[4],sun_color[4],ambient[4],hemi[4],fog[4];
     float light_position[4],light_direction[4],light_color[4],alpha[4];
     float material[4],color_scale[4],color_bias[4],sun_scale_bias[4],tree_wave[4],tree_wind[4];
+    float fog_params[4],fog_plane[4];
 };
-static_assert(sizeof(Constants)==912,"B4.4 HLSL cbuffer size");
+static_assert(sizeof(Constants)==944,"E1.8 HLSL cbuffer size");
 static_assert(offsetof(Constants,normal_matrix)==128 && offsetof(Constants,inverse_vp)==192 &&
-    offsetof(Constants,shadow)==256 && offsetof(Constants,camera)==640 && offsetof(Constants,alpha)==800,"B4.4 HLSL offsets");
+    offsetof(Constants,shadow)==256 && offsetof(Constants,camera)==640 && offsetof(Constants,alpha)==800 &&
+    offsetof(Constants,fog_params)==912 && offsetof(Constants,fog_plane)==928,"E1.8 HLSL offsets");
+inline void FogConstants(const KichR4LightingFrame& input,const Matrix& vp,Constants& out){
+    memset(out.fog_params,0,sizeof(out.fog_params));memset(out.fog_plane,0,sizeof(out.fog_plane));
+    if(!input.fog_valid || !Finite(input.fog_near) || !Finite(input.fog_far) || input.fog_far<=input.fog_near)return;
+    const double reciprocal=1.0/(double(input.fog_far)-input.fog_near);
+    const double offset=-double(input.fog_near)*reciprocal;
+    if(reciprocal>1.e10 || !Finite(float(offset)))return;
+    out.fog_params[0]=float(offset);out.fog_params[1]=float(reciprocal);
+    // R2 cl_fog_plane: normalized view plane, distinct from radial combine fog.
+    double plane[4];for(unsigned i=0;i<4;++i)plane[i]=-double(vp.m[i*4+3])-vp.m[i*4+2];
+    const double length=sqrt(plane[0]*plane[0]+plane[1]*plane[1]+plane[2]*plane[2]);
+    if(!(length>1.e-12))return;
+    for(unsigned i=0;i<4;++i)plane[i]/=-length;
+    for(unsigned i=0;i<3;++i)out.fog_plane[i]=float(-plane[i]*reciprocal);
+    out.fog_plane[3]=float(1-(plane[3]-input.fog_near)*reciprocal);
+    for(unsigned i=0;i<4;++i)if(!Finite(out.fog_plane[i])){memset(out.fog_plane,0,sizeof(out.fog_plane));return;}
+    out.fog_params[3]=1; // forward plane is valid; .z is a per-draw opt-in.
+}
 inline bool ValidLight(const KichR4LocalLight& l){
     if((l.type!=1 && l.type!=2) || !Finite(l.range) || l.range<=.05f || l.range>10000)return false;
     for(unsigned i=0;i<3;++i)if(!Finite(l.position[i]) || !Finite(l.direction[i]) || !Finite(l.color[i]) || l.color[i]<0)return false;

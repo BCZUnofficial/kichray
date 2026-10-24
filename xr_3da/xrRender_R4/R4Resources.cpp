@@ -129,7 +129,7 @@ struct Device {
     uint64_t telemetry_epoch,pass_ordinal,draw_ordinal,created_total,released_total,uploads_total,uploaded_bytes_total;
     uint64_t resource_records,resource_records_dropped,route_observations,route_records,route_records_dropped,callback_failures;
     uint64_t backbuffer_write,backbuffer_generation;std::set<uint64_t> pass_routes;
-    KichR4Handle bound_textures[8];
+    KichR4Handle bound_textures[DrawTextureSlots];
     uint32_t profile_failure;bool capture_query_requested;
     KichR4TelemetryTiming timing_results[8];uint32_t timing_count;
     struct ProfileSlot {ID3D11Query* disjoint;ID3D11Query* stamp[8];bool pending;
@@ -360,7 +360,7 @@ int32_t KICH_R4_CALL CreateBuffer(KichR4Handle device, const KichR4BufferDesc* d
         hr=d->hw->CreateBuffer(&native,data ? &initial : NULL,&r->buffer); if (FAILED(hr)) return hr;
         r->info.kind=desc->kind; r->info.byte_size=desc->byte_size;
         r->buffer_stride=desc->stride;r->initialized=data!=NULL;
-        if(desc->kind==KICH_R4_CONSTANT_BUFFER && data && bytes==912)memcpy(r->alpha,static_cast<const unsigned char*>(data)+800,16);
+        if(desc->kind==KICH_R4_CONSTANT_BUFFER && data && bytes==DeferredConstantsBytes)memcpy(r->alpha,static_cast<const unsigned char*>(data)+DeferredAlphaOffset,16);
         *out=d->Add(std::move(r)); return KICH_R4_OK;
     });
 }
@@ -582,8 +582,8 @@ int32_t ShaderConstants(const Resource& shader,uint32_t& bytes,bool texture=fals
     for(size_t i=0;i<shader.bindings.size();++i) {
         const KichR4ShaderBinding& b=shader.bindings[i];
         if(model_capacity && b.kind==KICH_R4_BIND_CONSTANTS && b.slot==1 && b.count==1 && b.byte_size==KichR4ModelPaletteBytes(model_capacity)){palette=true;continue;}
-        if(advanced && b.count==1 && ((b.kind==KICH_R4_BIND_TEXTURE && b.slot<8) ||
-            (b.kind==KICH_R4_BIND_SAMPLER && b.slot<9)))continue;
+        if(advanced && b.count==1 && ((b.kind==KICH_R4_BIND_TEXTURE && b.slot<DrawTextureSlots) ||
+            (b.kind==KICH_R4_BIND_SAMPLER && b.slot<DrawSamplerSlots)))continue;
         if(texture && (b.kind==KICH_R4_BIND_TEXTURE || b.kind==KICH_R4_BIND_SAMPLER) && b.slot==0 && b.count==1)continue;
         if(b.kind!=KICH_R4_BIND_CONSTANTS || b.slot!=0 || b.count!=1 || !b.byte_size || b.byte_size>65536)
             return KICH_R4_E_UNSUPPORTED;
@@ -695,7 +695,7 @@ int32_t KICH_R4_CALL UpdateBuffer(KichR4Handle device,KichR4Handle buffer,const 
             memcpy(r->constant_contents.data(),data,bytes);
         }else d->context->UpdateSubresource(r->buffer,0,NULL,data,0,0);
         r->initialized=true;
-        if(r->info.kind==KICH_R4_CONSTANT_BUFFER && bytes==912)memcpy(r->alpha,static_cast<const unsigned char*>(data)+800,16);
+        if(r->info.kind==KICH_R4_CONSTANT_BUFFER && bytes==DeferredConstantsBytes)memcpy(r->alpha,static_cast<const unsigned char*>(data)+DeferredAlphaOffset,16);
         d->Upload(r,bytes);++d->geometry_stats.buffer_updates;return KICH_R4_OK;
     });
 }
@@ -761,13 +761,13 @@ void SnapshotPass(Device* d){
     for(uint32_t i=0;i<d->pass.color_count;++i){char key[32];snprintf(key,sizeof(key),"rtv_%u",i);d->Number("GPU_PASS",id,key,d->pass.colors[i]);SnapshotResource(d,d->pass.colors[i]);}
     d->Number("GPU_PASS",id,"dsv",d->pass.depth);SnapshotResource(d,d->pass.depth);
     d->Emit("GPU_PASS",id,"output_view_range","MIP_0_SLICE_0; HANDLE_0_RTV_IS_BACKBUFFER; HANDLE_0_DSV_IS_UNBOUND");
-    d->Emit("GPU_PASS",id,"input_transition","PS_SRV_SLOTS_0_TO_7_UNBOUND_BEFORE_OM_TARGETS");
+    d->Emit("GPU_PASS",id,"input_transition","PS_SRV_SLOTS_0_TO_9_UNBOUND_BEFORE_OM_TARGETS");
 }
 void TelemetryDraw(Device* d,const KichR4DrawIndexedDesc& desc,Resource* pipeline,const KichR4StreamDrawDesc* state,const KichR4Handle* textures,const KichR4DetailDrawDesc* detail,KichR4Handle pose){
     ++d->draw_ordinal;
     try { if(d->telemetry_sink && (d->telemetry.flags&KICH_R4_TELEMETRY_DETAILED)){
         ++d->route_observations;uint64_t route=TelemetryHash(&desc.pipeline,sizeof(desc.pipeline));
-        if(textures)route^=TelemetryHash(textures,8*sizeof(KichR4Handle));
+        if(textures)route^=TelemetryHash(textures,DrawTextureSlots*sizeof(KichR4Handle));
         route^=TelemetryHash(&desc.constant_buffer,sizeof(desc.constant_buffer));route^=pose;
         const uint32_t states[]={desc.cull_mode,desc.depth_mode,state?state->depth_write:desc.depth_mode,state?state->blend_enable:0,state?state->source_blend:0,state?state->dest_blend:0,state?state->clamp_texture:0,state?state->scissor_enable:0};route^=TelemetryHash(states,sizeof(states));
         const bool fresh=d->pass_routes.find(route)==d->pass_routes.end();
@@ -780,7 +780,7 @@ void TelemetryDraw(Device* d,const KichR4DrawIndexedDesc& desc,Resource* pipelin
             d->Emit("GPU_BINDING",id,"scope","ACTUAL_SUBMITTED_BINDINGS; DECLARATIONS_AND_BRANCH_EXECUTION_ARE_DISTINCT");
             SnapshotResource(d,desc.pipeline);SnapshotResource(d,desc.vertex_buffer);SnapshotResource(d,desc.index_buffer);SnapshotResource(d,desc.constant_buffer);SnapshotResource(d,pose);if(detail)SnapshotResource(d,detail->instance_buffer);
             Resource* ps=d->resources.Find(pipeline->pixel_shader);
-            for(unsigned slot=0;slot<8;++slot){KichR4Handle handle=textures?textures[slot]:0;char slot_id[96];snprintf(slot_id,sizeof(slot_id),"draw_%llu_ps_t%u",static_cast<unsigned long long>(d->draw_ordinal),slot);
+            for(unsigned slot=0;slot<DrawTextureSlots;++slot){KichR4Handle handle=textures?textures[slot]:0;char slot_id[96];snprintf(slot_id,sizeof(slot_id),"draw_%llu_ps_t%u",static_cast<unsigned long long>(d->draw_ordinal),slot);
                 bool declared=false;if(ps)for(const auto& b:ps->bindings)if(b.kind==KICH_R4_BIND_TEXTURE && slot>=b.slot && slot-b.slot<b.count)declared=true;
                 d->Number("GPU_TEXTURE_BINDING",slot_id,"pass_ordinal",d->pass_ordinal);d->Number("GPU_TEXTURE_BINDING",slot_id,"handle",handle);d->Emit("GPU_TEXTURE_BINDING",slot_id,"bound",handle?"YES":"NO");
                 d->Emit("GPU_TEXTURE_BINDING",slot_id,"declared_in_bytecode",ps?(declared?"YES":"NO"):"SHADER_HANDLE_RELEASED");d->Emit("GPU_TEXTURE_BINDING",slot_id,"pixel_branch_executed","NOT_MEASURED");
@@ -813,7 +813,7 @@ void SnapshotDraw(Device* d,const KichR4DrawIndexedDesc& desc,Resource* pipeline
         const int count=snprintf(event.samplers+used,sizeof(event.samplers)-used,"s%u:UVW=%u/%u/%u;min_mag_mip=%u/%u/%u;aniso=%u;border=%08x;bias_bits=%08x;maxmip=%u;",i?i+1:0,t.u,t.v,t.w,t.min_filter,t.mag_filter,t.mip_filter,t.anisotropy,t.border,t.lod_bias_bits,t.max_mip);
         if(count<0 || size_t(count)>=sizeof(event.samplers)-used)break;
         used+=size_t(count);}
-    if(pipeline->pipeline->advanced && used<sizeof(event.samplers))snprintf(event.samplers+used,sizeof(event.samplers)-used,"s1:COMPARISON_LINEAR;UVW=BORDER;cmp=LESS_EQUAL");
+    if(pipeline->pipeline->advanced && used<sizeof(event.samplers))snprintf(event.samplers+used,sizeof(event.samplers)-used,"s1:COMPARISON_POINT;UVW=BORDER;cmp=LESS_EQUAL");
     /* Callback cannot reenter GPU services; the EXE recorder catches its own
      * allocation failures and copies everything before returning. */
     d->snapshot_sink(&event);
@@ -834,7 +834,7 @@ int32_t SubmitDraw(Device* d,const KichR4DrawIndexedDesc* desc,Resource* texture
         d->draw_state.BeginPass(viewport); // Bind changed OM and viewport outside the deferred path.
         const int32_t drawn=p->pipeline->Draw(d->context,d->draw_state,*desc,vb->buffer,ib->buffer,cb->buffer,ib->buffer_stride,texture?texture->srv:NULL,extra);
         if(drawn<0)return drawn;
-        d->pass_active=false;d->bound_textures[0]=texture?texture->handle:0;
+        d->pass_active=false;memset(d->bound_textures,0,sizeof(d->bound_textures));d->bound_textures[0]=texture?texture->handle:0;
         SnapshotDraw(d,*desc,p,vb,cb,extra,d->bound_textures);
         ++d->geometry_stats.draw_calls;
         const uint64_t triangles=uint64_t(d->geometry_stats.triangles)+desc->index_count/3;
@@ -889,7 +889,7 @@ int32_t KICH_R4_CALL BeginDeferredPass(KichR4Handle device,const KichR4PassDesc*
             if((pass->clear_flags&KICH_R4_CLEAR_STENCIL) && r->info.format!=KICH_R4_DEPTH24_STENCIL8)return KICH_R4_E_ARGUMENT;
             depth=r->dsv;}
         d->draw_state.Invalidate(); // OM target changes may implicitly unbind SRV aliases.
-        ID3D11ShaderResourceView* empty[8]={};d->context->PSSetShaderResources(0,8,empty);memset(d->bound_textures,0,sizeof(d->bound_textures));
+        ID3D11ShaderResourceView* empty[DrawTextureSlots]={};d->context->PSSetShaderResources(0,DrawTextureSlots,empty);memset(d->bound_textures,0,sizeof(d->bound_textures));
         d->context->OMSetRenderTargets(pass->color_count,colors,depth);
         D3D11_VIEWPORT viewport={};viewport.Width=static_cast<float>(pass->width);viewport.Height=static_cast<float>(pass->height);viewport.MaxDepth=1;
         d->context->RSSetViewports(1,&viewport);
@@ -926,9 +926,13 @@ int32_t DrawDeferredOrDetail(KichR4Handle device,const KichR4DeferredDrawDesc* d
         if(detail){instances=d->resources.Find(detail->instance_buffer);if(!instances)return KICH_R4_E_HANDLE;
             if(!instances->dynamic_instances || !ValidDetailRange(detail->first_instance,detail->instance_count,instances->instance_count))return KICH_R4_E_ARGUMENT;
             if(!instances->initialized)return KICH_R4_E_STATE;}
-        ID3D11ShaderResourceView* inputs[8]={};
-        for(unsigned i=0;i<8;++i)if(desc->textures[i]){
-            const KichR4Handle handle=desc->textures[i];
+        ID3D11ShaderResourceView* inputs[DrawTextureSlots]={};KichR4Handle handles[DrawTextureSlots]={};
+        memcpy(handles,desc->textures,sizeof(desc->textures));
+        if(model){KichR4SurfaceState sampler_state=KichR4DefaultSurface();
+            for(unsigned i=0;i<2;++i){handles[8+i]=model->material_textures[i];sampler_state.samplers[i]=model->material_samplers[i];}
+            if(!KichR4ValidSurface(sampler_state))return KICH_R4_E_ARGUMENT;}
+        for(unsigned i=0;i<DrawTextureSlots;++i)if(handles[i]){
+            const KichR4Handle handle=handles[i];
             if(handle==d->pass.depth)return KICH_R4_E_ARGUMENT;
             for(unsigned c=0;c<d->pass.color_count;++c)if(handle==d->pass.colors[c])return KICH_R4_E_ARGUMENT;
             Resource* r=d->resources.Find(handle);if(!r)return KICH_R4_E_HANDLE;
@@ -941,9 +945,9 @@ int32_t DrawDeferredOrDetail(KichR4Handle device,const KichR4DeferredDrawDesc* d
         if(d->pass.color_count==3 && d->pass.depth && draw.depth_mode && effective.depth_write &&
             d->resources.Find(d->pass.depth)->info.format==KICH_R4_DEPTH24_STENCIL8)KichR4ReceiverState(effective.surface,true);
         hr=p->pipeline->Draw(d->context,d->draw_state,draw,vb->buffer,ib->buffer,cb->buffer,ib->buffer_stride,NULL,&effective,inputs,
-            instances?instances->buffer:NULL,detail?detail->instance_count:0,detail?detail->first_instance:0,pose?pose->buffer:NULL);
+            instances?instances->buffer:NULL,detail?detail->instance_count:0,detail?detail->first_instance:0,pose?pose->buffer:NULL,model?model->material_samplers:NULL);
         if(hr<0)return hr;
-        memcpy(d->bound_textures,desc->textures,sizeof(d->bound_textures));SnapshotDraw(d,draw,p,vb,cb,&effective,d->bound_textures,detail,model?model->pose_buffer:0);
+        memcpy(d->bound_textures,handles,sizeof(d->bound_textures));SnapshotDraw(d,draw,p,vb,cb,&effective,d->bound_textures,detail,model?model->pose_buffer:0);
         ++d->geometry_stats.draw_calls;
         const uint64_t tris=uint64_t(d->geometry_stats.triangles)+uint64_t(draw.index_count/3)*(detail?detail->instance_count:1);
         d->geometry_stats.triangles=tris>UINT32_MAX?UINT32_MAX:static_cast<uint32_t>(tris);

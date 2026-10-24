@@ -10,6 +10,7 @@
 #include "xrLevel.h"
 #include "CameraManager.h"
 #include "KichR4Game.h"
+#include "KichR4UpdateProbe.h"
 
 ENGINE_API IGame_Level* g_pGameLevel = NULL;
 
@@ -150,8 +151,14 @@ void IGame_Level::OnFrame()
 
 	// Update all objects
 	VERIFY(bReady);
-	Objects.Update(false);
-	pHUD->OnFrame();
+	{
+		kich_r4_update::Scope<> probe(kich_r4_update::ObjectsUpdate);
+		Objects.Update(false);
+	}
+	{
+		kich_r4_update::Scope<> probe(kich_r4_update::HUDUpdate);
+		pHUD->OnFrame();
+	}
 
 	// Ambience
 	if (Sounds_Random.size() && (Device.dwTimeGlobal > Sounds_Random_dwNextTime))

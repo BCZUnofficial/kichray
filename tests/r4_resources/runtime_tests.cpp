@@ -10,7 +10,10 @@ int main(){try{unsigned char data[24]={1,2,3,4,5,6,7,8,0,0,0,0,9,10,11,12,13,14,
     Require(UploadBGRA8(1,h,1,1,data,4,4,&next)==0 && next!=h && device.resources.Find(h),"resize publishes replacement without releasing caller-owned old handle");
     Require(UploadBGRA8(1,999,1,1,data,4,4,&next)==KICH_R4_E_HANDLE && !next,"stale handle rejected");
     Resource shader;KichR4ShaderBinding binding={};binding.kind=KICH_R4_BIND_SAMPLER;binding.count=1;uint32_t bytes=0;
-    for(unsigned i=0;i<9;++i){binding.slot=i;shader.bindings.push_back(binding);}Require(ShaderConstants(shader,bytes,true,true)==0,"real shader reflection gate accepts surface samplers and reserved comparison sampler");
-    binding.slot=9;shader.bindings.push_back(binding);Require(ShaderConstants(shader,bytes,true,true)<0,"undeclared sampler slots remain rejected");
+    for(unsigned i=0;i<DrawSamplerSlots;++i){binding.slot=i;shader.bindings.push_back(binding);}Require(ShaderConstants(shader,bytes,true,true)==0,"real shader reflection gate accepts surface samplers and reserved comparison sampler");
+    binding.slot=DrawSamplerSlots;shader.bindings.push_back(binding);Require(ShaderConstants(shader,bytes,true,true)<0,"undeclared sampler slots remain rejected");
+    shader.bindings.clear();binding.kind=KICH_R4_BIND_TEXTURE;
+    for(unsigned i=0;i<DrawTextureSlots;++i){binding.slot=i;shader.bindings.push_back(binding);}Require(ShaderConstants(shader,bytes,true,true)==0,"reflection admits common textures and model extra slots");
+    binding.slot=DrawTextureSlots;shader.bindings.push_back(binding);Require(ShaderConstants(shader,bytes,true,true)<0,"texture slots beyond production contract remain rejected");
     puts("PASS: production runtime upload body: reuse, resize, padded BGRA rows, failure retention, invalid handle");return 0;
 }catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

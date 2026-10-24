@@ -11,11 +11,12 @@ typedef const char* LPCSTR;
 struct Fvector {float x,y,z;};
 struct Fcolor {float r,g,b,a;};
 struct IRender_Light {enum LT{POINT=1,SPOT=2};};
-struct Source {KichR4LightIdentity identity;KichR4LocalLight light;bool active,shadow;};
+struct Source {KichR4LightIdentity identity;KichR4LocalLight light;KichR4LightProjector projector;bool active,shadow;};
 std::map<const void*,Source> registry;
 bool accept_identity=true;
 bool KichR4_CaptureLightIdentity(const void* id,const KichR4LightIdentity& source){if(!accept_identity)return false;registry[id].identity=source;return true;}
 void KichR4_CaptureLight(const void* id,const KichR4LocalLight& light,bool active){registry[id].light=light;registry[id].active=active;}
+void KichR4_CaptureLightProjector(const void* id,const KichR4LightProjector& projector){registry[id].projector=projector;}
 void KichR4_CaptureLightShadow(const void* id,bool shadow){registry[id].shadow=shadow;}
 void KichR4_CaptureLightForget(const void* id){registry.erase(id);}
 #include "native_light_under_test.cpp"
@@ -26,9 +27,17 @@ int main(){try{
     Require(first.role==KICH_R4_LIGHT_ROLE_RUNTIME && first.serial && first.level_record==UINT32_MAX && first.controller==UINT32_MAX,"runtime role has explicit unknown level provenance");
     Require(!(first.flags&KICH_R4_LIGHT_STATIC),"runtime source starts with dynamic semantics independently of numeric light data");
     Require(first.process_handle==static_cast<uint64_t>(reinterpret_cast<uintptr_t>(runtime)),"pointer identity is explicit process-local source handle");
+    char name[]="lights/torch";runtime->set_texture(name);name[0]='X';
+    Require(registry[runtime].projector.texture=="lights/torch","setter owns texture name independently of caller memory");
+    const Fvector direction={0,0,1},right={0,1,0};runtime->set_rotation(direction,right);
+    Require(registry[runtime].projector.right[1]==1 && registry[runtime].light.direction[2]==1,"rotation retains right vector for projector roll");
     runtime->set_active(false);runtime->set_active(true);
+    Require(registry[runtime].projector.texture=="lights/torch","reactivation retains source projector");
+    runtime->set_texture(NULL);Require(registry[runtime].projector.texture.empty(),"null setter clears projector");
+    runtime->set_texture("");Require(registry[runtime].projector.texture.empty(),"empty setter keeps analytic light");
+    runtime->set_texture("lights/torch");
     Require(registry[runtime].identity.serial==first.serial,"activation changes preserve source lifetime serial");
-    R4Light other;other.set_active(true);
+    R4Light other;other.set_rotation(direction,right);other.set_active(true);
     Require(registry.size()==2 && registry[&other].identity.serial!=first.serial && !std::memcmp(&registry[&other].light,&registry[runtime].light,sizeof(KichR4LocalLight)),"numerically identical sources retain distinct identities");
     other.SetLevelIdentity(12,7);
     Require(registry[&other].identity.role==KICH_R4_LIGHT_ROLE_LEVEL && registry[&other].identity.level_record==12 && registry[&other].identity.controller==7,"level record ordinal and controller preserved");
@@ -38,5 +47,6 @@ int main(){try{
     runtime->~R4Light();Require(registry.count(runtime)==0,"destruction unregisters source");
     runtime=new(storage) R4Light;runtime->set_active(true);
     Require(registry[runtime].identity.process_handle==first.process_handle && registry[runtime].identity.serial>first.serial,"address reuse starts a new source lifetime");
+    Require(registry[runtime].projector.texture.empty(),"address reuse cannot inherit destroyed projector");
     runtime->~R4Light();printf("G3b production native light provenance: %u checks passed\n",checks);return 0;
 }catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

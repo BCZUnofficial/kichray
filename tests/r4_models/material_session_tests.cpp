@@ -137,6 +137,53 @@ void DrawBasisAndExposure(){Harness h;Require(h.Start()==0,"object exposure setu
     const auto& c=constants_drawn.back();Require(c.color_bias[3]==1 && c.color_scale[3]==.2f && c.sun_scale_bias[2]==0,"raw object visibility reaches model shader without weather multiplication");
     Require((uint32_t(c.material[0])&33)==33,"valid bump and object sun mask coexist");
 }
+void HUDMaterialLighting(const char* directory){Harness h;Require(h.Start()==0,"HUD material setup");auto mesh=MaterialMesh();auto material=CutoutMaterial();
+    material.surface=KichR4DefaultSurface();material.fog_enabled=true;
+    material.surface.samplers[1]={1,1,1,3,2,2,8,0,0,0};material.surface.samplers[2]={3,3,3,2,2,1,1,0,0,0};SeedTextures(h,material);
+    kich_r4_capture::Batch batch;batch.Begin(640,480,160);Capture(batch,mesh,material);auto& command=batch.native_models[0];
+    command.layer=1;command.style.min_z=0;command.style.max_z=.02f;command.object_light_valid=true;command.object_hemi=.2f;command.object_sun=0;
+    command.world.m[12]=3;command.vp.m[0]=2;h.base.sun_color[0]=.4f;h.base.sun_color[1]=.5f;h.base.sun_color[2]=.6f;
+    h.base.light_position[3]=10;h.base.light_color[3]=1;h.base.fog_params[2]=1;
+    KichR4Handle maps[6];for(unsigned i=0;i<6;++i){maps[i]=f->Add(KICH_R4_TEXTURE_2D);h.base.shadow[i]=kich_r4_scene::Identity();h.base.shadow[i].m[12]=float(i+1);}
+    kich_r4_record::Request(true);kich_r4_record::BeginFrame(160);
+    Require(h.models.Prepare(h.frame,h.level,batch)==0,"HUD immutable source prepared");const unsigned pose_uploads=uploads;
+    BeginMaterialSnapshot(directory);
+    Require(h.models.Draw(h.frame,h.level,h.cb,h.base,batch,KichR4ModelSession::HUD,1,"hud_test",maps)==0,"HUD base lit draw");
+    const auto base_draw=model_draws.back();const auto base=constants_drawn.back();
+    Require(base_draw.material_textures[0]==h.level.textures[material.bump] && base_draw.material_textures[1]==h.level.textures[material.bump_aux] && uint32_t(base.material[0])==1025,"HUD normal and gloss use separate actual bump and auxiliary inputs");
+    Require(!memcmp(base_draw.material_samplers,material.surface.samplers+1,sizeof(base_draw.material_samplers)),"HUD preserves authored normal-map sampler states");
+    for(unsigned i=0;i<6;++i)Require(base_draw.surface.textures[i+2]==maps[i],"HUD material never aliases sun or local shadow texture slots");
+    Require(base.color_bias[3]==1 && base.color_scale[3]==.2f && base.sun_scale_bias[2]==0,"HUD carries measured owner exposure");
+    Require(base.sun_color[0]==.4f && base.sun_color[1]==.5f && base.sun_color[2]==.6f,"source opaque HUD keeps current PCF sunlight without multiplying ROS sun zero");
+    Require(base.world.m[12]==3 && base.mvp.m[0]==2 && base.fog_params[2]==0,"HUD lighting world and separate projection survive while world fog stays disabled");
+    Require(base_draw.surface.state.max_depth==.02f,"HUD near depth contract remains unchanged");
+    Require(h.models.hud_recorded_draws==1 && h.models.hud_exposure_valid_draws==1 && h.models.hud_mapped_draws==1 && !h.models.hud_unlit_draws && h.models.hud_hemi_min==.2f && h.models.hud_hemi_max==.2f,"bounded HUD report aggregates actual successful base pass exposure and map bindings");
+    Require(h.models.Draw(h.frame,h.level,h.cb,h.base,batch,KichR4ModelSession::HUDAdd,1,"hud_local_test",maps)==0,"HUD point light additive draw");
+    const auto local_draw=model_draws.back();const auto local=constants_drawn.back();
+    for(unsigned i=0;i<6;++i){Require(local_draw.surface.textures[i+2]==maps[i],"all six point-light shadow faces coexist with HUD normals");Require(local.shadow[i].m[12]==float(i+1),"HUD retains actual world-space local projection matrices");}
+    Require(local_draw.material_textures[0]==base_draw.material_textures[0] && local_draw.material_textures[1]==base_draw.material_textures[1] && local_draw.surface.state.source_blend==2 && local_draw.surface.state.dest_blend==2,"HUD local contribution uses same material and additive state");
+    Require(uploads==pose_uploads && model_draws.size()==2,"HUD base and local light reuse pose and introduce no material-only draw");
+    Require(h.models.hud_recorded_draws==1 && h.models.draw_calls[KichR4ModelSession::HUDAdd]==1,"HUD local additions do not inflate base visual-part diagnostics");
+    h.base.light_color[3]=2;h.base.sun_direction[3]=1;
+    Require(h.models.Draw(h.frame,h.level,h.cb,h.base,batch,KichR4ModelSession::HUDAdd,1,"hud_spot_test",maps)==0,"HUD spot projector draw");
+    const auto spot=model_draws.back();Require(spot.surface.textures[3]==maps[1] && spot.surface.state.surface.samplers[3].u==3 && spot.surface.state.surface.samplers[3].mip_filter==0,"HUD spot cookie retains its own clamp/no-mip sampler");
+    Require(spot.material_textures[0]==base_draw.material_textures[0] && !memcmp(spot.material_samplers,base_draw.material_samplers,sizeof(spot.material_samplers)),"spot projector does not override HUD normal resources or samplers");
+    RenderSnapshot_End("COMPLETE");Require(MaterialReport().find("[RECORD HUD_MATERIAL_EXECUTION]")!=std::string::npos && MaterialReport().find("SOC_R2_BUMP; WORLD_TBN; MODEL_T8_T9")!=std::string::npos,"snapshot identifies actual HUD material execution rather than claiming pixel luminance");
+    command.material.semantic=kich_r4_material::BLENDED;command.material.passes=kich_r4_material::PASS_FORWARD;
+    Require(h.Draw(batch,KichR4ModelSession::HUD)==0 && constants_drawn.back().sun_color[0]==0,"genuine source forward HUD preserves its ROS sun policy");
+    command.effect=1;const size_t before=model_draws.size();Require(h.Draw(batch,KichR4ModelSession::HUD)==0 && model_draws.size()==before+1 && !model_draws.back().material_textures[0],"authored unlit HUD does not gain normal-map lighting");
+    Require(h.models.hud_unlit_draws==1 && h.models.hud_mapped_draws==2,"unlit HUD is reported distinctly from mapped lighting");
+    kich_r4_record::Request(false);kich_r4_record::BeginFrame(161);h.models.ResetFrame();
+    Require(!h.models.hud_recorded_draws && !h.models.hud_exposure_valid_draws && !h.models.hud_mapped_draws,"new frame cannot replay previous HUD diagnostic counts");
+}
+void HUDMaterialFallbacks(){for(unsigned mode=0;mode<2;++mode){Harness h;Require(h.Start()==0,"HUD fallback setup");auto mesh=MaterialMesh();const auto material=CutoutMaterial();SeedTextures(h,material);
+    if(mode==0)for(auto& v:mesh->vertices)v.attributes&=~kich_r4_material::ATTR_TANGENT;
+    else{h.level.textures[material.bump]=h.level.checker;h.level.texture_registry.entries[kich_r4_texture::Key(material.bump)].handle=h.level.checker;}
+    kich_r4_capture::Batch batch;batch.Begin(640,480,180+mode);Capture(batch,mesh,material);batch.native_models[0].layer=1;
+    Require(h.models.Prepare(h.frame,h.level,batch)==0 && h.Draw(batch,KichR4ModelSession::HUD)==0,"missing HUD optional basis/resource retains draw");
+    const auto& d=model_draws.back();Require(!d.material_textures[0] && !d.material_textures[1] && constants_drawn.back().material[0]==0,"HUD fallback clears both material slots and flags, never decodes checker as normal");
+    Require(!h.models.hud_recorded_draws,"record off skips HUD numeric diagnostic collection");
+}}
 void WatchActualBindings(){Harness h;Require(h.Start()==0,"watch production model setup");auto mesh=MaterialMesh();const auto material=CutoutMaterial();SeedTextures(h,material);
     kich_r4_capture::Batch batch;batch.Begin(640,480,130);Capture(batch,mesh,material);auto& target=batch.native_models[0];target.lifecycle_serial=500;
     // The recording fixture bypasses OGF Decode/BuildBounds; supply its known triangle box.
@@ -152,6 +199,6 @@ void WatchActualBindings(){Harness h;Require(h.Start()==0,"watch production mode
     watch.Finish(constants_drawn.front());watch.Reset();kich_r4_record::Request(false);kich_r4_record::BeginFrame(131);
 }
 }
-int main(int argc,char** argv){try{Require(argc==2,"snapshot output directory");MaterialCaptureOwnership();MaterialBindingsAndRouting(argv[1]);MaterialFallbacks(argv[1]);BasisFallbackTelemetry(argv[1]);RepairedModelBindsBump(argv[1]);DrawBasisAndExposure();MixedBasis();WatchActualBindings();
+int main(int argc,char** argv){try{Require(argc==2,"snapshot output directory");MaterialCaptureOwnership();MaterialBindingsAndRouting(argv[1]);MaterialFallbacks(argv[1]);BasisFallbackTelemetry(argv[1]);RepairedModelBindsBump(argv[1]);DrawBasisAndExposure();MixedBasis();WatchActualBindings();HUDMaterialLighting(argv[1]);HUDMaterialFallbacks();
     printf("G3c native model material integration: %d checks passed\n",checks);return 0;
 }catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

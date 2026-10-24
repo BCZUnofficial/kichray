@@ -4,6 +4,7 @@
 #include "KichR4DeferredShaders.h"
 #include "KichR4StreamSession.h"
 #include "KichR4LightingMath.h"
+#include "KichR4LightProjector.h"
 #include "KichR4Game.h"
 #include "KichR4NativeTools.h"
 #include "KichR4DetailSession.h"
@@ -28,6 +29,8 @@ struct KichR4DeferredSession {
     // Successful submissions in this frame, not a measurement of visible shadow pixels.
     uint32_t frame_sun_cascades=0,frame_spot_shadow_lights=0,frame_point_shadow_lights=0;
     uint32_t frame_local_shadow_faces=0;
+    // Count each selected spot once in opaque local accumulation, never HUD/forward repeats.
+    uint32_t frame_projector_spots=0,frame_projector_named=0,frame_projector_ready=0,frame_projector_fallback=0;
     kich_r4_shadow_record::Frame shadow_record;
     uint64_t sun_map_generation[2]={0,0},local_pool_generation=0;
     // One bounded pool, shared by deferred, forward and HUD lighting. A point
@@ -144,7 +147,7 @@ struct KichR4DeferredSession {
         kich_r4_telemetry::Text("LIGHT",id,"color_transform","NONE; COPIED_TO_LIGHT_COLOR_RGB");
         const kich_r4_scene::Vec3 normalized=kich_r4_scene::Normalize(kich_r4_scene::Vec3{light_source.direction[0],light_source.direction[1],light_source.direction[2]});const float direction[]={normalized.x,normalized.y,normalized.z};
         kich_r4_telemetry::Vector("LIGHT",id,"applied_normalized_direction",direction,3);kich_r4_telemetry::Float("LIGHT",id,"applied_cone_cos_half",cosf(light_source.cone*.5f));
-        kich_r4_telemetry::Text("LIGHT",id,"attenuation","saturate(1-distanceSquared/(range*.95)^2); SPOT_MULTIPLIER=saturate((angle-cosHalf)/max(.001,(1-cosHalf)*.2))");
+        kich_r4_telemetry::Text("LIGHT",id,"attenuation","saturate(1-distanceSquared/(range*.95)^2); SPOT=PROJECTED_RGBA_WITH_CONE_BOUNDARY_OR_ANALYTIC_FALLBACK");
         kich_r4_telemetry::Text("LIGHT",id,"pixel_contribution","NOT_MEASURED");kich_r4_telemetry::Text("LIGHT",id,"affected_objects","NOT_MEASURED; FULLSCREEN_LIGHT_USES_DEPTH_NORMAL; FORWARD_TESTS_REPORTED_BY_PHASE");
     }
     static void SnapshotCPU(const kich_r4_capture::Batch* batch){
@@ -171,8 +174,8 @@ struct KichR4DeferredSession {
         Text("SHADOW",id,"format","DEPTH32F/D32_FLOAT");U64("SHADOW",id,"width",sun?2048:resolution);U64("SHADOW",id,"height",sun?2048:resolution);U64("SHADOW",id,"target_handle",target);
         Float("SHADOW",id,"near",sun?0.f:kich_r4_lighting::LocalShadowNear(range));Float("SHADOW",id,"far",sun?1024.f:range);Vector("SHADOW",id,"view_projection_row_major",matrix.m,16);
         Float("SHADOW",id,"orthographic_span",sun?span:0);Text("SHADOW",id,"projection",sun?"TEXEL_SNAPPED_CAMERA_CENTERED":"PERSPECTIVE_SPOT_CONE_OR_POINT_90_DEG_PLUS_2_TEXEL_GUARD");
-        Float("SHADOW",id,"comparison_depth_bias",0);Float("SHADOW",id,"receiver_bias_meters",sun?.01f:.003f);Text("SHADOW",id,"comparison_bias_source","WORLD_SPACE_RECEIVER_TOWARD_LIGHT; EXACT_TEXEL_RECEIVER_PLANE; NO_FIXED_NONLINEAR_DEPTH_SUBTRACTION");
-        Text("SHADOW",id,"rasterizer_bias","DEFAULT_ZERO; NO_PER_LIGHT_OVERRIDE");Text("SHADOW",id,"filter","3x3 SampleCmpLevelZero; LESS_EQUAL; POINT_COMPARISON_TEXEL_CENTRE_QUADRATIC_TENT");
+        Float("SHADOW",id,"comparison_depth_bias",0);Float("SHADOW",id,"receiver_bias_meters",sun?.01f:.003f);Text("SHADOW",id,"comparison_bias_source","WORLD_SPACE_RECEIVER_TOWARD_LIGHT; CAMERA_RELATIVE_QUAD_RECEIVER_PLANE; NO_FIXED_NONLINEAR_DEPTH_SUBTRACTION");
+        Text("SHADOW",id,"rasterizer_bias","DEFAULT_ZERO; NO_PER_LIGHT_OVERRIDE");Text("SHADOW",id,"filter","VALID_PLANE_3x3_POINT_COMPARISON_TEXEL_CENTRE_QUADRATIC_TENT; INVALID_PLANE_SINGLE_POINT; LESS_EQUAL");
         Text("SHADOW",id,"candidate_source","LEVEL_STATIC+DETAILS+MODEL_CAMERA_SHADOW_UNION; PASS_FRUSTUM_CULL");Text("SHADOW",id,"stencil_volumes","NOT_SUPPORTED");
         Text("SHADOW",id,"execution","PLANNED");
     }
@@ -377,8 +380,9 @@ struct KichR4DeferredSession {
 
             if(g_render_snapshot_active)SnapshotVisibility("SELECTED","CAMERA_FRUSTUM");
             kich_r4_lighting::Constants c=base;c.world=mesh.world;c.mvp=vp;c.normal_matrix=static_normals[i];c.alpha[0]=m.alpha_ref;c.alpha[1]=static_cast<float>(m.alpha_func);
+            kich_r4_capture::Style style;style.blend=m.blend;style.src=m.source;style.dst=m.destination;style.write=0;style.cull=KICH_R4_CULL_NONE;style.fog_enabled=m.descriptor.fog_enabled;if(described){kich_r4_material::Apply(m.descriptor,style);c.alpha[0]=m.descriptor.alpha_ref;c.alpha[1]=float(m.descriptor.alpha_func);c.material[3]=kich_r4_material::MaterialClass(m.descriptor.material);c.ambient[3]=m.descriptor.emissive_gain;c.hemi[3]=m.descriptor.emissive_specular;}
+            c.fog_params[2]=style.fog_enabled?(style.blend && style.dst==2?2.f:1.f):0.f;
             if(Constants(s,l,c)<0)return s.failure;
-            kich_r4_capture::Style style;style.blend=m.blend;style.src=m.source;style.dst=m.destination;style.write=0;style.cull=KICH_R4_CULL_NONE;if(described){kich_r4_material::Apply(m.descriptor,style);c.alpha[0]=m.descriptor.alpha_ref;c.alpha[1]=float(m.descriptor.alpha_func);c.material[3]=kich_r4_material::MaterialClass(m.descriptor.material);c.ambient[3]=m.descriptor.emissive_gain;c.hemi[3]=m.descriptor.emissive_specular;if(Constants(s,l,c)<0)return s.failure;}
             KichR4DeferredDrawDesc d=Description(pipelines[described && m.descriptor.semantic==kich_r4_material::EMISSIVE?StaticPlain:m.kind==2?StaticWater:StaticForward],l.vertex_buffers[mesh.vb],l.index_buffers[mesh.ib],cb,mesh.count,mesh.first,style);d.textures[0]=l.Texture(s,m.texture);d.textures[1]=scene_color;d.textures[2]=sun_map;d.textures[3]=sun_far_map;
             SnapshotResolvedTexture(l,0,m.texture.c_str(),d.textures[0]);
             const bool simple=simple_transparent.count(mesh.material)!=0;
@@ -477,8 +481,11 @@ struct KichR4DeferredSession {
             if(pass==Wallmarks)constants.alpha[3]=static_cast<float>(c.wallmark_color);
             if(c.style.emissive_gain>0){constants.ambient[3]=c.style.emissive_gain;constants.hemi[3]=c.style.emissive_specular;
                 if(pass==GeometryModels)constants.material[0]=float(uint32_t(constants.material[0])|256u);}
-            if(Constants(s,l,constants)<0)return s.failure;
             kich_r4_capture::Style style=c.style;
+            constants.fog_params[2]=!c.layer && (pass==ForwardBase || pass==ForwardAdd) && c.style.fog_enabled &&
+                (c.effect==0 || c.effect==4)?(c.style.blend && c.style.dst==2?2.f:1.f):0.f;
+            if(Constants(s,l,constants)<0)return s.failure;
+            if(pass==Environment){style.depth=style.write=0;style.fog_enabled=false;}
             if(pass==Wallmarks){style.depth=1;style.write=0;style.surface.color_mask=7;KichR4ReceiverState(style.surface,false);}
             if(pass==Celestial){kich_r4_optics::SkyStyle(style);if(frame.screen[2]==12)style.blend=0;}
             if(native_mode && pass==MenuPP)style.blend=0;
@@ -490,6 +497,7 @@ struct KichR4DeferredSession {
             if(pass==ShadowModels){style.depth=style.write=1;style.blend=style.clamp=0;style.scissor=false;style.min_z=0;style.max_z=1;}
             if(pass==ForwardAdd){style.blend=1;style.src=style.dst=2;style.write=0;}
             KichR4DeferredDrawDesc d=Description(pipelines[pipeline],stream.vb,stream.ib,cb,c.count,c.first,style);
+            if(pass==ForwardAdd && kich_r4_projector::Enabled(constants))kich_r4_projector::Sampler(d.state.surface);
             d.textures[0]=pass==ShadowModels && c.style.alpha_func==8?0:native_mode && c.effect==2?l.CubeTexture(s,c.texture):c.texture.empty()?white:l.Texture(s,c.texture);
             if(pass==Celestial)d.textures[1]=depth;
             if(!native_mode && pass==HUD && d.textures[0]==l.checker)return s.Record("B4.4 HUD DDS unavailable",KICH_R4_E_UNSUPPORTED);
@@ -569,6 +577,7 @@ struct KichR4DeferredSession {
             style.surface.samplers[0]={3,3,3,2,2,2,1,0,0,0};
             style.surface.samplers[1]={1,1,1,2,2,2,1,0,0,0};}
         if(add){style.blend=1;style.src=style.dst=2;}
+        if(p==Combine && native_mode && c.screen[2]==0){style.blend=1;style.src=6;style.dst=5;}
         if(p==Local){KichR4LocalLight source={};memcpy(source.position,c.light_position,12);source.range=c.light_position[3];
             const kich_r4_visibility::ScreenRect rect=kich_r4_visibility::LightScreenRect(source,base.mvp);
             style.scissor=true;style.rect[0]=int32_t(floorf(rect.left*width));style.rect[1]=int32_t(floorf(rect.top*height));
@@ -576,6 +585,7 @@ struct KichR4DeferredSession {
             if(style.rect[0]>=style.rect[2] || style.rect[1]>=style.rect[3])return 0;
         }
         KichR4DeferredDrawDesc d=Description(pipelines[p],screen_vb,screen_ib,cb,3,0,style);d.textures[0]=t0;d.textures[1]=t1;
+        if(p==Local && kich_r4_projector::Enabled(c))kich_r4_projector::Sampler(d.state.surface);
         if(maps)for(unsigned i=0;i<6;++i)d.textures[i+2]=maps[i];
         const int32_t result=l.Expect(s,"B4.4 fullscreen draw",api.draw(s.device,&d));
         if(g_render_snapshot_active){using namespace kich_r4_telemetry;char id[96];snprintf(id,sizeof(id),"%s_pipeline_%u",snapshot_phase,static_cast<unsigned>(p));
@@ -629,16 +639,32 @@ struct KichR4DeferredSession {
         kich_r4_telemetry::Text("POSTPROCESS","native_postprocess","execution",result>=0?"DRAW_SUCCEEDED; PIXEL_CONTRIBUTION_NOT_MEASURED":"DRAW_FAILED");return result;
     }
     kich_r4_lighting::Constants LocalConstants(const KichR4LocalLight& l)const {
-        kich_r4_lighting::Constants c=base;c.alpha[3]=1;memcpy(c.light_position,l.position,12);c.light_position[3]=l.range;
+        kich_r4_lighting::Constants c=base;c.alpha[3]=1;c.sun_direction[3]=0;memcpy(c.light_position,l.position,12);c.light_position[3]=l.range;
         const kich_r4_scene::Vec3 direction=kich_r4_scene::Normalize(kich_r4_scene::Vec3{l.direction[0],l.direction[1],l.direction[2]});
         c.light_direction[0]=direction.x;c.light_direction[1]=direction.y;c.light_direction[2]=direction.z;c.light_direction[3]=cosf(l.cone*.5f);
         memcpy(c.light_color,l.color,12);c.light_color[3]=static_cast<float>(l.type);c.screen[3]=static_cast<float>(local_shadow_size);
         for(unsigned i=0;i<(l.type==2?1u:6u);++i)c.shadow[i]=kich_r4_lighting::LocalShadow(l,i,local_shadow_size);
         return c;
     }
+    void LocalInputs(KichR4LevelSession& level,const KichR4LightingFrame& lighting,unsigned index,kich_r4_lighting::Constants& c,KichR4Handle* maps,bool count=false){
+        const KichR4LightProjector* projector=index<lighting.projectors.size()?&lighting.projectors[index]:NULL;
+        const char* status=kich_r4_projector::Configure(level,lighting.lights[index],projector,c,maps);
+        if(count && lighting.lights[index].type==2){++frame_projector_spots;
+            if(projector && !projector->texture.empty()){++frame_projector_named;
+                if(kich_r4_projector::Enabled(c))++frame_projector_ready;else ++frame_projector_fallback;}}
+        if(g_render_snapshot_active){char id[48];const uint64_t serial=index<lighting.sources.size()?lighting.sources[index].serial:0;
+            if(serial)snprintf(id,sizeof(id),"source_%llu",static_cast<unsigned long long>(serial));else snprintf(id,sizeof(id),"local_%u",index);
+            kich_r4_telemetry::Text("LIGHT",id,"projector_status",status);
+            kich_r4_telemetry::Text("LIGHT",id,"projector_texture",projector?projector->texture.c_str():"");
+            kich_r4_telemetry::U64("LIGHT",id,"projector_handle",kich_r4_projector::Enabled(c)?maps[kich_r4_projector::MapIndex]:0);
+            if(projector)kich_r4_telemetry::Vector("LIGHT",id,"projector_right",projector->right,3);
+            if(kich_r4_projector::Enabled(c))kich_r4_telemetry::Vector("LIGHT",id,"projector_world_to_clip",c.shadow[kich_r4_projector::MatrixIndex].m,16);
+            kich_r4_telemetry::Text("LIGHT",id,"projector_contract","SPOT_T3; SHADOW_1_MATRIX; CLAMP_LINEAR_NO_MIP; RGBA; INDEPENDENT_OF_SHADOW_SELECTION");}
+    }
     double model_prepare_ms=0;
     int32_t Draw(KichR4FrameSession& s,KichR4LevelSession& l,KichR4StreamSession& stream,const KichR4GameFrame& input,const kich_r4_capture::Batch* captured,uint32_t debug){
         frame_sun_cascades=frame_spot_shadow_lights=frame_point_shadow_lights=frame_local_shadow_faces=0;
+        frame_projector_spots=frame_projector_named=frame_projector_ready=frame_projector_fallback=0;
         shadow_record.Begin(input.engine_frame);
         if(!native_mode)l.texture_registry.Begin(); // Native presenter owns its submission epoch.
         if(!native_mode || visibility_frame!=input.engine_frame || visibility_revision!=l.revision)BeginFramePlan(l,input);
@@ -648,7 +674,8 @@ struct KichR4DeferredSession {
             kich_r4_telemetry::Vector("ENVIRONMENT","weather","sun_direction",input.lighting.sun_direction,3);kich_r4_telemetry::Vector("ENVIRONMENT","weather","sun_color",input.lighting.sun_color,3);
             kich_r4_telemetry::Vector("ENVIRONMENT","weather","ambient",input.lighting.ambient,3);kich_r4_telemetry::Vector("ENVIRONMENT","weather","hemi",input.lighting.hemi,3);kich_r4_telemetry::Vector("ENVIRONMENT","weather","fog",input.lighting.fog,3);
             RenderSnapshot_Text("ENVIRONMENT","sky_cloud_execution","NO_SUCCESSFUL_DRAW_RECORDED_YET");RenderSnapshot_Text("ENVIRONMENT","weather_texture_names","SEE_ENVIRONMENT_COMMAND_TEXTURE_RECORDS; NOT_DERIVED_FROM_LIGHTING_VALUES");
-            RenderSnapshot_Text("ENVIRONMENT","fog_applied","FOG_RGB_AS_EMPTY_DEPTH_BACKGROUND_IN_LEGACY_COMBINE; NATIVE_SKY_PRESERVED; NO_ATMOSPHERIC_DISTANCE_FOG");
+            RenderSnapshot_Text("ENVIRONMENT","fog_applied","CURRENT_ENV_RADIAL_DISTANCE; R2_FOG_SQUARED_SKY_BLEND; FORWARD_SOURCE_FOG_PLANE; HUD_UI_EXCLUDED");
+            RenderSnapshot_Value("ENVIRONMENT","fog_near",input.lighting.fog_near);RenderSnapshot_Value("ENVIRONMENT","fog_far",input.lighting.fog_far);RenderSnapshot_U64("ENVIRONMENT","fog_valid",input.lighting.fog_valid);
             RenderSnapshot_Text("ENVIRONMENT","ambient_hemi_applied","R2_MATERIAL_RESPONSE; ambient+hemi*vertex_hemi_response; NO_EXTRA_WORLD_UP_MULTIPLIER");
             RenderSnapshot_Text("ENVIRONMENT","sun_disk_direction_link","NOT_INSTRUMENTED; LIGHT_DIRECTION_AND_SHADOW_PROJECTION_RECORDED_SEPARATELY");
             RenderSnapshot_U64("TRANSPARENCY","debug_mode",debug);RenderSnapshot_Text("TRANSPARENCY","debug_view",kich_r4_optics::DebugView(debug));RenderSnapshot_Text("TRANSPARENCY","forward_requested",!debug?"ENABLED":"DISABLED_BY_DEBUG_VIEW");
@@ -668,12 +695,13 @@ struct KichR4DeferredSession {
         if(captured && PrepareModels(s,l,*captured)<0)return s.failure;
         model_prepare_ms=kich_r4_metrics::Elapsed(model_started);
         memset(&base,0,sizeof(base));base.material[3]=1;base.world=base.normal_matrix=kich_r4_scene::Identity();memcpy(base.mvp.m,input.view_projection,64);
-        if(!kich_r4_lighting::Inverse(base.mvp,base.inverse_vp))return s.Record("B4.4 inverse camera",KICH_R4_E_ARGUMENT);
+        if(!kich_r4_lighting::Inverse(base.mvp,base.inverse_vp,input.position))return s.Record("B4.4 relative inverse camera",KICH_R4_E_ARGUMENT);
         memcpy(base.tree_wave,input.tree_wave,16);memcpy(base.tree_wind,input.tree_wind,16);base.tree_wind[3]=input.tree_sbc;
         memcpy(base.camera,input.position,12);base.camera[3]=150;base.light_position[3]=input.time;base.screen[0]=static_cast<float>(width);base.screen[1]=static_cast<float>(height);base.screen[2]=static_cast<float>(debug);base.screen[3]=2048;
         const kich_r4_scene::Vec3 dir=kich_r4_scene::Normalize(kich_r4_scene::Vec3{weather[0][0],weather[0][1],weather[0][2]});
         base.sun_direction[0]=dir.x;base.sun_direction[1]=dir.y;base.sun_direction[2]=dir.z;
         memcpy(base.sun_color,weather[1],12);memcpy(base.ambient,weather[2],12);memcpy(base.hemi,weather[3],12);memcpy(base.fog,weather[4],12);
+        kich_r4_lighting::FogConstants(input.lighting,base.mvp,base);
         const bool sun=kich_r4_scene::Dot(dir,dir)>.5f && (base.sun_color[0]>0 || base.sun_color[1]>0 || base.sun_color[2]>0);
         base.sun_color[3]=sun?1.f:0.f;
         KichR4Handle sun_inputs[6]={};
@@ -734,6 +762,7 @@ struct KichR4DeferredSession {
         for(unsigned i=0;i<input.lighting.count && debug!=8;++i){kich_r4_lighting::Constants c=LocalConstants(input.lighting.lights[i]);if(native_mode && !shadowed[i])c.alpha[3]=0;
             {char phase[48];snprintf(phase,sizeof(phase),"local_%u_lighting",i);SnapshotPhase(phase);SnapshotLocalLight(input.lighting.lights[i],input.lighting.sources[i],i,!native_mode || shadowed[i]);}
             KichR4Handle maps[6]={};for(unsigned face=0;face<(input.lighting.lights[i].type==2?1u:6u);++face)maps[face]=native_mode && !shadowed[i]?0:LocalMap(i,face);
+            LocalInputs(l,input.lighting,i,c,maps,true);
             if(Fullscreen(s,l,Local,c,normal,depth,maps,true)<0)return s.failure;
             SnapshotSubmittedLight(input.lighting.sources[i],i);++local_passes;}
         if(g_render_snapshot_active)RenderSnapshot_U64("LIGHT_REGISTRY","submitted_local_lights",input.lighting.count);
@@ -760,6 +789,7 @@ struct KichR4DeferredSession {
             for(unsigned i=0;i<input.lighting.count;++i){kich_r4_lighting::Constants c=LocalConstants(input.lighting.lights[i]);if(native_mode && !shadowed[i])c.alpha[3]=0;KichR4Handle maps[6]={};
                 {char phase[48];snprintf(phase,sizeof(phase),"local_%u_forward_add",i);SnapshotPhase(phase);SnapshotLocalLight(input.lighting.lights[i],input.lighting.sources[i],i,!native_mode || shadowed[i]);}
                 for(unsigned face=0;face<(input.lighting.lights[i].type==2?1u:6u);++face)maps[face]=native_mode && !shadowed[i]?0:LocalMap(i,face);
+                LocalInputs(l,input.lighting,i,c,maps);
                 if(Models(s,l,stream,captured,ForwardAdd,c,maps)<0)return s.failure;}}
         if(!debug && Distort(s,l,stream,captured)<0)return s.failure;
         if(native_mode && !debug && captured && !captured->native_models.empty()){
@@ -768,6 +798,7 @@ struct KichR4DeferredSession {
             for(unsigned i=0;i<input.lighting.count;++i){kich_r4_lighting::Constants c=LocalConstants(input.lighting.lights[i]);if(!shadowed[i])c.alpha[3]=0;KichR4Handle maps[6]={};
                 char phase[48];snprintf(phase,sizeof(phase),"local_%u_hud_add",i);SnapshotPhase(phase);SnapshotLocalLight(input.lighting.lights[i],input.lighting.sources[i],i,shadowed[i]);
                 for(unsigned face=0;face<(input.lighting.lights[i].type==2?1u:6u);++face)maps[face]=shadowed[i]?LocalMap(i,face):0;
+                LocalInputs(l,input.lighting,i,c,maps);
                 if(native_models.Draw(s,l,cb,c,*captured,KichR4ModelSession::HUDAdd,snapshot_pass_mask,snapshot_phase,maps)<0)return s.failure;}
         }
         Mark(s,5);

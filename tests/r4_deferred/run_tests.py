@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 root=Path(__file__).resolve().parents[2]
 with tempfile.TemporaryDirectory(prefix='kich-b44-') as folder:
-    for name in ('math','session','optics','noise','warmup','shadow_record'):
+    for name in ('math','session','optics','noise','projector','warmup','shadow_record','fog'):
         binary=Path(folder)/name
         subprocess.run([os.environ.get('CXX','g++'),'-std=c++11','-O2','-Wall','-Wextra','-Werror',str(root/'tests/r4_deferred'/f'{name}_tests.cpp'),str(root/'xr_3da/RenderSnapshot.cpp'),'-o',str(binary)],check=True)
         subprocess.run([str(binary)],check=True)
@@ -50,4 +50,5 @@ with tempfile.TemporaryDirectory(prefix='kich-b44-') as folder:
         subprocess.run([str(binary)],check=True)
 subprocess.run(['python3','-B',str(root/'tests/r4_deferred/run_shadow_tests.py')],check=True)
 subprocess.run(['python3','-B',str(root/'tests/r4_deferred/run_sun_tests.py')],check=True)
+subprocess.run(['python3','-B',str(root/'tests/r4_deferred/run_fog_shader_tests.py')],check=True)
 subprocess.run(['python3','-B',str(root/'tests/r4_deferred/embed_shaders.py'),'--check'],check=True)

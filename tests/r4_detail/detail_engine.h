@@ -36,7 +36,7 @@ public:
     typedef Items<SlotItem*> SlotItemVec;
     struct SlotPart {u32 id;SlotItemVec items;SlotPart():id(DetailSlot::ID_Empty){}};
     enum SlotType {stReady=0,stPending};
-    struct Slot {bool empty;SlotType type;struct Vis {struct Sphere {Fvector P;}sphere;}vis;SlotPart G[dm_obj_in_slot];Slot():empty(true),type(stReady),vis(){}};
+    struct Slot {bool empty;SlotType type;int sx,sz;struct Vis {struct Sphere {Fvector P;}sphere;}vis;SlotPart G[dm_obj_in_slot];Slot():empty(true),type(stReady),sx(0),sz(0),vis(){}};
     typedef std::vector<Items<SlotItemVec*> > vis_list;
     std::vector<CDetail*> objects;vis_list m_visibles[3];
     Slot cache_pool[dm_cache_size];

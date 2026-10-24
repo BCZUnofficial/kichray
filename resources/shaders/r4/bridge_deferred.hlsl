@@ -4,6 +4,7 @@ cbuffer Frame : register(b0) {
     float4 camera,screen,sun_direction,sun_color,ambient,hemi,fog;
     float4 light_position,light_direction,light_color,alpha;
     float4 material,color_scale,color_bias,sun_scale_bias,tree_wave,tree_wind;
+    float4 fog_params,fog_plane; // radial offset/scale, per-draw mode, valid plane
 };
 Texture2D image0:register(t0); Texture2D image1:register(t1);
 Texture2D shadow0:register(t2); Texture2D shadow1:register(t3);
@@ -13,6 +14,9 @@ SamplerState surface:register(s0); SamplerComparisonState shadow_surface:registe
 SamplerState surface1:register(s2); SamplerState surface2:register(s3);
 SamplerState surface3:register(s4); SamplerState surface4:register(s5);
 SamplerState surface5:register(s6); SamplerState surface6:register(s7); SamplerState surface7:register(s8);
+// Model-only slots preserve every point-shadow face and the spot projector.
+Texture2D model_bump:register(t8); Texture2D model_bump_aux:register(t9);
+SamplerState model_bump_surface:register(s9); SamplerState model_bump_aux_surface:register(s10);
 // Material flags: bump=1, baked lightmap=2, hemi map=4, detail=8,
 // vertex baked RGB=16, source sun=32, tree light scale/bias=64, emissive=256, authored wallmark=512.
 struct StaticInput {float3 p:POSITION;float2 uv:TEXCOORD0;float4 n:NORMAL;
@@ -116,7 +120,9 @@ float3 Normal(Varying v,bool front){float3 n=v.n.xyz;
         t=normalize(t);float3 b=normalize(cross(n,t))*(handed<0?-1:1);
         // SoC R2 sload: bump stores gloss,x-normal in alpha,y in B,z in G;
         // bump# stores signed reconstruction error in RGB, height in alpha.
-        float4 Nu=image1.Sample(surface1,v.uv),NuE=shadow0.Sample(surface2,v.uv);
+        float4 Nu,NuE;
+        [branch] if(((uint)material.x&1024)!=0){Nu=model_bump.Sample(model_bump_surface,v.uv);NuE=model_bump_aux.Sample(model_bump_aux_surface,v.uv);}
+        else{Nu=image1.Sample(surface1,v.uv);NuE=shadow0.Sample(surface2,v.uv);}
         float3 mapped=Nu.wzy+NuE.xyz-1;mapped.z*=.5;
         float3 result=t*mapped.x+b*mapped.y+n*mapped.z;
         if(dot(result,result)>1e-8)n=normalize(result);
@@ -137,7 +143,9 @@ float MaterialClass(float packed){return fmod(packed,16)*.2;}
 float Gloss(Varying v){
     // SoC sload.h: bump R is squared gloss, flat surfaces use def_gloss.
     float gloss=2.0/255;
-    if(((uint)material.x&1)!=0){float g=image1.Sample(surface1,v.uv).r;gloss=g*g;}
+    if(((uint)material.x&1)!=0){float g;
+        [branch] if(((uint)material.x&1024)!=0)g=model_bump.Sample(model_bump_surface,v.uv).r;
+        else {g=image1.Sample(surface1,v.uv).r;}gloss=g*g;}
     if(((uint)material.x&9)==9)gloss*=shadow3.Sample(surface5,v.uv*material.yz).a*2;
     return saturate(gloss);
 }
@@ -162,10 +170,17 @@ GeometryOutput PSGeometry(Varying v,bool front:SV_IsFrontFace){GeometryOutput o;
     if((int)screen.z==8)o.baked=0;
     return o;}
 void PSShadow(Varying v){if((int)alpha.y!=8)Base(v);}
+float FogAmount(float distance){return fog_params.y>0?saturate(distance*fog_params.y+fog_params.x):0;}
+float FogTransmittance(float3 world_position){return fog_params.z>0 && fog_params.w>0?saturate(dot(float4(world_position,1),fog_plane)):1;}
+float3 ForwardFog(float3 color,float transmittance){
+    // Additive base effects attenuate without adding a fog-colored quad.
+    return fog_params.z>1.5?color*transmittance:lerp(fog.rgb,color,transmittance);
+}
 float4 PSPlain(Varying v):SV_Target {float4 c=Base(v);
     // Non-emissive UI/copy/glow keeps the authored value. Blended self-light
     // folds its known R2 emissive response once; opaque emission uses GBuffer.
     if(ambient.w>0)c.rgb=c.rgb*ambient.w+hemi.w*Gloss(v);
+    c.rgb=ForwardFog(c.rgb,FogTransmittance(v.w));
     return c;}
 // Dynamic wallmarks use vertex alpha as AGE, not opacity, in MUL_2X+fade.
 // SoC BLENDDIFFUSEALPHA / X-Ray 1.6 stub_default_ma: a fresh neutral-gray
@@ -193,26 +208,36 @@ float4 PSCelestial(Varying v,uint primitive_id:SV_PrimitiveID):SV_Target {
     if(mode==12)return (primitive_id&1)==0?float4(1,0,0,1):float4(0,1,0,1);
     return Base(v);
 }
-float3 WorldPosition(float2 pixel,float depth){float4 p=float4(pixel.x*2/screen.x-1,1-pixel.y*2/screen.y,depth,1);
+float3 RelativePosition(float2 pixel,float depth){float4 p=float4(pixel.x*2/screen.x-1,1-pixel.y*2/screen.y,depth,1);
     p=mul(p,inverse_vp);return p.xyz/p.w;}
+float3 WorldPosition(float2 pixel,float depth){return RelativePosition(pixel,depth)+camera.xyz;}
 // Derivatives are captured before depth rejection, alpha discard, attenuation
 // and cube-face selection. Taking ddx/ddy inside those branches is undefined.
-bool ShadowPlaneStable(float distance_squared,float step_squared){
-    return isfinite(distance_squared) && isfinite(step_squared) && step_squared<=max(.0625,distance_squared*.0025);
+bool ShadowPlaneStable(float distance_squared,float step_squared,float plane_error_squared){
+    // A large screen-pixel step is normal on continuous grazing receivers.
+    // Reject noncoplanarity instead, allowing depth/float reconstruction noise.
+    return isfinite(distance_squared) && isfinite(step_squared) && isfinite(plane_error_squared) &&
+        plane_error_squared<=max(4e-6,max(distance_squared*2.5e-7,step_squared*1e-6));
+}
+float ShadowPlaneErrorSquared(float3 dx,float3 dy,float3 mixed){
+    float3 plane=cross(dx,dy);float length_squared=dot(plane,plane),residual=dot(plane,mixed);
+    return length_squared>1e-30?residual*residual/length_squared:1e30;
 }
 void ShadowDerivatives(float3 p,out float3 dx,out float3 dy){
-    dx=ddx(p);dy=ddy(p);
-    // A foreground/background discontinuity does not describe one receiver
-    // plane. Reject it instead of extrapolating a large false depth gradient.
-    float3 from_camera=p-camera.xyz;
-    if(!all(isfinite(dx)) || !all(isfinite(dy)) || !ShadowPlaneStable(dot(from_camera,from_camera),max(dot(dx,dx),dot(dy,dy)))){dx=0;dy=0;}
+    // p is camera-relative. Fine derivatives preserve the four positions of
+    // this quad; the mixed difference lies in the same plane for any continuous
+    // planar receiver, including perspective foreshortening near the horizon.
+    dx=ddx_fine(p);dy=ddy_fine(p);float error_squared=ShadowPlaneErrorSquared(dx,dy,ddx_fine(dy));
+    if(!all(isfinite(dx)) || !all(isfinite(dy)) ||
+        !ShadowPlaneStable(dot(p,p),max(dot(dx,dx),dot(dy,dy)),error_squared)){dx=0;dy=0;}
 }
-float2 ShadowGradient(float3 dx,float3 dy){
+bool ShadowGradient(float3 dx,float3 dy,out float2 gradient){
+    gradient=0;
     float determinant=dx.x*dy.y-dx.y*dy.x;
     float scale=max(dx.x*dx.x+dx.y*dx.y,dy.x*dy.x+dy.y*dy.y);
-    if(abs(determinant)<=max(scale*1e-5,1e-20))return float2(0,0);
-    float2 gradient=float2(dx.z*dy.y-dy.z*dx.y,dx.x*dy.z-dy.x*dx.z)/determinant;
-    return all(isfinite(gradient))?gradient:float2(0,0);
+    if(abs(determinant)<=max(scale*1e-5,1e-20))return false;
+    gradient=float2(dx.z*dy.y-dy.z*dx.y,dx.x*dy.z-dy.x*dx.z)/determinant;
+    return all(isfinite(gradient));
 }
 float ShadowTent(float offset){
     float a=abs(offset),edge=max(1.5-a,0);
@@ -225,7 +250,15 @@ float3 ShadowDerivative(float4 projected,float4 derivative){
 float PCF(Texture2D map,float4 projected,float4 dx,float4 dy){if(projected.w<=0)return 0;
     float3 q=projected.xyz/projected.w;float2 uv=float2(q.x*.5+.5,.5-q.y*.5);
     if(any(uv<0) || any(uv>1) || q.z<0 || q.z>1)return 0;
-    float2 gradient=ShadowGradient(ShadowDerivative(projected,dx),ShadowDerivative(projected,dy));
+    float2 gradient;
+    // Without a receiver plane, do not extrapolate its depth across a 3x3
+    // footprint. One comparison preserves real blockers and bounds the fallback
+    // to the containing texel instead of introducing a broad false shadow.
+    if(!ShadowGradient(ShadowDerivative(projected,dx),ShadowDerivative(projected,dy),gradient)){
+        float2 fallback_uv=(floor(uv*screen.w)+.5)/screen.w;
+        fallback_uv.x=min(fallback_uv.x,1-.5/screen.w);fallback_uv.y=min(fallback_uv.y,1-.5/screen.w);
+        return map.SampleCmpLevelZero(shadow_surface,fallback_uv,q.z);
+    }
     float2 center=floor(uv*screen.w)+.5;float result=0,weight=0;
     // Nine POINT comparisons at actual texel centres. Each comparison uses
     // the receiver depth at that centre, not the depth of the original pixel.
@@ -305,28 +338,36 @@ float LocalVisibility(float3 p,float3 dx,float3 dy){if(alpha.w<.5)return 1;uint 
     if(face==4)return PCF(shadow4,projected,sx,sy);return PCF(shadow5,projected,sx,sy);}
 float LocalAttenuation(float distance_squared,float range){float radius=max(range*.95,.0001);
     return saturate(1-distance_squared/(radius*radius));}
+// SPOT-only input alias: t3/shadow[1] is the independent projector. Point
+// lights retain t3 as shadow face 1. The texture's alpha modulates specular.
+float4 LocalProjector(float3 p){float4 projected=mul(float4(p,1),shadow[1]);
+    if(projected.w<=.00001)return 0;
+    float2 uv=projected.xy/projected.w*float2(.5,-.5)+.5;
+    return shadow1.Sample(surface3,uv);}
 float4 LocalLight(float3 p,float3 n,float gloss,float m,float3 dx,float3 dy){float3 delta=light_position.xyz-p;float distance=length(delta);
     float3 direction=delta/max(distance,.0001);float attenuation=LocalAttenuation(dot(delta,delta),light_position.w);
+    float4 profile=1;
     if(light_color.w>1.5){float angle=dot(-direction,light_direction.xyz);
-        attenuation*=saturate((angle-light_direction.w)/max(.001,(1-light_direction.w)*.2));}
+        if(sun_direction.w>.5){if(angle<light_direction.w)return 0;profile=LocalProjector(p);}
+        else attenuation*=saturate((angle-light_direction.w)/max(.001,(1-light_direction.w)*.2));}
     if(attenuation<=0)return 0;
-    return DirectLight(p,n,direction,light_color.rgb,gloss,m)*(attenuation*LocalVisibility(p,dx,dy));}
+    return DirectLight(p,n,direction,light_color.rgb,gloss,m)*(attenuation*LocalVisibility(p,dx,dy))*profile;}
 float4 PSSun(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=image1.Load(int3(at,0)).r;
-    float3 p=WorldPosition(v.p.xy,depth),dx,dy;ShadowDerivatives(p,dx,dy);
+    float3 relative=RelativePosition(v.p.xy,depth),p=relative+camera.xyz,dx,dy;ShadowDerivatives(relative,dx,dy);
     if(depth>=1)return 0;float4 n=image0.Load(int3(at,0));
     if((int)screen.z==8)return float4(SunVisibility(p,dx,dy).xxx,0);
     // Albedo alpha retains source sun occlusion for diagnostics, not dynamic lighting.
     return SunLighting(p,DecodeNormal(n.xy),n.z,MaterialGloss(n.w),MaterialClass(n.w),dx,dy);}
 float4 PSLocal(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=image1.Load(int3(at,0)).r;
-    float3 p=WorldPosition(v.p.xy,depth),dx,dy;ShadowDerivatives(p,dx,dy);
+    float3 relative=RelativePosition(v.p.xy,depth),p=relative+camera.xyz,dx,dy;ShadowDerivatives(relative,dx,dy);
     if(depth>=1)return 0;float4 n=image0.Load(int3(at,0));
     return LocalLight(p,DecodeNormal(n.xy),MaterialGloss(n.w),MaterialClass(n.w),dx,dy);}
-float4 PSForwardSun(Varying v,bool front:SV_IsFrontFace):SV_Target {float3 dx,dy;ShadowDerivatives(v.w,dx,dy);float4 c=Base(v);
+float4 PSForwardSun(Varying v,bool front:SV_IsFrontFace):SV_Target {float3 dx,dy;ShadowDerivatives(v.w-camera.xyz,dx,dy);float4 c=Base(v);
     float4 light=SunLighting(v.w,Normal(v,front),saturate(v.n.w),Gloss(v),material.w,dx,dy);
-    return float4(c.rgb*light.rgb+light.aaa,c.a);}
-float4 PSForwardLocal(Varying v,bool front:SV_IsFrontFace):SV_Target {float3 dx,dy;ShadowDerivatives(v.w,dx,dy);float4 c=Base(v);
+    return float4(ForwardFog(c.rgb*light.rgb+light.aaa,FogTransmittance(v.w)),c.a);}
+float4 PSForwardLocal(Varying v,bool front:SV_IsFrontFace):SV_Target {float3 dx,dy;ShadowDerivatives(v.w-camera.xyz,dx,dy);float4 c=Base(v);
     float4 light=LocalLight(v.w,Normal(v,front),Gloss(v),material.w,dx,dy);
-    return float4((c.rgb*light.rgb+light.aaa)*(alpha.z>0?c.a:1),0);}
+    return float4((c.rgb*light.rgb+light.aaa)*(alpha.z>0?c.a:1)*FogTransmittance(v.w),0);}
 // combine: image0 albedo, image1 light; shadow0 normal; shadow1 depth.
 float4 PSCombine(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=shadow1.Load(int3(at,0)).r;
     if(depth>=1){if(alpha.w>19.5)discard;return float4(fog.rgb,1);}float4 a=image0.Load(int3(at,0)),n=shadow0.Load(int3(at,0));
@@ -335,19 +376,25 @@ float4 PSCombine(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=shadow1.
     if(mode==3)return float4(saturate(length(WorldPosition(v.p.xy,depth)-camera.xyz)/camera.w).xxx,1);
     if(mode==4 || mode==8)return float4(light.rgb+light.aaa,1);if(mode==5)return float4(n.zzz,1);
     if(mode==6 || mode==9)return float4(a.rgb,1);if(mode==7)return float4(a.aaa,1);
-    return float4(a.rgb*light.rgb+light.aaa,1);}
+    float amount=FogAmount(length(RelativePosition(v.p.xy,depth)));
+    return float4(lerp(a.rgb*light.rgb+light.aaa,fog.rgb,amount),amount*amount);}
 
 // Native environment entries use the engine's two weather cubemaps.
 TextureCube sky0:register(t0);TextureCube sky1:register(t1);
 float4 PSSky(Varying v):SV_Target {float3 d=v.n.xyz;return float4(lerp(sky0.Sample(surface,d).rgb,sky1.Sample(surface1,d).rgb,v.c.a)*v.c.rgb*2,1);}
 float4 PSClouds(Varying v):SV_Target {return float4((image0.Sample(surface,v.uv).rgb+image1.Sample(surface1,v.n.xy).rgb)*v.c.rgb,v.c.a);}
 float4 PSWater(Varying v,bool front:SV_IsFrontFace):SV_Target {
-    float3 dx,dy;ShadowDerivatives(v.w,dx,dy);
+    float3 dx,dy;ShadowDerivatives(v.w-camera.xyz,dx,dy);
     float t=light_position.w;float2 flow=v.uv+float2(t*.015,t*.01);
     float4 water=image0.Sample(surface,flow);float2 wave=(water.rg-.5)*.012;
     float2 screen_uv=v.p.xy/screen.xy;float3 behind=image1.Sample(surface1,saturate(screen_uv+wave)).rgb;
     float3 n=Normal(v,front);float fresnel=pow(1-saturate(dot(n,normalize(camera.xyz-v.w))),5);
-    float3 lit=water.rgb*SunLight(v.w,n,saturate(v.n.w),dx,dy);return float4(lerp(lerp(behind,lit,.35),hemi.rgb,fresnel*.5),.8);
+    float transmittance=FogTransmittance(v.w);
+    float3 lit=ForwardFog(water.rgb*SunLight(v.w,n,saturate(v.n.w),dx,dy),transmittance);
+    float3 reflected=ForwardFog(hemi.rgb,transmittance);
+    // The sampled opaque background already contains combine fog. Fog only
+    // the water's own light/reflection, then use R2 soft-water distance fade.
+    return float4(lerp(lerp(behind,lit,.35),reflected,fresnel*.5),.8*transmittance*transmittance);
 }
 float4 PSDistortion(Varying v):SV_Target {float4 mask=Base(v);bool menu=alpha.w>29.5 && alpha.w<30.5;
     // Match R2 distort.ps: the menu mask is alpha-blended over neutral 0.5.

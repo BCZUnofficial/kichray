@@ -132,8 +132,8 @@ public:
 xr_vector<ref_light> static_lights;
 u32 native_level_light_records=0,native_level_directional_skips=0;
 class R4Light:public IRender_Light {
-    KichR4LocalLight value;KichR4LightIdentity identity;bool active,shadow;
-    void Update(){const bool registered=KichR4_CaptureLightIdentity(this,identity);KichR4_CaptureLight(this,value,active && registered);KichR4_CaptureLightShadow(this,shadow);}
+    KichR4LocalLight value;KichR4LightIdentity identity;KichR4LightProjector projector;bool active,shadow;
+    void Update(){const bool registered=KichR4_CaptureLightIdentity(this,identity);if(registered)KichR4_CaptureLightProjector(this,projector);KichR4_CaptureLight(this,value,active && registered);KichR4_CaptureLightShadow(this,shadow);}
 public:
     R4Light():active(false),shadow(false){static uint64_t next_serial=0;ZeroMemory(&identity,sizeof(identity));
         identity.process_handle=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(this));identity.serial=++next_serial;identity.role=KICH_R4_LIGHT_ROLE_RUNTIME;
@@ -142,9 +142,9 @@ public:
     void SetLevelIdentity(uint32_t record,uint32_t controller){identity.role=KICH_R4_LIGHT_ROLE_LEVEL;identity.flags|=KICH_R4_LIGHT_STATIC;identity.level_record=record;identity.controller=controller;Update();}
     void set_type(LT v){value.type=v;Update();}void set_active(bool v){active=v;Update();}bool get_active(){return active;}
     void set_shadow(bool v){shadow=v;Update();}void set_position(const Fvector& p){CopyMemory(value.position,&p.x,12);Update();}
-    void set_rotation(const Fvector& d,const Fvector&){CopyMemory(value.direction,&d.x,12);Update();}
+    void set_rotation(const Fvector& d,const Fvector& r){CopyMemory(value.direction,&d.x,12);CopyMemory(projector.right,&r.x,12);Update();}
     void set_cone(float v){value.cone=v;Update();}void set_range(float v){value.range=v;Update();}
-    void set_virtual_size(float){}void set_texture(LPCSTR){}
+    void set_virtual_size(float){}void set_texture(LPCSTR name){try{projector.texture=name?name:"";}catch(...){projector.texture.clear();}Update();}
     void set_color(const Fcolor& c){set_color(c.r,c.g,c.b);}void set_color(float r,float g,float b){value.color[0]=r;value.color[1]=g;value.color[2]=b;Update();}
 };
 class R4Glow;
@@ -298,7 +298,15 @@ void CRender::add_Visual(IRender_Visual* v){if(!v || invisible)return;NativePrep
     // Off-camera shadow-only commands do not consume object irradiance. They
     // must not trigger ray work for an exposure their depth pass never uses.
     const bool camera_needed=!(radius>0) || !_valid(radius) || ViewBase.testSphere_dirty(center,radius);
-    if(object && !q.hud && camera_needed){R4ROS* ros=dynamic_cast<R4ROS*>(object->renderable_ROS());if(ros){ros->Exposure(q.hemi,q.sun);q.light_valid=true;}}
+    // HUD geometry has a separate projection, but its indirect exposure belongs
+    // to the carrier. Keep the item identity for wetness/material callbacks;
+    // only the visual ROS owner follows its root. Multiple HUD parts reuse the
+    // same budgeted, smoothed exposure rather than tracing per bone or draw.
+    IRenderable* light_object=object;
+    if(q.hud){CObject* item=dynamic_cast<CObject*>(object);
+        if(item)light_object=item->H_Root();
+        if(!light_object && g_pGameLevel)light_object=g_pGameLevel->CurrentViewEntity();}
+    if(light_object && (q.hud || camera_needed)){R4ROS* ros=dynamic_cast<R4ROS*>(light_object->renderable_ROS());if(ros){ros->Exposure(q.hemi,q.sun);q.light_valid=true;}}
     queue.push_back(q);}
 void CRender::add_Geometry(IRender_Visual* v){if(v && occ_visible(v->vis))add_Visual(v);}
 void CRender::Submit(IRender_Visual* v,CKinematics* parent){if(!v)return;CKinematics* k=v->dcast_PKinematics();if(k){k->CalculateBones(TRUE);k->CalculateWallmarks();parent=k;}
@@ -369,9 +377,7 @@ void CRender::Calculate(){queue.clear();shadow_views.clear();native_lod_shadow_v
     // native path gathers their conservative union, then culls immutable model
     // commands against the actual pass matrix in the backend.
     KichR4LightingFrame lighting={};lighting.valid=1;
-    if(g_pGamePersistent){const CEnvDescriptor& e=g_pGamePersistent->Environment().CurrentEnv;
-        CopyMemory(lighting.sun_direction,&e.sun_dir.x,12);CopyMemory(lighting.sun_color,&e.sun_color.x,12);
-        CopyMemory(lighting.ambient,&e.ambient.x,12);CopyMemory(lighting.hemi,&e.hemi_color.x,12);CopyMemory(lighting.fog,&e.fog_color.x,12);}
+    if(g_pGamePersistent)KichR4CopyEnvironment(lighting,g_pGamePersistent->Environment().CurrentEnv);
     KichR4_FreezeLighting(Device.dwFrame,Device.dwTimeGlobal,&Device.vCameraPosition.x,lighting,ps_r2_ls_flags.test(R2FLAG_R1LIGHTS)!=0,&Device.mFullTransform._11);
     KichR4_CaptureLightingDiagnostics(&Device.vCameraPosition.x,lighting);
     if(g_render_snapshot_active){RenderSnapshot_U64("LIGHT_POLICY","R2FLAG_R1LIGHTS_requested",ps_r2_ls_flags.test(R2FLAG_R1LIGHTS)?1:0);

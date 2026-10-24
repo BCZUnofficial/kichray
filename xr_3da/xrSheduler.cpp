@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "xrSheduler.h"
 #include "xr_object.h"
+#include "KichR4UpdateProbe.h"
 
 //#define DEBUG_SCHEDULER
 
@@ -407,6 +408,7 @@ void CSheduler::Switch				()
 */
 void CSheduler::Update()
 {
+	kich_r4_update::Scope<> probe(kich_r4_update::SchedulerUpdate);
 	R_ASSERT(Device.Statistic);
 	// Initialize
 	Device.Statistic->Sheduler.Begin();

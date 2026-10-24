@@ -2,10 +2,18 @@
 #define KICH_R4_LIGHTING_H
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
 #include <vector>
+#include <string>
 /* CPU snapshots only. type follows IRender_Light: POINT=1, SPOT=2. */
 struct KichR4LocalLight {
     float position[3],range,direction[3],cone,color[3];uint32_t type;
+};
+// Owned EXE-only projector data. No strings or engine pointers cross the DLL ABI.
+struct KichR4LightProjector {
+    std::string texture;
+    float right[3];
+    KichR4LightProjector():right(){}
 };
 enum KichR4LightRole {KICH_R4_LIGHT_ROLE_UNKNOWN=0,KICH_R4_LIGHT_ROLE_RUNTIME=1,KICH_R4_LIGHT_ROLE_LEVEL=2};
 enum KichR4LightFlags {KICH_R4_LIGHT_STATIC=1u};
@@ -23,8 +31,11 @@ typedef bool (*KichR4LightVisibility)(const KichR4LocalLight&,const float* camer
 struct KichR4LightingFrame {
     uint32_t valid,count,shadow_mask;
     float sun_direction[3],sun_color[3],ambient[3],hemi[3],fog[3];
+    // CurrentEnv mixer output, not a second weather or distance policy.
+    float fog_near,fog_far;uint32_t fog_valid;
     std::vector<KichR4LocalLight> lights;
     std::vector<KichR4LightIdentity> sources;
+    std::vector<KichR4LightProjector> projectors;
     std::vector<uint8_t> shadows;
     // Keep the camera used for selection so diagnostics explain the same set.
     float visibility_vp[16];uint32_t visibility_valid;
@@ -38,8 +49,8 @@ struct KichR4LightingFrame {
     uint32_t shadow_resolution_changes,shadow_resolution_reason;
     // Small direct/test producers can still fill the original first eight
     // entries. Captured frames resize to every visible registry source.
-    KichR4LightingFrame():valid(0),count(0),shadow_mask(0),sun_direction(),sun_color(),ambient(),hemi(),fog(),
-        lights(8),sources(8),visibility_vp(),visibility_valid(0),r1_lights_requested(0),r1_lights_applied(0),occlusion_enabled(0),occlusion_tested(0),
+    KichR4LightingFrame():valid(0),count(0),shadow_mask(0),sun_direction(),sun_color(),ambient(),hemi(),fog(),fog_near(0),fog_far(0),fog_valid(0),
+        lights(8),sources(8),projectors(8),visibility_vp(),visibility_valid(0),r1_lights_requested(0),r1_lights_applied(0),occlusion_enabled(0),occlusion_tested(0),
         selection_frame(0),local_shadow_size(0),shadow_plan_faces(0),shadow_resolution_changes(0),shadow_resolution_reason(0){}
     bool CastsShadow(unsigned index)const {
         if(index>=count)return false;
@@ -49,6 +60,13 @@ struct KichR4LightingFrame {
         return index<32 && (shadow_mask&(1u<<index))!=0;
     }
 };
+// Shared by early native selection and both presentation adapters. Copying a
+// frozen lighting frame must preserve the same complete environment snapshot.
+template<class Environment> inline void KichR4CopyEnvironment(KichR4LightingFrame& frame,const Environment& env){
+    frame.valid=1;memcpy(frame.sun_direction,&env.sun_dir.x,12);memcpy(frame.sun_color,&env.sun_color.x,12);
+    memcpy(frame.ambient,&env.ambient.x,12);memcpy(frame.hemi,&env.hemi_color.x,12);memcpy(frame.fog,&env.fog_color.x,12);
+    frame.fog_near=env.fog_near;frame.fog_far=env.fog_far;frame.fog_valid=1;
+}
 static_assert(sizeof(KichR4LocalLight)==48,"CPU light layout");
 static_assert(sizeof(KichR4LightIdentity)==32,"CPU light provenance layout");
 #if defined(_WIN32)
@@ -66,6 +84,7 @@ KICH_R4_LIGHT_EXPORT void KichR4_CaptureLightForget(const void*);
 #undef KICH_R4_LIGHT_EXPORT
 /* EXE-only helper keeps allocation/exception handling out of the PCH adapter. */
 void KichR4_CaptureLighting(const float*,KichR4LightingFrame&,bool r1_lights_enabled=false,const float* camera_vp=NULL);
+void KichR4_CaptureLightProjector(const void*,const KichR4LightProjector&);
 void KichR4_CaptureLightingDiagnostics(const float*,const KichR4LightingFrame&);
 void KichR4_SetLightVisibility(KichR4LightVisibility);
 void KichR4_FreezeLighting(uint32_t engine_frame,uint32_t now_ms,const float* camera,KichR4LightingFrame&,bool r1_lights_enabled,const float* camera_vp);

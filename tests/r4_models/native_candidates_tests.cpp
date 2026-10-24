@@ -33,15 +33,15 @@ struct ISpatial_DB {
 ISpatial_DB* g_SpatialSpace=&spatial;
 struct HUD {unsigned calls;HUD():calls(0){}void Render_First(){++calls;}void Render_Last(){++calls;}} hud;
 struct Level {HUD* pHUD;} level={&hud};Level* g_pGameLevel=&level;
-struct CEnvDescriptor {Fvector sun_dir,sun_color,ambient,hemi_color,fog_color;};
-struct Weather {CEnvDescriptor CurrentEnv;} weather={{{0,-1,0},{0,0,0},{0,0,0},{0,0,0},{0,0,0}}};
+struct CEnvDescriptor {Fvector sun_dir,sun_color,ambient,hemi_color,fog_color;float fog_near,fog_far;};
+struct Weather {CEnvDescriptor CurrentEnv;} weather={{{0,-1,0},{0,0,0},{0,0,0},{0,0,0},{0,0,0},35,160}};
 struct Persistent {Weather& Environment(){return weather;}} persistent;Persistent* g_pGamePersistent=&persistent;
 struct DeviceState {Fmatrix mFullTransform;Fvector vCameraPosition;u32 dwFrame,dwTimeGlobal;} Device;
 struct Flags {bool enabled;bool test(unsigned){return enabled;}} psDeviceFlags={true};
 Flags ps_r2_ls_flags={false};enum{R2FLAG_R1LIGHTS=1u<<10};u32 native_level_light_records=0,native_level_directional_skips=0;
-KichR4LightingFrame lights={};bool light_visibility_requested=false;
+KichR4LightingFrame lights={};bool light_visibility_requested=false,environment_fog_received=false;
 void KichR4_CaptureLightingDiagnostics(const float*,const KichR4LightingFrame&){}
-void KichR4_FreezeLighting(uint32_t,uint32_t,const float*,KichR4LightingFrame& out,bool r1_lights_enabled,const float* camera_vp){light_visibility_requested=camera_vp && !memcmp(camera_vp,Device.mFullTransform.m,64);out=lights;out.r1_lights_requested=out.r1_lights_applied=r1_lights_enabled?1u:0u;}
+void KichR4_FreezeLighting(uint32_t,uint32_t,const float*,KichR4LightingFrame& out,bool r1_lights_enabled,const float* camera_vp){light_visibility_requested=camera_vp && !memcmp(camera_vp,Device.mFullTransform.m,64);environment_fog_received=out.fog_valid && out.fog_near==35 && out.fog_far==160;out=lights;out.r1_lights_requested=out.r1_lights_applied=r1_lights_enabled?1u:0u;}
 class CRender {
 public:
     enum{PHASE_NORMAL=0};unsigned phase;bool loaded;std::vector<int> queue;std::vector<CFrustum> shadow_views;CFrustum ViewBase,*View;
@@ -65,6 +65,7 @@ int main(){try{
     ISpatial distant={&outside,{20.f,-.1f,-.1f},{21.f,.1f,.1f},0,{{{20.5f,0,0},.6f}}};
     spatial.objects={&camera,&caster,&duplicate,&distant};CRender renderer;renderer.Calculate();
     Require(light_visibility_requested,"native selection receives the actual game camera frustum");
+    Require(environment_fog_received,"early native selection freezes complete mixed environment before presentation can copy it");
     Require(spatial.queries==7 && renderer.shadow_views.size()==6,"camera plus all selected point faces queried");
     Require(inside.rendered==1 && shadow.rendered==1 && outside.rendered==0,"production Calculate retains off-camera caster and culls outside all volumes");
     Require(camera.updates==1 && caster.updates+duplicate.updates==1,"renderable identity deduplicates across views and spatial aliases");
