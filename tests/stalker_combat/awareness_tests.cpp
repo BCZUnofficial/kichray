@@ -13,8 +13,9 @@ void search_lifecycle()
     assert(npc.moving.body==eBodyStateCrouch && npc.moving.type==eMovementTypeWalk);
     assert(npc.moving.desired.distance_to(Fvector(0,0,4))<.001f);
     npc.pos=npc.moving.desired;Device.dwTimeGlobal+=1500;action.execute();
-    assert(npc.moving.type==eMovementTypeStand && npc.moving.body==eBodyStateCrouch);
-    Device.dwTimeGlobal+=1000;action.execute();assert(npc.moving.body==eBodyStateStand);
+    assert(npc.moving.type==eMovementTypeStand && npc.moving.body==eBodyStateStand);
+    assert(npc.animations.starts==1); // Stand-only prisluh/fallback starts on arrival.
+    Device.dwTimeGlobal+=1500;action.execute();assert(npc.moving.body==eBodyStateCrouch);
     assert(!group.m_scout.assigned);action.finalize();
     assert(stalker_known_enemy_distance(npc,&enemy)==4.f);
     npc.memories.info.m_object=nullptr;assert(stalker_known_enemy_distance(npc,&enemy)==flt_max);
@@ -102,8 +103,13 @@ void finish_sectors(CAI_Stalker& npc,CStalkerActionSearchEnemy& action)
 {
     npc.pos=npc.memories.info.m_object_params.m_position;
     npc.moving.complete=true;action.execute();
-    for(int sector=0;sector<3;++sector){Device.dwTimeGlobal+=2500;action.execute();}
-    action.execute();
+    // Arrival at the remembered node and at each of the three local sectors.
+    for(int point=0;point<4;++point){
+        Device.dwTimeGlobal+=1500;action.execute(); // Finish bounded missing-motion pause.
+        action.execute(); // Only now can the next leg begin.
+        if(point<3){npc.pos=npc.moving.desired;npc.moving.complete=true;
+            Device.dwTimeGlobal+=250;action.execute();}
+    }
 }
 void search_patience()
 {
@@ -217,5 +223,69 @@ void close_pitch()
     float yaw,pitch;sight.SetFirePointLookAngles(npc.eye_matrix.c,yaw,pitch);
     assert(std::isfinite(yaw)&&std::isfinite(pitch));
 }
-int main(){search_lifecycle();search_cancellation();group_scout();delayed_sneak_decision();search_patience();search_doorway_route();peripheral();close_pitch();
- std::cout<<"PASS: production cautious search, observation-age patience, delayed choice, squad lease, cancellation, peripheral occlusion/delay and close pitch\n";}
+void search_listening_and_horizontal_sight()
+{
+    for(float eye_height:{.8f,1.5f,3.f}){
+        CAgentMemberManager group;CAI_Stalker npc;CEntityAlive enemy;configure(npc,enemy,group,1);
+        npc.memories.info.m_object_params.m_position=Fvector(0,.9f,8); // Real memory Center Y.
+        npc.pos=Fvector(0,0,8);npc.eye_matrix.c=Fvector(0,eye_height,8);
+        npc.animations.available=true;
+        CStalkerActionSearchEnemy action(&npc);action.initialize();action.execute();
+        assert(npc.animations.active && npc.animations.starts==1 && npc.moving.type==eMovementTypeStand);
+        assert(npc.sights.last.y==eye_height && npc.sights.last.z>npc.pos.z+1.f);
+        const u32 legs=npc.moving.changes;
+        npc.eye_matrix.c.y=eye_height+.5f; // Real crouch-to-stand raises the eyes during the phase.
+        Device.dwTimeGlobal+=3000;action.execute();
+        assert(npc.sights.last.y==npc.eye_matrix.c.y);
+        assert(npc.animations.starts==1 && npc.moving.changes==legs); // No timed sector advance during listen.
+        ++npc.memories.info.m_level_time;action.execute();
+        assert(npc.animations.starts==1); // Same-position relay cannot replay the motion.
+        npc.animations.active=false;action.execute();action.execute();
+        assert(npc.moving.changes==legs+1 && npc.moving.type==eMovementTypeWalk);
+        Device.dwTimeGlobal+=3000;npc.pos.x=-1;action.execute();
+        assert(npc.moving.changes==legs+1 && npc.animations.starts==1); // Travelling is not arrival.
+        npc.pos=npc.moving.desired;npc.moving.complete=true;Device.dwTimeGlobal+=250;action.execute();
+        assert(npc.animations.starts==2 && npc.animations.active);
+        assert(npc.sights.last.y==npc.eye_matrix.c.y && npc.sights.last.distance_to_xz_sqr(npc.eye_matrix.c)>1.f);
+        action.finalize();assert(!npc.animations.active);
+    }
+}
+void listening_interruptions()
+{
+    for(int cause=0;cause<11;++cause){
+        CAgentMemberManager group;CAI_Stalker npc;CEntityAlive enemy;configure(npc,enemy,group,1);
+        npc.pos=Fvector(0,0,8);npc.animations.available=true;
+        CStalkerActionSearchEnemy action(&npc);action.initialize();action.execute();
+        assert(npc.animations.active);CDangerObject grenade;
+        Device.dwTimeGlobal+=300;
+        switch(cause){
+        case 0:npc.memories.visuals.seen=true;break;
+        case 1:npc.memories.dangers.danger=&grenade;break;
+        case 2:++npc.memories.hits.revision;break;
+        case 3:++npc.near_miss_revision;break;
+        case 4:npc.memories.info.m_object_params.m_position.z+=4;++npc.memories.info.m_level_time;break;
+        case 5:npc.memories.enemies.target=nullptr;break;
+        case 6:npc.alive=false;break;
+        case 7:npc.animations.scripts.push_back(7);break;
+        case 8:npc.condition.hp=.5f;break;
+        case 9:Device.dwTimeGlobal+=6500;break;
+        case 10:npc.script=true;break;
+        }
+        action.execute();assert(!npc.animations.active);
+        if(cause==7)assert(npc.animations.scripts.size()==1); // Do not consume another controller's motion.
+        action.finalize();
+    }
+    // A failed path never plays an arrival motion. Missing clips have a bounded pause.
+    CAgentMemberManager group;CAI_Stalker npc;CEntityAlive enemy;configure(npc,enemy,group,1);
+    CStalkerActionSearchEnemy action(&npc);action.initialize();action.execute();
+    npc.moving.level.fail=true;route=false;Device.dwTimeGlobal+=300;action.execute();
+    assert(npc.animations.starts==0);action.finalize();
+    configure(npc,enemy,group,1);npc.moving.level.fail=false;npc.pos=Fvector(0,0,8);
+    action.initialize();action.execute();assert(npc.animations.starts==1 && !npc.animations.active);
+    const u32 legs=npc.moving.changes;
+    Device.dwTimeGlobal+=1499;action.execute();assert(npc.moving.changes==legs);
+    ++Device.dwTimeGlobal;action.execute();action.execute();assert(npc.moving.changes==legs+1);
+    action.finalize();
+}
+int main(){search_lifecycle();search_cancellation();group_scout();delayed_sneak_decision();search_patience();search_doorway_route();search_listening_and_horizontal_sight();listening_interruptions();peripheral();close_pitch();
+ std::cout<<"PASS: production search travel/listen progression, horizontal sight, animation cancellation/fallback, memory patience, scout lease and peripheral perception\n";}

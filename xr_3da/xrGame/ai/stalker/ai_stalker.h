@@ -346,6 +346,7 @@ class CAI_Stalker : public CCustomMonster, public CObjectHandler, public CAI_Phr
 						 collide::rq_results& rq_storage);
 	void can_kill_entity_from(const Fvector& position, Fvector direction, float distance);
 	void update_can_kill_info();
+	bool combat_known_friendly_fire(const Fvector& toward_source);
 	void process_combat_near_miss();
 	void update_combat_near_miss();
 

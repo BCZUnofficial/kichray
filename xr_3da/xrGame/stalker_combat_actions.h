@@ -218,6 +218,17 @@ class CStalkerActionSearchEnemy : public CStalkerActionCombatBase
 	Fvector m_search_anchor;
 	Fvector m_search_observed_position;
     Fvector m_search_progress_position;
+    Fvector m_search_destination;
+    Fvector m_search_look_direction;
+    bool m_search_listening, m_search_listen_animation, m_search_listen_crouched;
+    u32 m_search_listen_started, m_search_listen_next_stage;
+    u32 m_search_listen_hit_revision, m_search_listen_near_miss_revision;
+    float m_search_listen_health;
+    void search_sight(const Fvector& target, const Fvector& fallback);
+    bool search_reached(const Fvector& target) const;
+    void start_listening(u32 now, u32 next_stage);
+    void stop_listening();
+    bool update_listening(u32 now);
     u32 m_search_last_progress;
 	u16 m_search_enemy_id;
 	Fvector m_search_direction;

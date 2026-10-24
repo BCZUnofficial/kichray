@@ -15,6 +15,8 @@ HERE = Path(__file__).resolve().parent
 def main():
     source = (GAME / 'ai/stalker/ai_stalker_fire.cpp').read_text(encoding='cp1251')
     methods = [extract(source, signature) for signature in (
+        'template <typename T>\nvoid stalker_collect_known_fire(',
+        'bool CAI_Stalker::combat_known_friendly_fire(',
         'bool CAI_Stalker::bullet_near_miss_ready()',
         'void CAI_Stalker::on_bullet_near_miss(',
         'u32 CAI_Stalker::combat_near_miss_revision()',
@@ -23,6 +25,9 @@ def main():
         'bool CAI_Stalker::combat_near_miss_recent(',
         'void CAI_Stalker::process_combat_near_miss()',
         'void CAI_Stalker::update_combat_near_miss()')]
+    start = source.index('struct StalkerKnownFireContact')
+    end = source.index('};', start) + 2
+    methods.insert(0, source[start:end])
     # The real movement manager copies target posture during update; a callback
     # applied after it would otherwise be overwritten by the next planner tick.
     lifecycle = (GAME / 'ai/stalker/ai_stalker.cpp').read_text(encoding='cp1251')

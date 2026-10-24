@@ -43,6 +43,20 @@ class CStalkerAnimationManager
 	CStalkerAnimationPair m_legs;
 	CStalkerAnimationPair m_script;
 
+    // Native search gesture; never placed in the Lua animation queue.
+    CStalkerAnimationPair m_search_listen;
+    MotionID m_search_listen_motions[3];
+    bool m_search_listen_active;
+    bool m_search_listen_phase_played;
+    u32 m_search_listen_phase;
+    u32 m_search_listen_started;
+    u32 m_search_listen_phase_started;
+    u32 m_search_listen_phase_duration;
+    u32 m_search_listen_slot;
+    u16 m_search_listen_item;
+    u32 m_search_listen_hit_revision;
+    float m_search_listen_health;
+
   private:
 	u32 m_direction_start;
 	EMovementDirection m_current_direction;
@@ -128,6 +142,9 @@ class CStalkerAnimationManager
   private:
 	IC void play_global_impl(const MotionID& animation);
 	bool play_global();
+    u32 search_listen_slot() const;
+    bool search_listen_allowed() const;
+    bool play_search_listen();
 
   private:
 	IC void play_head();
@@ -150,6 +167,12 @@ class CStalkerAnimationManager
 	void play_delayed_callbacks();
 
   public:
+    // Caller owns the stationary standing posture and can interrupt at any time.
+    // A false start leaves the regular weapon/posture animation untouched.
+    bool start_search_listen();
+    bool search_listen_active() const;
+    void stop_search_listen();
+
 	void add_script_animation(LPCSTR animation, bool hand_usage = false, bool use_movement_controller = false);
 	IC void clear_script_animations();
 	IC void pop_script_animation();

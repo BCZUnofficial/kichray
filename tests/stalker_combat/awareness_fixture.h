@@ -72,7 +72,7 @@ struct Movement {
  bool complete=false,access=true;int body=eBodyStateStand,type=eMovementTypeStand;Fvector desired;u32 dest=0,changes=0;
  void set_desired_position(const Fvector* p){if(p)desired=*p;}
  void set_desired_direction(const Fvector*){} void set_path_type(int){} void set_detail_path_type(int){} void set_mental_state(int){}
- void set_body_state(int v){body=v;} void set_movement_type(int v){type=v;}
+ int target_body_state() const{return body;} void set_body_state(int v){body=v;} void set_movement_type(int v){type=v;}
  bool accessible(u32) const{return access;} bool accessible(const Fvector&) const{return access;}
  void set_level_dest_vertex(u32 v){dest=v;complete=false;++changes;}
  void set_nearest_accessible_position(){desired=Fvector();complete=true;}
@@ -92,7 +92,13 @@ struct CAI_Stalker:CEntityAlive {
  Memory memories;Movement moving;Agent agent;
  struct Sight {Fvector last;void setup(const CSightAction& a){last=a.point;}} sights;
  struct Condition {float hp=1;float health() const{return hp;}} condition;
- struct Animation {std::vector<int> scripts;const std::vector<int>& script_animations()const{return scripts;}} animations;
+ struct Animation {
+ std::vector<int> scripts;bool available=false,active=false;u32 starts=0,stops=0;
+ const std::vector<int>& script_animations()const{return scripts;}
+ bool start_search_listen(){++starts;active=available;return active;}
+ bool search_listen_active() const{return active;}
+ void stop_search_listen(){++stops;active=false;}
+ } animations;
  struct Matrix {Fvector c=Fvector(0,1.5f,0),k=Fvector(0,0,1);void transform_tiny(Fvector& p,const Fvector& v)const{p=v;}} eye_matrix;
  stalker_combat_awareness::Peripheral m_combat_peripheral;Fvector m_combat_peripheral_point;
  bool script=false,injured=false,critical=false,talking=false,relation=true;
@@ -126,7 +132,7 @@ struct CStalkerActionCombatBase {
  CStalkerActionCombatBase(CAI_Stalker* o,LPCSTR):m_object(o){}
  virtual ~CStalkerActionCombatBase(){}
  virtual void initialize(){}virtual void execute(){}virtual void finalize(){}
- CAI_Stalker& object(){return *m_object;}void aim_ready(){}
+ CAI_Stalker& object()const{return *m_object;}void aim_ready(){}
 };
 bool route=true,space=true;u32 route_queries=0;
 bool stalker_local_destination(CAI_Stalker&,const Fvector& requested,Fvector& dest,u32& v){++route_queries;dest=requested;v=3;return route;}

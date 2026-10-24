@@ -1061,6 +1061,8 @@ void CStalkerActionSearchEnemy::initialize()
 {
 	inherited::initialize();
     m_sneak_decided = m_sneak_active = m_sneak_arrived = false;
+    m_search_listening = m_search_listen_animation = m_search_listen_crouched = false;
+    m_search_look_direction.set(0.f, 0.f, 1.f);
     m_search_has_anchor = false;
     m_search_moving = false;
     m_search_stage_time = Device.dwTimeGlobal;
@@ -1082,8 +1084,86 @@ void CStalkerActionSearchEnemy::initialize()
 
 void CStalkerActionSearchEnemy::finalize()
 {
+    stop_listening();
     stop_sneak("sneak_finalize");
 	inherited::finalize();
+}
+
+void CStalkerActionSearchEnemy::search_sight(const Fvector& target, const Fvector& fallback)
+{
+    // A navigation/memory point is not an aim point. Near it, keep the search
+    // heading instead of looking vertically down at our own feet/old contact.
+    Fvector direction;
+    direction.sub(target, object().Position());
+    direction.y = 0.f;
+    if (direction.square_magnitude() < 1.f) direction = fallback;
+    direction.y = 0.f;
+    if (direction.square_magnitude() < EPS_L) direction.set(0.f, 0.f, 1.f);
+    direction.normalize_safe();
+    m_search_look_direction = direction;
+    Fvector look;
+    look.mad(object().eye_matrix.c, direction, 6.f);
+    object().sight().setup(CSightAction(SightManager::eSightTypePosition, look, true));
+}
+
+bool CStalkerActionSearchEnemy::search_reached(const Fvector& target) const
+{
+    // Memory stores Center Y, whereas walking uses the navigation floor.
+    // Keep a vertical bound so a node on another storey is not an arrival.
+    const float height = object().Position().y - target.y;
+    return object().Position().distance_to_xz_sqr(target) <= .64f && height * height <= 4.f;
+}
+
+void CStalkerActionSearchEnemy::start_listening(u32 now, u32 next_stage)
+{
+    if (m_search_listening) return;
+    m_search_listening = true;
+    m_search_listen_started = now;
+    m_search_listen_next_stage = next_stage;
+    m_search_listen_hit_revision = object().memory().hit().recent_hit_revision();
+    m_search_listen_near_miss_revision = object().combat_near_miss_revision();
+    m_search_listen_health = object().conditions().health();
+    m_search_listen_crouched = object().movement().target_body_state() == eBodyStateCrouch;
+    object().movement().set_nearest_accessible_position();
+    object().movement().set_movement_type(eMovementTypeStand);
+    // Authored prisluh motions are standing. Restore a cautious crouch afterwards.
+    object().movement().set_body_state(eBodyStateStand);
+    aim_ready();
+    m_search_listen_animation = object().animation().start_search_listen();
+    if (stalker_combat_diagnostics::enabled(object().ID()))
+        stalker_combat_diagnostics::log(object().ID(), stalker_combat_diagnostics::action,
+            "search_listen", "stage=%u animated=%u", m_search_stage, u32(m_search_listen_animation));
+}
+
+void CStalkerActionSearchEnemy::stop_listening()
+{
+    if (!m_search_listening) return;
+    object().animation().stop_search_listen();
+    m_search_listening = false;
+    if (m_search_listen_crouched && object().g_Alive() && !object().GetScriptControl() &&
+        !object().wounded() && !object().critically_wounded() && !object().IsTalking() &&
+        object().animation().script_animations().empty() &&
+        object().movement().target_body_state() == eBodyStateStand)
+        object().movement().set_body_state(eBodyStateCrouch);
+    m_search_listen_crouched = false;
+}
+
+bool CStalkerActionSearchEnemy::update_listening(u32 now)
+{
+    if (!m_search_listening) return false;
+    // Eye height changes while a cautious crouch rises into the authored motion.
+    search_sight(object().Position(), m_search_look_direction);
+    const bool interrupted = object().conditions().health() < m_search_listen_health ||
+        object().memory().hit().recent_hit_revision() != m_search_listen_hit_revision ||
+        object().combat_near_miss_revision() != m_search_listen_near_miss_revision;
+    const u32 elapsed = now - m_search_listen_started;
+    const bool waiting = m_search_listen_animation ? object().animation().search_listen_active() : elapsed < 1500u;
+    if (!interrupted && waiting && elapsed < 6500u) return true;
+    stop_listening();
+    m_search_stage = m_search_listen_next_stage;
+    m_search_stage_time = now;
+    m_search_moving = false;
+    return true; // Start the next leg on a subsequent decision, never during the motion.
 }
 
 void CStalkerActionSearchEnemy::stop_sneak(const char* reason)
@@ -1164,9 +1244,7 @@ bool CStalkerActionSearchEnemy::update_sneak(u32 now)
         stop_sneak(unsafe ? "sneak_threat" : "sneak_timeout_or_path");
         return true; // Do not overwrite the cancellation with a new move in this tick.
     }
-    Fvector look = m_search_observed_position;
-    look.y += 1.f;
-    object().sight().setup(CSightAction(SightManager::eSightTypePosition, look, true));
+    search_sight(m_search_observed_position, m_search_direction);
     if (!m_sneak_arrived && (object().Position().distance_to_sqr(m_sneak_destination) <= .64f ||
         (now - m_sneak_started >= 250u && object().movement().path_completed())))
     {
@@ -1177,26 +1255,40 @@ bool CStalkerActionSearchEnemy::update_sneak(u32 now)
         }
         m_sneak_arrived = true;
         m_sneak_arrival_time = now;
-        object().movement().set_nearest_accessible_position();
-        object().movement().set_movement_type(eMovementTypeStand);
+        m_sneak_active = false;
+        object().agent_manager().member().release_scout(object().ID());
+        m_search_anchor = object().Position();
+        m_search_stage = 1;
+        m_search_moving = false;
+        start_listening(now, 1);
     }
-    if (m_sneak_arrived && now - m_sneak_arrival_time >= 1000u) stop_sneak("sneak_inspected");
     return true;
 }
 
 void CStalkerActionSearchEnemy::execute()
 {
     inherited::execute();
+    if (!object().g_Alive()) { stop_listening(); return; }
     const CEntityAlive* enemy = object().memory().enemy().selected();
-    if (!enemy) { stop_sneak("sneak_no_enemy"); return; }
+    if (!enemy) { stop_listening(); stop_sneak("sneak_no_enemy"); return; }
     if (object().memory().visual().visible_now(enemy))
     {
+        stop_listening();
         stop_sneak("sneak_visible");
         object().movement().set_movement_type(eMovementTypeStand);
         return; // The planner returns to visible-target combat without disabling memory.
     }
     const CMemoryInfo memory = object().memory().memory(enemy);
-    if (!memory.m_object) { stop_sneak("sneak_no_memory"); return; }
+    if (!memory.m_object) { stop_listening(); stop_sneak("sneak_no_memory"); return; }
+    const CDangerObject* danger = object().memory().danger().selected();
+    if (object().GetScriptControl() || object().wounded() || object().critically_wounded() ||
+        object().IsTalking() || !object().animation().script_animations().empty() ||
+        (danger && danger->type() == CDangerObject::eDangerTypeGrenade))
+    {
+        stop_listening();
+        stop_sneak("sneak_threat");
+        return;
+    }
     const CVisibleObject* visual = object().memory().visual().visible_object(enemy);
     const bool squad_visible = visual && visual->visible(squad_mask_type(-1));
     const u32 now = Device.dwTimeGlobal;
@@ -1213,6 +1305,7 @@ void CStalkerActionSearchEnemy::execute()
     }
     if (changed_position)
     {
+        stop_listening();
         stop_sneak("sneak_report_changed");
         if (new_enemy) m_sneak_decided = false;
         m_search_anchor = memory.m_object_params.m_position;
@@ -1257,11 +1350,13 @@ void CStalkerActionSearchEnemy::execute()
             stalker_combat_diagnostics::log(object().ID(), stalker_combat_diagnostics::action,
                 "search_expired", "enemy=%u observation_ms=%u sectors_done=%u",
                 u32(m_search_enemy_id), report_age, u32(m_search_stage > 3));
+        stop_listening();
         object().memory().enable(enemy, false);
         object().movement().set_nearest_accessible_position();
         object().movement().set_movement_type(eMovementTypeStand);
         return;
     }
+    if (update_listening(now)) return;
     if (m_search_stage == 0)
     {
         if (try_sneak(now, squad_visible))
@@ -1269,7 +1364,7 @@ void CStalkerActionSearchEnemy::execute()
             update_sneak(now);
             return;
         }
-        object().sight().setup(CSightAction(SightManager::eSightTypePosition, m_search_anchor, true));
+        search_sight(m_search_anchor, m_search_direction);
         if (object().Position().distance_to_sqr(m_search_progress_position) >= .0625f)
         {
             m_search_progress_position = object().Position();
@@ -1279,24 +1374,28 @@ void CStalkerActionSearchEnemy::execute()
         // Allow that existing route to progress instead of giving up after six
         // seconds; retain both a no-progress timeout and an absolute budget.
         const u32 approach_age = now - m_search_stage_time;
-        if (approach_age < 250u && object().Position().distance_to_sqr(m_search_anchor) > .64f) return;
+        const bool arrived = search_reached(m_search_anchor);
+        if (approach_age < 250u && !arrived) return;
+        if (arrived)
+        {
+            start_listening(now, 1);
+            return;
+        }
         if (!object().movement().path_completed() && !object().movement().level_path().failed() &&
             approach_age < 18000u && now - m_search_last_progress < 4500u) return;
-        // If the exact last-known node cannot be reached, search only around our reachable position.
-        if (object().Position().distance_to_sqr(m_search_anchor) > 16.f) m_search_anchor = object().Position();
+        // A failure is not an arrival. Search from the reachable position without
+        // pretending that we inspected the inaccessible remembered node.
+        m_search_anchor = object().Position();
         m_search_stage = 1;
         m_search_stage_time = now;
         m_search_moving = false;
     }
     if (m_search_stage > 3)
     {
-        // Another member's live visual contact must never be disabled by our search.
-        // Same-position reports update patience without rebuilding this finished route.
+        // Preserve an alert horizontal heading while waiting for genuinely new information.
         object().movement().set_nearest_accessible_position();
         object().movement().set_movement_type(eMovementTypeStand);
-        Fvector aim;
-        if (object().combat_target_position(aim, true))
-            object().sight().setup(CSightAction(SightManager::eSightTypePosition, aim, true));
+        search_sight(object().Position(), m_search_direction);
         return;
     }
     const Fvector side = Fvector().set(-m_search_direction.z, 0.f, m_search_direction.x);
@@ -1304,34 +1403,50 @@ void CStalkerActionSearchEnemy::execute()
     if (m_search_stage == 1) sector = side;
     else if (m_search_stage == 2) sector = Fvector(side).invert();
     else sector = m_search_direction;
-    Fvector look;
-    look.mad(m_search_anchor, sector, 6.f);
-    look.y += 1.f;
-    object().sight().setup(CSightAction(SightManager::eSightTypePosition, look, true));
     if (!m_search_moving)
     {
-        Fvector requested, destination;
+        Fvector requested;
         requested.mad(m_search_anchor, sector, 2.5f);
         u32 vertex;
-        if (stalker_local_destination(object(), requested, destination, vertex) &&
-            stalker_local_space(object(), destination, vertex, false))
-        {
-            object().movement().set_level_dest_vertex(vertex);
-            object().movement().set_desired_position(&destination);
-            object().movement().set_movement_type(eMovementTypeWalk);
-        }
-        else
+        if (!stalker_local_destination(object(), requested, m_search_destination, vertex) ||
+            !stalker_local_space(object(), m_search_destination, vertex, false))
         {
             object().movement().set_nearest_accessible_position();
             object().movement().set_movement_type(eMovementTypeStand);
+            search_sight(object().Position(), sector);
+            ++m_search_stage;
+            m_search_stage_time = now;
+            return;
         }
+        object().movement().set_level_dest_vertex(vertex);
+        object().movement().set_desired_position(&m_search_destination);
+        object().movement().set_movement_type(eMovementTypeWalk);
         m_search_moving = true;
+        m_search_stage_time = m_search_last_progress = now;
+        m_search_progress_position = object().Position();
         if (stalker_combat_diagnostics::enabled(object().ID()))
             stalker_combat_diagnostics::log(object().ID(), stalker_combat_diagnostics::action,
                 "search_sector", "stage=%u memory_ms=%u", m_search_stage, now - m_search_memory_time);
     }
-    if (stalker_combat_cover_policy::search_step_expired(now - m_search_stage_time))
+    search_sight(m_search_destination, sector);
+    if (object().Position().distance_to_sqr(m_search_progress_position) >= .0625f)
     {
+        m_search_progress_position = object().Position();
+        m_search_last_progress = now;
+    }
+    const u32 travel_age = now - m_search_stage_time;
+    if (travel_age < 250u) return; // Do not consume completion of the previous path.
+    if (search_reached(m_search_destination))
+    {
+        start_listening(now, m_search_stage + 1);
+        return;
+    }
+    if (object().movement().level_path().failed() || object().movement().path_completed() ||
+        travel_age >= 6000u || now - m_search_last_progress >= 4500u)
+    {
+        // Failed/stalled legs do not start an arrival animation or run forever.
+        object().movement().set_nearest_accessible_position();
+        object().movement().set_movement_type(eMovementTypeStand);
         ++m_search_stage;
         m_search_stage_time = now;
         m_search_moving = false;

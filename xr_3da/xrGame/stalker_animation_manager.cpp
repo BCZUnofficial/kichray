@@ -40,6 +40,15 @@ void CStalkerAnimationManager::reinit()
 	m_torso.reset();
 	m_legs.reset();
 	m_script.reset();
+    m_search_listen.reset();
+    m_search_listen.global_animation(true);
+    m_search_listen.step_dependence(false);
+    m_search_listen_active = m_search_listen_phase_played = false;
+    m_search_listen_phase = m_search_listen_started = m_search_listen_phase_started = 0;
+    m_search_listen_phase_duration = m_search_listen_slot = m_search_listen_hit_revision = 0;
+    m_search_listen_item = u16(-1);
+    m_search_listen_health = 0.f;
+    for (u32 i = 0; i != 3; ++i) m_search_listen_motions[i].invalidate();
 
 	m_legs.step_dependence(true);
 	m_global.step_dependence(true);
@@ -58,6 +67,7 @@ void CStalkerAnimationManager::reload(CAI_Stalker* _object)
 {
 	m_object = _object;
 	m_visual = object().Visual();
+    stop_search_listen();
 
 	m_crouch_state_config = object().SpecificCharacter().crouch_type();
 	VERIFY((m_crouch_state_config == 0) || (m_crouch_state_config == 1) || (m_crouch_state_config == -1));
@@ -90,6 +100,7 @@ void CStalkerAnimationManager::reload(CAI_Stalker* _object)
 	torso().set_dbg_info(*object().cName(), "Torso ");
 	legs().set_dbg_info(*object().cName(), "Legs  ");
 	script().set_dbg_info(*object().cName(), "Script");
+    m_search_listen.set_dbg_info(*object().cName(), "Search listen");
 #endif
 };
 

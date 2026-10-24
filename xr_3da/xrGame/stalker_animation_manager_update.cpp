@@ -170,12 +170,20 @@ void CStalkerAnimationManager::play_legs()
 void CStalkerAnimationManager::update_impl()
 {
 	if (!object().g_Alive())
+	{
+		stop_search_listen();
 		return;
+	}
 
 	play_delayed_callbacks();
 	update_tracks();
 
+	// Script ownership wins before native search playback; do not clear its queue.
+	if (!script_animations().empty()) stop_search_listen();
 	if (play_script())
+		return;
+
+	if (play_search_listen())
 		return;
 
 	if (play_global())

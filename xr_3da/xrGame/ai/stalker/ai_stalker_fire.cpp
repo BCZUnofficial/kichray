@@ -22,6 +22,7 @@
 #include "../../ef_pattern.h"
 #include "../../memory_manager.h"
 #include "../../hit_memory_manager.h"
+#include "../../sound_memory_manager.h"
 #include "../../enemy_manager.h"
 #include "../../item_manager.h"
 #include "../../stalker_movement_manager.h"
@@ -728,10 +729,102 @@ void CAI_Stalker::update_range_fov(float& new_range, float& new_fov, float start
 	return (inherited::update_range_fov(new_range, new_fov, range, fov));
 }
 
+// The squad already shares these memory records. Use only observed positions;
+// a friendly object's current position and a bullet's hidden shooter are not evidence.
+struct StalkerKnownFireContact
+{
+    const CEntityAlive* object;
+    Fvector position;
+    u32 age;
+};
+
+template <typename T>
+void stalker_collect_known_fire(CAI_Stalker& self, const T& records,
+    StalkerKnownFireContact* contacts, u32& count)
+{
+    const MemorySpace::squad_mask_type mask = self.memory().visual().mask();
+    for (typename T::const_iterator i = records.begin(); i != records.end(); ++i)
+    {
+        if (!i->m_enabled || !i->m_squad_mask.test(mask) || !i->m_object) continue;
+        const u32 age = Device.dwTimeGlobal - i->m_level_time;
+        if (age > 15000u || !_valid(i->m_object_params.m_position)) continue;
+        const CEntityAlive* other = smart_cast<const CEntityAlive*>(i->m_object);
+        if (!other || other == &self || !other->g_Alive()) continue;
+        u32 index = 0;
+        for (; index != count && contacts[index].object != other; ++index) {}
+        if (index == count)
+        {
+            // The caller preflights all three input sizes before entering this collector.
+            ++count;
+            contacts[index].object = other;
+        }
+        else if (age >= contacts[index].age)
+            continue; // Equal timestamps retain visual, then sound, then hit precedence.
+        contacts[index].position = i->m_object_params.m_position;
+        contacts[index].age = age;
+    }
+}
+
+bool CAI_Stalker::combat_known_friendly_fire(const Fvector& toward_source)
+{
+    const CEntityAlive* enemy = memory().enemy().selected();
+    if (!enemy || !_valid(toward_source)) return false;
+    Fvector forward = eye_matrix.k, incoming = toward_source;
+    forward.y = incoming.y = 0.f;
+    if (forward.square_magnitude() < .01f || incoming.square_magnitude() < .01f) return false;
+    forward.normalize_safe(); incoming.normalize_safe();
+    if (forward.dotproduct(incoming) > -.25f) return false;
+
+    // No allocation or world query. Preflight raw input sizes, including ignored records,
+    // before any deduplication: at most 128 entries and 128*128 pointer comparisons.
+    const u32 limit = 128u;
+    const CVisualMemoryManager::VISIBLES& visuals = memory().visual().objects();
+    const CSoundMemoryManager::SOUNDS& sounds = memory().sound().objects();
+    const CHitMemoryManager::HITS& hits = memory().hit().objects();
+    if (visuals.size() > limit || sounds.size() > limit - visuals.size() ||
+        hits.size() > limit - visuals.size() - sounds.size()) return false;
+    StalkerKnownFireContact contacts[128];
+    u32 count = 0;
+    stalker_collect_known_fire(*this, visuals, contacts, count);
+    stalker_collect_known_fire(*this, sounds, contacts, count);
+    stalker_collect_known_fire(*this, hits, contacts, count);
+
+    // Choose the newest enabled snapshot actually shared with this NPC. The generic
+    // memory() accessor also sees unshared/disabled records, so cannot decide this.
+    u32 target = 0;
+    for (; target != count && contacts[target].object != enemy; ++target) {}
+    if (target == count) return false;
+    Fvector threat;
+    threat.sub(contacts[target].position, Position());
+    threat.y = 0.f;
+    if (threat.square_magnitude() < 1.f) return false;
+    threat.normalize_safe();
+    if (forward.dotproduct(threat) < .25f) return false;
+
+    bool friendly = false;
+    for (u32 i = 0; i != count; ++i)
+    {
+        Fvector direction;
+        direction.sub(contacts[i].position, Position());
+        direction.y = 0.f;
+        const float distance_sqr = direction.square_magnitude();
+        if (distance_sqr < 1.f || distance_sqr > 2500.f) continue;
+        direction.normalize_safe();
+        if (direction.dotproduct(incoming) < .8660254f) continue; // +/- 30 degrees.
+        const CEntityAlive* other = contacts[i].object;
+        if (is_relation_enemy(other)) return false; // A known rear threat overrides a friendly.
+        if (contacts[i].age <= 5000u && (tfGetRelationType(other) == ALife::eRelationTypeFriend ||
+            agent_manager().member().get_member(other->ID()))) friendly = true;
+    }
+    return friendly;
+}
+
 bool CAI_Stalker::bullet_near_miss_ready() const
 {
-    return g_Alive() && !getDestroy() && !Remote() && !GetScriptControl() && !wounded() &&
-        m_combat_near_miss.ready(Device.dwTimeGlobal);
+    if (!g_Alive() || getDestroy() || Remote() || GetScriptControl() || wounded() ||
+        !m_combat_near_miss.ready(Device.dwTimeGlobal)) return false;
+    const CEntityAlive* enemy = memory().enemy().selected();
+    return !enemy || !memory().visual().visible_right_now(enemy);
 }
 
 void CAI_Stalker::on_bullet_near_miss(const Fvector& local_point, const Fvector& flight_direction)
@@ -740,6 +833,9 @@ void CAI_Stalker::on_bullet_near_miss(const Fvector& local_point, const Fvector&
     // its selected pointer remains valid until the next scheduled memory update.
     if (!bullet_near_miss_ready() || !_valid(local_point) || critically_wounded() || IsTalking() ||
         !animation().script_animations().empty()) return;
+    Fvector toward_source = flight_direction;
+    toward_source.invert();
+    if (combat_known_friendly_fire(toward_source)) return;
     if (m_combat_near_miss.observe(Device.dwTimeGlobal))
     {
         m_combat_near_miss_point = local_point;
@@ -760,6 +856,11 @@ void CAI_Stalker::on_combat_heard_shot(const Fvector& sound_position)
     if (!g_Alive() || getDestroy() || Remote() || GetScriptControl() || wounded() ||
         critically_wounded() || IsTalking() || !animation().script_animations().empty() ||
         !_valid(sound_position)) return;
+    const CEntityAlive* enemy = memory().enemy().selected();
+    if (enemy && memory().visual().visible_right_now(enemy)) return;
+    Fvector toward_source;
+    toward_source.sub(sound_position, Position());
+    if (combat_known_friendly_fire(toward_source)) return;
     const float distance_sqr = Position().distance_to_sqr(sound_position);
     if (distance_sqr < .04f || distance_sqr > 1600.f || !m_combat_alert.observe(Device.dwTimeGlobal)) return;
     m_combat_alert_point = sound_position;
@@ -781,7 +882,7 @@ bool CAI_Stalker::combat_alert_look(Fvector& point)
     const CDangerObject* danger = memory().danger().selected();
     if ((danger && danger->type() == CDangerObject::eDangerTypeGrenade) ||
         movement().target_movement_type() == eMovementTypeRun ||
-        (enemy && memory().visual().visible_now(enemy)))
+        (enemy && memory().visual().visible_right_now(enemy)))
     {
         m_combat_alert.active = false;
         return false;
@@ -819,6 +920,13 @@ void CAI_Stalker::process_combat_near_miss()
             movement().set_body_state(eBodyStateStand);
         m_combat_near_miss.restore_body = false;
     }
+    const CEntityAlive* enemy = memory().enemy().selected();
+    if (enemy && memory().visual().visible_right_now(enemy))
+    {
+        m_combat_near_miss.pending = m_combat_near_miss.response_pending = false;
+        m_combat_near_miss.duck_active = m_combat_alert.active = false;
+        return;
+    }
     if (!m_combat_near_miss.pending) return;
     m_combat_near_miss.pending = false;
     if (!combat_near_miss_recent(1000u)) return;
@@ -842,7 +950,9 @@ void CAI_Stalker::update_combat_near_miss()
         return;
     }
     const CDangerObject* danger = memory().danger().selected();
-    if (!memory().enemy().selected() || (danger && danger->type() == CDangerObject::eDangerTypeGrenade) ||
+    const CEntityAlive* enemy = memory().enemy().selected();
+    if (!enemy || memory().visual().visible_right_now(enemy) ||
+        (danger && danger->type() == CDangerObject::eDangerTypeGrenade) ||
         movement().target_movement_type() == eMovementTypeRun ||
         movement().target_mental_state() != eMentalStateDanger)
     {
