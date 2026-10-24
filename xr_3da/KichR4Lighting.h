@@ -44,6 +44,12 @@ struct KichR4LightingFrame {
     // R2 accum_direct m_sunmask rows (u,v), world space: sunmask.dds alpha
     // projected along the sun and drifting with the wind. Zero valid = no mask.
     float sunmask[8];uint32_t sunmask_valid;
+    // R2 phase_bloom settings: threshold, kernel_g, kernel_b, kernel_scale,
+    // KichRay mode, strength, knee, fast filter. Defaults are the R2 defaults.
+    float bloom[8];
+    // R2 phase_luminance: tonemap amount (0 with r2_tonemap off), middle gray,
+    // low luminance, adaptation speed and this frame's Device.fTimeDelta.
+    float exposure[5];
     std::vector<KichR4LocalLight> lights;
     std::vector<KichR4LightIdentity> sources;
     std::vector<KichR4LightProjector> projectors;
@@ -62,7 +68,9 @@ struct KichR4LightingFrame {
     // entries. Captured frames resize to every visible registry source.
     KichR4LightingFrame():valid(0),count(0),shadow_mask(0),sun_direction(),sun_color(),ambient(),hemi(),fog(),fog_near(0),fog_far(0),fog_valid(0),
         env_ambient(),env_color(),gloss_factor(1),env_valid(0),sun_mode(KICH_R4_SUN_DEFAULT),sunmask(),sunmask_valid(0),lights(8),sources(8),projectors(8),visibility_vp(),visibility_valid(0),r1_lights_requested(0),r1_lights_applied(0),occlusion_enabled(0),occlusion_tested(0),
-        selection_frame(0),local_shadow_size(0),shadow_plan_faces(0),shadow_resolution_changes(0),shadow_resolution_reason(0){}
+        selection_frame(0),local_shadow_size(0),shadow_plan_faces(0),shadow_resolution_changes(0),shadow_resolution_reason(0){
+        const float defaults[8]={.3f,3.3f,.7f,1.f,0.f,.75f,.5f,0.f};memcpy(bloom,defaults,sizeof(bloom));
+        const float tonemap[5]={0.f,.25f,.001f,5.f,0.f};memcpy(exposure,tonemap,sizeof(exposure));}
     bool CastsShadow(unsigned index)const {
         if(index>=count)return false;
         if(index<shadows.size())return shadows[index]!=0;

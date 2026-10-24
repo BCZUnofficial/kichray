@@ -77,6 +77,12 @@ void KichR4_CopyEngineEnvironment(KichR4LightingFrame& frame)
     frame.sun_mode=KichR4SunMode(frame.sun_color,ps_r2_gloss_factor,ps_r2_ls_flags.test(R2FLAG_SUN)!=0,
         psDeviceFlags.test(rsR2) && r2_sun_static);
     KichR4_SunMaskFrame(frame,env);
+    const float bloom[8]={ps_r2_ls_bloom_threshold,ps_r2_ls_bloom_kernel_g,ps_r2_ls_bloom_kernel_b,ps_r2_ls_bloom_kernel_scale,
+        float(ps_r2_bloom_mode),ps_r2_bloom_strength,ps_r2_bloom_knee,ps_r2_ls_flags.test(R2FLAG_FASTBLOOM)?1.f:0.f};
+    memcpy(frame.bloom,bloom,sizeof(bloom));
+    const float exposure[5]={ps_r2_ls_flags.test(R2FLAG_TONEMAP)?ps_r2_tonemap_amount:0.f,ps_r2_tonemap_middlegray,
+        ps_r2_tonemap_low_lum,ps_r2_tonemap_adaptation,Device.fTimeDelta};
+    memcpy(frame.exposure,exposure,sizeof(exposure));
 }
 
 static void KichR4_GameObservationFrame(KichR4GameFrame& input)

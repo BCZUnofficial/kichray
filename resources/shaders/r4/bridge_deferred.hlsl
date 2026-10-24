@@ -462,25 +462,43 @@ float4 PSForwardSun(Varying v,bool front:SV_IsFrontFace):SV_Target {float3 dx,dy
 float4 PSForwardLocal(Varying v,bool front:SV_IsFrontFace):SV_Target {float3 dx,dy;ShadowDerivatives(v.w-camera.xyz,dx,dy);float4 c=Base(v);
     float4 light=LocalLight(v.w,Normal(v,front),Gloss(v),material.w,dx,dy);
     return float4((c.rgb*light.rgb+light.aaa)*(alpha.z>0?c.a:1)*FogTransmittance(v.w),0);}
+// P0-C2 R2 common.h tonemap(): low=rgb*scale (generic0), high=low/def_hdr
+// (generic1, the bloom source). Exposure scale is 1 with r2_tonemap off.
+struct ToneOutput {float4 low:SV_Target0;float4 high:SV_Target1;};
+// P0-C1 s_tonemap: the 1x1 R32F exposure result at t7 when light_color.w is
+// set (native sky/combine/clouds); other producers keep scale 1.
+float Exposure(){return light_color.w>.5?shadow5.Load(int3(0,0,0)).r:1;}
+ToneOutput Tonemap(float4 c,float scale){ToneOutput o;c.rgb*=scale;o.low=c;o.high=float4(c.rgb/8,c.a);return o;}
 // combine: image0 albedo, image1 light; shadow0 normal; shadow1 depth.
-float4 PSCombine(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=shadow1.Load(int3(at,0)).r;
-    if(depth>=1){if(alpha.w>19.5)discard;return float4(fog.rgb,1);}float4 a=image0.Load(int3(at,0)),n=shadow0.Load(int3(at,0));
-    float4 light=image1.Load(int3(at,0));int mode=(int)screen.z;
-    if(mode==1)return float4(a.rgb,1);if(mode==2)return float4(DecodeNormal(n.xy)*.5+.5,1);
-    if(mode==3)return float4(saturate(length(LoadReceiverPosition(v.p.xy,depth))/camera.w).xxx,1);
-    if(mode==4 || mode==8)return float4(light.rgb+light.aaa,1);if(mode==5)return float4(n.zzz,1);
-    if(mode==6 || mode==9)return float4(a.rgb,1);if(mode==7)return float4(a.aaa,1);
-    float3 relative=LoadReceiverPosition(v.p.xy,depth),hdiffuse,hspecular;
-    // combine_1.ps: D*(L.rgb+hdiffuse, L.w) + hspecular; RGB env specular is
-    // never folded into the scalar accumulator alpha.
-    Hemisphere(hdiffuse,hspecular,MaterialClass(n.w),n.z,MaterialGloss(n.w),relative,DecodeNormal(n.xy));
-    float amount=FogAmount(length(relative));
-    return float4(lerp(a.rgb*(light.rgb+hdiffuse)+light.aaa+hspecular,fog.rgb,amount),amount*amount);}
+float4 CombineColor(Varying v){int2 at=int2(v.p.xy);float depth=shadow1.Load(int3(at,0)).r;
+    if(depth>=1 && alpha.w>19.5)discard;
+    float4 result=float4(fog.rgb,1);
+    [branch] if(depth<1){float4 a=image0.Load(int3(at,0)),n=shadow0.Load(int3(at,0));
+        float4 light=image1.Load(int3(at,0));int mode=(int)screen.z;
+        if(mode==1 || mode==6 || mode==9)result=float4(a.rgb,1);
+        else if(mode==2)result=float4(DecodeNormal(n.xy)*.5+.5,1);
+        else if(mode==3)result=float4(saturate(length(LoadReceiverPosition(v.p.xy,depth))/camera.w).xxx,1);
+        else if(mode==4 || mode==8)result=float4(light.rgb+light.aaa,1);
+        else if(mode==5)result=float4(n.zzz,1);
+        else if(mode==7)result=float4(a.aaa,1);
+        else{float3 relative=LoadReceiverPosition(v.p.xy,depth),hdiffuse,hspecular;
+            // combine_1.ps: D*(L.rgb+hdiffuse, L.w) + hspecular; RGB env specular is
+            // never folded into the scalar accumulator alpha.
+            Hemisphere(hdiffuse,hspecular,MaterialClass(n.w),n.z,MaterialGloss(n.w),relative,DecodeNormal(n.xy));
+            float amount=FogAmount(length(relative));
+            result=float4(lerp(a.rgb*(light.rgb+hdiffuse)+light.aaa+hspecular,fog.rgb,amount),amount*amount);}}
+    return result;}
+// Both targets share combine_1's fog alpha blend over the sky (R2 MRT).
+// Out parameters: FXC cannot return a struct from a shader that discards.
+void PSCombine(Varying v,out float4 low:SV_Target0,out float4 high:SV_Target1){
+    float4 c=CombineColor(v);ToneOutput o=Tonemap(c,Exposure());low=o.low;high=o.high;}
 
 // Native environment entries use the engine's two weather cubemaps.
 TextureCube sky0:register(t0);TextureCube sky1:register(t1);
-float4 PSSky(Varying v):SV_Target {float3 d=v.n.xyz;return float4(lerp(sky0.Sample(surface,d).rgb,sky1.Sample(surface1,d).rgb,v.c.a)*v.c.rgb*2,1);}
-float4 PSClouds(Varying v):SV_Target {return float4((image0.Sample(surface,v.uv).rgb+image1.Sample(surface1,v.n.xy).rgb)*v.c.rgb,v.c.a);}
+// R2 sky2.ps: tonemap(low, high, sky, scale*2) into generic0/generic1.
+ToneOutput PSSky(Varying v){float3 d=v.n.xyz;return Tonemap(float4(lerp(sky0.Sample(surface,d).rgb,sky1.Sample(surface1,d).rgb,v.c.a)*v.c.rgb*2,1),Exposure());}
+// R2 clouds.ps: tonemap(rgb, hi, mix, scale) into generic0 only.
+float4 PSClouds(Varying v):SV_Target {return float4((image0.Sample(surface,v.uv).rgb+image1.Sample(surface1,v.n.xy).rgb)*v.c.rgb*Exposure(),v.c.a);}
 float4 PSWater(Varying v,bool front:SV_IsFrontFace):SV_Target {
     float3 dx,dy;ShadowDerivatives(v.w-camera.xyz,dx,dy);
     float t=light_position.w;float2 flow=v.uv+float2(t*.015,t*.01);
@@ -509,6 +527,73 @@ float4 PSDistortionComposite(Varying v):SV_Target {
     // RGBA16F preserves neutral .5 exactly; the source engine used 127/255 in RGBA8.
     float2 displacement=(image1.Sample(surface1,v.uv).rg-.5)*.05;
     return float4(image0.Sample(surface,saturate(v.uv+displacement)).rgb,1);
+}
+
+// P0-C2 R2 phase_bloom. Bloom targets are 256^2. D3D9 pixel centres are
+// integer, so R2 texcoords are a+x/256; floor(SV_Position) reproduces them.
+// kich_graphics_math.h, KichRay r2_bloom_mode 1 soft-knee alpha.
+float KichBloomAlpha(float brightness,float threshold,float knee_ratio){
+    float knee=max(threshold*knee_ratio,.0001);
+    float soft=min(max(brightness-threshold+knee,0),2*knee);soft=soft*soft/(4*knee);
+    return max(max(brightness-threshold,soft),0);
+}
+// bloom_build.ps (+ kich_bloom_build.ps): four bilinear taps of generic1 spaced
+// (w/2)/256 screen pixels, rgb=sum/2, a=dot(rgb,1)-threshold; RGBA8 clamps.
+// light_position: threshold, KichRay mode, strength, knee ratio.
+float4 PSBloomBuild(Varying v):SV_Target {
+    float2 a=floor(v.p.xy)/256+.5/screen.xy;const float one=1.0/512;
+    float3 s0=image0.SampleLevel(surface,a,0).rgb,s1=image0.SampleLevel(surface,a+float2(one,0),0).rgb;
+    float3 s2=image0.SampleLevel(surface,a+float2(0,one),0).rgb,s3=image0.SampleLevel(surface,a+float2(one,one),0).rgb;
+    float3 avg=(s0+s1+s2+s3)/2;float4 result=float4(avg,dot(avg,1)-light_position.x);
+    [branch] if(light_position.y>.5){result.a=KichBloomAlpha(dot(result.rgb,1),light_position.x,light_position.w);result.rgb*=light_position.z;}
+    return result;
+}
+// bloom_filter.ps: separable 2*7+1 taps, each bilinear across two texels at
+// +-(2k-.5) texels. light_position/light_direction: R2 weight[0]/weight[1]
+// (CalcGauss_wave); light_color.xy: filter axis.
+float4 PSBloomFilter(Varying v):SV_Target {
+    float2 center=(floor(v.p.xy)+.5)/256,axis=light_color.xy/256;
+    float weights[7]={light_position.x,light_position.y,light_position.z,light_position.w,light_direction.x,light_direction.y,light_direction.z};
+    float4 accum=light_direction.w*image0.SampleLevel(surface,center,0);
+    [unroll] for(int k=1;k<=7;++k){float2 o=axis*(2*k-.5);
+        accum+=weights[k-1]*(image0.SampleLevel(surface,center-o,0)+image0.SampleLevel(surface,center+o,0));}
+    return accum;
+}
+// bloom_filter_f.ps (r2_ls_bloom_fast): four diagonal taps at +-kernel_b texels, sum/2.
+float4 PSBloomFilterFast(Varying v):SV_Target {
+    float2 center=(floor(v.p.xy)+.5)/256;float d=light_position.x/256;
+    return (image0.SampleLevel(surface,center+float2(-d,-d),0)+image0.SampleLevel(surface,center+float2(d,d),0)+
+        image0.SampleLevel(surface,center+float2(d,-d),0)+image0.SampleLevel(surface,center+float2(-d,d),0))/2;
+}
+// P0-C1 R2 phase_luminance. bloom_luminance_1.ps, 256^2 -> 64^2: four
+// bilinear 2x2 averages per texel at (4x+{1,3})/256, luminance*def_hdr.
+float4 PSLuminance1(Varying v):SV_Target {
+    float2 a=floor(v.p.xy)*4/256;const float3 weights=float3(.3,.48,.22)*8;
+    return float4(dot(image0.SampleLevel(surface,a+float2(1,1)/256,0).rgb,weights),dot(image0.SampleLevel(surface,a+float2(3,1)/256,0).rgb,weights),
+        dot(image0.SampleLevel(surface,a+float2(1,3)/256,0).rgb,weights),dot(image0.SampleLevel(surface,a+float2(3,3)/256,0).rgb,weights));
+}
+// bloom_luminance_2/3.ps: 16 bilinear samples of a source block, each the mean
+// of four components; xyzw are the means of samples 0-3, 4-7, 8-11, 12-15.
+float4 LuminanceBlock(float2 pixel,float source){
+    float2 origin=floor(pixel)*8;float4 final=0;
+    [unroll] for(int k=0;k<16;++k){float2 offset=float2((k*2+1)%8,(k/4)*2+1);
+        float value=dot(image0.SampleLevel(surface,(origin+offset)/source,0),.25);
+        final[k/4]+=value*.25;}
+    return final;
+}
+float4 PSLuminance2(Varying v):SV_Target {return LuminanceBlock(v.p.xy,64);}
+// 8^2 -> 1x1: scale = MiddleGray.x/(lum*MiddleGray.y+MiddleGray.z), lerped
+// with last frame's scale (image1) by the adaptation factor. R2's
+// clamp(rvalue,1/8,2) discards its result, so no clamp is applied.
+float4 PSLuminance3(Varying v):SV_Target {
+    float result=dot(LuminanceBlock(v.p.xy,8),.25);
+    float scale=light_position.x/(result*light_position.y+light_position.z);
+    return lerp(image1.Load(int3(0,0,0)).r,scale,light_position.w).xxxx;
+}
+// combine_2_naa.ps combine_bloom: low + bloom.rgb*bloom.a, bloom sampled at the pixel centre.
+float4 PSBloomComposite(Varying v):SV_Target {
+    float4 bloom=image1.SampleLevel(surface1,v.p.xy/screen.xy,0);
+    return float4(image0.Load(int3(int2(v.p.xy),0)).rgb+bloom.rgb*bloom.a,1);
 }
 
 float3 PostprocessNoise(float3 color,float3 noise,float amount){return lerp(color,color*noise*2,amount);}

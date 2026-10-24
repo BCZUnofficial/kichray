@@ -18,13 +18,22 @@
 #include "KichR4PostprocessNoise.h"
 #include "KichR4ShadowPoolPolicy.h"
 #include "KichR4ShadowRecord.h"
+#include "KichR4Bloom.h"
 #include <set>
 /* EXE-side pass planner. Native resources remain owned by the R4 device;
  * destroying that device releases partial construction and all cached maps. */
 struct KichR4DeferredSession {
-    enum Pipeline {StaticGeometry,ModelGeometry,StaticShadow,ModelShadow,Sun,Local,ForwardSun,ForwardLocal,Plain,Combine,Sky,Clouds,Water,Distortion,StaticForward,StaticWater,Copy,Postprocess,StaticPlain,DistortionMask,DistortionComposite,CelestialPipeline,WallmarkPipeline,StaticWallmarkPipeline,PipelineCount};
+    enum Pipeline {StaticGeometry,ModelGeometry,StaticShadow,ModelShadow,Sun,Local,ForwardSun,ForwardLocal,Plain,Combine,Sky,Clouds,Water,Distortion,StaticForward,StaticWater,Copy,Postprocess,StaticPlain,DistortionMask,DistortionComposite,CelestialPipeline,WallmarkPipeline,StaticWallmarkPipeline,
+        BloomBuild,BloomFilter,BloomFilterFast,BloomComposite,Luminance1,Luminance2,Luminance3,PipelineCount};
     KichR4DeferredAPI api;
-    KichR4Handle pipelines[PipelineCount],shaders[21],cb,screen_vb,screen_ib,white;
+    enum {ShaderCount=28};
+    KichR4Handle pipelines[PipelineCount],shaders[ShaderCount],cb,screen_vb,screen_ib,white;
+    // P0-C2: R2 generic1 (high = colour/8, RGBA8) and the 256^2 bloom1/bloom2.
+    KichR4Handle high_color=0,bloom1=0,bloom2=0;
+    // P0-C1: R2 lum_t64/lum_t8 (RGBA16F) and the 1x1 R32F exposure pool. [0] is
+    // last frame's result (s_tonemap source), [1] is read by sky/combine/clouds
+    // and receives this frame's result; they swap at the end of the frame.
+    KichR4Handle lum64=0,lum8=0,lum_pool[2]={0,0};bool lum_ready=false;float luminance_adapt=.5f;
     KichR4Handle albedo,normal,depth,receiver_depth,light,sun_map,sun_far_map,scene_color,final_color,distortion_map;
     KichR4Handle sun_mask=0; // this frame's t6 sunmask or white, shared by sun-lit forward draws
     uint32_t width,height,frames,shadow_passes,local_passes;
@@ -228,12 +237,15 @@ struct KichR4DeferredSession {
         a.pointer_size==sizeof(void*) && !a.flags && a.create_pipeline && a.begin_pass && a.draw;}
     int32_t Start(KichR4FrameSession& s,KichR4LevelSession& level){
         if(!ValidAPI(api))return s.Record("B4.4 deferred ABI",KICH_R4_E_ARGUMENT);
-        const char* entries[]={"VSStatic","VSModel","VSModelShadow","VSScreen","PSGeometry","PSShadow","PSSun","PSLocal","PSForwardSun","PSForwardLocal","PSPlain","PSCombine","PSSky","PSClouds","PSWater","PSDistortion","PSPostprocess","PSParticleDistortionMask","PSDistortionComposite","PSCelestial","PSWallmark"};
+        const char* entries[]={"VSStatic","VSModel","VSModelShadow","VSScreen","PSGeometry","PSShadow","PSSun","PSLocal","PSForwardSun","PSForwardLocal","PSPlain","PSCombine","PSSky","PSClouds","PSWater","PSDistortion","PSPostprocess","PSParticleDistortionMask","PSDistortionComposite","PSCelestial","PSWallmark",
+            "PSBloomBuild","PSBloomFilter","PSBloomFilterFast","PSBloomComposite","PSLuminance1","PSLuminance2","PSLuminance3"};
+        static_assert(sizeof(entries)/sizeof(entries[0])==ShaderCount,"deferred shader entries");
         const char* source=KichR4DeferredShaderSource();
-        for(unsigned i=0;i<21;++i){level.Continue();KichR4ShaderDesc d={};d.struct_size=sizeof(d);d.kind=i<4?KICH_R4_VERTEX_SHADER:KICH_R4_PIXEL_SHADER;
+        for(unsigned i=0;i<ShaderCount;++i){level.Continue();KichR4ShaderDesc d={};d.struct_size=sizeof(d);d.kind=i<4?KICH_R4_VERTEX_SHADER:KICH_R4_PIXEL_SHADER;
             memcpy(d.entry,entries[i],strlen(entries[i])+1);memcpy(d.name,"kich_b44_deferred",18);
             if(level.Expect(s,entries[i],level.bridge.resources.compile_shader(s.device,&d,source,static_cast<uint32_t>(strlen(source)),&shaders[i],level.bridge.shader_error,sizeof(level.bridge.shader_error)))<0)return s.failure;}
-        const unsigned vs[]={0,1,0,2,3,3,1,1,1,3,1,1,1,1,0,0,3,3,0,1,3,1,1,0},ps[]={4,4,5,5,6,7,8,9,10,11,12,13,14,15,8,14,10,16,10,17,18,19,20,20};
+        const unsigned vs[]={0,1,0,2,3,3,1,1,1,3,1,1,1,1,0,0,3,3,0,1,3,1,1,0,3,3,3,3,3,3,3},ps[]={4,4,5,5,6,7,8,9,10,11,12,13,14,15,8,14,10,16,10,17,18,19,20,20,21,22,23,24,25,26,27};
+        static_assert(sizeof(vs)/sizeof(vs[0])==PipelineCount && sizeof(ps)/sizeof(ps[0])==PipelineCount,"deferred pipeline table");
         for(unsigned i=0;i<PipelineCount;++i){KichR4PipelineDesc d={};d.struct_size=sizeof(d);d.vertex_shader=shaders[vs[i]];d.pixel_shader=shaders[ps[i]];
             const bool model=vs[i]==1 || vs[i]==2,screen=vs[i]==3;
             d.vertex_stride=model?sizeof(kich_r4_capture::Vertex):screen?20:sizeof(kich_r4_level::Vertex);
@@ -265,13 +277,19 @@ struct KichR4DeferredSession {
         return l.Expect(s,"B4.4 target allocation",l.bridge.resources.create_texture(s.device,&d,&h));}
     int32_t ScreenTargets(KichR4FrameSession& s,KichR4LevelSession& l,uint32_t w,uint32_t h){
         if(w==width && h==height)return 0;
-        if(uint64_t(w)*h*(native_mode?44u:28u)>(native_mode?384u:192u)*1024u*1024u)return s.Record("B4.4 screen target budget",KICH_R4_E_MEMORY);
-        KichR4Handle* old[]={&albedo,&normal,&depth,&receiver_depth,&light,&scene_color,&final_color,&distortion_map};
-        for(unsigned i=0;i<8;++i)if(*old[i]){if(l.Expect(s,"B4.4 old screen target",l.bridge.resources.release_resource(s.device,*old[i]))<0)return s.failure;*old[i]=0;}
+        if(uint64_t(w)*h*(native_mode?48u:28u)>(native_mode?384u:192u)*1024u*1024u)return s.Record("B4.4 screen target budget",KICH_R4_E_MEMORY);
+        KichR4Handle* old[]={&albedo,&normal,&depth,&receiver_depth,&light,&scene_color,&final_color,&distortion_map,&high_color,&bloom1,&bloom2,&lum64,&lum8,&lum_pool[0],&lum_pool[1]};
+        lum_ready=false;
+        for(unsigned i=0;i<sizeof(old)/sizeof(old[0]);++i)if(*old[i]){if(l.Expect(s,"B4.4 old screen target",l.bridge.resources.release_resource(s.device,*old[i]))<0)return s.failure;*old[i]=0;}
         if(Target(s,l,albedo,w,h,KICH_R4_RGBA8,false)<0 || Target(s,l,normal,w,h,KICH_R4_RGBA16F,false)<0 ||
             Target(s,l,depth,w,h,KICH_R4_DEPTH24_STENCIL8,true)<0 || Target(s,l,receiver_depth,w,h,KICH_R4_R32F,false)<0 ||
             Target(s,l,light,w,h,KICH_R4_RGBA16F,false)<0)return s.failure;
         if(native_mode && (Target(s,l,scene_color,w,h,KICH_R4_RGBA8,false)<0 || Target(s,l,final_color,w,h,KICH_R4_RGBA8,false)<0 || Target(s,l,distortion_map,w,h,KICH_R4_RGBA16F,false)<0))return s.failure;
+        // R2 creates generic1 and bloom1/bloom2 as A8R8G8B8; the 8-bit clamp is part of the look.
+        if(native_mode && (Target(s,l,high_color,w,h,KICH_R4_RGBA8,false)<0 || Target(s,l,bloom1,kich_r4_bloom::Size,kich_r4_bloom::Size,KICH_R4_RGBA8,false)<0 ||
+            Target(s,l,bloom2,kich_r4_bloom::Size,kich_r4_bloom::Size,KICH_R4_RGBA8,false)<0 ||
+            Target(s,l,lum64,64,64,KICH_R4_RGBA16F,false)<0 || Target(s,l,lum8,8,8,KICH_R4_RGBA16F,false)<0 ||
+            Target(s,l,lum_pool[0],1,1,KICH_R4_R32F,false)<0 || Target(s,l,lum_pool[1],1,1,KICH_R4_R32F,false)<0))return s.failure;
         width=w;height=h;return 0;
     }
     int32_t Pass(KichR4FrameSession& s,KichR4LevelSession& l,uint32_t w,uint32_t h,uint32_t count,KichR4Handle c0,KichR4Handle c1,KichR4Handle z,uint32_t clear,const float* color=NULL,KichR4Handle c2=0,KichR4Handle c3=0){
@@ -593,6 +611,9 @@ struct KichR4DeferredSession {
             style.surface.samplers[0]={3,3,3,2,2,2,1,0,0,0};
             style.surface.samplers[1]={1,1,1,2,2,2,1,0,0,0};}
         if(p==Sun)style.surface.samplers[6]={1,1,1,2,2,2,1,0,0,0}; // R2 sunmask: wrap, trilinear
+        // R2 phase_bloom/combine_2 r_Sampler_clf: clamp, linear, no mips.
+        if(p==BloomBuild || p==BloomFilter || p==BloomFilterFast || p==BloomComposite || p==Luminance1 || p==Luminance2 || p==Luminance3)
+            style.surface.samplers[0]=style.surface.samplers[1]={3,3,3,2,2,0,1,0,0,0};
         if(add){style.blend=1;style.src=style.dst=2;}
         if(p==Combine && native_mode && c.screen[2]==0){style.blend=1;style.src=6;style.dst=5;}
         if(p==Local){KichR4LocalLight source={};memcpy(source.position,c.light_position,12);source.range=c.light_position[3];
@@ -612,6 +633,55 @@ struct KichR4DeferredSession {
             U64("POSTPROCESS",id,"pipeline",p);U64("POSTPROCESS",id,"pipeline_handle",pipelines[p]);U64("POSTPROCESS",id,"input0_handle",t0);U64("POSTPROCESS",id,"input1_handle",t1);
             Text("POSTPROCESS",id,"output","SEE_BACKEND_PASS_RENDER_TARGET_HANDLES");U64("POSTPROCESS",id,"additive",add?1:0);}
         return result;
+    }
+    // P0-C1 R2 phase_luminance: bloom1 256^2 -> 64^2 -> 8^2 -> 1x1 exposure
+    // scale, blended with the previous result. MiddleGray lerps from (1,0,1)
+    // to (middle gray,1,low lum) by the tonemap amount, so r2_tonemap off
+    // converges to 1. The pool swaps at frame end like phase_combine's.
+    int32_t Luminance(KichR4FrameSession& s,KichR4LevelSession& l,const KichR4LightingFrame& lighting){
+        const float* e=lighting.exposure;
+        luminance_adapt=.9f*luminance_adapt+.1f*e[4]*e[3];
+        const float none[3]={1,0,1},full[3]={e[1],1,e[2]};
+        kich_r4_lighting::Constants c=base;c.alpha[1]=8;c.alpha[3]=0;
+        for(unsigned i=0;i<3;++i)c.light_position[i]=none[i]+(full[i]-none[i])*e[0];
+        c.light_position[3]=luminance_adapt;
+        SnapshotPhase("luminance");
+        if(Pass(s,l,64,64,1,lum64,0,0,0)<0 || Fullscreen(s,l,Luminance1,c,bloom1,0,NULL)<0 ||
+            Pass(s,l,8,8,1,lum8,0,0,0)<0 || Fullscreen(s,l,Luminance2,c,lum64,0,NULL)<0 ||
+            Pass(s,l,1,1,1,lum_pool[1],0,0,0)<0 || Fullscreen(s,l,Luminance3,c,lum8,lum_pool[0],NULL)<0)return s.failure;
+        if(g_render_snapshot_active){using namespace kich_r4_telemetry;
+            Vector("POSTPROCESS","exposure","amount_middlegray_lowlum_adaptation_dt",e,5);
+            Vector("POSTPROCESS","exposure","middlegray_constant",c.light_position,4);
+            Text("POSTPROCESS","exposure","contract","R2_LUM_T64_T8_POOL_R32F; SCALE_TWO_FRAMES_OLD_AT_SKY_COMBINE_CLOUDS");}
+        return 0;
+    }
+    // P0-C2 R2 phase_bloom and the combine_2 bloom term. high_color is R2
+    // generic1 (sky and combine at colour/8); clouds, forward and HUD stay
+    // low-only exactly as in R2. Output replaces final_color with low+bloom.
+    int32_t Bloom(KichR4FrameSession& s,KichR4LevelSession& l,const KichR4LightingFrame& lighting){
+        const float* b=lighting.bloom;const unsigned size=kich_r4_bloom::Size;
+        kich_r4_lighting::Constants c=base;c.alpha[1]=8;c.alpha[3]=0;
+        // b_params.x threshold; kich_bloom_params mode, strength, knee.
+        c.light_position[0]=b[0];c.light_position[1]=b[4];c.light_position[2]=b[5];c.light_position[3]=b[6];
+        SnapshotPass("POSTPROCESS",RENDER_SNAPSHOT_PASS_POSTPROCESS,"bloom_build");
+        if(Pass(s,l,size,size,1,bloom1,0,0,0)<0 || Fullscreen(s,l,BloomBuild,c,high_color,0,NULL)<0)return s.failure;
+        if(Luminance(s,l,lighting)<0)return s.failure; // R2 phase_luminance runs on the unfiltered build
+        if(b[7]>.5f){SnapshotPhase("bloom_filter_fast");
+            c.light_position[0]=b[2]; // r2_ls_bloom_kernel_b, in bloom texels
+            if(Pass(s,l,size,size,1,bloom2,0,0,0)<0 || Fullscreen(s,l,BloomFilterFast,c,bloom1,0,NULL)<0 ||
+                Pass(s,l,size,size,1,bloom1,0,0,0)<0 || Fullscreen(s,l,BloomFilterFast,c,bloom2,0,NULL)<0)return s.failure;}
+        else for(unsigned vertical=0;vertical<2;++vertical){SnapshotPhase(vertical?"bloom_filter_y":"bloom_filter_x");
+            kich_r4_bloom::FilterWeights(vertical!=0,b[1],b[3],width,height,c.light_position,c.light_direction);
+            c.light_color[0]=vertical?0.f:1.f;c.light_color[1]=vertical?1.f:0.f;c.light_color[2]=c.light_color[3]=0;
+            if(Pass(s,l,size,size,1,vertical?bloom1:bloom2,0,0,0)<0 || Fullscreen(s,l,BloomFilter,c,vertical?bloom2:bloom1,0,NULL)<0)return s.failure;}
+        SnapshotPhase("bloom_composite");
+        if(Pass(s,l,width,height,1,scene_color,0,0,0)<0 || Fullscreen(s,l,BloomComposite,c,final_color,bloom1,NULL)<0)return s.failure;
+        std::swap(scene_color,final_color);
+        std::swap(lum_pool[0],lum_pool[1]); // phase_combine end: this result becomes s_tonemap's source
+        if(g_render_snapshot_active){using namespace kich_r4_telemetry;
+            Vector("POSTPROCESS","bloom","settings_threshold_kernel_g_b_scale_mode_strength_knee_fast",b,8);
+            Text("POSTPROCESS","bloom","contract","R2_GENERIC1_HIGH_DIV_8_RGBA8; BUILD_256_4TAP; GAUSS_WAVE_15TAP_XY_OR_FAST; COMBINE_2_LOW_PLUS_RGB_TIMES_A; TONEMAP_SCALE_1");}
+        return 0;
     }
     int32_t DrawMenu(KichR4FrameSession& s,KichR4LevelSession& l,KichR4StreamSession& stream,const KichR4GameFrame& input,const kich_r4_capture::Batch& batch,bool after_scene=false){
         SnapshotCPU(&batch);if(!after_scene){native_models.ResetFrame();details.ResetFrame(input.engine_frame);}SnapshotPass("MENU_UI",RENDER_SNAPSHOT_PASS_MENU_UI,"menu");
@@ -651,7 +721,7 @@ struct KichR4DeferredSession {
             Vector("POSTPROCESS",id,"applied_baseRGB",c.sun_color,3);Vector("POSTPROCESS",id,"applied_addRGB",c.ambient,3);Vector("POSTPROCESS",id,"applied_grayRGB",c.hemi,3);Vector("POSTPROCESS",id,"applied_balanceRGB",c.fog,3);
             Text("POSTPROCESS",id,"override",menu?"MENU_ZERO_GRAY_BLUR_DUALITY_NOISE; BASE=.5 ADD=0 GRAY=1/3":"NONE");
             Text("POSTPROCESS",id,"shader_parameter_transform","gamma=max(.01,alpha.x); brightness=alpha.y*.5; contrast=alpha.z*.5; SATURATED_OUTPUT");
-            Text("POSTPROCESS",id,"HDR_exposure_bloom","NOT_SUPPORTED_BY_NATIVE_POSTPROCESS");Text("POSTPROCESS",id,"output_color_format","SWAPCHAIN_UNORM; NO_HDR_TONEMAP");
+            Text("POSTPROCESS",id,"HDR_exposure_bloom",menu?"MENU_NO_BLOOM":"R2_BLOOM_COMPOSITED_BEFORE_POSTPROCESS; EXPOSURE_SCALE_1_TONEMAP_ADAPTATION_NOT_YET");Text("POSTPROCESS",id,"output_color_format","SWAPCHAIN_UNORM; NO_HDR_TONEMAP");
             U64("POSTPROCESS",id,"input_handle",final_color);Text("POSTPROCESS",id,"output","SWAPCHAIN_BACKBUFFER");Text("POSTPROCESS",id,"execution","PLANNED");}
         if(Pass(s,l,input.width,input.height,1,0,0,0,0)<0)return s.failure;
         const int32_t result=Fullscreen(s,l,Postprocess,c,final_color,noise,NULL);
@@ -737,6 +807,13 @@ struct KichR4DeferredSession {
         else memcpy(base.env_ambient,base.ambient,12);
         base.env_ambient[3]=input.lighting.env_valid?input.lighting.gloss_factor:1.f;
         if(sun && input.lighting.sunmask_valid){memcpy(base.sunmask_u,input.lighting.sunmask,16);memcpy(base.sunmask_v,input.lighting.sunmask+4,16);}
+        if(native_mode){
+            // R2 clears the luminance pool to 0x7f7f7f7f (127/255) once at creation.
+            if(!lum_ready){const float initial[4]={127.f/255,127.f/255,127.f/255,127.f/255};
+                for(unsigned i=0;i<2;++i)if(Pass(s,l,1,1,1,lum_pool[i],0,0,KICH_R4_CLEAR_COLOR,initial)<0)return s.failure;
+                lum_ready=true;}
+            // light_color.w: sky, combine and clouds read the R2 s_tonemap scale at t7.
+            base.light_color[3]=1;}
         KichR4Handle sun_inputs[6]={};
         if(sun){
             const unsigned cascades=native_mode?2:1;
@@ -817,17 +894,20 @@ struct KichR4DeferredSession {
             kich_r4_telemetry::Text("ENVIRONMENT","hmodel","env1",input.lighting.env_textures[1].empty()?"NONE":input.lighting.env_textures[1].c_str());
             kich_r4_telemetry::Text("ENVIRONMENT","hmodel","env_resident",combine_inputs[2]!=l.neutral_cube && combine_inputs[3]!=l.neutral_cube?"BOTH":"NEUTRAL_FALLBACK_USED");}
         SnapshotPass("ENVIRONMENT_COMBINE",RENDER_SNAPSHOT_PASS_ENVIRONMENT_COMBINE,"environment_combine");
-        if(native_mode){if(Pass(s,l,width,height,1,scene_color,0,depth,KICH_R4_CLEAR_COLOR)<0 || Models(s,l,stream,captured,Environment,base)<0)return s.failure;
+        // R2 phase_combine renders the skybox and combine_1 into generic0/generic1 (low/high).
+        const KichR4Handle exposure_maps[6]={0,0,0,0,0,native_mode?lum_pool[1]:0}; // t7: R2 s_tonemap ($user$tonemap)
+        if(native_mode){combine_inputs[5]=lum_pool[1];
+            if(Pass(s,l,width,height,2,scene_color,high_color,depth,KICH_R4_CLEAR_COLOR)<0 || Models(s,l,stream,captured,Environment,base,exposure_maps)<0)return s.failure;
             // Unbind DSV before sampling the completed opaque depth mask.
             SnapshotPass("COMBINE_POSTPROCESS",RENDER_SNAPSHOT_PASS_ENVIRONMENT_COMBINE,"celestial_source_sky_mask");
             if(!debug && (Pass(s,l,width,height,1,scene_color,0,0,0)<0 || Models(s,l,stream,captured,Celestial,base)<0))return s.failure;
             SnapshotPass("ENVIRONMENT_COMBINE",RENDER_SNAPSHOT_PASS_ENVIRONMENT_COMBINE,"environment_combine");}
         kich_r4_lighting::Constants combination=base;if(native_mode)combination.alpha[3]=20;
-        if(Pass(s,l,width,height,1,native_mode?scene_color:0,0,0,0)<0 || Fullscreen(s,l,Combine,combination,albedo,light,combine_inputs)<0)return s.failure;
+        if(Pass(s,l,width,height,native_mode?2:1,native_mode?scene_color:0,native_mode?high_color:0,0,0)<0 || Fullscreen(s,l,Combine,combination,albedo,light,combine_inputs)<0)return s.failure;
         // Match R2 phase_combine: sky/source, combine, clouds, forward. Clouds
         // must cover the source instead of having the disc blended over them.
         if(native_mode && !debug){SnapshotPhase("clouds_after_combine");
-            if(Pass(s,l,width,height,1,scene_color,0,depth,0)<0 || Models(s,l,stream,captured,CloudLayer,base)<0)return s.failure;}
+            if(Pass(s,l,width,height,1,scene_color,0,depth,0)<0 || Models(s,l,stream,captured,CloudLayer,base,exposure_maps)<0)return s.failure;}
         if(native_mode){kich_r4_lighting::Constants copy=base;copy.alpha[1]=8;if(Pass(s,l,width,height,1,final_color,0,0,0)<0 || Fullscreen(s,l,Copy,copy,scene_color,0,NULL)<0)return s.failure;}
         Mark(s,4);
         SnapshotPass("FORWARD_TRANSPARENCY",RENDER_SNAPSHOT_PASS_FORWARD_TRANSPARENCY,"forward_base");
@@ -855,7 +935,7 @@ struct KichR4DeferredSession {
                 if(Pass(s,l,width,height,1,final_color,0,0,KICH_R4_CLEAR_COLOR)<0 || Models(s,l,stream,captured,Celestial,base)<0)return s.failure;}
             if(debug){kich_r4_lighting::Constants copy=base;copy.alpha[1]=8;copy.alpha[3]=0;copy.material[0]=0;
                 if(Pass(s,l,width,height,1,0,0,0,0)<0 || Fullscreen(s,l,Copy,copy,final_color,0,NULL)<0)return s.failure;}
-            else if(Process(s,l,input)<0)return s.failure;
+            else if(Bloom(s,l,input.lighting)<0 || Process(s,l,input)<0)return s.failure;
         }
         SnapshotPass("HUD_UI",RENDER_SNAPSHOT_PASS_HUD_UI,"hud_ui");
         if(Models(s,l,stream,captured,HUD,base)<0)return s.failure;
