@@ -56,7 +56,7 @@ struct SampleTexture{float4 value;float2 last=float2(0,0);unsigned reads=0;float
 int surface1=0,surface5=0,surface6=0,surface7=0,model_bump_surface=0,model_bump_aux_surface=0;
 '''
 for name in ("NormalSign", "EncodeNormal", "DecodeNormal", "PackMaterial", "MaterialGloss",
-             "MaterialClass", "MaterialSlice", "MaterialResponse", "SpecularIntensity", "LocalAttenuation", "TerrainWeights", "TerrainChannels", "TerrainBump", "TerrainNormalSample", "GlossWithTerrain", "Gloss"):
+             "MaterialClass", "SpecularIntensity", "LocalAttenuation", "TerrainWeights", "TerrainChannels", "TerrainBump", "TerrainNormalSample", "GlossWithTerrain", "Gloss"):
     body = function(name)
     # Translate HLSL swizzle syntax only; all numerical expressions are production code.
     body = re.sub(r"n\.xy=([^;]+);", r"SetXY(n,\1);", body)
@@ -111,22 +111,7 @@ int main(){
     }
     for(float3 n:{float3(0,0,1),float3(0,0,-1),float3(0,1,0),float3(1,0,0)})
         assert(dot(n,DecodeNormal(EncodeNormal(n)))>.99999f);
-    for(int slice=0;slice<4;++slice){
-        float2 dark=MaterialResponse(0,1,float(slice));assert(dark.x==0 && dark.y==0);
-        for(int ld=0;ld<=100;++ld)for(int lh=0;lh<=100;++lh){
-            float2 response=MaterialResponse(ld*.01f,lh*.01f,float(slice));
-            assert(std::isfinite(response.x) && std::isfinite(response.y));
-            assert(response.x>=0 && response.x<=1 && response.y>=0 && response.y<=1);
-        }
-    }
-    // Independent SoC LUT checkpoints: material response cannot invent gain.
-    assert(abs(MaterialResponse(.5f,0,0).x-pow(.5f,.75f))<1e-6);
-    assert(abs(MaterialResponse(.5f,0,1).x-pow(.5f,.90f))<1e-6);
-    assert(abs(MaterialResponse(.5f,0,2).x-.5f)<1e-6);
-    assert(abs(MaterialResponse(1,1,0).y-.5f)<1e-6);
-    assert(MaterialResponse(1,1,1).y==1);
-    assert(abs(MaterialResponse(.5f,0,.5f).x-
-        (MaterialResponse(.5f,0,0).x+MaterialResponse(.5f,0,1).x)*.5f)<1e-6);
+    // MaterialResponse samples the R2 s_material table: run_material_lut_tests.py.
     // q-linear falloff: R2 accum_spot uses range*.95, accum_point the full range.
     assert(LocalAttenuation(0,10,true)==1 && LocalAttenuation(100,10,true)==0);
     assert(abs(LocalAttenuation(9.5f*9.5f*.25f,10,true)-.75f)<1e-6);
@@ -139,7 +124,7 @@ int main(){
         assert(std::isfinite(spec) && spec>=0 && spec<=max(1.f,intensity)*(1+1e-6f));
         env_ambient.a=2;assert(abs(SpecularIntensity(float3(intensity,intensity,intensity))-2*spec)<1e-5f*max(1.f,spec));env_ambient.a=1;
     }
-    std::cout<<"PASS: production HLSL material bounds, R2 reference responses/falloff, 2048 exact half payloads; oct half max error="<<worst<<" deg\n";
+    std::cout<<"PASS: production HLSL material packing, R2 falloff/gloss factor, 2048 exact half payloads; oct half max error="<<worst<<" deg\n";
 }
 '''
 with tempfile.TemporaryDirectory(prefix="kich-material-lighting-") as folder:

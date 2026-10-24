@@ -7,6 +7,8 @@
 #include <cstdio>
 #include <stdexcept>
 #include <initializer_list>
+#include <vector>
+#include "KichR4MaterialLut.h"
 using std::abs;using std::floor;using std::fmod;using std::pow;using std::sin;using std::cos;
 float max(float a,float b){return std::max(a,b);}
 int min(int a,int b){return std::min(a,b);}
@@ -26,6 +28,10 @@ struct float4 {
 };
 struct int2{int x,y;explicit int2(float2 v):x(int(v.x)),y(int(v.y)){} };
 struct int3{int x,y,z;int3(int2 v,int a):x(v.x),y(v.y),z(a){} };
+float2 operator+(float2 a,float2 b){return float2(a.x+b.x,a.y+b.y);}
+float2 operator-(float2 a,float b){return float2(a.x-b,a.y-b);}
+float2 operator/(float2 a,float2 b){return float2(a.x/b.x,a.y/b.y);}
+float2 clamp(float2 v,float2 lo,float2 hi){return float2(clamp(v.x,lo.x,hi.x),clamp(v.y,lo.y,hi.y));}
 float3 operator+(float3 a,float3 b){return float3(a.x+b.x,a.y+b.y,a.z+b.z);}
 float3 operator-(float3 a,float3 b){return float3(a.x-b.x,a.y-b.y,a.z-b.z);}
 float3 operator-(float3 a){return float3(-a.x,-a.y,-a.z);}
@@ -46,13 +52,25 @@ struct Texture2D {
     float4 value;unsigned loads=0;
     float4 Load(int3){++loads;return value;}
 }image0,image1,shadow2;
+// P0-L3 R2 s_material at t10: bilinear CLAMP SampleLevel over the generated table.
+struct LutSampler{} material_lut_surface;
+struct LutTexture {
+    std::vector<unsigned char> texels;
+    float Texel(int x,int y,int c){x=std::min(std::max(x,0),127);y=std::min(std::max(y,0),1023);return texels[128+(y*128+x)*4+c]/255.f;}
+    float4 SampleLevel(LutSampler,float2 uv,int){
+        if(texels.empty())texels=kich_r4_material_lut::Dds();
+        const float px=uv.x*128-.5f,py=uv.y*1024-.5f;const int x0=int(std::floor(px)),y0=int(std::floor(py));const float fx=px-x0,fy=py-y0;
+        float out[4];for(int c=0;c<4;++c)out[c]=(Texel(x0,y0,c)*(1-fx)+Texel(x0+1,y0,c)*fx)*(1-fy)+(Texel(x0,y0+1,c)*(1-fx)+Texel(x0+1,y0+1,c)*fx)*fy;
+        return float4(out[0],out[1],out[2],out[3]);}
+}material_lut;
 float4 camera,screen,sun_direction,sun_color,ambient,hemi,material,fog,fog_params,fog_plane,env_ambient(0,0,0,1);
 float visibility=1,surface_gloss=0;
 float3 surface_normal(0,1,0);
 float3 WorldPosition(float2,float){return float3(0,0,0);}
 float3 LoadReceiverPosition(float2,float){return -xyz(camera);}
 void ShadowDerivatives(float3,float3& dx,float3& dy){dx=float3(.01f,0,0);dy=float3(0,0,.01f);}
-float SunVisibility(float3,float3,float3){return visibility;}
+// Same gate as production SunVisibility: only sun_color.w==1 uses shadow maps.
+float SunVisibility(float3,float3,float3){return sun_color.w<=0 || sun_color.w>1.5f?0:visibility;}
 float3 DecodeNormal(float2){return surface_normal;}
 float3 Normal(Varying,bool){return surface_normal;}
 float4 Base(Varying v){return v.c;}
@@ -77,7 +95,8 @@ int main(){try{
     for(float shadow:{0.f,.25f,1.f})for(float gloss:{0.f,1.f}){
         shadow2.value=float4(.2f,.4f,.7f,mask);visibility=shadow;surface_gloss=gloss;
         image0.value=float4(0,0,h,PackMaterial(gloss,2));receiver.n.w=h;
-        const float3 indirect=xyz(ambient)+xyz(hemi)*h;
+        // Forward hemi response is the R2 table's diffuse at (h,0) for the Phong slice.
+        const float3 indirect=xyz(ambient)+xyz(hemi)*MaterialResponse(h,0,2).x;
         Check(PSSun(receiver),splat3(shadow),gloss*shadow,
             "dynamic sun must follow current shadow visibility, independently of baked/ROS sun alpha; no indirect");
         // Forward keeps R2 forward L_ambient+hemi and the same direct sun.

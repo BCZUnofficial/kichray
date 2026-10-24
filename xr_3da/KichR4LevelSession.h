@@ -3,6 +3,7 @@
 #include "KichR4GeometrySession.h"
 #include "KichR4Level.h"
 #include "KichR4Dds.h"
+#include "KichR4MaterialLut.h"
 #include "KichR4LevelCamera.h"
 #include "KichR4FrameMetrics.h"
 #include "KichR4TexturePolicy.h"
@@ -19,7 +20,7 @@ struct KichR4LevelSession {
     // Readers still close in NeedTexture; no filesystem lease crosses a draw.
     std::map<std::string,std::vector<unsigned char> > prepared_textures;
     uint64_t prepared_texture_bytes=0,prepared_texture_epoch=0;
-    KichR4Handle white,checker,neutral_cube;
+    KichR4Handle white,checker,neutral_cube,material_lut=0;
     uint32_t textures_loaded,texture_fallbacks,budget_skips,frames,visible,culled,camera_steps,revision,cull,depth;
     uint64_t texture_bytes,submitted_triangles,submitted_draws;
     double texture_io_ms=0,texture_parse_ms=0,texture_create_ms=0;
@@ -102,6 +103,17 @@ struct KichR4LevelSession {
         if(hr==0 && loaded)neutral_cube=loaded;
         else{if(loaded)bridge.resources.release_resource(s.device,loaded);if(kich_r4_texture::FatalDevice(hr))s.Record("E1.2 neutral cube device failure",hr);}
         return neutral_cube;
+    }
+    // P0-L3 R2 s_material, persistent and outside the DDS LRU like the neutral
+    // cube. Lighting cannot fall back to another table: a failure fails the frame.
+    KichR4Handle MaterialLut(KichR4FrameSession& s){
+        if(material_lut)return material_lut;
+        const std::vector<unsigned char> d=kich_r4_material_lut::Dds();
+        const KichR4DdsDesc desc={sizeof(desc),kich_r4_material_lut::Height,0};KichR4Handle loaded=0;
+        const int32_t hr=api.create_texture_dds(s.device,&desc,d.data(),static_cast<uint32_t>(d.size()),&loaded);
+        if(hr==0 && loaded)material_lut=loaded;
+        else{if(loaded)bridge.resources.release_resource(s.device,loaded);s.Record("P0-L3 material LUT texture",hr<0?hr:KICH_R4_E_ARGUMENT);}
+        return material_lut;
     }
     KichR4Handle CubeTexture(KichR4FrameSession& s,const std::string& name){
         if(!name.empty()){

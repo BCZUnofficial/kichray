@@ -435,6 +435,7 @@ struct KichR4ModelSession {
                 state.draw.index_buffer=split->ib;state.draw.start_index=good_first;state.draw.index_count=good_count;}
             if(c.has_material && (pass==Geometry || pass==Shadow))kich_r4_material::Bind(s,l,c.material,attributes,constants,d.surface,pass==Shadow,false,c.object_light_valid && pass==Geometry?kich_r4_material::SHADER_SUN:0,"MODEL_MATERIAL_EXECUTION");
             if(c.has_material && (pass==HUD || pass==HUDAdd) && state.draw.pipeline!=plain_pipeline[command_classes[index]])BindHUDMaterial(s,l,c,constants,d);
+            if(pass==Forward || pass==ForwardAdd || pass==HUD || pass==HUDAdd){const KichR4Handle lut=l.MaterialLut(s);if(!lut)return s.failure;kich_r4_material_lut::Bind(d.surface,lut);}
             if(c.style.emissive_gain>0){constants.ambient[3]=c.style.emissive_gain;constants.hemi[3]=c.style.emissive_specular;
                 if(pass==Geometry)constants.material[0]=float(uint32_t(constants.material[0])|256u);}
             if(g_render_snapshot_active && c.has_material && pass==Geometry)SnapshotMaterialBasis(c,uint32_t(constants.material[0]));

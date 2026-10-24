@@ -26,7 +26,7 @@ def function(signature):
 
 signatures = (
     "float PackMaterial(", "float MaterialGloss(", "float MaterialClass(",
-    "float2 MaterialSlice(", "float2 MaterialResponse(", "float SpecularIntensity(",
+    "float2 MaterialLutSlice(", "float2 MaterialResponse(", "float SpecularIntensity(",
     "float FogTransmittance(", "float3 ForwardFog(",
     "float SunDirect(", "float4 DirectLight(", "float3 ForwardIndirect(",
     "float4 SunLighting(", "float4 PSSun(", "float4 PSForwardSun(",
@@ -47,5 +47,5 @@ with tempfile.TemporaryDirectory(prefix="kich-e16-sun-") as directory:
     cpp, binary = Path(directory) / "sun.cpp", Path(directory) / "sun"
     cpp.write_text(fixture)
     subprocess.run([os.environ.get("CXX", "g++"), "-std=c++11", "-O2", "-Wall",
-                    "-Wextra", "-Werror", str(cpp), "-o", str(binary)], check=True)
+                    "-Wextra", "-Werror", "-I", str(root / "xr_3da"), str(cpp), "-o", str(binary)], check=True)
     subprocess.run([str(binary)], check=True)

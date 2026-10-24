@@ -89,9 +89,9 @@ inline void Bind(KichR4FrameSession& s,KichR4LevelSession& level,const Descripto
         kich_r4_telemetry::U64(category,id,"effective_alpha_func",AlphaFunction(m,shadow));kich_r4_telemetry::Float(category,id,"effective_alpha_ref",AlphaReference(m,shadow));
         kich_r4_telemetry::Text(category,id,"semantic",Name(m.semantic));
         kich_r4_telemetry::Text(category,id,"normal_path",flags&SHADER_BUMP?"SOC_R2_BUMP_WZY_PLUS_BUMP_AUX_RGB_MINUS_ONE; TBN; GBUFFER_NORMAL":"GEOMETRIC_NORMAL");
-        kich_r4_telemetry::Text(category,id,"lightmap_path",flags&SHADER_LIGHTMAP?"UV1; RGB_BAKED_ADDED_BEFORE_DIRECT_LIGHT; ALPHA_SUN_DIAGNOSTIC_ONLY":"NO_BAKED_LIGHTMAP");
-        kich_r4_telemetry::Text(category,id,"lighting_model","SOC_R2_ANALYTIC_MATERIAL_LUT; BUMP_R_SQUARED_GLOSS; LOCAL_Q_LINEAR_POINT_RANGE_SPOT_RANGE_0_95; R2_SUN_MODE_DYNAMIC_OR_STATIC; SOURCE_SUN_MASK_STATIC_SUN_ONLY; SOURCE_BAKED_RGB_ADDITIVE; DEFERRED_R2_HMODEL_TWO_ENV_CUBEMAPS");
-        kich_r4_telemetry::Text(category,id,"lighting_limits","FORWARD_WEATHER_HEMI_RGB; NO_LUT_TEXEL_QUANTIZATION");
+        kich_r4_telemetry::Text(category,id,"lightmap_path",flags&SHADER_LIGHTMAP?"UV1; RGB_DIAGNOSTIC_ONLY_R2_DEFERRED_PARITY; ALPHA_SUN_STATIC_SUN_ONLY":"NO_BAKED_LIGHTMAP");
+        kich_r4_telemetry::Text(category,id,"lighting_model","SOC_R2_S_MATERIAL_8BIT_TABLE_T10; BUMP_R_SQUARED_GLOSS; LOCAL_Q_LINEAR_POINT_RANGE_SPOT_RANGE_0_95; R2_SUN_MODE_DYNAMIC_OR_STATIC; SOURCE_SUN_MASK_STATIC_SUN_ONLY; SOURCE_BAKED_RGB_DIAGNOSTIC_ONLY; DEFERRED_R2_HMODEL_TWO_ENV_CUBEMAPS");
+        kich_r4_telemetry::Text(category,id,"lighting_limits","FORWARD_WEATHER_HEMI_RGB; GBUFFER_MATERIAL_CLASS_STEP_0_2");
         kich_r4_telemetry::Text(category,id,"gbuffer_layout","NORMAL_XY_OCT; Z_HEMI; W_GLOSS7_MATERIAL4_EXACT_HALF_INTEGER");
         kich_r4_telemetry::Text(category,id,"hemi_path",flags&SHADER_HEMI?"UV1; MEAN_RGB_HEMI; ALPHA_SUN_DIAGNOSTIC_ONLY":"SOURCE_VERTEX_HEMI");
         kich_r4_telemetry::Text(category,id,"fallback_reason",fallback.empty()?"NONE":fallback.c_str());

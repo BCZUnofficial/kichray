@@ -179,8 +179,9 @@ struct GeometryOutput {float4 albedo:SV_Target0;float4 normal:SV_Target1;float4 
 GeometryOutput PSGeometry(Varying v,bool front:SV_IsFrontFace){GeometryOutput o;
     uint flags=(uint)material.x;float h=v.n.w,s=(flags&32)!=0?v.baked_sun.w:.5;float3 baked=0;
     if((flags&16)!=0)baked=v.baked_sun.rgb;
-    // R1/XRLC baked RGB remains additive irradiance, separate from material
-    // response to direct lights. Do not reinterpret it as albedo or hemi.
+    // R1/XRLC baked RGB is diagnostic only. SoC R2 deferred (uber_deffer,
+    // deffer_base_*) binds only s_hemi and vertex color.w; lightmap/vertex RGB
+    // belongs to R1 lmape and would double the dynamic lights here.
     if((flags&2)!=0){float4 lm=shadow1.Sample(surface3,v.uv1);baked+=lm.rgb;s=lm.a;}
     if((flags&4)!=0){float4 lm=shadow2.Sample(surface4,v.uv1);h=dot(lm.rgb,float3(1.0/3,1.0/3,1.0/3));s=lm.a;}
     // Geometry shares each authored terrain sample across albedo, normal and
@@ -194,7 +195,7 @@ GeometryOutput PSGeometry(Varying v,bool front:SV_IsFrontFace){GeometryOutput o;
     if((flags&16384)!=0)s=terrain_lmap.Sample(terrain_lmap_surface,v.uv).a;
     o.albedo=float4(base_color.rgb,saturate(s));
     float gloss=GlossWithTerrain(v,terrain_channels,terrain_total);
-    o.normal=float4(EncodeNormal(NormalWithTerrain(v,front,terrain_channels,terrain_total)),saturate(h),PackMaterial(gloss,material.w));o.baked=float4(baked,0);
+    o.normal=float4(EncodeNormal(NormalWithTerrain(v,front,terrain_channels,terrain_total)),saturate(h),PackMaterial(gloss,material.w));o.baked=0;
     // SoC E[4] accum_emissive[l] writes constant irradiance/specular. Fold it
     // into this base surface's accumulator once, retaining its depth/coverage.
     if((flags&256)!=0){o.baked.rgb+=ambient.www;o.baked.a+=hemi.w*gloss;}
@@ -350,22 +351,23 @@ float SunDirect(float3 p,float3 dx,float3 dy,float static_sun){float result=stat
     [branch] if(sun_color.w<=1.5)result=SunVisibility(p,dx,dy);
     return result;
 }
-// Analytical evaluation of SoC r2_rendertarget.cpp's four-slice material LUT.
-// This retains its diffuse/specular response, not a new PBR/brightness model;
-// LUT texel quantization remains separate work.
-float2 MaterialSlice(float ld,float ls,int index){
-    if(index==0)return float2(pow(ld,.75),pow(ls,16)*.5);
-    if(index==1)return float2(pow(ld,.90),pow(ls,24));
-    if(index==2)return float2(ld,saturate(pow(ls*1.01,128)));
-    float s0=abs(1-abs(.05*sin(33*ld)+ld-ls));
-    float s1=abs(1-abs(.05*cos(33*ld*ls)+ld-ls));
-    float s2=abs(1-abs(ld-ls));
-    return float2(ld,saturate(pow(max(s0,max(s1,s2)),24)*pow(ld,1.0/7)));
+// P0-L3: SoC r2_rendertarget.cpp s_material, generated on the CPU by the same
+// code (KichR4MaterialLut.h): 128 (L.N) x 256 (H.N) x 4 slices, 8-bit, forced
+// last texel. The four slices are stacked rows slice*256+y; R diffuse, A specular.
+Texture2D material_lut:register(t10);SamplerState material_lut_surface:register(s11);
+float2 MaterialLutSlice(float2 texel,float slice){
+    float4 t=material_lut.SampleLevel(material_lut_surface,(texel+float2(.5,.5+slice*256))/float2(128,1024),0);
+    return float2(t.r,t.a);
 }
+// R2 tex3D(s_material,(L.N,H.N,(mtl+.5)/4)) with r_Sampler_clw: LINEAR, U/V
+// CLAMP, W WRAP. Texel-centre space keeps the half-texel offset of R2; U/V are
+// clamped inside each slice, and W filtering is the lerp of two wrapped slices.
 float2 MaterialResponse(float ld,float lh,float m){
-    ld=saturate(ld);float ls=saturate(lh)*pow(ld,1.0/32);
-    m=clamp(m,0,3);int lo=(int)floor(m);
-    return lerp(MaterialSlice(ld,ls,lo),MaterialSlice(ld,ls,min(lo+1,3)),frac(m));
+    float2 texel=clamp(float2(ld*128,lh*256)-.5,float2(0,0),float2(127,255));
+    float slice=floor(m),f=m-slice;slice-=4*floor(slice*.25);
+    float2 result=MaterialLutSlice(texel,slice);
+    [branch] if(f>0)result=lerp(result,MaterialLutSlice(texel,slice<3?slice+1:0),f);
+    return result;
 }
 // R2 u_diffuse2s, including its r2_gloss_factor scale.
 float SpecularIntensity(float3 color){float value=max(0,dot(color,float3(1.0/3,1.0/3,1.0/3)));

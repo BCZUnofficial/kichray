@@ -397,6 +397,7 @@ struct KichR4DeferredSession {
             c.fog_params[2]=style.fog_enabled?(style.blend && style.dst==2?2.f:1.f):0.f;
             if(Constants(s,l,c)<0)return s.failure;
             KichR4DeferredDrawDesc d=Description(pipelines[described && m.descriptor.semantic==kich_r4_material::EMISSIVE?StaticPlain:m.kind==2?StaticWater:StaticForward],l.vertex_buffers[mesh.vb],l.index_buffers[mesh.ib],cb,mesh.count,mesh.first,style);d.textures[0]=l.Texture(s,m.texture);d.textures[1]=scene_color;d.textures[2]=sun_map;d.textures[3]=sun_far_map;
+            {const KichR4Handle lut=l.MaterialLut(s);if(!lut)return s.failure;kich_r4_material_lut::Bind(d,lut);}
             SnapshotResolvedTexture(l,0,m.texture.c_str(),d.textures[0]);
             const bool simple=simple_transparent.count(mesh.material)!=0;
             int32_t hr=KICH_R4_OK;
@@ -511,6 +512,7 @@ struct KichR4DeferredSession {
             if(pass==ForwardAdd){style.blend=1;style.src=style.dst=2;style.write=0;}
             KichR4DeferredDrawDesc d=Description(pipelines[pipeline],stream.vb,stream.ib,cb,c.count,c.first,style);
             if(pass==ForwardAdd && kich_r4_projector::Enabled(constants))kich_r4_projector::Sampler(d.state.surface);
+            if(pipeline==ForwardSun || pipeline==ForwardLocal || pipeline==Water){const KichR4Handle lut=l.MaterialLut(s);if(!lut)return s.failure;kich_r4_material_lut::Bind(d,lut);}
             d.textures[0]=pass==ShadowModels && kich_r4_material::AlphaFunction(c.style,true)==8?0:native_mode && c.effect==2?l.CubeTexture(s,c.texture):c.texture.empty()?white:l.Texture(s,c.texture);
             if(pass==Celestial)d.textures[1]=depth;
             if(!native_mode && pass==HUD && d.textures[0]==l.checker)return s.Record("B4.4 HUD DDS unavailable",KICH_R4_E_UNSUPPORTED);
@@ -600,7 +602,8 @@ struct KichR4DeferredSession {
         KichR4DeferredDrawDesc d=Description(pipelines[p],screen_vb,screen_ib,cb,3,0,style);d.textures[0]=t0;d.textures[1]=t1;
         if(p==Local && kich_r4_projector::Enabled(c))kich_r4_projector::Sampler(d.state.surface);
         if(maps)for(unsigned i=0;i<6;++i)d.textures[i+2]=maps[i];
-        if(p==Sun || p==Local || p==Combine)d.textures[11]=receiver_depth;
+        if(p==Sun || p==Local || p==Combine){d.textures[11]=receiver_depth;
+            const KichR4Handle lut=l.MaterialLut(s);if(!lut)return s.failure;kich_r4_material_lut::Bind(d,lut);}
         const int32_t result=l.Expect(s,"B4.4 fullscreen draw",api.draw(s.device,&d));
         if(g_render_snapshot_active){using namespace kich_r4_telemetry;char id[96];snprintf(id,sizeof(id),"%s_pipeline_%u",snapshot_phase,static_cast<unsigned>(p));
             Text("POSTPROCESS",id,"execution",result>=0?"DRAW_SUCCEEDED; PIXEL_CONTRIBUTION_NOT_MEASURED":"DRAW_FAILED");
@@ -797,9 +800,10 @@ struct KichR4DeferredSession {
         // t4/t5: R2 env_s0/env_s1 (sky_r_textures_env), neutral until resident.
         KichR4Handle combine_inputs[6]={normal,depth,l.CubeTexture(s,input.lighting.env_textures[0]),l.CubeTexture(s,input.lighting.env_textures[1]),0,0};
         if(s.failure<0)return s.failure;
-        if(g_render_snapshot_active){RenderSnapshot_Text("ENVIRONMENT","hmodel_env0",input.lighting.env_textures[0].empty()?"NONE":input.lighting.env_textures[0].c_str());
-            RenderSnapshot_Text("ENVIRONMENT","hmodel_env1",input.lighting.env_textures[1].empty()?"NONE":input.lighting.env_textures[1].c_str());
-            RenderSnapshot_Text("ENVIRONMENT","hmodel_env_resident",combine_inputs[2]!=l.neutral_cube && combine_inputs[3]!=l.neutral_cube?"BOTH":"NEUTRAL_FALLBACK_USED");}
+        // Per-record telemetry: the shared summary can overflow before combine.
+        if(g_render_snapshot_active){kich_r4_telemetry::Text("ENVIRONMENT","hmodel","env0",input.lighting.env_textures[0].empty()?"NONE":input.lighting.env_textures[0].c_str());
+            kich_r4_telemetry::Text("ENVIRONMENT","hmodel","env1",input.lighting.env_textures[1].empty()?"NONE":input.lighting.env_textures[1].c_str());
+            kich_r4_telemetry::Text("ENVIRONMENT","hmodel","env_resident",combine_inputs[2]!=l.neutral_cube && combine_inputs[3]!=l.neutral_cube?"BOTH":"NEUTRAL_FALLBACK_USED");}
         SnapshotPass("ENVIRONMENT_COMBINE",RENDER_SNAPSHOT_PASS_ENVIRONMENT_COMBINE,"environment_combine");
         if(native_mode){if(Pass(s,l,width,height,1,scene_color,0,depth,KICH_R4_CLEAR_COLOR)<0 || Models(s,l,stream,captured,Environment,base)<0)return s.failure;
             // Unbind DSV before sampling the completed opaque depth mask.
