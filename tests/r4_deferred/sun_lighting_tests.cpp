@@ -1,6 +1,7 @@
 // Production shader functions are inserted by run_sun_tests.py. The independent
-// oracle uses the Lambert material slice: sunlight follows current visibility,
-// indirect follows source hemi, and source static-sun alpha cannot change either.
+// oracle uses the Lambert material slice: dynamic sunlight follows current
+// visibility and ignores source sun alpha; deferred indirect is combine hmodel,
+// forward indirect follows source hemi; R2 static sun uses source alpha*2.
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -45,7 +46,7 @@ struct Texture2D {
     float4 value;unsigned loads=0;
     float4 Load(int3){++loads;return value;}
 }image0,image1,shadow2;
-float4 camera,screen,sun_direction,sun_color,ambient,hemi,material,fog,fog_params,fog_plane;
+float4 camera,screen,sun_direction,sun_color,ambient,hemi,material,fog,fog_params,fog_plane,env_ambient(0,0,0,1);
 float visibility=1,surface_gloss=0;
 float3 surface_normal(0,1,0);
 float3 WorldPosition(float2,float){return float3(0,0,0);}
@@ -77,23 +78,29 @@ int main(){try{
         shadow2.value=float4(.2f,.4f,.7f,mask);visibility=shadow;surface_gloss=gloss;
         image0.value=float4(0,0,h,PackMaterial(gloss,2));receiver.n.w=h;
         const float3 indirect=xyz(ambient)+xyz(hemi)*h;
-        const float3 expected=indirect+splat3(shadow);
-        Check(PSSun(receiver),expected,gloss*shadow,
-            "dynamic sun must follow current shadow visibility, independently of baked/ROS sun alpha");
-        // Forward already used unit sun visibility multiplier; maintain parity
-        // with deferred irradiance while preserving authored RGB and opacity.
-        Check(PSForwardSun(receiver,true),xyz(receiver.c)*expected+splat3(gloss*shadow),receiver.c.w,
+        Check(PSSun(receiver),splat3(shadow),gloss*shadow,
+            "dynamic sun must follow current shadow visibility, independently of baked/ROS sun alpha; no indirect");
+        // Forward keeps R2 forward L_ambient+hemi and the same direct sun.
+        Check(PSForwardSun(receiver,true),xyz(receiver.c)*(indirect+splat3(shadow))+splat3(gloss*shadow),receiver.c.w,
             "forward light/alpha must retain its previous unmasked response");
         Near(shadow2.value.a,mask,"source sun diagnostic alpha must be retained");
+        // R2 USE_R2_STATIC_SUN: no maps, source occlusion*2 owns direct sun.
+        sun_color.w=2;
+        Check(PSSun(receiver),splat3(mask*2),gloss*mask*2,"static sun must use source sun alpha*2, not shadow maps");
+        Check(PSForwardSun(receiver,true),xyz(receiver.c)*(indirect+splat3(1))+splat3(gloss),receiver.c.w,
+            "forward static sun has no G-buffer occlusion and stays unoccluded");
+        sun_color.w=0;
+        Check(PSSun(receiver),float3(),0,"disabled sun adds no direct light");
+        sun_color.w=1;
     }
-    // An unlit normal retains exactly the existing ambient/hemi response.
+    // An unlit normal receives no direct sun; indirect is not written here.
     surface_normal=float3(0,-1,0);image0.value=float4(0,0,.37f,PackMaterial(1,2));visibility=1;
-    Check(PSSun(receiver),xyz(ambient)+xyz(hemi)*.37f,0,"sun direction/material response must remain active");
+    Check(PSSun(receiver),float3(),0,"sun direction/material response must remain active");
     // Sky rejection and the raw shadow diagnostic must remain independent of
     // indirect illumination and the receiver's baked alpha.
     image1.value.r=1;Check(PSSun(receiver),float3(),0,"sky cannot receive surface lighting");
     image1.value.r=.5f;screen.z=8;visibility=.25f;
     Check(PSSun(receiver),splat3(.25f),0,"shadow diagnostic must show current map visibility");
-    std::printf("E1.6 production sun lighting: %u checks passed (baked/ROS mask independence, current shadows, hemi, forward, sky)\n",checks);
+    std::printf("P0-L1 production sun lighting: %u checks passed (baked/ROS mask independence, current shadows, static/disabled sun, forward hemi, sky)\n",checks);
     return 0;
 }catch(const std::exception& e){std::fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

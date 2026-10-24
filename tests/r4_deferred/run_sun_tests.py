@@ -28,13 +28,13 @@ signatures = (
     "float PackMaterial(", "float MaterialGloss(", "float MaterialClass(",
     "float2 MaterialSlice(", "float2 MaterialResponse(", "float SpecularIntensity(",
     "float FogTransmittance(", "float3 ForwardFog(",
-    "float4 DirectLight(", "float4 SunLighting(", "float4 PSSun(",
-    "float4 PSForwardSun(",
+    "float SunDirect(", "float4 DirectLight(", "float3 ForwardIndirect(",
+    "float4 SunLighting(", "float4 PSSun(", "float4 PSForwardSun(",
 )
 helpers = "\n".join(function(signature) for signature in signatures)
 # Syntax-only adapters: execute the production branches and numerical expressions.
-helpers = helpers.replace(":SV_Target", "").replace(":SV_IsFrontFace", "")
-helpers = helpers.replace("SunVisibility(p,dx,dy).xxx", "splat3(SunVisibility(p,dx,dy))")
+helpers = helpers.replace(":SV_Target", "").replace(":SV_IsFrontFace", "").replace("[branch]", "")
+helpers = helpers.replace("SunDirect(p,dx,dy,static_sun).xxx", "splat3(SunDirect(p,dx,dy,static_sun))")
 helpers = re.sub(r"\b(\w+(?:\.\w+)*)\.(?:rgb|xyz)\b", r"xyz(\1)", helpers)
 helpers = re.sub(r"\b(\w+(?:\.\w+)*)\.xy\b", r"xy(\1)", helpers)
 helpers = re.sub(r"\b(\w+(?:\.\w+)*)\.aaa\b", r"splat3(\1.w)", helpers)

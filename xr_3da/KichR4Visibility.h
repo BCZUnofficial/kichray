@@ -149,7 +149,9 @@ inline ScreenRect LightScreenRect(const KichR4LocalLight& light,const Matrix& vp
     result.top=std::max(0.f,std::min(1.f,low[1]-pad));result.bottom=std::max(0.f,std::min(1.f,high[1]+pad));
     return result;
 }
+// Dynamic shadowed sun only: R2 static and disabled sun render no sun maps.
 inline bool SunEnabled(const KichR4LightingFrame& lighting){
+    if(lighting.sun_mode==KICH_R4_SUN_STATIC || lighting.sun_mode==KICH_R4_SUN_DISABLED)return false;
     const kich_r4_scene::Vec3 dir=kich_r4_scene::Normalize(kich_r4_scene::Vec3{lighting.sun_direction[0],lighting.sun_direction[1],lighting.sun_direction[2]});
     return kich_r4_scene::Dot(dir,dir)>.5f && (lighting.sun_color[0]>0 || lighting.sun_color[1]>0 || lighting.sun_color[2]>0);
 }

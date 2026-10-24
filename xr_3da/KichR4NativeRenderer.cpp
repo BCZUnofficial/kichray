@@ -377,7 +377,7 @@ void CRender::Calculate(){queue.clear();shadow_views.clear();native_lod_shadow_v
     // native path gathers their conservative union, then culls immutable model
     // commands against the actual pass matrix in the backend.
     KichR4LightingFrame lighting={};lighting.valid=1;
-    if(g_pGamePersistent)KichR4CopyEnvironment(lighting,g_pGamePersistent->Environment().CurrentEnv);
+    KichR4_CopyEngineEnvironment(lighting);
     KichR4_FreezeLighting(Device.dwFrame,Device.dwTimeGlobal,&Device.vCameraPosition.x,lighting,ps_r2_ls_flags.test(R2FLAG_R1LIGHTS)!=0,&Device.mFullTransform._11);
     KichR4_CaptureLightingDiagnostics(&Device.vCameraPosition.x,lighting);
     if(g_render_snapshot_active){RenderSnapshot_U64("LIGHT_POLICY","R2FLAG_R1LIGHTS_requested",ps_r2_ls_flags.test(R2FLAG_R1LIGHTS)?1:0);

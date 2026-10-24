@@ -50,6 +50,8 @@ void SetXY(float3& n,float2 v){n.x=v.x;n.y=v.y;}
 typedef unsigned uint;
 struct Varying{float2 uv;};
 struct MaterialConstants{float x;float2 yz;MaterialConstants():x(0),yz(1,1){}}material;
+float4 env_ambient(0,0,0,1); // .w r2_gloss_factor
+
 struct SampleTexture{float4 value;float2 last=float2(0,0);unsigned reads=0;float4 Sample(int,float2 uv){last=uv;++reads;return value;}}image1,shadow3,shadow4,shadow5,model_bump,model_bump_aux;
 int surface1=0,surface5=0,surface6=0,surface7=0,model_bump_surface=0,model_bump_aux_surface=0;
 '''
@@ -60,8 +62,8 @@ for name in ("NormalSign", "EncodeNormal", "DecodeNormal", "PackMaterial", "Mate
     body = re.sub(r"n\.xy=([^;]+);", r"SetXY(n,\1);", body)
     body = body.replace("n.xy", "float2(n.x,n.y)").replace("n.yx", "float2(n.y,n.x)")
     body = body.replace("max(dot(abs(n),float3(1,1,1)),1e-8)", "max(dot(abs(n),float3(1,1,1)),1e-8f)")
-    body = body.replace("max(range*.95,.0001)", "max(range*.95f,.0001f)")
-    body = body.replace("max(0,dot(color", "max(0.f,dot(color")
+    body = body.replace("max(spot?range*.95:range,.0001)", "max(spot?range*.95f:range,.0001f)")
+    body = body.replace("max(0,dot(color", "max(0.f,dot(color").replace("env_ambient.w", "env_ambient.a")
     body = body.replace("[branch]", "")
     body = body.replace("max(dot(mask,1),.0001)", "max(dot(mask,1),.0001f)")
     body = body.replace("channels.wzy", "float3(channels.a,channels.b,channels.g)")
@@ -125,13 +127,17 @@ int main(){
     assert(MaterialResponse(1,1,1).y==1);
     assert(abs(MaterialResponse(.5f,0,.5f).x-
         (MaterialResponse(.5f,0,0).x+MaterialResponse(.5f,0,1).x)*.5f)<1e-6);
-    // range*.95 and q-linear falloff, including no light beyond effective range.
-    assert(LocalAttenuation(0,10)==1 && LocalAttenuation(100,10)==0);
-    assert(abs(LocalAttenuation(9.5f*9.5f*.25f,10)-.75f)<1e-6);
-    assert(abs(LocalAttenuation(9.5f*9.5f,10))<1e-6);
+    // q-linear falloff: R2 accum_spot uses range*.95, accum_point the full range.
+    assert(LocalAttenuation(0,10,true)==1 && LocalAttenuation(100,10,true)==0);
+    assert(abs(LocalAttenuation(9.5f*9.5f*.25f,10,true)-.75f)<1e-6);
+    assert(abs(LocalAttenuation(9.5f*9.5f,10,true))<1e-6);
+    assert(LocalAttenuation(0,10,false)==1 && LocalAttenuation(100,10,false)==0);
+    assert(abs(LocalAttenuation(25,10,false)-.75f)<1e-6);
+    assert(abs(LocalAttenuation(9.5f*9.5f,10,false)-(1-.9025f))<1e-6); // lit where SPOT is already dark
     for(float intensity:{0.f,.125f,.5f,1.f,4.f,100.f}){
         float spec=SpecularIntensity(float3(intensity,intensity,intensity));
         assert(std::isfinite(spec) && spec>=0 && spec<=max(1.f,intensity)*(1+1e-6f));
+        env_ambient.a=2;assert(abs(SpecularIntensity(float3(intensity,intensity,intensity))-2*spec)<1e-5f*max(1.f,spec));env_ambient.a=1;
     }
     std::cout<<"PASS: production HLSL material bounds, R2 reference responses/falloff, 2048 exact half payloads; oct half max error="<<worst<<" deg\n";
 }

@@ -20,7 +20,7 @@ with tempfile.TemporaryDirectory(prefix='kich-b44-hlsl-') as folder:
     for name,offset in offsets.items():
         if not re.search(r'\b'+name+r'(?:\[0\])?: offset '+str(offset)+r'\b',reflection):
             raise SystemExit('Missing/wrong HLSL member offset: '+name)
-    if not re.search(r'Frame: .*size 1008\b',reflection):
+    if not re.search(r'Frame: .*size 1040\b',reflection):
         raise SystemExit('Wrong HLSL cbuffer size')
     if not re.search(r'\bmodel_header: offset 0\b',reflection) or not re.search(r'ModelPose: .*size 16400\b',reflection):
         raise SystemExit('Wrong G3c model palette packing')
@@ -28,4 +28,4 @@ with tempfile.TemporaryDirectory(prefix='kich-b44-hlsl-') as folder:
         result=subprocess.run([tool,'-D','-DKICH_R4_MODEL_BONE_CAPACITY='+str(capacity),'-V','--hlsl-iomap','--hlsl-offsets','-l','-q','-S','vert','-e','VSModelGPU',str(source),'-o',str(Path(folder)/('model'+str(capacity)+'.spv'))],text=True,capture_output=True)
         if result.returncode or not re.search(r'ModelPose: .*size '+str(16+64*capacity)+r'\b',result.stdout) or not re.search(r'\bmodel_bones(?:\[0\])?: offset 16\b',result.stdout):
             raise SystemExit('Wrong class-sized palette '+str(capacity)+'\n'+result.stdout+result.stderr)
-print('PASS: HLSL entries, 1008-byte frame, five header-first palette classes (glslang, not FXC/GPU)')
+print('PASS: HLSL entries, 1040-byte frame, five header-first palette classes (glslang, not FXC/GPU)')

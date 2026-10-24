@@ -5,6 +5,7 @@
 #include "IGame_Persistent.h"
 #include "XR_IOConsole.h"
 #include "Environment.h"
+#include "ResourceManager.h"
 #include "xrRender/xrRender_console.h"
 #include "CameraManager.h"
 #include "xr_object.h"
@@ -26,6 +27,28 @@ static void KichR4_GameTreeFrame(KichR4GameFrame& input)
     input.tree_sbc=ps_r__Tree_SBC*1.3333f;
     input.geometry_lod[0]=ps_r__LOD;input.geometry_lod[1]=ps_r__GLOD_ssa_start;
     input.geometry_lod[2]=ps_r__GLOD_ssa_end;input.geometry_lod[3]=Device.fFOV;
+}
+
+extern ENGINE_API BOOL r2_sun_static;
+extern float ps_r2_gloss_factor;
+
+void KichR4_CopyEngineEnvironment(KichR4LightingFrame& frame)
+{
+    if(!g_pGamePersistent)return;
+    CEnvDescriptorMixer& env=g_pGamePersistent->Environment().CurrentEnv;
+    KichR4CopyEnvironment(frame,env);
+    KichR4CopyR2Hemisphere(frame,env,ps_r2_sun_lumscale_amb,ps_r2_sun_lumscale_hemi);
+    /* phase_combine binds sky_r_textures_env[0/1], not the sky textures. */
+    for(unsigned i=0;i<2;++i){frame.env_textures[i].clear();
+        if(env.sky_r_textures_env.size()<=i || !env.sky_r_textures_env[i].second._get())continue;
+        CTexture* texture=env.sky_r_textures_env[i].second._get();
+        const char* native=texture->pSurface?KichR4_NativeTextureName(texture->pSurface):NULL;
+        if(native)frame.env_textures[i]=native;else if(texture->cName.c_str())frame.env_textures[i]=texture->cName.c_str();}
+    for(unsigned i=0;i<3;++i)frame.sun_color[i]*=ps_r2_sun_lumscale;
+    frame.gloss_factor=ps_r2_gloss_factor;
+    /* renderer_r2a is the R2 static-sun mode; R1 has no R2 sun policy. */
+    frame.sun_mode=KichR4SunMode(frame.sun_color,ps_r2_gloss_factor,ps_r2_ls_flags.test(R2FLAG_SUN)!=0,
+        psDeviceFlags.test(rsR2) && r2_sun_static);
 }
 
 static void KichR4_GameObservationFrame(KichR4GameFrame& input)
@@ -69,7 +92,7 @@ void KichR4_GamePrepareEngineFrame()
         !Device.dwPrecacheFrame && g_loading_events.empty() && !Device.Paused() && !menu && !(Console && Console->bVisible);
     input.toggle_down=(GetAsyncKeyState(VK_F8)&0x8000)!=0;
     input.debug_down=(GetAsyncKeyState(VK_F9)&0x8000)!=0;
-    if(g_pGamePersistent)KichR4CopyEnvironment(input.lighting,g_pGamePersistent->Environment().CurrentEnv);
+    KichR4_CopyEngineEnvironment(input.lighting);
     if(!KichR4_CopyFrozenLighting(input.engine_frame,input.position,input.view_projection,input.lighting))
         KichR4_CaptureLighting(input.position,input.lighting,ps_r2_ls_flags.test(R2FLAG_R1LIGHTS)!=0,input.view_projection);
     KichR4_GamePrepare(input);
@@ -90,7 +113,7 @@ void KichR4_NativePresentEngineFrame(bool loading,bool precaching)
     if(path!=previous_path){previous_path=path;Msg("[R4 native B5] output path=%s level_ready=%u precache=%u loading_events=%u",
         input.warmup?"precache/world+loading_UI":loading?"loading/UI":input.allowed?"game":"menu/UI",g_pGameLevel && g_pGameLevel->bReady?1u:0u,Device.dwPrecacheFrame,static_cast<u32>(g_loading_events.size()));}
     input.lighting.valid=1;input.lighting.sun_direction[1]=-1;input.lighting.ambient[0]=input.lighting.ambient[1]=input.lighting.ambient[2]=.2f;
-    if(g_pGamePersistent)KichR4CopyEnvironment(input.lighting,g_pGamePersistent->Environment().CurrentEnv);
+    KichR4_CopyEngineEnvironment(input.lighting);
     if(input.allowed || input.warmup){
         if(!KichR4_CopyFrozenLighting(input.engine_frame,input.position,input.view_projection,input.lighting))
             KichR4_FreezeLighting(input.engine_frame,Device.dwTimeGlobal,input.position,input.lighting,ps_r2_ls_flags.test(R2FLAG_R1LIGHTS)!=0,input.view_projection);

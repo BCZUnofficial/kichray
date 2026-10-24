@@ -6,6 +6,7 @@ cbuffer Frame : register(b0) {
     float4 material,color_scale,color_bias,sun_scale_bias,tree_wave,tree_wind;
     float4 fog_params,fog_plane; // radial offset/scale, per-draw mode, valid plane
     row_major float4x4 receiver_inverse;
+    float4 env_ambient,env_color; // R2 L_ambient (.w r2_gloss_factor), env_color (.w cubemap lerp)
 };
 Texture2D image0:register(t0); Texture2D image1:register(t1);
 Texture2D shadow0:register(t2); Texture2D shadow1:register(t3);
@@ -332,7 +333,7 @@ float3 ShadowNumericalOffset(float3 p,float3 dx,float3 dy,float3 towards){
     return p+n*allowance;
 }
 float SunVisibility(float3 p,float3 dx,float3 dy){
-    if(sun_color.w<=0)return 0;
+    if(sun_color.w<=0 || sun_color.w>1.5)return 0;
     // Precision allowance only: plane correction handles the filter footprint.
     p=ShadowNumericalOffset(p,dx,dy,-sun_direction.xyz)-sun_direction.xyz*.01;
     float4 near_position=mul(float4(p,1),shadow[0]);
@@ -344,9 +345,14 @@ float SunVisibility(float3 p,float3 dx,float3 dy){
     float far_visibility=PCF(shadow1,mul(float4(p,1),shadow[1]),mul(float4(dx,0),shadow[1]),mul(float4(dy,0),shadow[1]));
     return lerp(near_visibility,far_visibility,saturate((edge-.9)*10));
 }
+// sun_color.w 2: R2 USE_R2_STATIC_SUN, baked occlusion*2 instead of sun maps.
+float SunDirect(float3 p,float3 dx,float3 dy,float static_sun){float result=static_sun*2;
+    [branch] if(sun_color.w<=1.5)result=SunVisibility(p,dx,dy);
+    return result;
+}
 // Analytical evaluation of SoC r2_rendertarget.cpp's four-slice material LUT.
 // This retains its diffuse/specular response, not a new PBR/brightness model;
-// LUT texel quantization and environment-cubemap specular remain separate work.
+// LUT texel quantization remains separate work.
 float2 MaterialSlice(float ld,float ls,int index){
     if(index==0)return float2(pow(ld,.75),pow(ls,16)*.5);
     if(index==1)return float2(pow(ld,.90),pow(ls,24));
@@ -361,25 +367,38 @@ float2 MaterialResponse(float ld,float lh,float m){
     m=clamp(m,0,3);int lo=(int)floor(m);
     return lerp(MaterialSlice(ld,ls,lo),MaterialSlice(ld,ls,min(lo+1,3)),frac(m));
 }
+// R2 u_diffuse2s, including its r2_gloss_factor scale.
 float SpecularIntensity(float3 color){float value=max(0,dot(color,float3(1.0/3,1.0/3,1.0/3)));
-    return value<1?pow(value,2.0/3):value;}
+    return env_ambient.w*(value<1?pow(value,2.0/3):value);}
 float4 DirectLight(float3 p,float3 n,float3 direction,float3 color,float gloss,float m){
     float3 view=camera.xyz-p;view/=max(length(view),1e-8);
     float3 half_vector=direction+view;half_vector/=max(length(half_vector),1e-8);
     float2 response=MaterialResponse(dot(n,direction),dot(n,half_vector),m);
     return float4(color*response.x,SpecularIntensity(color)*response.y*gloss);
 }
-float4 SunLighting(float3 p,float3 n,float h,float gloss,float m,float3 dx,float3 dy){
-    // Source hemi already encodes visibility; R2 hmodel does not multiply it
-    // by a second world-up term. Weather hemi RGB remains the env approximation.
-    float3 indirect=ambient.rgb+hemi.rgb*MaterialResponse(saturate(h),0,m).x;
+// Forward surfaces only: R2 forward shaders use L_ambient+L_hemi_color, not
+// hmodel. Source hemi already encodes visibility; no extra world-up term.
+float3 ForwardIndirect(float h,float m){return ambient.rgb+hemi.rgb*MaterialResponse(saturate(h),0,m).x;}
+float4 SunLighting(float3 p,float3 n,float gloss,float m,float3 dx,float3 dy,float static_sun){
     // R2/1.6 use baked/ROS sun occlusion only in static-sun mode, where the
     // dynamic sun pass is disabled. Here the current shadow maps own visibility;
     // a baked zero must not suppress sunlight and moving shadows on a receiver.
-    float4 direct=DirectLight(p,n,-sun_direction.xyz,sun_color.rgb,gloss,m)*SunVisibility(p,dx,dy);
-    return float4(indirect,0)+direct;
+    return DirectLight(p,n,-sun_direction.xyz,sun_color.rgb,gloss,m)*SunDirect(p,dx,dy,static_sun);
 }
-float3 SunLight(float3 p,float3 n,float h,float3 dx,float3 dy){return SunLighting(p,n,h,0,material.w,dx,dy).rgb;}
+// Forward static sun has no G-buffer occlusion; .5*2 leaves it unoccluded.
+float3 SunLight(float3 p,float3 n,float h,float3 dx,float3 dy){return ForwardIndirect(h,material.w)+SunLighting(p,n,0,material.w,dx,dy,.5).rgb;}
+// SoC R2 hmodel.h, combine_1.ps only. R4 normals and camera-relative positions
+// are already world space, so m_v2w is identity. Squared env is R2 "contrast".
+TextureCube env0:register(t4);TextureCube env1:register(t5);
+float3 EnvironmentSample(float3 d){return env_color.rgb*lerp(env0.Sample(surface4,d).rgb,env1.Sample(surface5,d).rgb,env_color.w);}
+void Hemisphere(out float3 diffuse,out float3 specular,float m,float h,float s,float3 relative,float3 n){
+    float3 v2point=relative*rsqrt(max(dot(relative,relative),1e-12));
+    float3 reflected=reflect(v2point,n);
+    float2 light=MaterialResponse(h,.5+.5*dot(reflected,v2point),m);
+    float3 env_d=EnvironmentSample(n);diffuse=env_d*env_d*light.x+env_ambient.rgb;
+    reflected.y=reflected.y*2-1; // R2 fake remapping
+    float3 env_s=EnvironmentSample(reflected);specular=env_s*env_s*light.y*s;
+}
 uint CubeFace(float3 d){float3 a=abs(d);if(a.x>=a.y && a.x>=a.z)return d.x>=0?0:1;
     if(a.y>=a.z)return d.y>=0?2:3;return d.z>=0?4:5;}
 float LocalVisibility(float3 p,float3 dx,float3 dy){if(alpha.w<.5)return 1;uint face=light_color.w>1.5?0:CubeFace(p-light_position.xyz);
@@ -393,7 +412,8 @@ float LocalVisibility(float3 p,float3 dx,float3 dy){if(alpha.w<.5)return 1;uint 
     if(face==0)return PCF(shadow0,projected,sx,sy);if(face==1)return PCF(shadow1,projected,sx,sy);
     if(face==2)return PCF(shadow2,projected,sx,sy);if(face==3)return PCF(shadow3,projected,sx,sy);
     if(face==4)return PCF(shadow4,projected,sx,sy);return PCF(shadow5,projected,sx,sy);}
-float LocalAttenuation(float distance_squared,float range){float radius=max(range*.95,.0001);
+// R2 accum_point uses 1/(range*range); only accum_spot shortens to range*.95.
+float LocalAttenuation(float distance_squared,float range,bool spot){float radius=max(spot?range*.95:range,.0001);
     return saturate(1-distance_squared/(radius*radius));}
 // SPOT-only input alias: t3/shadow[1] is the independent projector. Point
 // lights retain t3 as shadow face 1. The texture's alpha modulates specular.
@@ -402,7 +422,7 @@ float4 LocalProjector(float3 p){float4 projected=mul(float4(p,1),shadow[1]);
     float2 uv=projected.xy/projected.w*float2(.5,-.5)+.5;
     return shadow1.Sample(surface3,uv);}
 float4 LocalLight(float3 p,float3 n,float gloss,float m,float3 dx,float3 dy){float3 delta=light_position.xyz-p;float distance=length(delta);
-    float3 direction=delta/max(distance,.0001);float attenuation=LocalAttenuation(dot(delta,delta),light_position.w);
+    float3 direction=delta/max(distance,.0001);float attenuation=LocalAttenuation(dot(delta,delta),light_position.w,light_color.w>1.5);
     float4 profile=1;
     if(light_color.w>1.5){float angle=dot(-direction,light_direction.xyz);
         if(sun_direction.w>.5){if(angle<light_direction.w)return 0;profile=LocalProjector(p);}
@@ -412,15 +432,17 @@ float4 LocalLight(float3 p,float3 n,float gloss,float m,float3 dx,float3 dy){flo
 float4 PSSun(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=image1.Load(int3(at,0)).r;
     float3 relative=LoadReceiverPosition(v.p.xy,depth),p=relative+camera.xyz,dx,dy;ShadowDerivatives(relative,dx,dy);
     if(depth>=1)return 0;float4 n=image0.Load(int3(at,0));
-    if((int)screen.z==8)return float4(SunVisibility(p,dx,dy).xxx,0);
-    // Albedo alpha retains source sun occlusion for diagnostics, not dynamic lighting.
-    return SunLighting(p,DecodeNormal(n.xy),n.z,MaterialGloss(n.w),MaterialClass(n.w),dx,dy);}
+    // Albedo alpha (t4) is source sun occlusion: R2 static sun only, never dynamic.
+    float static_sun=sun_color.w>1.5?shadow2.Load(int3(at,0)).a:0;
+    if((int)screen.z==8)return float4(SunDirect(p,dx,dy,static_sun).xxx,0);
+    // Indirect light is R2 hmodel in combine, applied once per receiver.
+    return SunLighting(p,DecodeNormal(n.xy),MaterialGloss(n.w),MaterialClass(n.w),dx,dy,static_sun);}
 float4 PSLocal(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=image1.Load(int3(at,0)).r;
     float3 relative=LoadReceiverPosition(v.p.xy,depth),p=relative+camera.xyz,dx,dy;ShadowDerivatives(relative,dx,dy);
     if(depth>=1)return 0;float4 n=image0.Load(int3(at,0));
     return LocalLight(p,DecodeNormal(n.xy),MaterialGloss(n.w),MaterialClass(n.w),dx,dy);}
 float4 PSForwardSun(Varying v,bool front:SV_IsFrontFace):SV_Target {float3 dx,dy;ShadowDerivatives(v.w-camera.xyz,dx,dy);float4 c=Base(v);
-    float4 light=SunLighting(v.w,Normal(v,front),saturate(v.n.w),Gloss(v),material.w,dx,dy);
+    float4 light=SunLighting(v.w,Normal(v,front),Gloss(v),material.w,dx,dy,.5)+float4(ForwardIndirect(v.n.w,material.w),0);
     return float4(ForwardFog(c.rgb*light.rgb+light.aaa,FogTransmittance(v.w)),c.a);}
 float4 PSForwardLocal(Varying v,bool front:SV_IsFrontFace):SV_Target {float3 dx,dy;ShadowDerivatives(v.w-camera.xyz,dx,dy);float4 c=Base(v);
     float4 light=LocalLight(v.w,Normal(v,front),Gloss(v),material.w,dx,dy);
@@ -433,8 +455,12 @@ float4 PSCombine(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=shadow1.
     if(mode==3)return float4(saturate(length(LoadReceiverPosition(v.p.xy,depth))/camera.w).xxx,1);
     if(mode==4 || mode==8)return float4(light.rgb+light.aaa,1);if(mode==5)return float4(n.zzz,1);
     if(mode==6 || mode==9)return float4(a.rgb,1);if(mode==7)return float4(a.aaa,1);
-    float amount=FogAmount(length(LoadReceiverPosition(v.p.xy,depth)));
-    return float4(lerp(a.rgb*light.rgb+light.aaa,fog.rgb,amount),amount*amount);}
+    float3 relative=LoadReceiverPosition(v.p.xy,depth),hdiffuse,hspecular;
+    // combine_1.ps: D*(L.rgb+hdiffuse, L.w) + hspecular; RGB env specular is
+    // never folded into the scalar accumulator alpha.
+    Hemisphere(hdiffuse,hspecular,MaterialClass(n.w),n.z,MaterialGloss(n.w),relative,DecodeNormal(n.xy));
+    float amount=FogAmount(length(relative));
+    return float4(lerp(a.rgb*(light.rgb+hdiffuse)+light.aaa+hspecular,fog.rgb,amount),amount*amount);}
 
 // Native environment entries use the engine's two weather cubemaps.
 TextureCube sky0:register(t0);TextureCube sky1:register(t1);

@@ -78,6 +78,8 @@ inline int32_t Preflight(KichR4FrameSession& frame,KichR4LevelSession& level,
         // their DDS or evict a material later during local accumulation.
         for(unsigned i=0;i<input.lighting.count && i<input.lighting.projectors.size();++i)
             if(input.lighting.lights[i].type==2)demand.NeedTexture(input.lighting.projectors[i].texture,LIGHTING);
+        // Combine hmodel() samples both weather env cubemaps every scene frame.
+        for(unsigned i=0;i<2;++i)if(!input.lighting.env_textures[i].empty())demand.NeedTexture(input.lighting.env_textures[i],LIGHTING);
         if(kich_r4_visibility::SunEnabled(input.lighting)){
             add_shadow(kich_r4_lighting::SunShadow(input.position,input.lighting.sun_direction,128.f),UINT32_MAX,true);
             add_shadow(kich_r4_lighting::SunShadow(input.position,input.lighting.sun_direction,512.f),UINT32_MAX,true);}

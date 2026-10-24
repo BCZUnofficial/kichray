@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
+#include <math.h>
 #include <vector>
 #include <string>
 /* CPU snapshots only. type follows IRender_Light: POINT=1, SPOT=2. */
@@ -28,11 +29,18 @@ struct KichR4LightIdentity {
 // Native renderer installs a conservative current-camera light-volume query.
 // NULL and non-camera callers (ROS/AI) preserve the complete source registry.
 typedef bool (*KichR4LightVisibility)(const KichR4LocalLight&,const float* camera_vp);
+// R2 CRender::Render sun policy. DEFAULT is a direct/test producer without
+// engine settings and keeps the dynamic shadowed sun.
+enum KichR4SunMode {KICH_R4_SUN_DEFAULT=0,KICH_R4_SUN_DYNAMIC=1,KICH_R4_SUN_STATIC=2,KICH_R4_SUN_DISABLED=3};
 struct KichR4LightingFrame {
     uint32_t valid,count,shadow_mask;
     float sun_direction[3],sun_color[3],ambient[3],hemi[3],fog[3];
     // CurrentEnv mixer output, not a second weather or distance policy.
     float fog_near,fog_far;uint32_t fog_valid;
+    // R2 phase_combine hmodel() inputs, scaled exactly as L_ambient/env_color.
+    // Raw ambient/hemi above remain the forward-surface (L_ambient/L_hemi) inputs.
+    float env_ambient[3],env_color[4],gloss_factor;uint32_t env_valid,sun_mode;
+    std::string env_textures[2];
     std::vector<KichR4LocalLight> lights;
     std::vector<KichR4LightIdentity> sources;
     std::vector<KichR4LightProjector> projectors;
@@ -50,7 +58,7 @@ struct KichR4LightingFrame {
     // Small direct/test producers can still fill the original first eight
     // entries. Captured frames resize to every visible registry source.
     KichR4LightingFrame():valid(0),count(0),shadow_mask(0),sun_direction(),sun_color(),ambient(),hemi(),fog(),fog_near(0),fog_far(0),fog_valid(0),
-        lights(8),sources(8),projectors(8),visibility_vp(),visibility_valid(0),r1_lights_requested(0),r1_lights_applied(0),occlusion_enabled(0),occlusion_tested(0),
+        env_ambient(),env_color(),gloss_factor(1),env_valid(0),sun_mode(KICH_R4_SUN_DEFAULT),lights(8),sources(8),projectors(8),visibility_vp(),visibility_valid(0),r1_lights_requested(0),r1_lights_applied(0),occlusion_enabled(0),occlusion_tested(0),
         selection_frame(0),local_shadow_size(0),shadow_plan_faces(0),shadow_resolution_changes(0),shadow_resolution_reason(0){}
     bool CastsShadow(unsigned index)const {
         if(index>=count)return false;
@@ -66,6 +74,22 @@ template<class Environment> inline void KichR4CopyEnvironment(KichR4LightingFram
     frame.valid=1;memcpy(frame.sun_direction,&env.sun_dir.x,12);memcpy(frame.sun_color,&env.sun_color.x,12);
     memcpy(frame.ambient,&env.ambient.x,12);memcpy(frame.hemi,&env.hemi_color.x,12);memcpy(frame.fog,&env.fog_color.x,12);
     frame.fog_near=env.fog_near;frame.fog_far=env.fog_far;frame.fog_valid=1;
+}
+// SoC r2_rendertarget_phase_combine.cpp: L_ambient=max(ambient*2,.001)*amb,
+// env_color=(sky_color*2+EPS)*2*hemi, w=CurrentEnv.weight. Not hemi_color.
+template<class Environment> inline void KichR4CopyR2Hemisphere(KichR4LightingFrame& frame,const Environment& env,float ambient_scale,float hemi_scale){
+    const float* ambient=&env.ambient.x;const float* sky=&env.sky_color.x;
+    for(unsigned i=0;i<3;++i){const float a=ambient[i]*2;
+        frame.env_ambient[i]=(a>.001f?a:.001f)*ambient_scale;frame.env_color[i]=(sky[i]*2+.00001f)*2*hemi_scale;}
+    frame.env_color[3]=env.weight;frame.env_valid=1;
+}
+// Light_DB sun_adapted color (sun_color*r2_sun_lumscale) and CRender::Render
+// bSUN: R2FLAG_SUN && u_diffuse2s(color)>EPS; R2 static sun disables the pass.
+inline uint32_t KichR4SunMode(const float* sun_color,float gloss_factor,bool sun_flag,bool r2_static){
+    if(r2_static)return KICH_R4_SUN_STATIC;
+    const float v=(sun_color[0]+sun_color[1]+sun_color[2])/3.f;
+    const float specular=v>0?gloss_factor*(v<1?powf(v,2.f/3.f):v):0;
+    return sun_flag && specular>.00001f?KICH_R4_SUN_DYNAMIC:KICH_R4_SUN_DISABLED;
 }
 static_assert(sizeof(KichR4LocalLight)==48,"CPU light layout");
 static_assert(sizeof(KichR4LightIdentity)==32,"CPU light provenance layout");
@@ -85,6 +109,8 @@ KICH_R4_LIGHT_EXPORT void KichR4_CaptureLightForget(const void*);
 /* EXE-only helper keeps allocation/exception handling out of the PCH adapter. */
 void KichR4_CaptureLighting(const float*,KichR4LightingFrame&,bool r1_lights_enabled=false,const float* camera_vp=NULL);
 void KichR4_CaptureLightProjector(const void*,const KichR4LightProjector&);
+/* EXE-only: CurrentEnv plus the R2 hmodel/sun policy inputs of this frame. */
+void KichR4_CopyEngineEnvironment(KichR4LightingFrame&);
 void KichR4_CaptureLightingDiagnostics(const float*,const KichR4LightingFrame&);
 void KichR4_SetLightVisibility(KichR4LightVisibility);
 void KichR4_FreezeLighting(uint32_t engine_frame,uint32_t now_ms,const float* camera,KichR4LightingFrame&,bool r1_lights_enabled,const float* camera_vp);
