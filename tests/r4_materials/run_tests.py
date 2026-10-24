@@ -26,6 +26,8 @@ native = (ROOT / "xr_3da/KichR4NativeDraw.cpp").read_text()
 adapter = '#include "fake_engine.h"\n' + function(renderer, "void CRender::Submit(") + "\n"
 adapter += function(native, "void KichR4_NativeElementSource(") + "\n"
 adapter += function(native, "void KichR4_NativeElementPass(") + "\n"
+adapter += function(native, "bool KichR4_NativeGlow(") + "\n"
+adapter += function(native, "void KichR4_NativeEmissive(") + "\n"
 with tempfile.TemporaryDirectory(prefix="kich-g3b-materials-") as temp:
     source = Path(temp) / "production_adapter.cpp"
     source.write_text(adapter)

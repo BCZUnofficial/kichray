@@ -12,7 +12,7 @@ template<class T>using xr_vector=std::vector<T>;
 #define STYPE_RENDERABLE 1
 #define rsDrawDynamic 1
 struct Fvector {float x,y,z;};
-struct Fmatrix {float m[16];};
+struct Fmatrix {union {float m[16];float _11;};};
 struct CFrustum {
     kich_r4_scene::Matrix vp;
     void CreateFromMatrix(const Fmatrix& m,unsigned){std::memcpy(vp.m,m.m,64);}
@@ -37,9 +37,9 @@ struct Persistent {Weather& Environment(){return weather;}} persistent;Persisten
 struct DeviceState {Fmatrix mFullTransform;Fvector vCameraPosition;} Device;
 struct Flags {bool enabled;bool test(unsigned){return enabled;}} psDeviceFlags={true};
 Flags ps_r2_ls_flags={false};enum{R2FLAG_R1LIGHTS=1u<<10};u32 native_level_light_records=0,native_level_directional_skips=0;
-KichR4LightingFrame lights={};
+KichR4LightingFrame lights={};bool light_visibility_requested=false;
 void KichR4_CaptureLightingDiagnostics(const float*,const KichR4LightingFrame&){}
-void KichR4_CaptureLighting(const float*,KichR4LightingFrame& out,bool r1_lights_enabled){out=lights;out.r1_lights_requested=out.r1_lights_applied=r1_lights_enabled?1u:0u;}
+void KichR4_CaptureLighting(const float*,KichR4LightingFrame& out,bool r1_lights_enabled,const float* camera_vp){light_visibility_requested=camera_vp && !memcmp(camera_vp,Device.mFullTransform.m,64);out=lights;out.r1_lights_requested=out.r1_lights_applied=r1_lights_enabled?1u:0u;}
 class CRender {
 public:
     enum{PHASE_NORMAL=0};unsigned phase;bool loaded;std::vector<int> queue;std::vector<CFrustum> shadow_views;CFrustum ViewBase,*View;
@@ -57,6 +57,7 @@ int main(){try{
     ISpatial duplicate=caster;
     ISpatial distant={&outside,{20.f,-.1f,-.1f},{21.f,.1f,.1f},0};
     spatial.objects={&camera,&caster,&duplicate,&distant};CRender renderer;renderer.Calculate();
+    Require(light_visibility_requested,"native selection receives the actual game camera frustum");
     Require(spatial.queries==7 && renderer.shadow_views.size()==6,"camera plus all selected point faces queried");
     Require(inside.rendered==1 && shadow.rendered==1 && outside.rendered==0,"production Calculate retains off-camera caster and culls outside all volumes");
     Require(camera.updates==1 && caster.updates+duplicate.updates==1,"renderable identity deduplicates across views and spatial aliases");

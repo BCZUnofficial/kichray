@@ -57,14 +57,28 @@ struct Buffer {std::vector<Vertex> vertices;uint32_t available_attributes,basis_
     Buffer():available_attributes(0),basis_vertices(0),tree_fraction_max(0){}
 };
 struct Draw {
-    uint32_t vb,ib,first,count,material,available_attributes;Matrix world;Vec3 low,high;
+    uint32_t vb,ib,first,count,material,available_attributes,visual;Matrix world;Vec3 low,high;
     float tree_scale[5],tree_bias[5];bool tree;
+};
+// Portal topology is optional: unsupported/corrupt topology must never make
+// otherwise valid static geometry disappear.
+struct Portal {uint32_t front,back;std::vector<Vec3> vertices;Vec3 normal;float distance;};
+struct Sector {uint32_t root;std::vector<uint32_t> portals,draws;};
+struct Topology {
+    std::vector<Portal> portals;std::vector<Sector> sectors;bool valid;
+    Topology():valid(false){}
+};
+struct VisualNode {
+    std::vector<uint32_t> children;uint32_t draw;
+    VisualNode():draw(UINT32_MAX){}
 };
 struct Scene {
     std::vector<Material> materials;std::vector<Buffer> vertices;
     std::vector<std::vector<uint32_t> > indices;std::vector<Draw> draws;
+    std::vector<VisualNode> nodes;Topology topology;
+    std::vector<unsigned char> sector_owned;bool hierarchy_valid;
     Vec3 low,high;uint32_t visuals,skipped,trees,triangles;uint64_t cpu_bytes;
-    Scene():visuals(0),skipped(0),trees(0),triangles(0),cpu_bytes(0){low={1.e20f,1.e20f,1.e20f};high={-1.e20f,-1.e20f,-1.e20f};}
+    Scene():hierarchy_valid(true),visuals(0),skipped(0),trees(0),triangles(0),cpu_bytes(0){low={1.e20f,1.e20f,1.e20f};high={-1.e20f,-1.e20f,-1.e20f};}
 };
 inline void Budget(Scene& s,uint64_t bytes){Check(bytes<=192u*1024u*1024u-s.cpu_bytes,"level geometry exceeds 192 MiB viewer budget");s.cpu_bytes+=bytes;}
 inline uint32_t TypeBytes(uint32_t type){const unsigned char sizes[]={4,8,12,16,4,4,4,8,4,4,8,4,8,4,4,4,8};return type<17?sizes[type]:0;}
@@ -162,11 +176,17 @@ inline void Materials(Span level,Scene& out){Reader r(Chunk(level,2));const uint
         out.materials.push_back(m);
     }Check(!r.Left(),"unexpected shader table tail");
 }
-inline void Visuals(Span level,const std::vector<Span>& ibs,const std::vector<Window>& swis,Scene& out){Reader table(Chunk(level,3));
+inline void Visuals(Span level,const std::vector<Span>& ibs,const std::vector<Window>& swis,Scene& out){Reader table(Chunk(level,3));uint64_t hierarchy_links=0;
     while(table.Left()){const uint32_t id=table.U32(),size=table.U32();Check(id==out.visuals && id<100000,"non-sequential or excessive visual table");
         const Span visual(table.Take(size),size);++out.visuals;Reader h(Chunk(visual,1));const unsigned char* prefix=h.Take(2);
         Check(prefix[0]==4,"expected OGF format 4");const uint32_t type=prefix[1],shader=h.U16();
-        Draw draw={};draw.material=shader;draw.world=kich_r4_scene::Identity();
+        out.nodes.push_back(VisualNode());
+        try{const Span child=Chunk(visual,10,false);if(child.p){Reader r(child);const uint32_t n=r.U32();hierarchy_links+=n;
+                Check(n<=100000 && n<=r.Left()/4 && hierarchy_links<=4000000,"invalid/excessive visual child count");
+                out.nodes.back().children.reserve(n);for(uint32_t k=0;k<n;++k)out.nodes.back().children.push_back(r.U32());Check(!r.Left(),"unexpected visual children tail");}
+            else if(type==1 || type==6)out.hierarchy_valid=false;
+        }catch(const std::runtime_error&){out.hierarchy_valid=false;}
+        Draw draw={};draw.visual=id;draw.material=shader;draw.world=kich_r4_scene::Identity();
         for(unsigned a=0;a<3;++a)Axis(draw.low,a)=h.Float();
         for(unsigned a=0;a<3;++a){Axis(draw.high,a)=h.Float();Check(Axis(draw.low,a)<=Axis(draw.high,a) && fabsf(Axis(draw.low,a))<=1.e6f && fabsf(Axis(draw.high,a))<=1.e6f,"invalid visual bounds");}h.Take(16);
         if(type!=0 && type!=2 && type!=7 && type!=11){++out.skipped;continue;}
@@ -197,13 +217,66 @@ inline void Visuals(Span level,const std::vector<Span>& ibs,const std::vector<Wi
         draw.available_attributes=~0u;
         for(uint32_t i=0;i<count;++i){const uint32_t vertex=source.U16();Check(vertex<vcount,"index addresses outside visual vertex slice");target.push_back(vbase+vertex);
             draw.available_attributes&=out.vertices[vb].vertices[vbase+vertex].attributes;}
-        out.triangles+=count/3;out.draws.push_back(draw);
+        out.nodes.back().draw=static_cast<uint32_t>(out.draws.size());out.triangles+=count/3;out.draws.push_back(draw);
         for(unsigned a=0;a<3;++a){Axis(out.low,a)=std::min(Axis(out.low,a),Axis(draw.low,a));Axis(out.high,a)=std::max(Axis(out.high,a),Axis(draw.high,a));}
     }
     Check(!out.draws.empty(),"no supported static geometry in level");
 }
+/* Matches xrRender_R2/r2_loader.cpp b_portal and r__sector.cpp::load.
+ * svector stores its six vertices BEFORE its u32 count. Unused vertex bytes
+ * are unspecified and deliberately not interpreted. */
+inline bool LoadTopology(Span level,Topology& result){
+    result=Topology();
+    try{Topology t;const Span sectors=Chunk(level,8,false),portals=Chunk(level,4,false);
+        if(!sectors.p || !portals.p)return false;
+        Check(portals.n%80==0 && portals.n/80<=65536,"invalid portal table");
+        Reader sr(sectors);uint64_t link_count=0;
+        while(sr.Left()){const uint32_t id=sr.U32(),bytes=sr.U32();Check(id==t.sectors.size() && id<65535,"invalid sector table");
+            const Span sector(sr.Take(bytes),bytes);Reader root(Chunk(sector,2));Sector s;s.root=root.U32();Check(!root.Left(),"invalid sector root");
+            Reader links(Chunk(sector,1));link_count+=links.Left()/2;
+            Check(links.Left()%2==0 && link_count<=2u*(portals.n/80),"invalid/excessive sector portal links");
+            while(links.Left())s.portals.push_back(links.U16());
+            t.sectors.push_back(s);}
+        Check(!t.sectors.empty(),"empty sector table");Reader pr(portals);
+        while(pr.Left()){Portal p;p.front=pr.U16();p.back=pr.U16();const Span vertices(pr.Take(72),72);const uint32_t n=pr.U32();
+            Check(p.front<t.sectors.size() && p.back<t.sectors.size() && p.front!=p.back && n>=3 && n<=6,"invalid portal record");
+            Reader vr(vertices);for(uint32_t i=0;i<n;++i){Vec3 v={vr.Float(),vr.Float(),vr.Float()};p.vertices.push_back(v);}
+            p.normal={0,0,0};for(uint32_t i=2;i<n;++i){const Vec3& a=p.vertices[0];const Vec3& b=p.vertices[i-1];const Vec3& c=p.vertices[i];
+                const Vec3 ab={b.x-a.x,b.y-a.y,b.z-a.z},ac={c.x-a.x,c.y-a.y,c.z-a.z};Vec3 normal=kich_r4_scene::Cross(ab,ac);
+                if(UnitVector(&normal.x)){p.normal.x+=normal.x;p.normal.y+=normal.y;p.normal.z+=normal.z;}}
+            Check(UnitVector(&p.normal.x),"degenerate portal");p.distance=-kich_r4_scene::Dot(p.normal,p.vertices[0]);
+            for(uint32_t i=1;i<n;++i)Check(fabsf(kich_r4_scene::Dot(p.normal,p.vertices[i])+p.distance)<.05f,"non-planar portal");
+            t.portals.push_back(p);}
+        std::vector<unsigned char> linked(t.portals.size(),0);
+        for(uint32_t i=0;i<t.sectors.size();++i){const Sector& s=t.sectors[i];for(size_t j=0;j<s.portals.size();++j){const uint32_t id=s.portals[j];
+                Check(id<t.portals.size(),"portal link out of range");const Portal& p=t.portals[id];
+                const unsigned char bit=p.front==i?1:p.back==i?2:0;Check(bit && !(linked[id]&bit),"inconsistent/duplicate portal link");linked[id]|=bit;}}
+        for(size_t i=0;i<linked.size();++i)Check(linked[i]==3,"missing reciprocal portal link");
+        t.valid=true;result=t;return true;
+    }catch(const std::runtime_error&){return false;}
+}
+inline void MapSectorDraws(Scene& scene){
+    scene.sector_owned.assign(scene.draws.size(),0);
+    if(!scene.topology.valid || !scene.hierarchy_valid){scene.topology.valid=false;return;}
+    try{const size_t count=scene.nodes.size();std::vector<uint32_t> incoming(count,0),pending;
+        uint64_t edges=0;for(size_t i=0;i<count;++i)for(size_t j=0;j<scene.nodes[i].children.size();++j){const uint32_t child=scene.nodes[i].children[j];
+            Check(child<count && ++edges<=4000000,"invalid/excessive visual hierarchy");++incoming[child];}
+        for(uint32_t i=0;i<count;++i)if(!incoming[i])pending.push_back(i);
+        for(size_t at=0;at<pending.size();++at){const VisualNode& node=scene.nodes[pending[at]];
+            for(size_t j=0;j<node.children.size();++j)if(!--incoming[node.children[j]])pending.push_back(node.children[j]);}
+        Check(pending.size()==count,"cyclic visual hierarchy");
+        std::vector<uint32_t> visited(count,UINT32_MAX);uint64_t steps=0;
+        for(uint32_t sector=0;sector<scene.topology.sectors.size();++sector){Sector& s=scene.topology.sectors[sector];s.draws.clear();
+            Check(s.root<count,"sector visual root out of range");pending.clear();pending.push_back(s.root);
+            for(size_t at=0;at<pending.size();++at){const uint32_t id=pending[at];if(visited[id]==sector)continue;visited[id]=sector;
+                Check(++steps<=4000000,"excessive sector hierarchy traversal");const VisualNode& node=scene.nodes[id];
+                if(node.draw!=UINT32_MAX){Check(node.draw<scene.draws.size(),"invalid sector draw");s.draws.push_back(node.draw);scene.sector_owned[node.draw]=1;}
+                for(size_t child=0;child<node.children.size();++child)pending.push_back(node.children[child]);}}
+    }catch(const std::runtime_error&){scene.topology.valid=false;scene.sector_owned.assign(scene.draws.size(),0);}
+}
 inline void Parse(Span level,Span geometry,Scene& out){Header(level);Header(geometry);Materials(level,out);Vertices(geometry,out);
-    const std::vector<Span> ibs=Indices(geometry);const std::vector<Window> swis=TreeWindows(geometry);Visuals(level,ibs,swis,out);}
+    const std::vector<Span> ibs=Indices(geometry);const std::vector<Window> swis=TreeWindows(geometry);Visuals(level,ibs,swis,out);
+    LoadTopology(level,out.topology);MapSectorDraws(out);}
 struct File {
     const KichR4LevelFiles& api;KichR4FileView view;
     explicit File(const KichR4LevelFiles& a):api(a){memset(&view,0,sizeof(view));}

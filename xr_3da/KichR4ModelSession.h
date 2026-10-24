@@ -201,10 +201,12 @@ struct KichR4ModelSession {
         return 0;
     }
     static bool Opaque(const Command& c){return !c.layer && (c.has_material && c.material.semantic!=kich_r4_material::UNKNOWN?
-        kich_r4_material::Geometry(c.material):!c.style.blend && c.style.depth && c.style.write && !c.effect);}
+        kich_r4_material::Geometry(c.material):!c.style.blend && c.style.depth && c.style.write && (!c.effect || c.style.emissive_gain>0));}
     static bool Routes(const Command& c,Pass pass){
         if(c.effect==5 || (c.has_material && c.material.semantic==kich_r4_material::DISTORTION))return pass==Distortion;
         if(pass==Distortion)return false;
+        if(pass==Shadow && c.style.emissive_gain>0)return false;
+        if((pass==ForwardAdd || pass==HUDAdd) && c.has_material && c.material.semantic==kich_r4_material::EMISSIVE)return false;
         if(c.layer==1)return pass==HUD || (pass==HUDAdd && (!c.effect || c.effect==6));
         if(pass==HUD || pass==HUDAdd)return false;
         if(pass==Geometry || pass==Shadow)return Opaque(c) && (pass!=Shadow || !c.has_material || c.material.semantic==kich_r4_material::UNKNOWN || kich_r4_material::Shadow(c.material));
@@ -318,6 +320,8 @@ struct KichR4ModelSession {
             constants.world=c.world;constants.mvp=kich_r4_scene::Multiply(c.world,(pass==HUD || pass==HUDAdd)?c.vp:base.mvp);constants.normal_matrix=kich_r4_lighting::NormalMatrix(c.world);
             constants.alpha[0]=c.style.alpha_ref;constants.alpha[1]=static_cast<float>(c.style.alpha_func);constants.alpha[2]=c.style.blend?1.f:0.f;
             if(pass==Distortion)constants.alpha[3]=0;
+            if(c.has_material){constants.material[3]=kich_r4_material::MaterialClass(c.material.material);
+                constants.ambient[3]=c.material.emissive_gain;constants.hemi[3]=c.material.emissive_specular;}
             kich_r4_capture::Style style=c.style;
             if(c.has_material)kich_r4_material::Apply(c.material,style);
             if(pass==Shadow){style.depth=style.write=1;style.blend=style.clamp=0;style.scissor=false;style.min_z=0;style.max_z=1;}
@@ -325,10 +329,10 @@ struct KichR4ModelSession {
             if(pass==Distortion){style.depth=1;style.write=0;style.blend=1;style.src=5;style.dst=6;}
             KichR4ModelDrawDesc d={};d.struct_size=sizeof(d);d.surface.struct_size=sizeof(d.surface);KichR4StreamDrawDesc& state=d.surface.state;state.struct_size=sizeof(state);
             state.draw={sizeof(state.draw),pipelines[command_classes[index]][pass],mesh.vb,mesh.ib,cb,c.count,c.first,style.cull,style.depth};
-            if((pass==Forward || pass==HUD) && c.effect==1)state.draw.pipeline=plain_pipeline[command_classes[index]];
+            if((pass==Forward || pass==HUD) && (c.effect==1 || (c.has_material && c.material.semantic==kich_r4_material::EMISSIVE)))state.draw.pipeline=plain_pipeline[command_classes[index]];
             state.blend_enable=style.blend;state.source_blend=style.src;state.dest_blend=style.dst;state.clamp_texture=style.clamp;state.surface=style.surface;
             state.depth_write=style.write;state.scissor_enable=style.scissor?1:0;memcpy(state.scissor,style.rect,sizeof(state.scissor));state.min_depth=style.min_z;state.max_depth=style.max_z;
-            const std::string& texture=c.has_material && !c.material.base.empty()?c.material.base:c.texture;d.surface.textures[0]=texture.empty()?white:l.Texture(s,texture);
+            const std::string& texture=c.has_material && !c.material.base.empty()?c.material.base:c.texture;d.surface.textures[0]=pass==Shadow && (c.has_material?c.material.alpha_func:c.style.alpha_func)==8?0:texture.empty()?white:l.Texture(s,texture);
             if(g_render_snapshot_active){if(texture.empty())RenderSnapshot_Texture(0,"$white");
                 else if(d.surface.textures[0]==l.checker){char resolved[256];snprintf(resolved,sizeof(resolved),"CHECKER_FALLBACK:%s",texture.c_str());RenderSnapshot_Texture(0,resolved);}}
             if(maps)for(unsigned j=0;j<6;++j)d.surface.textures[j+2]=maps[j];
@@ -339,6 +343,8 @@ struct KichR4ModelSession {
             if(split){attributes|=kich_r4_material::ATTR_NORMAL|kich_r4_material::ATTR_TANGENT|kich_r4_material::ATTR_BINORMAL;
                 state.draw.index_buffer=split->ib;state.draw.start_index=0;state.draw.index_count=split->good;}
             if(c.has_material && (pass==Geometry || pass==Shadow))kich_r4_material::Bind(s,l,c.material,attributes,constants,d.surface,pass==Shadow,false,c.object_light_valid && pass==Geometry?kich_r4_material::SHADER_SUN:0,"MODEL_MATERIAL_EXECUTION");
+            if(c.style.emissive_gain>0){constants.ambient[3]=c.style.emissive_gain;constants.hemi[3]=c.style.emissive_specular;
+                if(pass==Geometry)constants.material[0]=float(uint32_t(constants.material[0])|256u);}
             if(g_render_snapshot_active && c.has_material && pass==Geometry)SnapshotMaterialBasis(c,uint32_t(constants.material[0]));
             // Reuse unused model constants; static/tree layout and DLL ABI stay unchanged.
             constants.color_bias[3]=c.object_light_valid?1.f:0.f;constants.color_scale[3]=c.object_hemi;constants.sun_scale_bias[2]=c.object_sun;

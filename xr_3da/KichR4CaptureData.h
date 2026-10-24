@@ -4,6 +4,7 @@
 #include "KichR4Stream.h"
 #include "KichR4CaptureInput.h"
 #include "KichR4LightingMath.h"
+#include "KichR4Visibility.h"
 #include "RenderSnapshot.h"
 #include "KichR4TelemetryText.h"
 #include "KichR4Material.h"
@@ -237,6 +238,7 @@ inline void SnapshotCommand(Command& cmd,const std::vector<Vertex>& vertices,con
             h=SnapshotStringHash(h,cmd.texture);h=SnapshotStringHash(h,cmd.secondary);
             const uint32_t state[]={cmd.effect,cmd.style.blend,cmd.style.src,cmd.style.dst,cmd.style.clamp,cmd.style.cull,cmd.style.depth,cmd.style.write,cmd.style.alpha_func};
             h=SnapshotHash(h,state,sizeof(state));h=SnapshotHash(h,&cmd.style.alpha_ref,sizeof(cmd.style.alpha_ref));
+            const float emission[]={cmd.style.emissive_gain,cmd.style.emissive_specular};h=SnapshotHash(h,emission,sizeof(emission));
             h=SnapshotHash(h,&cmd.style.surface,sizeof(cmd.style.surface));
             snprintf(p->material_id,sizeof(p->material_id),"CAPTURE_DESCRIPTOR_FNV64:%016llx",static_cast<unsigned long long>(h));}
         /* Select at most four distinct referenced vertices, preserving indexed draw order. */
@@ -338,6 +340,7 @@ struct Batch {
         key.append(reinterpret_cast<const char*>(&world),sizeof(world));key.append(reinterpret_cast<const char*>(&vp),sizeof(vp));
         const uint32_t words[]={first,tris,count,skin_mode,cmd.layer,effect,shader_element,shader_pass,style.blend,style.src,style.dst,style.clamp,style.cull,style.depth,style.write,style.alpha_func};
         key.append(reinterpret_cast<const char*>(words),sizeof(words));key.append(reinterpret_cast<const char*>(&style.alpha_ref),sizeof(style.alpha_ref));
+        const float emission[]={style.emissive_gain,style.emissive_specular};key.append(reinterpret_cast<const char*>(emission),sizeof(emission));
         key.append(reinterpret_cast<const char*>(&style.surface),sizeof(style.surface));
         const float exposure[]={light_valid?1.f:0.f,object_hemi,object_sun};key.append(reinterpret_cast<const char*>(exposure),sizeof(exposure));
         const float depth_range[]={style.min_z,style.max_z};key.append(reinterpret_cast<const char*>(depth_range),sizeof(depth_range));
@@ -356,6 +359,7 @@ struct Batch {
             snprintf(p.semantic_type,sizeof(p.semantic_type),"%s",mesh->skinned?"SKINNED_MODEL":"RIGID_MODEL");
             snprintf(p.evidence,sizeof(p.evidence),"OGF_SHARED_GPU_MODEL");SnapshotModelID(*mesh,p.mesh_id,sizeof(p.mesh_id),first,cmd.count);
             uint64_t hash=SnapshotStringHash(UINT64_C(14695981039346656037),cmd.shader);hash=SnapshotStringHash(hash,cmd.texture);hash=SnapshotStringHash(hash,cmd.secondary);hash=SnapshotHash(hash,words+5,sizeof(words)-5*sizeof(uint32_t));hash=SnapshotHash(hash,&style.alpha_ref,sizeof(style.alpha_ref));
+            hash=SnapshotHash(hash,emission,sizeof(emission));
             snprintf(p.material_id,sizeof(p.material_id),"MODEL_DESCRIPTOR_FNV64:%016llx",static_cast<unsigned long long>(hash));
             p.flags=0;p.uv_count=0;uint32_t sample[4]={};for(uint32_t i=0;i<cmd.count && i<32 && p.uv_count<4;++i){const uint32_t at=mesh->indices[first+i];bool used=false;
                 for(uint32_t j=0;j<p.uv_count;++j)if(sample[j]==at)used=true;
@@ -399,10 +403,10 @@ struct State {
         if(!id)return;
         const bool valid=kich_r4_lighting::ValidLight(light);
         if(!active || !valid)lights.erase(id);
-        else if(lights.size()<4096 || lights.find(id)!=lights.end())lights[id]=light;
+        else if(lights.size()<KICH_R4_LIGHT_REGISTRY_CAPACITY || lights.find(id)!=lights.end())lights[id]=light;
         // Bounded observation metadata is separate from the render registry.
         // Retain inactive/invalid sources so a diagnostic can explain exclusion.
-        try{if(light_observations.size()<4096 || light_observations.count(id)){
+        try{if(light_observations.size()<KICH_R4_LIGHT_REGISTRY_CAPACITY || light_observations.count(id)){
             LightObservation o={light,active,valid,frame.engine_frame};light_observations[id]=o;
         }else ++light_observation_overflow;}catch(...){++light_observation_overflow;}
     }
@@ -412,27 +416,38 @@ struct State {
         // numerical equality establishes bStatic for a runtime registration.
         return !r1_lights_enabled && source!=light_sources.end() && (source->second.flags&KICH_R4_LIGHT_STATIC)!=0;
     }
-    void SelectLights(const float* camera,KichR4LightingFrame& out,bool r1_lights_enabled=false)const {
-        struct Choice {float score;KichR4LocalLight light;bool shadow;const void* source;};std::vector<Choice> choices;out.count=0;out.shadow_mask=0;memset(out.sources,0,sizeof(out.sources));
+    void SelectLights(const float* camera,KichR4LightingFrame& out,bool r1_lights_enabled=false,const float* camera_vp=NULL)const {
+        struct Choice {float score;KichR4LocalLight light;bool shadow;const void* source;};std::vector<Choice> choices;
+        out.count=0;out.shadow_mask=0;out.shadows.clear();out.sources.clear();out.lights.clear();out.visibility_valid=camera_vp?1u:0u;
+        if(camera_vp)memcpy(out.visibility_vp,camera_vp,sizeof(out.visibility_vp));
+        else memset(out.visibility_vp,0,sizeof(out.visibility_vp));
         out.r1_lights_requested=out.r1_lights_applied=r1_lights_enabled?1u:0u;
+        if(!camera)return;
+        Matrix vp={};if(camera_vp)memcpy(vp.m,camera_vp,sizeof(vp.m));
         for(std::map<const void*,KichR4LocalLight>::const_iterator it=lights.begin();it!=lights.end();++it){
             if(StaticLightDisabled(it->first,r1_lights_enabled))continue;
             const KichR4LocalLight& l=it->second;float distance=0;
             for(unsigned a=0;a<3;++a){const float d=l.position[a]-camera[a];distance+=d*d;}
             const float brightness=std::max(l.color[0],std::max(l.color[1],l.color[2]));
-            if(distance>(150+l.range)*(150+l.range) || brightness<=0)continue;
+            if(brightness<=0 || (camera_vp && !kich_r4_visibility::VisibleSphere(l.position,l.range,vp)))continue;
             Choice c={brightness*l.range*l.range/(distance+1)+(l.type==2 && distance<4?1.e10f:0),l,unshadowed_lights.count(it->first)==0,it->first};choices.push_back(c);
         }
+        // Sorting is deterministic scheduling only. Every visible source is
+        // admitted; the bounded registry is not a global gameplay light quota.
         std::stable_sort(choices.begin(),choices.end(),[](const Choice& a,const Choice& b){return a.score>b.score;});
-        out.count=static_cast<uint32_t>(std::min(size_t(8),choices.size()));for(unsigned i=0;i<out.count;++i){out.lights[i]=choices[i].light;if(choices[i].shadow)out.shadow_mask|=1u<<i;
+        out.lights.resize(choices.size());out.sources.resize(choices.size());out.shadows.resize(choices.size());
+        for(unsigned i=0;i<choices.size();++i){out.lights[i]=choices[i].light;out.shadows[i]=choices[i].shadow?1:0;
+            if(choices[i].shadow && i<32)out.shadow_mask|=1u<<i;
             const auto source=light_sources.find(choices[i].source);if(source!=light_sources.end())out.sources[i]=source->second;
             else out.sources[i].process_handle=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(choices[i].source));}
+        out.count=static_cast<uint32_t>(choices.size());
     }
     void SnapshotLights(const float* camera,const KichR4LightingFrame& selected)const {
         if(!g_render_snapshot_active || !camera)return;
         using namespace kich_r4_telemetry;
         uint64_t active=0,valid=0,admitted=0,selected_count=0,policy_rejected=0;
-        uint64_t rejected_inactive=0,rejected_invalid=0,rejected_capacity=0,rejected_distance=0,rejected_color=0,rejected_budget=0;
+        uint64_t rejected_inactive=0,rejected_invalid=0,rejected_capacity=0,rejected_frustum=0,rejected_color=0,rejected_missing=0;
+        Matrix selection_vp={};memcpy(selection_vp.m,selected.visibility_vp,sizeof(selection_vp.m));
         uint64_t selected_level=0,selected_runtime=0,selected_unknown=0,selected_shadow=0;
         for(auto it=light_observations.begin();it!=light_observations.end();++it){
             const LightObservation& o=it->second;const KichR4LocalLight& l=o.value;
@@ -443,18 +458,19 @@ struct State {
             const float brightness=std::max(l.color[0],std::max(l.color[1],l.color[2]));
             const bool in_registry=lights.count(it->first)!=0;
             const bool policy_passed=in_registry && !StaticLightDisabled(it->first,selected.r1_lights_applied!=0);
-            const bool candidate=policy_passed && !(distance>(150+l.range)*(150+l.range) || brightness<=0);
-            unsigned slot=8;for(unsigned i=0;i<selected.count && i<8;++i)if(selected.sources[i].process_handle==identity.process_handle && selected.sources[i].serial==identity.serial){slot=i;break;}
-            const bool chosen=slot<8;
-            const char* reason=!o.active?"INACTIVE":!o.valid?"INVALID_DESCRIPTOR":!in_registry?"REGISTRY_CAPACITY_LIMIT":!policy_passed?"STATIC_LIGHT_DISABLED_R2FLAG_R1LIGHTS":distance>(150+l.range)*(150+l.range)?"OUTSIDE_DISTANCE_LIMIT":brightness<=0?"NONPOSITIVE_COLOR":!chosen?"BELOW_TOP_8_SCORE":"SELECTED_TOP_8_SCORE";
+            const bool visible=!selected.visibility_valid || kich_r4_visibility::VisibleSphere(l.position,l.range,selection_vp);
+            const bool candidate=policy_passed && visible && brightness>0;
+            unsigned slot=selected.count;for(unsigned i=0;i<selected.count && i<selected.sources.size();++i)if(selected.sources[i].process_handle==identity.process_handle && selected.sources[i].serial==identity.serial){slot=i;break;}
+            const bool chosen=slot<selected.count;
+            const char* reason=!o.active?"INACTIVE":!o.valid?"INVALID_DESCRIPTOR":!in_registry?"REGISTRY_CAPACITY_LIMIT":!policy_passed?"STATIC_LIGHT_DISABLED_R2FLAG_R1LIGHTS":brightness<=0?"NONPOSITIVE_COLOR":!visible?"OUTSIDE_CAMERA_FRUSTUM":!chosen?"SELECTION_NOT_CAPTURED":"SELECTED_VISIBLE_SOURCE";
             if(o.active)++active;
             if(in_registry)++valid;
             if(candidate)++admitted;
             if(!o.active)++rejected_inactive;else if(!o.valid)++rejected_invalid;else if(!in_registry)++rejected_capacity;
-            else if(!policy_passed)++policy_rejected;else if(distance>(150+l.range)*(150+l.range))++rejected_distance;
-            else if(brightness<=0)++rejected_color;else if(!chosen)++rejected_budget;
+            else if(!policy_passed)++policy_rejected;else if(brightness<=0)++rejected_color;
+            else if(!visible)++rejected_frustum;else if(!chosen)++rejected_missing;
             if(chosen){++selected_count;if(identity.role==KICH_R4_LIGHT_ROLE_LEVEL)++selected_level;else if(identity.role==KICH_R4_LIGHT_ROLE_RUNTIME)++selected_runtime;else ++selected_unknown;
-                if(selected.shadow_mask&(1u<<slot))++selected_shadow;}
+                if(selected.CastsShadow(slot))++selected_shadow;}
             if(!RenderSnapshot_Detailed())continue;
             char id[64];if(identity.serial)Handle(id,sizeof(id),"source",identity.serial);else Handle(id,sizeof(id),"process_handle",identity.process_handle);
             Text("LIGHT",id,"registry","R4_NATIVE");Text("LIGHT",id,"id_scope",identity.serial?"PROCESS_LIFETIME_SOURCE_SERIAL":"PROCESS_POINTER; REUSE_NOT_RESOLVED");
@@ -474,7 +490,7 @@ struct State {
             Vector("LIGHT",id,"position",l.position,3);Vector("LIGHT",id,"direction",l.direction,3);Vector("LIGHT",id,"color",l.color,3);
             Float("LIGHT",id,"range",l.range);Float("LIGHT",id,"cone",l.cone);Float("LIGHT",id,"camera_distance_squared",distance);
             Text("LIGHT",id,"selection_reason",reason);
-            Text("LIGHT",id,"policy","BSTATIC_REQUIRES_R2FLAG_R1LIGHTS_BEFORE_RANGE_AND_TOP8; NO_NUMERIC_DEDUP");
+            Text("LIGHT",id,"policy","BSTATIC_REQUIRES_R2FLAG_R1LIGHTS; ALL_VISIBLE_POSITIVE_SOURCES; NO_NUMERIC_DEDUP");
             U64("LIGHT",id,"shadow_requested",unshadowed_lights.count(it->first)==0);U64("LIGHT",id,"last_update_frame",o.frame);
         }
         RenderSnapshot_U64("LIGHT_REGISTRY","registered_observed",light_observations.size());RenderSnapshot_U64("LIGHT_REGISTRY","identity_records",light_sources.size());
@@ -483,16 +499,16 @@ struct State {
         RenderSnapshot_U64("LIGHT_REGISTRY","policy_passed",valid-policy_rejected);RenderSnapshot_U64("LIGHT_REGISTRY","policy_rejected",policy_rejected);
         RenderSnapshot_U64("LIGHT_REGISTRY","rejected_STATIC_LIGHT_DISABLED_R2FLAG_R1LIGHTS",policy_rejected);
         RenderSnapshot_U64("LIGHT_REGISTRY","rejected_INACTIVE",rejected_inactive);RenderSnapshot_U64("LIGHT_REGISTRY","rejected_INVALID_DESCRIPTOR",rejected_invalid);
-        RenderSnapshot_U64("LIGHT_REGISTRY","rejected_REGISTRY_CAPACITY_LIMIT",rejected_capacity);RenderSnapshot_U64("LIGHT_REGISTRY","rejected_OUTSIDE_DISTANCE_LIMIT",rejected_distance);
-        RenderSnapshot_U64("LIGHT_REGISTRY","rejected_NONPOSITIVE_COLOR",rejected_color);RenderSnapshot_U64("LIGHT_REGISTRY","rejected_BELOW_TOP_8_SCORE",rejected_budget);
+        RenderSnapshot_U64("LIGHT_REGISTRY","rejected_REGISTRY_CAPACITY_LIMIT",rejected_capacity);RenderSnapshot_U64("LIGHT_REGISTRY","rejected_OUTSIDE_CAMERA_FRUSTUM",rejected_frustum);
+        RenderSnapshot_U64("LIGHT_REGISTRY","rejected_NONPOSITIVE_COLOR",rejected_color);RenderSnapshot_U64("LIGHT_REGISTRY","rejected_SELECTION_NOT_CAPTURED",rejected_missing);
         RenderSnapshot_U64("LIGHT_REGISTRY","admitted",admitted);RenderSnapshot_U64("LIGHT_REGISTRY","selected",selected_count);
         RenderSnapshot_U64("LIGHT_REGISTRY","selected_LEVEL_RECORD",selected_level);RenderSnapshot_U64("LIGHT_REGISTRY","selected_RUNTIME_REGISTERED",selected_runtime);RenderSnapshot_U64("LIGHT_REGISTRY","selected_UNKNOWN",selected_unknown);
-        RenderSnapshot_U64("LIGHT_REGISTRY","slots_used",selected.count);RenderSnapshot_U64("LIGHT_REGISTRY","slots_capacity",8);RenderSnapshot_U64("LIGHT_REGISTRY","selected_shadow_requested",selected_shadow);
+        RenderSnapshot_U64("LIGHT_REGISTRY","slots_used",selected.count);RenderSnapshot_U64("LIGHT_REGISTRY","slots_capacity",KICH_R4_LIGHT_REGISTRY_CAPACITY);RenderSnapshot_U64("LIGHT_REGISTRY","selected_shadow_requested",selected_shadow);
         RenderSnapshot_U64("LIGHT_REGISTRY","observation_overflow_events",light_observation_overflow);
         RenderSnapshot_U64("LIGHT_REGISTRY","identity_registration_rejections",light_identity_rejections);
         RenderSnapshot_Text("LIGHT_REGISTRY","counter_scope","BOUNDED_OBSERVATION_REGISTRY_AT_CALCULATE; RETAINS_INACTIVE_UNTIL_FORGET; BEFORE_DICTIONARY_LIMIT");
-        RenderSnapshot_Text("LIGHT_REGISTRY","policy","BSTATIC_REQUIRES_R2FLAG_R1LIGHTS; THEN_DISTANCE_150_PLUS_RANGE_POSITIVE_COLOR_TOP_8_SCORE; ENVIRONMENT_SUN_SEPARATE; NO_DEDUP");
-        RenderSnapshot_Text("LIGHT_REGISTRY","visibility_filter","DISTANCE_150_PLUS_RANGE; CAMERA_FRUSTUM_NOT_APPLIED; RETAINED_CONSERVATIVE_POLICY");
+        RenderSnapshot_Text("LIGHT_REGISTRY","policy","BSTATIC_REQUIRES_R2FLAG_R1LIGHTS; ALL_VISIBLE_POSITIVE_SOURCES; NO_GLOBAL_DRAW_LIGHT_LIMIT; ENVIRONMENT_SUN_SEPARATE; NO_DEDUP");
+        RenderSnapshot_Text("LIGHT_REGISTRY","visibility_filter",selected.visibility_valid?"SOURCE_RANGE_SPHERE_INTERSECTS_CAMERA_FRUSTUM":"NO_CAMERA_FRUSTUM_SUPPLIED; CONSERVATIVE_ALL_SOURCES");
     }
     void Diagnostic(const std::string& message){if(log && diagnostics<64){++diagnostics;log(("[R4 bridge B4.3b.1] "+message).c_str());}}
     void Begin(uint32_t w,uint32_t h,uint32_t f){frame.Begin(w,h,f);stream_bytes=0;

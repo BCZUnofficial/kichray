@@ -501,6 +501,8 @@
     <ClInclude Include="KichR4LevelData.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="KichR4LevelCamera.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="KichR4LevelSession.h"><Filter>Interfaces\Render</Filter></ClInclude>
+    <ClInclude Include="KichR4TexturePreflight.h"><Filter>Interfaces\Render</Filter></ClInclude>
+    <ClInclude Include="KichR4LevelVisibility.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="KichR4Game.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="KichR4GameSession.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="KichR4Dds.h"><Filter>Interfaces\Render</Filter></ClInclude>

@@ -56,7 +56,7 @@ int main(){try{
     KichR4LightingFrame lighting={};state.SelectLights(camera,lighting);Require(lighting.count==2,"active point and spot snapshots selected");
     state.Light(reinterpret_cast<void*>(1),light,false);Require(state.lights.size()==1,"deactivation removes snapshot");
     for(unsigned i=3;i<15;++i){light.type=1;light.position[0]=static_cast<float>(i);state.Light(reinterpret_cast<void*>(static_cast<uintptr_t>(i)),light,true);}
-    state.SelectLights(camera,lighting);Require(lighting.count==8,"only eight local lights reach GPU planner");
+    state.SelectLights(camera,lighting);Require(lighting.count==13,"all active local lights reach GPU planner without top8 cutoff");
     KichR4PassDesc pass={};pass.struct_size=sizeof(pass);pass.width=960;pass.height=540;pass.color_count=1;pass.depth_value=1;
     Require(kich_r4::ValidPass(pass),"backbuffer pass supported");pass.color_count=2;Require(!kich_r4::ValidPass(pass),"null MRT handles rejected");
     pass.colors[0]=1;pass.colors[1]=2;Require(kich_r4::ValidPass(pass),"two color attachments valid");

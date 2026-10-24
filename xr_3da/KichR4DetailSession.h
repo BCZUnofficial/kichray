@@ -116,7 +116,7 @@ struct KichR4DetailSession {
                 const KichR4BufferDesc ib={sizeof(ib),KICH_R4_INDEX_BUFFER,static_cast<uint32_t>(m.indices.size()*2),2};
                 if(l.Expect(s,"G3a immutable mesh vertices",l.bridge.resources.create_buffer(s.device,&vb,m.vertices.data(),vb.byte_size,&gpu.vb))<0)return s.failure;
                 if(l.Expect(s,"G3a immutable mesh indices",l.bridge.resources.create_buffer(s.device,&ib,m.indices.data(),ib.byte_size,&gpu.ib))<0)return s.failure;
-                gpu.texture=l.Texture(s,m.texture);gpu.indices=static_cast<uint32_t>(m.indices.size());meshes.push_back(gpu);
+                gpu.indices=static_cast<uint32_t>(m.indices.size());meshes.push_back(gpu);
             }
             generation=source->generation;
         }

@@ -22,7 +22,7 @@ namespace {
 bool selected=false,menu_pp=false,menu_overlay=false,distortion_enabled=true;
 uint32_t texture_budget_mb=384;
 bool celestial_source=false;
-bool lens_effect=false,object_light_valid=false;float object_hemi=1,object_sun=1;
+bool lens_effect=false,glow_scope=false,object_light_valid=false;float object_hemi=1,object_sun=1;
 std::chrono::steady_clock::time_point queue_begin;
 uint32_t states[256]={};
 uint32_t sampler_states[8][14]={};
@@ -98,6 +98,11 @@ uint32_t KichR4_NativeGetState(uint32_t key){return key<256?states[key]:0;}
 void KichR4_NativeMenuPP(bool enabled){if(menu_pp && !enabled)menu_overlay=true;menu_pp=enabled;}
 void KichR4_NativeCelestialSource(bool enabled){celestial_source=enabled;}
 void KichR4_NativeLensEffect(bool enabled){lens_effect=enabled;}
+bool KichR4_NativeGlow(bool enabled){const bool previous=glow_scope;glow_scope=enabled;return previous;}
+void KichR4_NativeEmissive(float gain,float specular,float* previous){
+    if(previous){previous[0]=style.emissive_gain;previous[1]=style.emissive_specular;}
+    style.emissive_gain=gain;style.emissive_specular=specular;
+}
 uint32_t KichR4_NativeWallmark(uint32_t scope){const uint32_t previous=wallmark_scope;wallmark_scope=scope;return previous;}
 void KichR4_NativeObjectLight(bool valid,float hemi,float sun){object_light_valid=valid;object_hemi=hemi;object_sun=sun;}
 void KichR4_NativeViewport(float a,float b){style.min_z=a;style.max_z=b;}
@@ -117,6 +122,10 @@ void KichR4_NativeElementPass(ShaderElement* e,uint32_t pass){
     const SPass* selected_pass=e->passes[pass]._get();
     if(selected_pass && selected_pass->ps)active_shader=selected_pass->ps->cName.c_str();
     effect=kich_r4_material::Effect(active_shader.c_str(),e->flags.bDistort!=0,e->flags.bWmark!=0);
+    // Generated streams do not carry the native model's material descriptor.
+    // Preserve the explicit emissive flag here, before the command is captured.
+    if(e->flags.bEmissive && !e->flags.bDistort && !e->flags.bWmark && !wallmark_scope)effect=1;
+    if(glow_scope)effect=1;
     if(wallmark_scope || effect==6){
         const uint32_t color0=selected_pass && selected_pass->state?selected_pass->state->state_code.get_TSS(0,1,4):4;
         const uint32_t color1=selected_pass && selected_pass->state?selected_pass->state->state_code.get_TSS(1,1,1):1;
@@ -133,7 +142,7 @@ void KichR4_NativeModelMaterial(kich_r4_capture::ModelInput& input){
     }catch(...){KichR4_CaptureFail("G3c model material snapshot failed");}
 }
 double KichR4_NativeQueueTime(){return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-queue_begin).count();}
-void KichR4_NativeBegin(uint32_t width,uint32_t height,uint32_t frame){wallmark_scope=wallmark_color=0;celestial_source=lens_effect=object_light_valid=false;object_hemi=object_sun=1;menu_pp=menu_overlay=false;queue_begin=std::chrono::steady_clock::now();memset(states,0,sizeof(states));style=kich_r4_capture::Style();states[D3DRS_ZENABLE]=states[D3DRS_ZWRITEENABLE]=1;
+void KichR4_NativeBegin(uint32_t width,uint32_t height,uint32_t frame){wallmark_scope=wallmark_color=0;celestial_source=lens_effect=glow_scope=object_light_valid=false;object_hemi=object_sun=1;menu_pp=menu_overlay=false;queue_begin=std::chrono::steady_clock::now();memset(states,0,sizeof(states));style=kich_r4_capture::Style();states[D3DRS_ZENABLE]=states[D3DRS_ZWRITEENABLE]=1;
     KichR4_DetailFrame().ClearFrame(frame);active_material=NULL;
     states[23]=4;states[171]=states[209]=1;states[207]=2;states[208]=1;
     memset(sampler_states,0,sizeof(sampler_states));for(unsigned i=0;i<8;++i){sampler_states[i][1]=sampler_states[i][2]=sampler_states[i][3]=sampler_states[i][10]=1;
@@ -253,6 +262,7 @@ void KichR4_NativeDraw(void* declaration,void* vb,void* ib,uint32_t stride,uint3
         if(lens_effect && !screen){cmd.effect=1;kich_r4_optics::SkyStyle(cmd.style);}
         if(celestial_source && !screen){cmd.effect=kich_r4_optics::CelestialSource;kich_r4_optics::SkyStyle(cmd.style);}
         cmd.semantic=CapturedSemantic(screen,effect);
+        if(glow_scope && !screen){cmd.effect=1;cmd.semantic=CAPTURE_GLOW;kich_r4_optics::GlowStyle(cmd.style);}
         if(cmd.effect==6)cmd.wallmark_color=wallmark_color;
         kich_r4_wallmark::Capture(wallmark_scope,screen,wallmark_color,cmd);
         cmd.captured_vertices=static_cast<uint32_t>(batch.vertices.size())-vbase;

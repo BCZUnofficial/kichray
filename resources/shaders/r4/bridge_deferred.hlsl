@@ -14,7 +14,7 @@ SamplerState surface1:register(s2); SamplerState surface2:register(s3);
 SamplerState surface3:register(s4); SamplerState surface4:register(s5);
 SamplerState surface5:register(s6); SamplerState surface6:register(s7); SamplerState surface7:register(s8);
 // Material flags: bump=1, baked lightmap=2, hemi map=4, detail=8,
-// vertex baked RGB=16, source sun=32, tree light scale/bias=64.
+// vertex baked RGB=16, source sun=32, tree light scale/bias=64, emissive=256.
 struct StaticInput {float3 p:POSITION;float2 uv:TEXCOORD0;float4 n:NORMAL;
     float3 t:TEXCOORD1;float3 b:TEXCOORD2;float3 uv_sun:TEXCOORD3;float4 light:COLOR0;float2 tree:TEXCOORD4;};
 struct ModelInput {float4 p:POSITION;float2 uv:TEXCOORD0;float4 c:COLOR0;float4 n:NORMAL;float3 w:TEXCOORD1;};
@@ -108,23 +108,50 @@ float3 Normal(Varying v,bool front){float3 n=v.n.xyz;
     }
     // Flip the complete mapped normal on the back face, preserving mirrored UV handedness.
     return front?n:-n;}
+// Octahedral normals free two GBuffer components without another render target.
+// The 11-bit integer in .w is exactly representable by RGBA16F: 7 gloss bits,
+// 4 material bits. The four SoC material slices clamp at class 3.
+float2 NormalSign(float2 v){return float2(v.x>=0?1:-1,v.y>=0?1:-1);}
+float2 EncodeNormal(float3 n){n/=max(dot(abs(n),float3(1,1,1)),1e-8);
+    return n.z>=0?n.xy:(1-abs(n.yx))*NormalSign(n.xy);}
+float3 DecodeNormal(float2 e){float3 n=float3(e,1-abs(e.x)-abs(e.y));
+    if(n.z<0){n.xy=(1-abs(n.yx))*NormalSign(n.xy);}return normalize(n);}
+float PackMaterial(float gloss,float m){return floor(saturate(gloss)*127+.5)*16+floor(clamp(m,0,3)*5+.5);}
+float MaterialGloss(float packed){return floor(packed/16)/127;}
+float MaterialClass(float packed){return fmod(packed,16)*.2;}
+float Gloss(Varying v){
+    // SoC sload.h: bump R is squared gloss, flat surfaces use def_gloss.
+    float gloss=2.0/255;
+    if(((uint)material.x&1)!=0){float g=image1.Sample(surface1,v.uv).r;gloss=g*g;}
+    if(((uint)material.x&9)==9)gloss*=shadow3.Sample(surface5,v.uv*material.yz).a*2;
+    return saturate(gloss);
+}
 struct GeometryOutput {float4 albedo:SV_Target0;float4 normal:SV_Target1;float4 baked:SV_Target2;};
 GeometryOutput PSGeometry(Varying v,bool front:SV_IsFrontFace){GeometryOutput o;
     uint flags=(uint)material.x;float h=v.n.w,s=(flags&32)!=0?v.baked_sun.w:.5;float3 baked=0;
     if((flags&16)!=0)baked=v.baked_sun.rgb;
-    // Compatibility irradiance: keep R1/XRLC lmap0 RGB as a separate raw
-    // additive baked term. This is not R2 material-LUT/specular parity.
+    // R1/XRLC baked RGB remains additive irradiance, separate from material
+    // response to direct lights. Do not reinterpret it as albedo or hemi.
     if((flags&2)!=0){float4 lm=shadow1.Sample(surface3,v.uv1);baked+=lm.rgb;s=lm.a;}
     if((flags&4)!=0){float4 lm=shadow2.Sample(surface4,v.uv1);h=dot(lm.rgb,float3(1.0/3,1.0/3,1.0/3));s=lm.a;}
-    o.albedo=float4(Base(v).rgb,saturate(s));o.normal=float4(Normal(v,front),saturate(h));o.baked=float4(baked,0);
+    o.albedo=float4(Base(v).rgb,saturate(s));
+    float gloss=Gloss(v);
+    o.normal=float4(EncodeNormal(Normal(v,front)),saturate(h),PackMaterial(gloss,material.w));o.baked=float4(baked,0);
+    // SoC E[4] accum_emissive[l] writes constant irradiance/specular. Fold it
+    // into this base surface's accumulator once, retaining its depth/coverage.
+    if((flags&256)!=0){o.baked.rgb+=ambient.www;o.baked.a+=hemi.w*gloss;}
     // Diagnostics keep separate components before accumulation, with no new MRT.
     if((int)screen.z==6)o.albedo.rgb=baked;
     if((int)screen.z==9){float3 n=v.n.xyz;if(dot(n,n)<.05)n=cross(ddy(v.w),ddx(v.w));
         n=dot(n,n)>1e-6?normalize(n):float3(0,1,0);o.albedo.rgb=(front?n:-n)*.5+.5;}
     if((int)screen.z==8)o.baked=0;
     return o;}
-void PSShadow(Varying v){Base(v);}
-float4 PSPlain(Varying v):SV_Target {return Base(v);}
+void PSShadow(Varying v){if((int)alpha.y!=8)Base(v);}
+float4 PSPlain(Varying v):SV_Target {float4 c=Base(v);
+    // Non-emissive UI/copy/glow keeps the authored value. Blended self-light
+    // folds its known R2 emissive response once; opaque emission uses GBuffer.
+    if(ambient.w>0)c.rgb=c.rgb*ambient.w+hemi.w*Gloss(v);
+    return c;}
 // Dynamic wallmarks use vertex alpha as AGE, not opacity, in MUL_2X+fade.
 // SoC BLENDDIFFUSEALPHA / X-Ray 1.6 stub_default_ma: a fresh neutral-gray
 // texel remains 0.5 so DESTCOLOR+SRCCOLOR leaves receiver albedo unchanged.
@@ -158,46 +185,97 @@ float PCF(Texture2D map,float4 projected){if(projected.w<=0)return 0;
     if(any(uv<0) || any(uv>1) || q.z<0 || q.z>1)return 0;
     float result=0;
     [unroll]for(int y=-1;y<=1;++y)[unroll]for(int x=-1;x<=1;++x)
-        result+=map.SampleCmpLevelZero(shadow_surface,uv+float2(x,y)/screen.w,q.z-.0015);
+        result+=map.SampleCmpLevelZero(shadow_surface,uv+float2(x,y)/screen.w,q.z);
     return result/9;
 }
-float SunVisibility(float3 p){return sun_color.w>0?PCF(shadow0,mul(float4(p,1),shadow[0])):0;}
-float3 SunLight(float3 p,float3 n,float h,float sun_mask){float sky=saturate(n.y*.5+.5)*h;
-    float3 base=ambient.rgb+hemi.rgb*sky;
-    return base+sun_color.rgb*saturate(dot(n,-sun_direction.xyz))*SunVisibility(p)*sun_mask;}
+float SunVisibility(float3 p){
+    if(sun_color.w<=0)return 0;
+    // 1 cm in world space, independent of the orthographic depth range.
+    p-=sun_direction.xyz*.01;
+    float4 near_position=mul(float4(p,1),shadow[0]);
+    float3 q=near_position.xyz/near_position.w;
+    float edge=max(abs(q.x),abs(q.y));
+    [branch] if(q.z<0 || q.z>1 || edge>=1)return PCF(shadow1,mul(float4(p,1),shadow[1]));
+    float near_visibility=PCF(shadow0,near_position);
+    [branch] if(edge<=.9)return near_visibility;
+    float far_visibility=PCF(shadow1,mul(float4(p,1),shadow[1]));
+    return lerp(near_visibility,far_visibility,saturate((edge-.9)*10));
+}
+// Analytical evaluation of SoC r2_rendertarget.cpp's four-slice material LUT.
+// This retains its diffuse/specular response, not a new PBR/brightness model;
+// LUT texel quantization and environment-cubemap specular remain separate work.
+float2 MaterialSlice(float ld,float ls,int index){
+    if(index==0)return float2(pow(ld,.75),pow(ls,16)*.5);
+    if(index==1)return float2(pow(ld,.90),pow(ls,24));
+    if(index==2)return float2(ld,saturate(pow(ls*1.01,128)));
+    float s0=abs(1-abs(.05*sin(33*ld)+ld-ls));
+    float s1=abs(1-abs(.05*cos(33*ld*ls)+ld-ls));
+    float s2=abs(1-abs(ld-ls));
+    return float2(ld,saturate(pow(max(s0,max(s1,s2)),24)*pow(ld,1.0/7)));
+}
+float2 MaterialResponse(float ld,float lh,float m){
+    ld=saturate(ld);float ls=saturate(lh)*pow(ld,1.0/32);
+    m=clamp(m,0,3);int lo=(int)floor(m);
+    return lerp(MaterialSlice(ld,ls,lo),MaterialSlice(ld,ls,min(lo+1,3)),frac(m));
+}
+float SpecularIntensity(float3 color){float value=max(0,dot(color,float3(1.0/3,1.0/3,1.0/3)));
+    return value<1?pow(value,2.0/3):value;}
+float4 DirectLight(float3 p,float3 n,float3 direction,float3 color,float gloss,float m){
+    float3 view=camera.xyz-p;view/=max(length(view),1e-8);
+    float3 half_vector=direction+view;half_vector/=max(length(half_vector),1e-8);
+    float2 response=MaterialResponse(dot(n,direction),dot(n,half_vector),m);
+    return float4(color*response.x,SpecularIntensity(color)*response.y*gloss);
+}
+float4 SunLighting(float3 p,float3 n,float h,float sun_mask,float gloss,float m){
+    // Source hemi already encodes visibility; R2 hmodel does not multiply it
+    // by a second world-up term. Weather hemi RGB remains the env approximation.
+    float3 indirect=ambient.rgb+hemi.rgb*MaterialResponse(saturate(h),0,m).x;
+    float4 direct=DirectLight(p,n,-sun_direction.xyz,sun_color.rgb,gloss,m)*SunVisibility(p)*sun_mask;
+    return float4(indirect,0)+direct;
+}
+float3 SunLight(float3 p,float3 n,float h,float sun_mask){return SunLighting(p,n,h,sun_mask,0,material.w).rgb;}
 uint CubeFace(float3 d){float3 a=abs(d);if(a.x>=a.y && a.x>=a.z)return d.x>=0?0:1;
     if(a.y>=a.z)return d.y>=0?2:3;return d.z>=0?4:5;}
 float LocalVisibility(float3 p){if(alpha.w<.5)return 1;uint face=light_color.w>1.5?0:CubeFace(p-light_position.xyz);
+    // A fixed projected-depth subtraction scales to meters near the far plane.
+    // Move the receiver by only 3 mm instead, preserving nearby blockers.
+    float3 towards=light_position.xyz-p;
+    p+=towards*(.003/max(length(towards),.003));
     float4 projected=mul(float4(p,1),shadow[face]);
     if(face==0)return PCF(shadow0,projected);if(face==1)return PCF(shadow1,projected);
     if(face==2)return PCF(shadow2,projected);if(face==3)return PCF(shadow3,projected);
     if(face==4)return PCF(shadow4,projected);return PCF(shadow5,projected);}
-float3 LocalLight(float3 p,float3 n){float3 delta=light_position.xyz-p;float distance=length(delta);
-    float3 direction=delta/max(distance,.0001);float attenuation=saturate(1-distance/light_position.w);attenuation*=attenuation;
+float LocalAttenuation(float distance_squared,float range){float radius=max(range*.95,.0001);
+    return saturate(1-distance_squared/(radius*radius));}
+float4 LocalLight(float3 p,float3 n,float gloss,float m){float3 delta=light_position.xyz-p;float distance=length(delta);
+    float3 direction=delta/max(distance,.0001);float attenuation=LocalAttenuation(dot(delta,delta),light_position.w);
     if(light_color.w>1.5){float angle=dot(-direction,light_direction.xyz);
         attenuation*=saturate((angle-light_direction.w)/max(.001,(1-light_direction.w)*.2));}
     if(attenuation<=0)return 0;
-    return light_color.rgb*(saturate(dot(n,direction))*attenuation*LocalVisibility(p));}
+    return DirectLight(p,n,direction,light_color.rgb,gloss,m)*(attenuation*LocalVisibility(p));}
 float4 PSSun(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=image1.Load(int3(at,0)).r;
     if(depth>=1)return 0;float4 n=image0.Load(int3(at,0));float3 p=WorldPosition(v.p.xy,depth);
-    if((int)screen.z==8)return float4(SunVisibility(p).xxx,1);
+    if((int)screen.z==8)return float4(SunVisibility(p).xxx,0);
     // SoC R2 combine uses raw static occlusion *2; .5 encodes unmasked runtime sun.
-    return float4(SunLight(p,n.xyz,n.w,shadow1.Load(int3(at,0)).a*2),1);}
+    return SunLighting(p,DecodeNormal(n.xy),n.z,shadow2.Load(int3(at,0)).a*2,MaterialGloss(n.w),MaterialClass(n.w));}
 float4 PSLocal(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=image1.Load(int3(at,0)).r;
-    if(depth>=1)return 0;float3 n=image0.Load(int3(at,0)).xyz;return float4(LocalLight(WorldPosition(v.p.xy,depth),n),0);}
+    if(depth>=1)return 0;float4 n=image0.Load(int3(at,0));
+    return LocalLight(WorldPosition(v.p.xy,depth),DecodeNormal(n.xy),MaterialGloss(n.w),MaterialClass(n.w));}
 float4 PSForwardSun(Varying v,bool front:SV_IsFrontFace):SV_Target {float4 c=Base(v);
-    return float4(c.rgb*SunLight(v.w,Normal(v,front),saturate(v.n.w),1),c.a);}
+    float4 light=SunLighting(v.w,Normal(v,front),saturate(v.n.w),1,Gloss(v),material.w);
+    return float4(c.rgb*light.rgb+light.aaa,c.a);}
 float4 PSForwardLocal(Varying v,bool front:SV_IsFrontFace):SV_Target {float4 c=Base(v);
-    return float4(c.rgb*LocalLight(v.w,Normal(v,front))*(alpha.z>0?c.a:1),0);}
+    float4 light=LocalLight(v.w,Normal(v,front),Gloss(v),material.w);
+    return float4((c.rgb*light.rgb+light.aaa)*(alpha.z>0?c.a:1),0);}
 // combine: image0 albedo, image1 light; shadow0 normal; shadow1 depth.
 float4 PSCombine(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=shadow1.Load(int3(at,0)).r;
     if(depth>=1){if(alpha.w>19.5)discard;return float4(fog.rgb,1);}float4 a=image0.Load(int3(at,0)),n=shadow0.Load(int3(at,0));
-    float3 light=image1.Load(int3(at,0)).rgb;int mode=(int)screen.z;
-    if(mode==1)return float4(a.rgb,1);if(mode==2)return float4(n.xyz*.5+.5,1);
+    float4 light=image1.Load(int3(at,0));int mode=(int)screen.z;
+    if(mode==1)return float4(a.rgb,1);if(mode==2)return float4(DecodeNormal(n.xy)*.5+.5,1);
     if(mode==3)return float4(saturate(length(WorldPosition(v.p.xy,depth)-camera.xyz)/camera.w).xxx,1);
-    if(mode==4 || mode==8)return float4(light,1);if(mode==5)return float4(n.www,1);
+    if(mode==4 || mode==8)return float4(light.rgb+light.aaa,1);if(mode==5)return float4(n.zzz,1);
     if(mode==6 || mode==9)return float4(a.rgb,1);if(mode==7)return float4(a.aaa,1);
-    return float4(a.rgb*light,1);}
+    return float4(a.rgb*light.rgb+light.aaa,1);}
 
 // Native environment entries use the engine's two weather cubemaps.
 TextureCube sky0:register(t0);TextureCube sky1:register(t1);

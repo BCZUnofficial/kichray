@@ -22,11 +22,11 @@ struct Descriptor {
     Family source_family;
     std::string shader,source,base,bump,bump_aux,detail,lightmap,hemi,unsupported_reason;
     uint64_t class_id;
-    float detail_scale[2],material,alpha_ref;
+    float detail_scale[2],material,alpha_ref,emissive_gain,emissive_specular;
     uint32_t alpha_func,cull,src_blend,dst_blend,required_attributes,passes,detail_usage,source_flags,source_alpha_reference;
     uint32_t base_uv,bump_uv,detail_uv,lightmap_uv,hemi_uv;
     bool depth_test,depth_write,tree_wave;
-    Descriptor():semantic(UNKNOWN),special(SPECIAL_NONE),source_family(FAMILY_UNKNOWN),class_id(UINT64_MAX),material(1),alpha_ref(0),alpha_func(8),cull(0),
+    Descriptor():semantic(UNKNOWN),special(SPECIAL_NONE),source_family(FAMILY_UNKNOWN),class_id(UINT64_MAX),material(1),alpha_ref(0),emissive_gain(0),emissive_specular(0),alpha_func(8),cull(0),
         src_blend(2),dst_blend(1),required_attributes(ATTR_NORMAL),passes(0),detail_usage(0),source_flags(0),source_alpha_reference(0),base_uv(0),bump_uv(0),detail_uv(0),lightmap_uv(1),hemi_uv(1),
         depth_test(true),depth_write(true),tree_wave(false){detail_scale[0]=detail_scale[1]=1;}
 };
@@ -39,14 +39,15 @@ struct Source {
 };
 struct PassState {
     KichR4SurfaceState surface=KichR4DefaultSurface();
-    bool blend,alpha_test,depth_test,depth_write,distortion,emissive,wallmark;
+    bool blend,alpha_test,depth_test,depth_write,distortion,emissive,wallmark,unlit;
     uint32_t src,dst,alpha_func,alpha_reference,cull;
-    PassState():blend(false),alpha_test(false),depth_test(true),depth_write(true),distortion(false),emissive(false),wallmark(false),
+    PassState():blend(false),alpha_test(false),depth_test(true),depth_write(true),distortion(false),emissive(false),wallmark(false),unlit(false),
         src(2),dst(1),alpha_func(8),alpha_reference(0),cull(0){}
 };
 inline bool Geometry(const Descriptor& d){return (d.passes&PASS_GEOMETRY)!=0;}
 inline bool Shadow(const Descriptor& d){return (d.passes&PASS_SHADOW)!=0;}
 inline bool Bumped(const Descriptor& d){return Geometry(d) && !d.bump.empty();}
+inline float MaterialClass(float material){return material==material?material<0?0:material>3?3:material:1;}
 inline const char* Name(Semantic s){switch(s){case MATERIAL_OPAQUE:return "opaque";case CUTOUT:return "cutout";
     case BLENDED:return "blended";case ADDITIVE:return "additive";case DISTORTION:return "distortion";
     case EMISSIVE:return "emissive";default:return "unknown";}}
@@ -58,7 +59,7 @@ inline uint64_t Key(const Descriptor& d){
         d.base_uv,d.bump_uv,d.detail_uv,d.lightmap_uv,d.hemi_uv,
         uint64_t(d.depth_test),uint64_t(d.depth_write),uint64_t(d.tree_wave)};
     for(unsigned v=0;v<sizeof(integers)/sizeof(integers[0]);++v)for(unsigned b=0;b<8;++b){key^=(integers[v]>>(b*8))&255;key*=UINT64_C(1099511628211);}
-    const float floats[]={d.detail_scale[0],d.detail_scale[1],d.material,d.alpha_ref};
+    const float floats[]={d.detail_scale[0],d.detail_scale[1],d.material,d.alpha_ref,d.emissive_gain,d.emissive_specular};
     const unsigned char* bytes=reinterpret_cast<const unsigned char*>(floats);
     for(unsigned b=0;b<sizeof(floats);++b){key^=bytes[b];key*=UINT64_C(1099511628211);}
     bytes=reinterpret_cast<const unsigned char*>(&d.surface);
@@ -75,6 +76,15 @@ inline Descriptor Build(const Source& source,const PassState& state) {
     const bool true_blend=state.blend && !(state.src==2 && state.dst==1);
     // Special families and explicit pass flags retain their source behavior.
     if(state.distortion)d.semantic=DISTORTION;
+    else if((state.emissive || state.unlit) && !state.wallmark){
+        // bEmissive is a source pass contract. Opaque base surfaces retain
+        // depth and direct lights with emission in the accumulator; blended
+        // self-lit effects retain their authored forward blend state.
+        d.semantic=EMISSIVE;
+        if(d.emissive_gain<=0)d.emissive_gain=1;
+        if(!true_blend){d.src_blend=2;d.dst_blend=1;}
+        else d.depth_write=false;
+    }
     else if(state.wallmark || source.family==FAMILY_SPECIAL || source.family==FAMILY_DETAIL) {
         d.semantic=true_blend?(state.dst==2?ADDITIVE:BLENDED):state.emissive?EMISSIVE:UNKNOWN;
         if(d.semantic==UNKNOWN && d.unsupported_reason.empty())d.unsupported_reason="special_family_keeps_source_pass";
@@ -96,11 +106,14 @@ inline Descriptor Build(const Source& source,const PassState& state) {
         d.semantic=true_blend?(state.dst==2?ADDITIVE:BLENDED):state.emissive?EMISSIVE:UNKNOWN;
         d.unsupported_reason="unclassified_source_family_preserve_compiled_pass";
     }
-    if(d.semantic==MATERIAL_OPAQUE || d.semantic==CUTOUT) {
-        d.passes=PASS_GEOMETRY|PASS_SHADOW;d.depth_test=d.depth_write=true;
+    if(d.semantic==MATERIAL_OPAQUE || d.semantic==CUTOUT ||
+        (d.semantic==EMISSIVE && d.depth_test && d.depth_write && !true_blend && !state.unlit)) {
+        // Stock models_selflight[l] has no E[2]/l_point shadow element.
+        // Its visible base still owns depth, but must not occlude its lamp.
+        d.passes=PASS_GEOMETRY|(d.semantic==EMISSIVE?0u:uint32_t(PASS_SHADOW));d.depth_test=d.depth_write=true;
         d.src_blend=2;d.dst_blend=1;
         if(d.semantic==MATERIAL_OPAQUE){d.alpha_ref=0;d.alpha_func=8;}
-        else {
+        else if(d.semantic==CUTOUT) {
             // resources/shaders/r2/common.h def_aref, used by flat and bumped
             // deffer_base_aref shaders. clip(alpha-ref) accepts equality.
             d.alpha_ref=200.f/255.f;d.alpha_func=7;
@@ -117,7 +130,8 @@ inline Descriptor Build(const Source& source,const PassState& state) {
 // Preserve the exact alpha comparison and UV0 between geometry and shadows.
 template<class Style> inline void Apply(const Descriptor& d,Style& s) {
     if(d.semantic==UNKNOWN)return;
-    s.blend=d.semantic==BLENDED || d.semantic==ADDITIVE || d.semantic==DISTORTION;
+    s.blend=d.semantic==BLENDED || d.semantic==ADDITIVE || d.semantic==DISTORTION ||
+        (d.semantic==EMISSIVE && !(d.src_blend==2 && d.dst_blend==1));
     s.src=d.src_blend;s.dst=d.dst_blend;s.alpha_func=d.alpha_func;s.alpha_ref=d.alpha_ref;
     s.depth=d.depth_test;s.write=d.depth_write;s.cull=d.cull;s.surface=d.surface;
 }

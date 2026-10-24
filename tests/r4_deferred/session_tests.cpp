@@ -49,7 +49,7 @@ void Telemetry(){Fixture fixture;f=&fixture;ResetDeferredRecorder();const KichR4
     Require(output.find("compiled_material_metadata_not_registered")!=std::string::npos && output.find("route_source=LEGACY_STATIC_FALLBACK")!=std::string::npos && output.find("effective_alpha_func=")!=std::string::npos,"unresolved static descriptor emits bounded source/fallback and effective alpha metadata");
     Require(output.find("controller=NOT_AVAILABLE")!=std::string::npos && output.find("controller=4294967295")==std::string::npos,"unknown controller is absent value with validity rather than uint sentinel");
     Require(output.find("source_light_id=source_93")!=std::string::npos && output.find("ONE_LIGHT_FACE; NOT_ONE_LAMP")!=std::string::npos && output.find("submitted_local_lights=1")!=std::string::npos,"shadow face identity links to unique submitted light");
-    Require(output.find("comparison_depth_bias=0.00150000001")!=std::string::npos && output.find("view_projection_row_major=")!=std::string::npos,"actual native shadow matrix and shader comparison bias reported");
+    Require(output.find("comparison_bias_source=WORLD_SPACE_RECEIVER_TOWARD_LIGHT")!=std::string::npos && output.find("view_projection_row_major=")!=std::string::npos,"actual native shadow matrix and shader comparison bias reported");
     Require(output.find("semantic_vertex_accounting_valid=1")!=std::string::npos && output.find("id=CPU_CAPTURE/PARTICLE")!=std::string::npos && output.find("vertex_bytes="+std::to_string(3*sizeof(kich_r4_capture::Vertex)))!=std::string::npos,"full semantic capture array accounts shared vertices once before trace limits");
     Require(output.find("requested_0_15=1,1,1,0.5,0.75")!=std::string::npos && output.find("applied_gamma_brightness_contrast_gray=1,1,1,0")!=std::string::npos && output.find("execution=DRAW_SUCCEEDED; PIXEL_CONTRIBUTION_NOT_MEASURED")!=std::string::npos,"requested and actual menu postprocess override and completed draw distinguished");
     KichR4GeometryReport report={};game.Stop(report);Require(f->objects.empty(),"telemetry does not retain resource ownership");
@@ -104,12 +104,39 @@ void WallmarkRoute(){Fixture fixture;f=&fixture;ResetDeferredRecorder();const Ki
         Require(game.deferred.Models(game.frame,game.level,game.stream,&batch,pass,game.deferred.base)==0,"other pass rejects wallmark");
     Require(draw_descriptions.size()==start+1,"no repeated lighting or shadow contribution from decal");Require(game.frame.Present()==0,"wallmark frame present");KichR4GeometryReport report={};game.Stop(report);Require(f->objects.empty(),"wallmark resources cleaned");
 }
+void AllVisibleShadows(){
+    Fixture fixture;f=&fixture;ResetDeferredRecorder();const KichR4LevelFiles fs={Open,Close};kich_r4_game::Session game(DeferredAPIs(),fs,"l01_escape",NULL);
+    game.deferred.native_mode=true;auto input=DeferredInput();input.lighting.count=10;
+    input.lighting.lights.resize(10);input.lighting.sources.resize(10);input.lighting.shadows.assign(10,1);
+    for(unsigned i=0;i<10;++i){auto& source=input.lighting.lights[i];source.type=i<3?2:1;source.range=20;
+        source.position[1]=2;source.direction[2]=1;source.cone=1;source.color[0]=1;}
+    Require(game.Render(input)==1,"more than eight native lights form a complete frame");
+    Require(game.deferred.shadow_passes==47 && game.deferred.local_passes==10,"two sun maps, three spot maps and all seven six-face point shadows execute");
+    Require(game.deferred.sun_map && game.deferred.sun_far_map && game.deferred.sun_map!=game.deferred.sun_far_map,"near and far sun have distinct resources");
+    Require(game.deferred.base.shadow[0].m[0]!=game.deferred.base.shadow[1].m[0],"sun cascades have different coverage");
+    std::set<KichR4Handle> maps;
+    for(unsigned i=0;i<10;++i)for(unsigned face=0;face<(input.lighting.lights[i].type==2?1u:6u);++face)
+        Require(maps.insert(game.deferred.LocalMap(i,face)).second,"each local face has an independent depth image");
+    for(size_t i=0;i<draw_entries.size();++i)if(draw_entries[i]=="PSShadow")
+        Require(!draw_descriptions[i].textures[0],"opaque shadow caster does not load or bind a diffuse texture");
+    const uint32_t created=f->created;
+    Require(game.Render(input)==1 && f->created==created,"stationary native frame does not allocate new shadow maps");
+    input.lighting.count=80;input.lighting.lights.resize(80);input.lighting.sources.resize(80);input.lighting.shadows.assign(80,1);
+    for(unsigned i=0;i<80;++i)input.lighting.lights[i].type=1;
+    std::vector<uint8_t> selected(80,1);
+    Require(game.deferred.PrepareLocalMaps(game.frame,game.level,input.lighting,selected)==0,"heavy point-light demand retains every face");
+    Require(game.deferred.local_maps.size()==480 && game.deferred.local_shadow_size<512,"pressure reduces resolution instead of disabling lights");
+    Require(uint64_t(game.deferred.local_maps.size())*game.deferred.local_shadow_size*game.deferred.local_shadow_size*4<=KichR4DeferredSession::LocalShadowBudget,"shadow pool respects byte budget");
+    const uint32_t stable=f->created;input.lighting.count=1;selected.resize(1);
+    Require(game.deferred.PrepareLocalMaps(game.frame,game.level,input.lighting,selected)==0 && f->created==stable,"visibility fluctuation retains reusable bounded pool");
+    KichR4GeometryReport r={};game.Stop(r);Require(!f->live && f->objects.empty(),"expanded shadow pool released on shutdown");
+}
 void Invalid(){
     for(unsigned which=0;which<3;++which){Fixture fixture;f=&fixture;ResetDeferredRecorder();const KichR4LevelFiles fs={Open,Close};kich_r4_game::Session game(DeferredAPIs(),fs,"l01_escape",NULL);
         auto input=DeferredInput();if(which==0)input.lighting.valid=0;else if(which==1)input.lighting.count=9;else memset(input.view_projection,0,64);
         Require(game.Render(input)<0 && !game.frame.rendered,"invalid deferred inputs never present partial image");KichR4GeometryReport r={};game.Stop(r);Require(!f->live && f->objects.empty(),"invalid input cleanup balanced");}
 }
 }
-int main(){try{(void)&Scenario;const int positions=ScenarioDeferred();for(int i=1;i<=positions;++i){ScenarioDeferred(i);ScenarioDeferred(i,7);}Invalid();Telemetry();MaterialExecution();WallmarkRoute();
+int main(){try{(void)&Scenario;const int positions=ScenarioDeferred();for(int i=1;i<=positions;++i){ScenarioDeferred(i);ScenarioDeferred(i,7);}Invalid();Telemetry();MaterialExecution();WallmarkRoute();AllVisibleShadows();
     printf("B4.4 pass planner / lighting / reuse / F8-F9 / failures: %d checks, %d failure positions passed\n",checks,positions);return 0;
 }catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

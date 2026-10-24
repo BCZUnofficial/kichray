@@ -71,7 +71,7 @@ void StatesAndGlow(){auto s=KichR4DefaultSurface();Require(KichR4ValidSurface(s)
     kich_r4_optics::GlowVisibility glow;float eye[3]={};const float first=glow.Step(true,100,eye);Require(first>0 && first<1,"glow appears gradually");
     Require(glow.Step(true,200,eye)>first,"visibility rises with bounded time");const float previous=glow.value;Require(glow.Step(false,216,eye)<previous && glow.value>0,"occlusion fades rather than toggles");
     Require(glow.Step(true,10000,eye)<.2f,"pause resets stale visibility");eye[0]=100;Require(glow.Step(false,10016,eye)==0,"camera teleport resets history");
-    glow.Reset();Require(!glow.known && !glow.value,"source disable clears ghost");Require(kich_r4_optics::GlowRayLength(10,100)>9.94f && kich_r4_optics::GlowRayLength(.01f,1)==0,"endpoint tolerance never exceeds five centimetres");
+    glow.Reset();Require(!glow.known && !glow.value,"source disable clears ghost");
 }
 }
 int main(){try{(void)&Scenario;Recovery();UIAdmission();Layouts();StatesAndGlow();printf("E1 recovery/UI admission/layout/state/glow: %d checks passed\n",checks);return 0;}catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

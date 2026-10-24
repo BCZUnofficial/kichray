@@ -21,6 +21,8 @@ namespace kich_r4_capture {struct Style;struct Batch;struct ModelInput;}
 /* Process selection is fixed before the first renderer or GPU is created. */
 KICH_NATIVE_API bool KichR4_NativeActive();
 KICH_NATIVE_API bool KichR4_NativeInlineGeometry(void* visual);
+// Conservative R2-style CFORM/portal probe; unknown leaves static culling open.
+uint32_t KichR4_NativeSector(const float* position);
 bool KichR4_NativeSelect(const char* parameters);
 IRender_interface* KichR4_CreateNativeRenderer();
 IKichRenderDevice& KichR4_NativeDevice();
@@ -49,6 +51,28 @@ void KichR4_NativeBegin(uint32_t width,uint32_t height,uint32_t frame);
 void KichR4_NativeMenuPP(bool enabled);
 KICH_NATIVE_API void KichR4_NativeCelestialSource(bool enabled);
 KICH_NATIVE_API void KichR4_NativeLensEffect(bool enabled);
+// World glow is an unlit, depth-tested billboard, independent of shader names.
+KICH_NATIVE_API bool KichR4_NativeGlow(bool enabled);
+class KichR4NativeGlowScope {
+    bool previous;
+public:
+    KichR4NativeGlowScope():previous(KichR4_NativeGlow(true)){}
+    ~KichR4NativeGlowScope(){KichR4_NativeGlow(previous);}
+private:
+    KichR4NativeGlowScope(const KichR4NativeGlowScope&);
+    KichR4NativeGlowScope& operator=(const KichR4NativeGlowScope&);
+};
+// Known R2 accum_emissive gain is folded into the textured main pass once.
+void KichR4_NativeEmissive(float gain,float specular,float* previous);
+class KichR4NativeEmissiveScope {
+    float previous[2];
+public:
+    KichR4NativeEmissiveScope(float gain,float specular){KichR4_NativeEmissive(gain,specular,previous);}
+    ~KichR4NativeEmissiveScope(){KichR4_NativeEmissive(previous[0],previous[1],0);}
+private:
+    KichR4NativeEmissiveScope(const KichR4NativeEmissiveScope&);
+    KichR4NativeEmissiveScope& operator=(const KichR4NativeEmissiveScope&);
+};
 // 0=none, 1=static, 2=skeletal. Returns the previous scope for nesting/unwind.
 KICH_NATIVE_API uint32_t KichR4_NativeWallmark(uint32_t scope);
 class KichR4NativeWallmarkScope {

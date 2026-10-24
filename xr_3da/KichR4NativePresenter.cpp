@@ -15,6 +15,7 @@
 #include "RenderSnapshot.h"
 #include "KichR4Telemetry.h"
 #include "KichR4MaterialServices.h"
+#include "KichR4TexturePreflight.h"
 bool KichR4_NativeTerrain(const char* shader,char (*layers)[128]);
 bool KichR4_NativeMaterialState(const char*,const char*,kich_r4_capture::Style&);
 bool KichR4_NativeNeedScreenshot();
@@ -41,7 +42,7 @@ struct NativeState {
     uint64_t current_engine_frame,device_generation,level_generation,present_frame,successful_presents,runtime_uploads,runtime_reuses,runtime_releases,runtime_upload_bytes,telemetry_cpu_ticks;
     std::unique_ptr<Context> context;
     void (*log)(const char*);void* window;uint32_t width,height,color,debug,interval;bool debug_key;std::string desired;
-    NativeState():module(NULL),log(NULL),window(NULL),width(0),height(0),color(0xff000000),debug(0),interval(1),debug_key(false){memset(&api,0,sizeof(api));memset(&files,0,sizeof(files));memset(&telemetry,0,sizeof(telemetry));pending_timing_count=0;current_engine_frame=0;device_generation=level_generation=present_frame=successful_presents=runtime_uploads=runtime_reuses=runtime_releases=runtime_upload_bytes=telemetry_cpu_ticks=0;}
+    NativeState():module(NULL),log(NULL),window(NULL),width(0),height(0),color(0xff000000),debug(0),interval(1),debug_key(false){memset(&api,0,sizeof(api));files=KichR4LevelFiles();memset(&telemetry,0,sizeof(telemetry));pending_timing_count=0;current_engine_frame=0;device_generation=level_generation=present_frame=successful_presents=runtime_uploads=runtime_reuses=runtime_releases=runtime_upload_bytes=telemetry_cpu_ticks=0;}
 } native;
 #if defined(__GNUC__)
 __attribute__((format(gnu_printf,1,2)))
@@ -223,17 +224,13 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
                     if(m.descriptor.special==kich_r4_material::SPECIAL_WATER)m.kind=2;
                     else if(m.descriptor.special==kich_r4_material::SPECIAL_TERRAIN)m.kind=1;
                     else m.kind=m.descriptor.semantic==kich_r4_material::UNKNOWN?(style.blend?3u:m.kind):kich_r4_material::Geometry(m.descriptor)?0u:3u;
-                    const std::string* maps[]={&m.descriptor.base,&m.descriptor.bump,&m.descriptor.bump_aux,&m.descriptor.lightmap,&m.descriptor.hemi,&m.descriptor.detail};
-                    for(unsigned j=0;j<6;++j)if(!maps[j]->empty())c.level.Texture(c.frame,*maps[j]);
                 }}
             LARGE_INTEGER loaded;QueryPerformanceCounter(&loaded);
             Write("[R4 G3e load] native_level_and_materials_ms=%.3f DDS_io_ms=%.3f DDS_parse_ms=%.3f DDS_create_upload_api_ms=%.3f DDS_loaded=%u; excludes engine prefetch; create includes provider parse and upload submission",
                 double(loaded.QuadPart-start.QuadPart)*1000.0/double(frequency.QuadPart),c.level.texture_io_ms,c.level.texture_parse_ms,c.level.texture_create_ms,c.level.textures_loaded);
-            // Preloading is not a submitted frame. Let visible UI claim its
-            // residency before world/shadow draws pin their material textures.
-            c.level.texture_registry.Begin();
         }
         const kich_r4_capture::Batch* batch=KichR4_CapturedFrame();if(!batch || !batch->Ready()){Write("[R4 native B5] rejected CPU frame: %s",batch?batch->error.c_str():"queue unavailable");return false;}
+        if(kich_r4_texture::Preflight(c.frame,c.level,*batch,input,c.deferred.details,c.loaded && input.allowed)<0)return false;
         if(c.stream.PrepareUI(c.frame,c.level,*batch)<0)return false;
         if(input.debug_down && !native.debug_key){native.debug=(native.debug+1)%kich_r4_optics::DebugViewCount;
             Write("[R4 G3e] F9 view=%u %s; diagnostic views bypass postprocess",native.debug,kich_r4_optics::DebugView(native.debug));}native.debug_key=input.debug_down;
@@ -277,6 +274,11 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
             RenderSnapshot_U64("MEMORY","dds_resident_payload_bytes",c.level.texture_registry.bytes);
             RenderSnapshot_U64("MEMORY","dds_budget_bytes",c.level.texture_registry.budget);
             RenderSnapshot_U64("MEMORY","dds_evictions_total",c.level.texture_registry.evictions);
+            RenderSnapshot_Text("MEMORY","dds_residency_policy","FRAME_DEPENDENCY_UNION; PLAN_MIPS_BEFORE_EVICTION; RETAINED_MIP_HYSTERESIS; UI_HUD_PRIORITY");
+            RenderSnapshot_U64("MEMORY","dds_planned_payload_bytes",c.level.texture_registry.planned_bytes);
+            RenderSnapshot_U64("MEMORY","dds_planned_sources",c.level.texture_registry.planned_sources);
+            RenderSnapshot_U64("MEMORY","dds_planned_mip_steps",c.level.texture_registry.planned_downgrades);
+            RenderSnapshot_U64("MEMORY","dds_irreducible_budget_denials",c.level.texture_registry.planned_denied);
             RenderSnapshot_U64("MEMORY","ui_texture_sources",c.stream.ui_texture_sources);
             RenderSnapshot_U64("MEMORY","ui_texture_ready",c.stream.ui_texture_ready);
             RenderSnapshot_U64("MEMORY","ui_texture_fallbacks",c.stream.ui_texture_fallbacks);
@@ -294,6 +296,11 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
             for(const auto& item:c.level.texture_registry.entries){const auto& e=item.second;
                 RenderSnapshot_RecordU64("DDS_RESIDENCY",item.first.c_str(),"handle",e.handle);RenderSnapshot_RecordU64("DDS_RESIDENCY",item.first.c_str(),"payload_bytes",e.bytes);
                 RenderSnapshot_RecordU64("DDS_RESIDENCY",item.first.c_str(),"width",e.width);RenderSnapshot_RecordU64("DDS_RESIDENCY",item.first.c_str(),"height",e.height);RenderSnapshot_RecordU64("DDS_RESIDENCY",item.first.c_str(),"mips",e.mips);
+                RenderSnapshot_RecordU64("DDS_RESIDENCY",item.first.c_str(),"requested_this_frame",e.wanted==c.level.texture_registry.epoch);
+                RenderSnapshot_RecordU64("DDS_RESIDENCY",item.first.c_str(),"role_priority",e.role);
+                RenderSnapshot_RecordU64("DDS_RESIDENCY",item.first.c_str(),"resident_first_mip",e.resident);
+                RenderSnapshot_RecordU64("DDS_RESIDENCY",item.first.c_str(),"faces",e.faces);
+                if(!e.levels.empty()){RenderSnapshot_RecordU64("DDS_RESIDENCY",item.first.c_str(),"source_width",e.levels[0].width);RenderSnapshot_RecordU64("DDS_RESIDENCY",item.first.c_str(),"source_height",e.levels[0].height);}
                 RenderSnapshot_RecordU64("DDS_RESIDENCY",item.first.c_str(),"retry_epoch",e.retry);RenderSnapshot_RecordU64("DDS_RESIDENCY",item.first.c_str(),"failure_kind",e.reason);
                 RenderSnapshot_RecordU64("DDS_RESIDENCY",item.first.c_str(),"hresult",static_cast<uint32_t>(e.failure));}
             RenderSnapshot_Value("TIMING","cpu_prepare_ms",input.prepare_ms);RenderSnapshot_Value("TIMING","cpu_native_submit_ms",double(submitted.QuadPart-start.QuadPart)*1000.0/double(frequency.QuadPart));

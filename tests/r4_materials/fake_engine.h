@@ -7,6 +7,7 @@
 #include "KichR4MaterialRules.h"
 #include "KichR4WallmarkRules.h"
 #include "KichR4MaterialServices.h"
+#include "KichR4Native.h"
 typedef uint32_t u32;
 typedef int BOOL;
 static const BOOL TRUE=1;
@@ -29,7 +30,7 @@ struct SPass {
     SPass(PixelShader* p,const char* t,bool c=false):ps(p),texture(t),clamp(c){}
 };
 struct ShaderElement {
-    struct Flags {bool bDistort,bWmark;Flags():bDistort(false),bWmark(false){}}flags;
+    struct Flags {bool bDistort,bWmark,bEmissive;Flags():bDistort(false),bWmark(false),bEmissive(false){}}flags;
     std::vector<Ref<SPass> > passes;
 };
 struct SelectionObservation {uint32_t pass,element,available;std::string reason;};
@@ -50,7 +51,8 @@ struct Fmatrix {
 inline float _sqrt(float value){return std::sqrt(value);}
 extern std::string active_shader,bound_texture;
 extern uint32_t effect,source_element,source_pass,wallmark_color,wallmark_scope;
-extern bool distortion_enabled,bound_clamp;
+extern bool distortion_enabled,bound_clamp,glow_scope;
+extern kich_r4_capture::Style style;
 extern kich_r4_material::Cache native_materials;
 extern const kich_r4_material::Descriptor* active_material;
 inline const kich_r4_material::Descriptor* KichR4_NativeFindMaterial(const void* element,uint32_t pass){return native_materials.Find(element,pass);}
@@ -71,7 +73,7 @@ struct Backend {
     }
 };
 extern Backend RCache;
-struct Draw {std::string shader,texture;uint32_t effect,element,pass;bool clamp;float uv[8];};
+struct Draw {std::string shader,texture;uint32_t effect,element,pass;bool clamp;float uv[8],emissive_gain,emissive_specular;};
 extern std::vector<Draw> draws;
 struct CKinematics;
 enum {MT_PARTICLE_GROUP=1,MT_HIERRARHY,MT_LOD};
@@ -85,6 +87,7 @@ struct IRender_Visual {
     virtual void Render(float){
         Draw d;d.shader=active_shader;d.texture=bound_texture;d.effect=effect;
         d.element=source_element;d.pass=source_pass;d.clamp=bound_clamp;
+        d.emissive_gain=style.emissive_gain;d.emissive_specular=style.emissive_specular;
         for(unsigned i=0;i<8;++i)d.uv[i]=uv[i];
         draws.push_back(d);
     }

@@ -15,14 +15,14 @@ void KichR4_CaptureLight(const void* id,const KichR4LocalLight& light,bool activ
 }
 bool KichR4_CaptureLightIdentity(const void* id,const KichR4LightIdentity& source){
     if(!capture || !id)return false;
-    try{if(capture->light_sources.size()<4096 || capture->light_sources.find(id)!=capture->light_sources.end()){capture->light_sources[id]=source;return true;}}catch(...){}
+    try{if(capture->light_sources.size()<KICH_R4_LIGHT_REGISTRY_CAPACITY || capture->light_sources.find(id)!=capture->light_sources.end()){capture->light_sources[id]=source;return true;}}catch(...){}
     ++capture->light_identity_rejections;return false;
 }
 void KichR4_CaptureLightForget(const void* id){if(!capture)return;capture->lights.erase(id);capture->light_sources.erase(id);capture->unshadowed_lights.erase(id);capture->light_observations.erase(id);}
 void KichR4_CaptureLightShadow(const void* id,bool shadow){if(!capture)return;if(shadow)capture->unshadowed_lights.erase(id);else capture->unshadowed_lights.insert(id);}
-void KichR4_CaptureLighting(const float* camera,KichR4LightingFrame& frame,bool r1_lights_enabled){
+void KichR4_CaptureLighting(const float* camera,KichR4LightingFrame& frame,bool r1_lights_enabled,const float* camera_vp){
     frame.count=0;frame.shadow_mask=0;frame.r1_lights_requested=frame.r1_lights_applied=r1_lights_enabled?1u:0u;if(!capture || !camera)return;
-    try{capture->SelectLights(camera,frame,r1_lights_enabled);}catch(...){frame.count=0;frame.shadow_mask=0;}
+    try{capture->SelectLights(camera,frame,r1_lights_enabled,camera_vp);}catch(...){frame.count=0;frame.shadow_mask=0;}
 }
 void KichR4_CaptureLightingDiagnostics(const float* camera,const KichR4LightingFrame& frame){
     if(!g_render_snapshot_active || !capture)return;

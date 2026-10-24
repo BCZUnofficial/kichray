@@ -19,9 +19,11 @@ struct GlowVisibility {
         time=now;known=true;for(unsigned i=0;i<3;++i)camera[i]=eye[i];return value;
     }
 };
-inline float GlowRayLength(float distance,float radius){
-    const float pad=radius>0?(radius*.25f<.05f?radius*.25f:.05f):0;
-    return distance>pad?distance-pad:0;
+// A centre collision ray cannot describe a partially visible billboard and
+// omits moving renderables. The completed opaque depth buffer is authoritative.
+inline void GlowStyle(kich_r4_capture::Style& style){
+    style.depth=1;style.write=0;style.cull=KICH_R4_CULL_NONE;style.min_z=0;style.max_z=1;
+    style.surface.depth_func=4; // D3DCMP_LESSEQUAL, no radius-sized depth bias.
 }
 inline const char* DebugView(unsigned view){
     const char* names[]={"NORMAL","ALBEDO","MAPPED_NORMAL","DISTANCE","TOTAL_LIGHT","HEMI",

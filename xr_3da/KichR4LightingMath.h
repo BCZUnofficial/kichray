@@ -37,17 +37,30 @@ inline Matrix StableView(Vec3 eye,Vec3 forward){forward=Normalize(forward);
 }
 inline Matrix Projection(float fov,float near_z,float far_z){Matrix p={};const float y=1.f/tanf(fov*.5f);
     p.m[0]=p.m[5]=y;p.m[10]=far_z/(far_z-near_z);p.m[11]=1;p.m[14]=-near_z*p.m[10];return p;}
-inline Matrix SunShadow(const float* camera,const float* direction){
+inline Matrix SunShadow(const float* camera,const float* direction,float span=512.f,unsigned resolution=2048){
     const Vec3 dir=Normalize(Vec3{direction[0],direction[1],direction[2]});
-    const Vec3 eye={camera[0]-dir.x*512,camera[1]-dir.y*512,camera[2]-dir.z*512};
-    Matrix p=Identity();p.m[0]=p.m[5]=2.f/512;p.m[10]=1.f/1024;
-    return Multiply(StableView(eye,dir),p);
+    const Vec3 center={camera[0],camera[1],camera[2]};
+    Matrix view=StableView(Vec3{0,0,0},dir);const Vec3 light_center=Direction(center,view);
+    if(!Finite(span) || span<=0)span=512.f;
+    if(!resolution)resolution=2048;
+    const float texel=span/static_cast<float>(resolution),depth_step=512.f/2048.f;
+    // Quantize the projection center in light space. Translating the camera
+    // within a texel leaves world-to-shadow coordinates exactly unchanged.
+    view.m[12]=-floorf(light_center.x/texel+.5f)*texel;
+    view.m[13]=-floorf(light_center.y/texel+.5f)*texel;
+    // Tighten only receiver XY coverage. Both cascades need the full upstream
+    // caster interval; otherwise a distant caster cannot shadow a near receiver.
+    // Keep identical depth quantization so choosing a cascade never changes Z.
+    view.m[14]=512.f-floorf(light_center.z/depth_step+.5f)*depth_step;
+    Matrix p=Identity();p.m[0]=p.m[5]=2.f/span;p.m[10]=1.f/1024.f;
+    return Multiply(view,p);
 }
+inline float LocalShadowNear(float range){return range<.4f?range*.25f:.1f;}
 inline Matrix LocalShadow(const KichR4LocalLight& l,unsigned face){
     static const Vec3 axes[6]={{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
     const Vec3 eye={l.position[0],l.position[1],l.position[2]};
     const Vec3 dir=l.type==2?Vec3{l.direction[0],l.direction[1],l.direction[2]}:axes[face%6];
-    return Multiply(StableView(eye,dir),Projection(l.type==2?l.cone:1.57079632679f,.03f,l.range));
+    return Multiply(StableView(eye,dir),Projection(l.type==2?l.cone:1.57079632679f,LocalShadowNear(l.range),l.range));
 }
 struct Constants {
     Matrix world,mvp,normal_matrix,inverse_vp,shadow[6];

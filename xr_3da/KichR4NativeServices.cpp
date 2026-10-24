@@ -4,6 +4,7 @@
 #include "Render.h"
 #include "KichR4CaptureInput.h"
 #include "KichR4MaterialServices.h"
+#include "KichR4MaterialRules.h"
 #include "blenders/Blender.h"
 #include "blenders/Blender_CLSID.h"
 #include "xrRender/Blender_BmmD.h"
@@ -75,6 +76,9 @@ std::string MaterialTexture(const char* value){return value && strcmp(value,"$nu
 kich_r4_material::PassState NativePassState(const ShaderElement& element,const SPass* pass){
     using namespace kich_r4_material;PassState out;
     out.distortion=element.flags.bDistort!=0;out.emissive=element.flags.bEmissive!=0;out.wallmark=element.flags.bWmark!=0;
+    // Native materials currently compile r1 scripts. Its exact simple.ps
+    // contract is tex2D(s_base) without lighting, even without bEmissive/E[4].
+    out.unlit=pass && pass->ps && !strcmp(pass->ps->cName.c_str(),"simple");
     if(!pass || !pass->state)return out;
     const SimulatorStates& state=pass->state->state_code;
     out.surface=KichR4ReadSurface([&](uint32_t key,uint32_t fallback){return state.get_RS(key,fallback);});
@@ -97,7 +101,7 @@ void KichR4_NativeRegisterMaterial(const void* pointer,uint32_t index,const char
     sh_list texture_list;Device.Resources->_ParseList(texture_list,textures);
     if(!texture_list.empty()){
         descriptor.base=MaterialTexture(texture_list[0].c_str());
-        descriptor.material=Device.Resources->m_textures_description.GetMaterial(texture_list[0]);
+        descriptor.material=MaterialClass(Device.Resources->m_textures_description.GetMaterial(texture_list[0]));
         descriptor.detail_scale[0]=descriptor.detail_scale[1]=Device.Resources->m_textures_description.GetDetailScale(texture_list[0]);
     }
     IBlender* blender=class_id==UINT64_MAX?NULL:Device.Resources->_FindBlender(shader);
@@ -159,7 +163,17 @@ bool KichR4_NativeResolveMaterial(const char* name,const char* textures,kich_r4_
     ref_shader shader;shader.create(name,textures);if(!shader)return false;
     for(uint32_t i=0;i<2;++i)if(shader->E[i] && !shader->E[i]->passes.empty() && !shader->E[i]->flags.bDistort){
         const kich_r4_material::Descriptor* material=KichR4_NativeFindMaterial(shader->E[i]._get(),0);
-        if(material){out=*material;return true;}
+        if(material){out=*material;
+            // R2 dsgraph selects the independent E[4] accumulator because the
+            // NORMAL element is emissive. The special element need not repeat
+            // that flag. Static level geometry bypasses CRender::Submit, so
+            // preserve the same known self-light contract at load time here.
+            if(shader->E[i]->flags.bEmissive && shader->E[4] && !shader->E[4]->flags.bDistort && shader->E[4]->passes.size()==1){
+                const SPass* special=shader->E[4]->passes[0]._get();
+                const float gain=kich_r4_material::EmissiveGain(special && special->ps?special->ps->cName.c_str():NULL);
+                if(gain>0){out.emissive_gain=gain;out.emissive_specular=kich_r4_material::EmissiveSpecular(special->ps->cName.c_str());}
+            }
+            return true;}
     }
     out=kich_r4_material::Descriptor();out.shader=name?name:"";out.unsupported_reason="normal_source_element_unavailable";return false;
 }

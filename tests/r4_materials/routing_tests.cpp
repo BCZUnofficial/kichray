@@ -1,9 +1,11 @@
 #include "fake_engine.h"
+#include "KichR4Native.h"
 #include <cassert>
 #include <iostream>
 std::string active_shader,bound_texture;
 uint32_t effect=0,source_element=UINT32_MAX,source_pass=0,wallmark_color=0,wallmark_scope=0;
-bool distortion_enabled=true,bound_clamp=false;
+bool distortion_enabled=true,bound_clamp=false,glow_scope=false;
+kich_r4_capture::Style style;
 kich_r4_material::Cache native_materials;
 const kich_r4_material::Descriptor* active_material=NULL;
 Backend RCache;
@@ -35,6 +37,54 @@ int main(){
     assert(draws.size()==1 && draws[0].element==0);
     xdistort.E[0]=NULL;draws.clear();renderer.Submit(&fire_distort,NULL);assert(draws.empty());
     distortion_enabled=true;
+
+    // Actual R2 selflight: textured emissive normal + textureless E[4]
+    // accumulator. The normal flag owns the contract even if E[4] has no flag.
+    ShaderElement emissive;emissive.flags.bEmissive=true;emissive.passes.push_back(&second_distort);
+    PixelShader full_accumulator("accum_emissive"),low_accumulator("accum_emissivel");
+    SPass accumulator_pass(&full_accumulator,"");ShaderElement accumulator;accumulator.passes.push_back(&accumulator_pass);
+    Shader lamp_shader;lamp_shader.E[0]=&emissive;lamp_shader.E[4]=&accumulator;
+    IRender_Visual lamp;lamp.shader=&lamp_shader;distortion_enabled=false;
+    draws.clear();renderer.Submit(&lamp,NULL);assert(draws.size()==1 && draws[0].element==0 && draws[0].effect==1);
+    assert(draws[0].shader=="opaque_named_source" && draws[0].texture=="pfx\\distortion_variant");
+    assert(draws[0].emissive_gain==8 && draws[0].emissive_specular==8 && style.emissive_gain==0 && style.emissive_specular==0);
+    accumulator_pass.ps=&low_accumulator;draws.clear();renderer.Submit(&lamp,NULL);
+    assert(draws.size()==1 && draws[0].element==0 && draws[0].emissive_gain==.5f && draws[0].emissive_specular==0);
+    lamp_shader.E[0]=NULL;draws.clear();renderer.Submit(&lamp,NULL);assert(draws.empty());
+    // Unknown E[4] is not assumed to be a textured overlay or a full emitter.
+    lamp_shader.E[0]=&fire;lamp_shader.E[4]=&emissive;draws.clear();renderer.Submit(&lamp,NULL);
+    assert(draws.size()==1 && draws[0].element==0 && draws[0].emissive_gain==0);
+    lamp_shader.E[4]=NULL;lamp_shader.E[0]=&emissive;draws.clear();renderer.Submit(&lamp,NULL);
+    assert(draws.size()==1 && draws[0].element==0 && draws[0].effect==1 && draws[0].emissive_gain==0);
+    emissive.flags.bDistort=true;KichR4_NativeElementPass(&emissive,0);assert(effect==5);emissive.flags.bDistort=false;
+    emissive.flags.bWmark=true;KichR4_NativeElementPass(&emissive,0);assert(effect==6);emissive.flags.bWmark=false;
+    wallmark_scope=1;KichR4_NativeElementPass(&emissive,0);assert(effect==0);wallmark_scope=0;
+    distortion_enabled=true;
+    try{KichR4NativeEmissiveScope outer(8,8);{KichR4NativeEmissiveScope inner(.5f,0);assert(style.emissive_gain==.5f && style.emissive_specular==0);}
+        assert(style.emissive_gain==8 && style.emissive_specular==8);throw 8;
+    }catch(int){}
+    assert(style.emissive_gain==0 && style.emissive_specular==0);
+
+    // Native script loading currently uses r1/: stock models_selflight has
+    // normal PS "simple", no emissive flag and no E[4]. Its shader returns the
+    // base texture directly; do not invent an R2 accumulator for this source.
+    PixelShader r1_simple("simple");SPass r1_simple_pass(&r1_simple,"fixture\\lamp");
+    ShaderElement r1_normal;r1_normal.passes.push_back(&r1_simple_pass);
+    Shader r1_lamp;r1_lamp.E[0]=&r1_normal;lamp.shader=&r1_lamp;
+    draws.clear();renderer.Submit(&lamp,NULL);
+    assert(draws.size()==1 && draws[0].effect==1 && draws[0].element==0 && draws[0].texture=="fixture\\lamp");
+    assert(draws[0].emissive_gain==0 && !r1_normal.flags.bEmissive);
+    assert(kich_r4_material::Effect("simple_variant",false,false)==0);
+    assert(kich_r4_material::Effect("simple",true,false)==5 && kich_r4_material::Effect("simple",false,true)==6);
+
+    // The explicit glow route stays self-lit even for an unrecognised shader;
+    // nested scopes and unwinding restore ordinary shader classification.
+    ShaderElement ordinary;ordinary.passes.push_back(&second_distort);
+    try{KichR4NativeGlowScope outer;KichR4_NativeElementPass(&ordinary,0);assert(glow_scope && effect==1);
+        {KichR4NativeGlowScope inner;KichR4_NativeElementPass(&warp,0);assert(glow_scope && effect==1);}
+        assert(glow_scope);throw 7;
+    }catch(int){}
+    assert(!glow_scope);KichR4_NativeElementPass(&ordinary,0);assert(effect==0);
 
     // Both passes bind their own resources; bDistort wins over shader-name inference.
     warp.passes.push_back(&second_distort);draws.clear();renderer.Submit(&fire_distort,NULL);

@@ -17,7 +17,7 @@ int32_t NativeFileOpen(const char* alias,const char* name,KichR4FileView* out){i
     if(!out || !name || !FS.exist(name))return static_cast<int32_t>(0x80070002u);out->data=NULL;out->bytes=0;out->owner=NULL;IReader* reader=FS.r_open(name);if(!reader)return static_cast<int32_t>(0x80070002u);
     if(!reader->length() || reader->length()>256u*1024u*1024u){FS.r_close(reader);return static_cast<int32_t>(0x80070057u);}out->data=static_cast<const unsigned char*>(reader->pointer());out->bytes=reader->length();out->owner=reader;return 0;
 }
-const KichR4LevelFiles native_files={NativeFileOpen,KichR4_CloseLevelFile};
+const KichR4LevelFiles native_files={NativeFileOpen,KichR4_CloseLevelFile,KichR4_NativeSector};
 void Modes(void* window){if(vid_mode_token)return;
     MONITORINFOEXW display={};display.cbSize=sizeof(display);
     const wchar_t* device=GetMonitorInfoW(MonitorFromWindow(static_cast<HWND>(window),MONITOR_DEFAULTTONEAREST),reinterpret_cast<MONITORINFO*>(&display))?display.szDevice:NULL;

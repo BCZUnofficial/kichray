@@ -40,7 +40,7 @@ void Msg(const char*,...){}
 double KichR4_NativeQueueTime(){return 1.5;}
 void KichR4_NativePostprocess(float* output){memset(output,0,24*sizeof(float));}
 bool KichR4_NativePresent(const KichR4GameFrame& input){++native_presented;native_captured=input;return true;}
-void KichR4_CaptureLighting(const float*,KichR4LightingFrame& out,bool r1_lights_enabled){out.count=0;out.r1_lights_requested=out.r1_lights_applied=r1_lights_enabled?1u:0u;}
+void KichR4_CaptureLighting(const float*,KichR4LightingFrame& out,bool r1_lights_enabled,const float* camera_vp){Require(camera_vp && !memcmp(camera_vp,Device.mFullTransform.m,64),"both engine frame adapters provide the current camera for light culling");out.count=0;out.r1_lights_requested=out.r1_lights_applied=r1_lights_enabled?1u:0u;}
 void KichR4_GamePrepare(const KichR4GameFrame& in){++prepared;captured=in;}
 // PRODUCTION_FUNCTION
 int main(){try {

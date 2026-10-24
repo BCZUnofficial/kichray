@@ -553,6 +553,8 @@
     <ClInclude Include="KichR4LevelData.h" />
     <ClInclude Include="KichR4LevelCamera.h" />
     <ClInclude Include="KichR4LevelSession.h" />
+    <ClInclude Include="KichR4TexturePreflight.h" />
+    <ClInclude Include="KichR4LevelVisibility.h" />
     <ClInclude Include="KichR4Game.h" />
     <ClInclude Include="KichR4GameSession.h" />
     <ClInclude Include="KichR4Stream.h" />
