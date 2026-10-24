@@ -5,7 +5,7 @@
 #include <stdint.h>
 #include <string.h>
 namespace kich_r4_dds {
-enum Format {RGBA=101,BGRA=102,BGRX=103,R8=104,RGBX=105,RGB24=106,RGB565=107,ARGB1555=108,ARGB4444=109,BC1=111,BC2=112,BC3=113,BC4=114,BC5=115,BC7=117};
+enum Format {RGBA=101,BGRA=102,BGRX=103,R8=104,RGBX=105,RGB24=106,RGB565=107,ARGB1555=108,ARGB4444=109,A8=110,BC1=111,BC2=112,BC3=113,BC4=114,BC5=115,BC7=117};
 struct Mip {const unsigned char* data;uint32_t row_pitch,bytes;};
 struct Image {uint32_t width,height,format,count,bytes,faces;Mip mips[90];};
 inline uint64_t UploadBytes(const Image& image){
@@ -54,10 +54,11 @@ inline bool Parse(const void* data,uint32_t bytes,uint32_t max_dimension,Image& 
         else if(r==0x7c00u && g==0x3e0u && b==0x1fu && a==0x8000u)format=ARGB1555;
         else if(r==0xf00u && g==0xf0u && b==0xfu && a==0xf000u)format=ARGB4444;
     }else if((flags&0x20000u) && bits==8 && U32(p+92)==0xffu)format=R8;
+    else if((flags&0x2u) && bits==8 && U32(p+104)==0xffu)format=A8; // DDPF_ALPHA, e.g. R2 sunmask
     if(!format)return false;
     Image image={};image.format=format;image.faces=faces;
     const bool block=format>=BC1;
-    const uint32_t pixel=format==R8?1u:format==RGB24?3u:format>=RGB565 && format<=ARGB4444?2u:4u;
+    const uint32_t pixel=format==R8 || format==A8?1u:format==RGB24?3u:format>=RGB565 && format<=ARGB4444?2u:4u;
     if(block && ((w%4 && w>4) || (h%4 && h>4)))return false;
     const uint32_t top_pitch=!block && (U32(p+8)&8u)?U32(p+20):w*pixel;
     if(!block && top_pitch<w*pixel)return false;
@@ -87,6 +88,7 @@ inline bool Parse(const void* data,uint32_t bytes,uint32_t max_dimension,Image& 
 }
 inline void ToRGBA(uint32_t format,const unsigned char* source,unsigned char* out){
     if(format==R8){out[0]=out[1]=out[2]=source[0];out[3]=255;return;}
+    if(format==A8){out[0]=out[1]=out[2]=0;out[3]=source[0];return;} // D3D9 A8 samples (0,0,0,a)
     if(format==RGB24){out[0]=source[2];out[1]=source[1];out[2]=source[0];out[3]=255;return;}
     if(format==RGB565 || format==ARGB1555 || format==ARGB4444){const uint32_t n=uint32_t(source[0])|(uint32_t(source[1])<<8);
         if(format==RGB565){out[0]=static_cast<unsigned char>(((n>>11)&31)*255/31);out[1]=static_cast<unsigned char>(((n>>5)&63)*255/63);out[2]=static_cast<unsigned char>((n&31)*255/31);out[3]=255;}

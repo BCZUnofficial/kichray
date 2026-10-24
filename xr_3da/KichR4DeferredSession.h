@@ -26,6 +26,7 @@ struct KichR4DeferredSession {
     KichR4DeferredAPI api;
     KichR4Handle pipelines[PipelineCount],shaders[21],cb,screen_vb,screen_ib,white;
     KichR4Handle albedo,normal,depth,receiver_depth,light,sun_map,sun_far_map,scene_color,final_color,distortion_map;
+    KichR4Handle sun_mask=0; // this frame's t6 sunmask or white, shared by sun-lit forward draws
     uint32_t width,height,frames,shadow_passes,local_passes;
     // Successful submissions in this frame, not a measurement of visible shadow pixels.
     uint32_t frame_sun_cascades=0,frame_spot_shadow_lights=0,frame_point_shadow_lights=0;
@@ -396,7 +397,7 @@ struct KichR4DeferredSession {
             kich_r4_capture::Style style;style.blend=m.blend;style.src=m.source;style.dst=m.destination;style.write=0;style.cull=KICH_R4_CULL_NONE;style.fog_enabled=m.descriptor.fog_enabled;if(described){kich_r4_material::Apply(m.descriptor,style);c.alpha[0]=m.descriptor.alpha_ref;c.alpha[1]=float(m.descriptor.alpha_func);c.material[3]=kich_r4_material::MaterialClass(m.descriptor.material);c.ambient[3]=m.descriptor.emissive_gain;c.hemi[3]=m.descriptor.emissive_specular;}
             c.fog_params[2]=style.fog_enabled?(style.blend && style.dst==2?2.f:1.f):0.f;
             if(Constants(s,l,c)<0)return s.failure;
-            KichR4DeferredDrawDesc d=Description(pipelines[described && m.descriptor.semantic==kich_r4_material::EMISSIVE?StaticPlain:m.kind==2?StaticWater:StaticForward],l.vertex_buffers[mesh.vb],l.index_buffers[mesh.ib],cb,mesh.count,mesh.first,style);d.textures[0]=l.Texture(s,m.texture);d.textures[1]=scene_color;d.textures[2]=sun_map;d.textures[3]=sun_far_map;
+            KichR4DeferredDrawDesc d=Description(pipelines[described && m.descriptor.semantic==kich_r4_material::EMISSIVE?StaticPlain:m.kind==2?StaticWater:StaticForward],l.vertex_buffers[mesh.vb],l.index_buffers[mesh.ib],cb,mesh.count,mesh.first,style);d.textures[0]=l.Texture(s,m.texture);d.textures[1]=scene_color;d.textures[2]=sun_map;d.textures[3]=sun_far_map;d.textures[6]=sun_mask?sun_mask:white;
             {const KichR4Handle lut=l.MaterialLut(s);if(!lut)return s.failure;kich_r4_material_lut::Bind(d,lut);}
             SnapshotResolvedTexture(l,0,m.texture.c_str(),d.textures[0]);
             const bool simple=simple_transparent.count(mesh.material)!=0;
@@ -591,6 +592,7 @@ struct KichR4DeferredSession {
         if(p==Postprocess){style.clamp=0; // global clamp would also override the noise sampler
             style.surface.samplers[0]={3,3,3,2,2,2,1,0,0,0};
             style.surface.samplers[1]={1,1,1,2,2,2,1,0,0,0};}
+        if(p==Sun)style.surface.samplers[6]={1,1,1,2,2,2,1,0,0,0}; // R2 sunmask: wrap, trilinear
         if(add){style.blend=1;style.src=style.dst=2;}
         if(p==Combine && native_mode && c.screen[2]==0){style.blend=1;style.src=6;style.dst=5;}
         if(p==Local){KichR4LocalLight source={};memcpy(source.position,c.light_position,12);source.range=c.light_position[3];
@@ -734,6 +736,7 @@ struct KichR4DeferredSession {
         if(input.lighting.env_valid){memcpy(base.env_ambient,input.lighting.env_ambient,12);memcpy(base.env_color,input.lighting.env_color,16);}
         else memcpy(base.env_ambient,base.ambient,12);
         base.env_ambient[3]=input.lighting.env_valid?input.lighting.gloss_factor:1.f;
+        if(sun && input.lighting.sunmask_valid){memcpy(base.sunmask_u,input.lighting.sunmask,16);memcpy(base.sunmask_v,input.lighting.sunmask+4,16);}
         KichR4Handle sun_inputs[6]={};
         if(sun){
             const unsigned cascades=native_mode?2:1;
@@ -788,6 +791,15 @@ struct KichR4DeferredSession {
         Mark(s,2);
         SnapshotPass("LIGHT_ACCUMULATION",RENDER_SNAPSHOT_PASS_LIGHT_ACCUMULATION,"sun_lighting");if(g_render_snapshot_active)RenderSnapshot_Light("sun","SCENE_ENVIRONMENT");
         sun_inputs[2]=albedo;
+        // t6: R2 sunmask (alpha) for every dynamic-sun receiver, white = no mask.
+        // Bound even without a mask so no sun pass samples a null view.
+        {KichR4Handle mask=sun && input.lighting.sunmask_valid?l.Texture(s,"sunmask"):0;
+            const bool resident=mask && mask!=l.checker && mask!=white;if(!resident)mask=white;
+            if(!mask)return s.Record("P0-S1 sunmask neutral texture",KICH_R4_E_STATE);
+            sun_inputs[4]=sun_mask=mask;
+            if(g_render_snapshot_active){kich_r4_telemetry::Text("ENVIRONMENT","sunmask","texture",resident?"sunmask":"NEUTRAL_WHITE");
+                kich_r4_telemetry::U64("ENVIRONMENT","sunmask","frame_valid",input.lighting.sunmask_valid);
+                kich_r4_telemetry::Vector("ENVIRONMENT","sunmask","u",base.sunmask_u,4);kich_r4_telemetry::Vector("ENVIRONMENT","sunmask","v",base.sunmask_v,4);}}
         if(Pass(s,l,width,height,1,light,0,0,0)<0 || Fullscreen(s,l,Sun,base,normal,depth,sun_inputs,true)<0)return s.failure;
         for(unsigned i=0;i<input.lighting.count && debug!=8;++i){kich_r4_lighting::Constants c=LocalConstants(input.lighting.lights[i]);if(native_mode && !shadowed[i])c.alpha[3]=0;
             {char phase[48];snprintf(phase,sizeof(phase),"local_%u_lighting",i);SnapshotPhase(phase);SnapshotLocalLight(input.lighting.lights[i],input.lighting.sources[i],i,!native_mode || shadowed[i]);}

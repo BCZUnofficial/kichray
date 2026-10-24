@@ -7,6 +7,7 @@ cbuffer Frame : register(b0) {
     float4 fog_params,fog_plane; // radial offset/scale, per-draw mode, valid plane
     row_major float4x4 receiver_inverse;
     float4 env_ambient,env_color; // R2 L_ambient (.w r2_gloss_factor), env_color (.w cubemap lerp)
+    float4 sunmask_u,sunmask_v;   // R2 m_sunmask rows for world positions (P0-S1)
 };
 Texture2D image0:register(t0); Texture2D image1:register(t1);
 Texture2D shadow0:register(t2); Texture2D shadow1:register(t3);
@@ -346,9 +347,21 @@ float SunVisibility(float3 p,float3 dx,float3 dy){
     float far_visibility=PCF(shadow1,mul(float4(p,1),shadow[1]),mul(float4(dx,0),shadow[1]),mul(float4(dy,0),shadow[1]));
     return lerp(near_visibility,far_visibility,saturate((edge-.9)*10));
 }
-// sun_color.w 2: R2 USE_R2_STATIC_SUN, baked occlusion*2 instead of sun maps.
+// P0-S1 R2 shadow.h sunmask(): sunmask.dds alpha through m_sunmask, 1/500 m
+// tiles along the sun drifting with the wind; both R2 sun passes multiply the
+// shadow by it. t6 is white when no mask. frac() keeps WRAP under the global
+// clamp of fullscreen passes; gradients come from the receiver plane, so no
+// derivative is taken inside lighting branches.
+float SunMask(float3 p,float3 dx,float3 dy){
+    float4 position=float4(p,1);
+    float2 tc=float2(dot(position,sunmask_u),dot(position,sunmask_v));
+    float2 gx=float2(dot(dx,sunmask_u.xyz),dot(dx,sunmask_v.xyz)),gy=float2(dot(dy,sunmask_u.xyz),dot(dy,sunmask_v.xyz));
+    return shadow4.SampleGrad(surface6,frac(tc),gx,gy).a;
+}
+// sun_color.w 2: R2 USE_R2_STATIC_SUN, baked occlusion*2 instead of sun maps
+// (no sunmask there, as in R2 combine).
 float SunDirect(float3 p,float3 dx,float3 dy,float static_sun){float result=static_sun*2;
-    [branch] if(sun_color.w<=1.5)result=SunVisibility(p,dx,dy);
+    [branch] if(sun_color.w<=1.5)result=SunVisibility(p,dx,dy)*SunMask(p,dx,dy);
     return result;
 }
 // P0-L3: SoC r2_rendertarget.cpp s_material, generated on the CPU by the same

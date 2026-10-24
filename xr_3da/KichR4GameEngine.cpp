@@ -32,6 +32,33 @@ static void KichR4_GameTreeFrame(KichR4GameFrame& input)
 extern ENGINE_API BOOL r2_sun_static;
 extern float ps_r2_gloss_factor;
 
+/* R2 accum_direct clouds xform, without its view->world prefix: the R4 sun
+ * shader passes world positions. R2 advances w_shift by 0.003*dt in each of
+ * the near and far sun passes, i.e. twice per dynamic-sun frame. */
+static void KichR4_SunMaskFrame(KichR4LightingFrame& frame,const CEnvDescriptorMixer& env)
+{
+    static float w_shift=0;static u32 advanced_frame=u32(-1);
+    frame.sunmask_valid=0;memset(frame.sunmask,0,sizeof(frame.sunmask));
+    if(frame.sun_mode!=KICH_R4_SUN_DYNAMIC)return;
+    if(advanced_frame!=Device.dwFrame){advanced_frame=Device.dwFrame;w_shift+=2*0.003f*Device.fTimeDelta;}
+    // Light_DB sun_adapted direction.
+    Fvector direction;direction.set(env.sun_dir);int counter=0;
+    while(direction.magnitude()<0.001f && counter<10){direction.add(env.sun_dir);++counter;}
+    if(direction.magnitude()<0.001f)return;
+    direction.normalize();
+    Fmatrix m_xform,clouds;Fvector normal;normal.setHP(env.wind_direction,0);
+    Fvector position;position.set(0,0,0);
+    m_xform.build_camera_dir(position,direction,normal);
+    Fvector localnormal;m_xform.transform_dir(localnormal,normal);localnormal.normalize();
+    clouds.set(m_xform);
+    m_xform.scale(0.002f,0.002f,1.f);clouds.mulA_44(m_xform);
+    m_xform.translate(localnormal.mul(w_shift));clouds.mulA_44(m_xform);
+    // HLSL float3x4 rows of R2 mul(m_sunmask,P): tc = (row0.P, row1.P).
+    const float rows[8]={clouds._11,clouds._21,clouds._31,clouds._41,clouds._12,clouds._22,clouds._32,clouds._42};
+    for(unsigned i=0;i<8;++i)if(!_valid(rows[i]))return;
+    memcpy(frame.sunmask,rows,sizeof(rows));frame.sunmask_valid=1;
+}
+
 void KichR4_CopyEngineEnvironment(KichR4LightingFrame& frame)
 {
     if(!g_pGamePersistent)return;
@@ -49,6 +76,7 @@ void KichR4_CopyEngineEnvironment(KichR4LightingFrame& frame)
     /* renderer_r2a is the R2 static-sun mode; R1 has no R2 sun policy. */
     frame.sun_mode=KichR4SunMode(frame.sun_color,ps_r2_gloss_factor,ps_r2_ls_flags.test(R2FLAG_SUN)!=0,
         psDeviceFlags.test(rsR2) && r2_sun_static);
+    KichR4_SunMaskFrame(frame,env);
 }
 
 static void KichR4_GameObservationFrame(KichR4GameFrame& input)

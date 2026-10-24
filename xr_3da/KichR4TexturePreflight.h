@@ -81,6 +81,7 @@ inline int32_t Preflight(KichR4FrameSession& frame,KichR4LevelSession& level,
         // Combine hmodel() samples both weather env cubemaps every scene frame.
         for(unsigned i=0;i<2;++i)if(!input.lighting.env_textures[i].empty())demand.NeedTexture(input.lighting.env_textures[i],LIGHTING);
         if(kich_r4_visibility::SunEnabled(input.lighting)){
+            if(input.lighting.sunmask_valid)demand.NeedTexture("sunmask",LIGHTING); // R2 cloud sun mask
             add_shadow(kich_r4_lighting::SunShadow(input.position,input.lighting.sun_direction,128.f),UINT32_MAX,true);
             add_shadow(kich_r4_lighting::SunShadow(input.position,input.lighting.sun_direction,512.f),UINT32_MAX,true);}
         std::vector<uint8_t> selected;kich_r4_visibility::SelectShadowLights(input.lighting,true,selected);

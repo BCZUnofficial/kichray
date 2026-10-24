@@ -52,6 +52,10 @@ struct Texture2D {
     float4 value;unsigned loads=0;
     float4 Load(int3){++loads;return value;}
 }image0,image1,shadow2;
+// P0-S1 sunmask at t6: constant alpha, records the projected coordinate.
+struct MaskSampler{} surface6;
+struct MaskTexture {float value=1;float2 last;float4 SampleGrad(MaskSampler,float2 uv,float2,float2){last=uv;return float4(0,0,0,value);}}shadow4;
+float2 frac(float2 v){return float2(frac(v.x),frac(v.y));}
 // P0-L3 R2 s_material at t10: bilinear CLAMP SampleLevel over the generated table.
 struct LutSampler{} material_lut_surface;
 struct LutTexture {
@@ -63,7 +67,7 @@ struct LutTexture {
         float out[4];for(int c=0;c<4;++c)out[c]=(Texel(x0,y0,c)*(1-fx)+Texel(x0+1,y0,c)*fx)*(1-fy)+(Texel(x0,y0+1,c)*(1-fx)+Texel(x0+1,y0+1,c)*fx)*fy;
         return float4(out[0],out[1],out[2],out[3]);}
 }material_lut;
-float4 camera,screen,sun_direction,sun_color,ambient,hemi,material,fog,fog_params,fog_plane,env_ambient(0,0,0,1);
+float4 camera,screen,sun_direction,sun_color,ambient,hemi,material,fog,fog_params,fog_plane,env_ambient(0,0,0,1),sunmask_u,sunmask_v;
 float visibility=1,surface_gloss=0;
 float3 surface_normal(0,1,0);
 float3 WorldPosition(float2,float){return float3(0,0,0);}
@@ -110,8 +114,19 @@ int main(){try{
             "forward static sun has no G-buffer occlusion and stays unoccluded");
         sun_color.w=0;
         Check(PSSun(receiver),float3(),0,"disabled sun adds no direct light");
-        sun_color.w=1;
+        // R2 sunmask multiplies the dynamic sun only, never static sun or indirect.
+        shadow4.value=.4f;sun_color.w=1;
+        Check(PSSun(receiver),splat3(shadow*.4f),gloss*shadow*.4f,"cloud mask must scale dynamic sun and its specular");
+        Check(PSForwardSun(receiver,true),xyz(receiver.c)*(indirect+splat3(shadow*.4f))+splat3(gloss*shadow*.4f),receiver.c.w,
+            "forward dynamic sun shares the cloud mask; forward indirect stays unmasked");
+        sun_color.w=2;
+        Check(PSSun(receiver),splat3(mask*2),gloss*mask*2,"static sun ignores the cloud mask as R2 combine does");
+        shadow4.value=1;sun_color.w=1;
     }
+    // m_sunmask rows act on the world position (camera-relative + camera), wrapped.
+    sunmask_u=float4(.002f,0,0,3.25f);sunmask_v=float4(0,0,.002f,-1.5f);PSSun(receiver);
+    Near(shadow4.last.x,.25f,"sunmask u row and wrap");Near(shadow4.last.y,.5f,"sunmask v row and wrap");
+    sunmask_u=sunmask_v=float4();
     // An unlit normal receives no direct sun; indirect is not written here.
     surface_normal=float3(0,-1,0);image0.value=float4(0,0,.37f,PackMaterial(1,2));visibility=1;
     Check(PSSun(receiver),float3(),0,"sun direction/material response must remain active");
@@ -120,6 +135,6 @@ int main(){try{
     image1.value.r=1;Check(PSSun(receiver),float3(),0,"sky cannot receive surface lighting");
     image1.value.r=.5f;screen.z=8;visibility=.25f;
     Check(PSSun(receiver),splat3(.25f),0,"shadow diagnostic must show current map visibility");
-    std::printf("P0-L1 production sun lighting: %u checks passed (baked/ROS mask independence, current shadows, static/disabled sun, forward hemi, sky)\n",checks);
+    std::printf("P0-S1 production sun lighting: %u checks passed (baked/ROS mask independence, current shadows, cloud sunmask, static/disabled sun, forward hemi, sky)\n",checks);
     return 0;
 }catch(const std::exception& e){std::fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

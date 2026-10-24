@@ -1000,7 +1000,7 @@ int32_t KICH_R4_CALL CreateDdsTexture(KichR4Handle device,const KichR4DdsDesc* d
          * preserve grayscale and opaque X bits without a BGRA device flag. */
         std::vector<std::vector<unsigned char> > converted;
         if(image.format!=kich_r4_dds::RGBA && image.format<kich_r4_dds::BC1){native.Format=DXGI_FORMAT_R8G8B8A8_UNORM;converted.resize(image.count*image.faces);
-            const uint32_t source_pixel=image.format==kich_r4_dds::R8?1u:image.format==kich_r4_dds::RGB24?3u:image.format>=kich_r4_dds::RGB565 && image.format<=kich_r4_dds::ARGB4444?2u:4u;
+            const uint32_t source_pixel=image.format==kich_r4_dds::R8 || image.format==kich_r4_dds::A8?1u:image.format==kich_r4_dds::RGB24?3u:image.format>=kich_r4_dds::RGB565 && image.format<=kich_r4_dds::ARGB4444?2u:4u;
             for(uint32_t m=0;m<image.count*image.faces;++m){const kich_r4_dds::Mip& mip=image.mips[m];const uint32_t lod=m%image.count;
                 const uint32_t w=std::max(1u,image.width>>lod),h=std::max(1u,image.height>>lod);
                 std::vector<unsigned char>& rgba=converted[m];rgba.resize(size_t(w)*h*4);

@@ -41,6 +41,9 @@ struct KichR4LightingFrame {
     // Raw ambient/hemi above remain the forward-surface (L_ambient/L_hemi) inputs.
     float env_ambient[3],env_color[4],gloss_factor;uint32_t env_valid,sun_mode;
     std::string env_textures[2];
+    // R2 accum_direct m_sunmask rows (u,v), world space: sunmask.dds alpha
+    // projected along the sun and drifting with the wind. Zero valid = no mask.
+    float sunmask[8];uint32_t sunmask_valid;
     std::vector<KichR4LocalLight> lights;
     std::vector<KichR4LightIdentity> sources;
     std::vector<KichR4LightProjector> projectors;
@@ -58,7 +61,7 @@ struct KichR4LightingFrame {
     // Small direct/test producers can still fill the original first eight
     // entries. Captured frames resize to every visible registry source.
     KichR4LightingFrame():valid(0),count(0),shadow_mask(0),sun_direction(),sun_color(),ambient(),hemi(),fog(),fog_near(0),fog_far(0),fog_valid(0),
-        env_ambient(),env_color(),gloss_factor(1),env_valid(0),sun_mode(KICH_R4_SUN_DEFAULT),lights(8),sources(8),projectors(8),visibility_vp(),visibility_valid(0),r1_lights_requested(0),r1_lights_applied(0),occlusion_enabled(0),occlusion_tested(0),
+        env_ambient(),env_color(),gloss_factor(1),env_valid(0),sun_mode(KICH_R4_SUN_DEFAULT),sunmask(),sunmask_valid(0),lights(8),sources(8),projectors(8),visibility_vp(),visibility_valid(0),r1_lights_requested(0),r1_lights_applied(0),occlusion_enabled(0),occlusion_tested(0),
         selection_frame(0),local_shadow_size(0),shadow_plan_faces(0),shadow_resolution_changes(0),shadow_resolution_reason(0){}
     bool CastsShadow(unsigned index)const {
         if(index>=count)return false;

@@ -28,7 +28,7 @@ signatures = (
     "float PackMaterial(", "float MaterialGloss(", "float MaterialClass(",
     "float2 MaterialLutSlice(", "float2 MaterialResponse(", "float SpecularIntensity(",
     "float FogTransmittance(", "float3 ForwardFog(",
-    "float SunDirect(", "float4 DirectLight(", "float3 ForwardIndirect(",
+    "float SunMask(", "float SunDirect(", "float4 DirectLight(", "float3 ForwardIndirect(",
     "float4 SunLighting(", "float4 PSSun(", "float4 PSForwardSun(",
 )
 helpers = "\n".join(function(signature) for signature in signatures)

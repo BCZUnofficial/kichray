@@ -97,13 +97,16 @@ struct Constants {
     Matrix receiver_inverse;
     // P0-L1: R2 L_ambient (.w r2_gloss_factor) and env_color (.w cubemap lerp).
     float env_ambient[4],env_color[4];
+    // P0-S1: R2 m_sunmask rows for world positions; zero when no cloud mask.
+    float sunmask_u[4],sunmask_v[4];
 };
-static_assert(sizeof(Constants)==1040,"P0-L1 HLSL cbuffer size");
+static_assert(sizeof(Constants)==1072,"P0-S1 HLSL cbuffer size");
 static_assert(offsetof(Constants,normal_matrix)==128 && offsetof(Constants,inverse_vp)==192 &&
     offsetof(Constants,shadow)==256 && offsetof(Constants,camera)==640 && offsetof(Constants,alpha)==800 &&
     offsetof(Constants,fog_params)==912 && offsetof(Constants,fog_plane)==928 &&
     offsetof(Constants,receiver_inverse)==944 && offsetof(Constants,env_ambient)==1008 &&
-    offsetof(Constants,env_color)==1024,"P0-L1 HLSL offsets");
+    offsetof(Constants,env_color)==1024 && offsetof(Constants,sunmask_u)==1040 &&
+    offsetof(Constants,sunmask_v)==1056,"P0-S1 HLSL offsets");
 inline void FogConstants(const KichR4LightingFrame& input,const Matrix& vp,Constants& out){
     memset(out.fog_params,0,sizeof(out.fog_params));memset(out.fog_plane,0,sizeof(out.fog_plane));
     if(!input.fog_valid || !Finite(input.fog_near) || !Finite(input.fog_far) || input.fog_far<=input.fog_near)return;
