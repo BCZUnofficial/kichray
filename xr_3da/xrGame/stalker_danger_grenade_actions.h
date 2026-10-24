@@ -16,6 +16,8 @@
 
 class CStalkerActionDangerGrenadeTakeCover : public CStalkerActionCombatBase
 {
+  private:
+    CStalkerGrenadeEscape m_escape;
   protected:
 	typedef CStalkerActionCombatBase inherited;
 

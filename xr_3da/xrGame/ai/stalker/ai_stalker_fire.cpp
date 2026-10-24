@@ -21,6 +21,7 @@
 #include "../../stalker_planner.h"
 #include "../../ef_pattern.h"
 #include "../../memory_manager.h"
+#include "../../memory_space_impl.h"
 #include "../../hit_memory_manager.h"
 #include "../../sound_memory_manager.h"
 #include "../../enemy_manager.h"
@@ -52,6 +53,8 @@
 #include "../../script_game_object.h"
 #include "../../inventory.h"
 #include "../../stalker_combat_fire_policy.h"
+#include "../../level_path_manager.h"
+#include "../../GameMtlLib.h"
 #include "../../danger_manager.h"
 #include "../../stalker_combat_diagnostics.h"
 
@@ -333,6 +336,19 @@ void CAI_Stalker::OnItemDrop(CInventoryItem* inventory_item)
 	brain().CStalkerPlanner::m_storage.set_property(StalkerDecisionSpace::eWorldPropertyCriticallyWounded, false);
 }
 
+bool CAI_Stalker::update_combat_pickup(const CInventoryItem* item)
+{
+    if (!item) return false;
+    if (m_combat_pickup.approach(item->object().ID(), Device.dwTimeGlobal,
+        Position().x, Position().y, Position().z, movement().level_path().failed())) return true;
+    m_item_actuality = false;
+    m_best_found_item_to_kill = 0;
+    m_best_found_ammo = 0;
+    movement().set_nearest_accessible_position();
+    movement().set_movement_type(eMovementTypeStand);
+    return false;
+}
+
 void CAI_Stalker::update_best_item_info()
 {
 	ai().ef_storage().alife_evaluation(false);
@@ -414,7 +430,8 @@ void CAI_Stalker::update_best_item_info()
 		for (; I != E; ++I)
 		{
 			const CInventoryItem* inventory_item = smart_cast<const CInventoryItem*>(*I);
-			if (!inventory_item || !memory().item().useful(&inventory_item->object()))
+			if (!inventory_item || m_combat_pickup.rejected(inventory_item->object().ID(), Device.dwTimeGlobal) ||
+            !memory().item().useful(&inventory_item->object()))
 				continue;
 			CInventoryItem* item = inventory_item->can_kill(&inventory());
 			if (item)
@@ -459,10 +476,11 @@ void CAI_Stalker::update_best_item_info()
 	for (; I != E; ++I)
 	{
 		const CInventoryItem* inventory_item = smart_cast<const CInventoryItem*>(*I);
-		if (!inventory_item || !memory().item().useful(&inventory_item->object()))
+		if (!inventory_item || m_combat_pickup.rejected(inventory_item->object().ID(), Device.dwTimeGlobal) ||
+            !memory().item().useful(&inventory_item->object()))
 			continue;
 		const CInventoryItem* item = inventory_item->can_kill(memory().item().objects());
-		if (item)
+		if (item && !m_combat_pickup.rejected(item->object().ID(), Device.dwTimeGlobal))
 		{
 			ai().ef_storage().non_alife().member_item() = &inventory_item->object();
 			float value = ai().ef_storage().m_pfWeaponEffectiveness->ffGetValue();
@@ -830,10 +848,23 @@ void CAI_Stalker::on_combat_ally_harm(const CEntityAlive* victim, const Fvector&
     if (!g_Alive() || getDestroy() || Remote() || !victim || victim == this ||
         !_valid(observed_position) || Position().distance_to_sqr(observed_position) > 225.f ||
         is_relation_enemy(victim)) return;
+    const CAI_Stalker* member = smart_cast<const CAI_Stalker*>(victim);
+    // Death removes live membership before queued sound reaches listeners.
+    // Entity team/squad/group IDs survive death and identify the former squadmate.
+    const bool dead_squadmate = !victim->g_Alive() && member &&
+        g_Team() == member->g_Team() && g_Squad() == member->g_Squad() && g_Group() == member->g_Group();
     if (tfGetRelationType(victim) != ALife::eRelationTypeFriend &&
-        !agent_manager().member().get_member(victim->ID())) return;
+        !agent_manager().member().get_member(victim->ID()) && !dead_squadmate) return;
     m_combat_ally_harm_time = Device.dwTimeGlobal;
     m_combat_ally_harm_known = true;
+    // The damaging bullet's flyby precedes GE_HIT delivery. React to the perceived
+    // harm itself; no subsequent shot or hidden attacker coordinates are required.
+    if (GetScriptControl() || wounded() || critically_wounded() || IsTalking() ||
+        !animation().script_animations().empty()) return;
+    if (m_combat_near_miss.observe(Device.dwTimeGlobal))
+        m_combat_near_miss_point = observed_position;
+    if (m_combat_alert.observe(Device.dwTimeGlobal))
+        m_combat_alert_point = observed_position;
 }
 
 void CAI_Stalker::notify_visible_ally_harm()
@@ -1136,7 +1167,12 @@ bool CAI_Stalker::combat_target_position(Fvector& position, bool aim_point)
             }
             else center.y += clampr((center.y - position.y) * .45f, 0.f, .35f);
         }
-        m_combat_target_offset.sub(center, position);
+        // Use the same baseline as a visual-memory snapshot (normally Center.y,
+        // but Position.y after AI-graph correction). Never add the full body height twice.
+        MemorySpace::CVisibleObject snapshot;
+        snapshot.m_object_params.fill(enemy);
+        m_combat_target_offset.sub(center, snapshot.m_object_params.m_position);
+        if (aim_point) position = center;
         m_combat_target_offset_id = enemy->ID();
     }
     else
@@ -1155,12 +1191,11 @@ bool CAI_Stalker::combat_target_position(Fvector& position, bool aim_point)
         }
     }
 
-    if (aim_point)
+    if (aim_point && !visible)
     {
         if (m_combat_target_offset_id == enemy->ID())
             position.add(m_combat_target_offset);
-        else
-            position.y += .9f;
+        // Without a personally observed pose, the remembered center is already a safe aim point.
     }
     return true;
 }
@@ -1298,7 +1333,45 @@ bool CAI_Stalker::combat_safe_to_shoot(const Fvector& position, const Fvector& d
 {
     // Called immediately before a live NPC shot, using the weapon's already chosen
     // trajectory. Scheduled planner/cache results cannot protect a continuing burst.
-    if (!g_Alive() || GetScriptControl() || !memory().enemy().selected()) return true;
+    if (!g_Alive() || GetScriptControl()) return true;
+    const CEntityAlive* enemy = memory().enemy().selected();
+    if (!enemy || enemy->ID() != m_combat_fire_enemy_id)
+    {
+        // A continuing burst belongs to its last approved target. Let the planner
+        // obtain a new firing solution before a different target can authorize it.
+        m_combat_fire_allowed = false;
+        m_combat_fire_block_reason = combat_fire_no_target;
+        m_combat_fire_gate_frame = u32(-1);
+        return false;
+    }
+    if (!memory().visual().visible_right_now(enemy))
+    {
+        const CWeapon* weapon = smart_cast<const CWeapon*>(inventory().ActiveItem());
+        const u32 seen = memory().visual().direct_visible_time(enemy);
+        u8 reason = combat_fire_none;
+        if (!weapon || weapon->ef_weapon_type() != 6 ||
+            !stalker_combat_fire_policy::suppression_fresh(Device.dwTimeGlobal, seen))
+            reason = combat_fire_suppression_age;
+        else
+        {
+            if (stalker_combat_fire_policy::reset_suppression_budget(
+                m_combat_fire_enemy_id != enemy->ID(), false, m_combat_last_visual_time, seen))
+                m_combat_suppression_shots = 0;
+            m_combat_fire_enemy_id = enemy->ID();
+            m_combat_last_visual_time = seen;
+            if (!stalker_combat_fire_policy::suppression_has_ammo(m_combat_suppression_shots,
+                u32(_max(0, weapon->GetAmmoElapsed())), u32(_max(0, weapon->GetAmmoMagSize()))))
+                reason = combat_fire_suppression_ammo;
+        }
+        if (reason != combat_fire_none)
+        {
+            m_combat_fire_block_reason = reason;
+            m_combat_fire_allowed = false;
+            m_combat_fire_gate_frame = u32(-1);
+            m_combat_fire_blocked_since = u32(-1);
+            return false;
+        }
+    }
     Fvector axis = direction;
     const float magnitude = axis.magnitude();
     if (!_valid(position) || !_valid(direction) || magnitude <= EPS_L) return false;
@@ -1329,8 +1402,13 @@ bool CAI_Stalker::combat_safe_to_shoot(const Fvector& position, const Fvector& d
         if (entry > EPS_L)
         {
             collide::rq_result hit;
-            if (Level().ObjectSpace.RayPick(position, axis, entry, collide::rqtBoth, hit, this) && hit.O != other)
-                continue;
+            if (Level().ObjectSpace.RayPick(position, axis, entry, collide::rqtBoth, hit, this) && !hit.O)
+            {
+                const SGameMtl* material = GMLib.GetMaterialByIdx(
+                    Level().ObjectSpace.GetStaticTris()[hit.element].material);
+                // Unknown/dynamic or penetrable cover cannot authorize a shot through an ally.
+                if (material && material->fShootFactor == 0.f) continue;
+            }
         }
         m_combat_fire_block_reason = combat_fire_friendly;
         m_combat_fire_allowed = false;

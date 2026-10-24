@@ -107,6 +107,8 @@ struct CAI_Stalker : CEntityAlive {
     void notify_visible_ally_harm();
     bool combat_recent_ally_harm() const;
     bool combat_known_friendly_fire(const Fvector&);
+    unsigned team=1,squad=2,group=3;
+    unsigned g_Team() const{return team;} unsigned g_Squad() const{return squad;} unsigned g_Group() const{return group;}
     bool alive=true, destroyed=false, remote=false, script=false, injured=false, critical=false, talking=false;
     struct Animation { std::vector<int> scripts; const std::vector<int>& script_animations() const { return scripts; } } animations;
     bool g_Alive() const { return alive; } bool getDestroy() const { return destroyed; }
@@ -380,7 +382,7 @@ void observed_ally_harm_overrides_suppression()
         npc.memories.visuals.values.push_back(report(ally,Fvector(0,0,-10)));
         npc.on_bullet_near_miss(point,flight);assert(npc.combat_near_miss_revision()==0);
         npc.on_combat_ally_harm(&ally,rear);assert(npc.combat_recent_ally_harm());
-        npc.on_bullet_near_miss(point,flight);assert(npc.combat_near_miss_revision()==1);
+        assert(npc.combat_near_miss_revision()==1); // No second shot: original flyby preceded GE_HIT.
         npc.process_combat_near_miss();npc.update_combat_near_miss();
         Fvector look;assert(npc.combat_alert_look(look)&&npc.moving.target_body==eBodyStateCrouch);
         assert(npc.memories.enemies.target==&enemy&&npc.memories.dangers.entries.empty());
@@ -441,8 +443,21 @@ void visible_hit_and_death_event_evidence()
     assert(!loaded.combat_recent_ally_harm());
     level_fixture.ObjectSpace.objects.clear();
 }
+void queued_squad_death()
+{
+    Device.dwTimeGlobal=100000;CAI_Stalker listener,corpse;
+    corpse.alive=false;corpse.CEntityAlive::alive=false;corpse.relation=ALife::eRelationTypeNeutral;
+    assert(listener.agent.people.ids.empty()); // Already unregistered, and not visible.
+    listener.on_combat_ally_harm(&corpse,Fvector(0,0,10));
+    assert(listener.combat_recent_ally_harm() && listener.combat_near_miss_revision()==1);
+    CAI_Stalker outsider;outsider.group=4;outsider.on_combat_ally_harm(&corpse,Fvector(0,0,10));
+    assert(!outsider.combat_recent_ally_harm());
+    CAI_Stalker hostile;corpse.relation=ALife::eRelationTypeEnemy;
+    hostile.on_combat_ally_harm(&corpse,Fvector(0,0,10));assert(!hostile.combat_recent_ally_harm());
+}
 int main()
 {
+    queued_squad_death();
     observed_ally_harm_overrides_suppression(); visible_hit_and_death_event_evidence();
     idle_and_combat(); priorities_and_lifecycle(); audible_attention();
     visible_enemy_cancels_flyby(); friendly_rear_sector_uses_known_positions();

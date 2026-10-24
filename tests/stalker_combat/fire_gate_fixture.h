@@ -95,7 +95,7 @@ struct CEntityAlive : CObject
     float radius=.6f;
     bool g_Alive() const {return alive;}
     float Radius() const {return radius;}
-    bool human=false;
+    bool human=false, memory_uses_feet=false;
     struct Renderable {IRender_Visual* visual=nullptr;} renderable;
     bool human_being() const {return human;}
     // Match CObject: Visual() has no const overload; the stored pointer remains readable.
@@ -130,7 +130,13 @@ struct FakeInventory
     CInventoryItem* ActiveItem() const { return active; }
 };
 
-struct ObjectParams { Fvector m_position; };
+struct ObjectParams {
+    Fvector m_position;
+    void fill(const CEntityAlive* enemy) {
+        enemy->Center(m_position);
+        if(enemy->memory_uses_feet) m_position.y=enemy->Position().y;
+    }
+};
 namespace MemorySpace
 {
 struct CVisibleObject { bool m_enabled = true; ObjectParams m_object_params; };
@@ -194,9 +200,17 @@ struct FakeShotEffector
     void SetRndSeed(u32 value) { seed = value; }
     void Shot(float value) { ++calls; last_dispersion = value; }
 };
-namespace collide { struct rq_results { void r_clear() {} }; enum rq_target {rqtBoth}; struct rq_result {CObject* O=nullptr;}; }
+namespace collide { struct rq_results { void r_clear() {} }; enum rq_target {rqtBoth}; struct rq_result {CObject* O=nullptr;u32 element=0;}; }
 template<class T> using xr_vector=std::vector<T>;
+struct SGameMtl {float fShootFactor=0.f;};
+struct FixtureMtlLib {
+    SGameMtl material; bool available=true;
+    const SGameMtl* GetMaterialByIdx(u32) {return available?&material:nullptr;}
+};
+static FixtureMtlLib GMLib;
 struct FixtureObjectSpace {
+    struct Triangle {u32 material=0;} triangle;
+    Triangle* GetStaticTris(){return &triangle;}
     std::vector<CObject*> objects;
     bool blocked=false;CObject* blocking_object=nullptr;
     unsigned nearby_calls=0, local_rays=0;

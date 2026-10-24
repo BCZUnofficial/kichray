@@ -206,6 +206,8 @@ void CAgentEnemyManager::compute_enemy_danger()
 
 void CAgentEnemyManager::assign_enemies()
 {
+    // Probability 1 is a valid score, not an unassigned-member sentinel.
+    squad_mask_type assigned = 0;
 	for (;;)
 	{
 		squad_mask_type J, K, N = 0;
@@ -222,7 +224,7 @@ void CAgentEnemyManager::assign_enemies()
 			{
 				K = (J & (J - 1)) ^ J;
 				CAgentMemberManager::iterator i = object().member().member(K);
-				if (!fsimilar((*i)->probability(), 1.f))
+				if (assigned & K)
 					continue;
 
 				float value = evaluate(&(*i)->object(), (*I).m_object);
@@ -238,6 +240,7 @@ void CAgentEnemyManager::assign_enemies()
 		if (!N)
 			break;
 
+        assigned |= N; // Every iteration consumes a new bit; at most squad-mask width iterations.
 		(*I).m_distribute_mask.set(N, TRUE);
 		CAgentMemberManager::iterator i = object().member().member(N);
 		(*i)->probability(best);

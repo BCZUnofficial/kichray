@@ -211,7 +211,7 @@ void CStalkerActionGetItemToKill::execute()
 
 	inherited::execute();
 
-	if (!object().m_best_found_item_to_kill)
+	if (!object().update_combat_pickup(object().m_best_found_item_to_kill))
 		return;
 
 	object().movement().set_level_dest_vertex(
@@ -275,7 +275,7 @@ void CStalkerActionMakeItemKilling::execute()
 
 	inherited::execute();
 
-	if (!object().m_best_found_ammo)
+	if (!object().update_combat_pickup(object().m_best_found_ammo))
 		return;
 
 	object().movement().set_level_dest_vertex(object().m_best_found_ammo->object().ai_location().level_vertex_id());
@@ -1588,11 +1588,7 @@ CStalkerActionHideFromGrenade::CStalkerActionHideFromGrenade(CAI_Stalker* object
 void CStalkerActionHideFromGrenade::initialize()
 {
 	inherited::initialize();
-    object().invalidate_best_cover();
-    m_grenade_last_query = Device.dwTimeGlobal - 400u;
-    m_grenade_object_id = u16(-1);
-    m_grenade_last_position = object().Position();
-    m_grenade_escape_active = false;
+    m_escape.reset(object());
 
 	m_storage->set_property(eWorldPropertyUseSuddenness, false);
 
@@ -1610,10 +1606,18 @@ void CStalkerActionHideFromGrenade::initialize()
 	m_storage->set_property(eWorldPropertyEnemyDetoured, false);
 }
 
-void CStalkerActionHideFromGrenade::execute()
+void CStalkerGrenadeEscape::reset(CAI_Stalker& object)
 {
-    inherited::execute();
-    const CDangerObject* danger = object().memory().danger().selected();
+    object.invalidate_best_cover();
+    m_grenade_last_query = Device.dwTimeGlobal - 400u;
+    m_grenade_object_id = u16(-1);
+    m_grenade_last_position = object.Position();
+    m_grenade_escape_active = false;
+}
+
+void CStalkerGrenadeEscape::update(CAI_Stalker& object)
+{
+    const CDangerObject* danger = object.memory().danger().selected();
     if (!danger || danger->type() != CDangerObject::eDangerTypeGrenade) return;
     const u32 now = Device.dwTimeGlobal;
     const Fvector position = danger->position();
@@ -1623,7 +1627,7 @@ void CStalkerActionHideFromGrenade::execute()
         position.distance_to_sqr(m_grenade_last_position) > 1.f;
     if (moved)
     {
-        object().invalidate_best_cover();
+        object.invalidate_best_cover();
         m_grenade_last_position = position;
         m_grenade_object_id = explosive_id;
         m_grenade_escape_active = false;
@@ -1632,62 +1636,68 @@ void CStalkerActionHideFromGrenade::execute()
     const bool known_fuse = missile && missile->destroy_time() != u32(-1);
     const u32 fuse_ms = known_fuse ? stalker_combat_cover_policy::fuse_remaining(now, missile->destroy_time()) : u32(-1);
     // Read the already configured danger/run velocity; do not mutate movement state to query speed.
-    const float run_speed = object().movement().detail().velocity(
+    const float run_speed = object.movement().detail().velocity(
         StalkerMovement::eVelocityRunDangerStandPositive).linear_velocity;
     const float travel_budget = known_fuse ? stalker_combat_cover_policy::grenade_travel_budget(fuse_ms, run_speed) : 30.f;
     const float escape_radius = stalker_combat_cover_policy::grenade_escape_radius(travel_budget);
     const bool keep_escape = m_grenade_escape_active && !moved &&
-        !object().movement().path_completed() && !object().movement().level_path().failed() &&
+        !object.movement().path_completed() && !object.movement().level_path().failed() &&
         now - m_grenade_last_query < 1500u;
-    const CCoverPoint* point = keep_escape ? 0 : object().best_cover(position);
+    const CCoverPoint* point = keep_escape ? 0 : object.best_cover(position);
     if (point)
     {
-        const float cover_distance = object().Position().distance_to(point->position());
+        const float cover_distance = object.Position().distance_to(point->position());
         // Nearby shelter is useful immediately; a far route cannot be relied on before detonation.
         if (known_fuse && cover_distance > 1.f && cover_distance > travel_budget) point = 0;
     }
     if (point)
     {
-        object().movement().set_level_dest_vertex(point->level_vertex_id());
-        object().movement().set_desired_position(&point->position());
-        object().movement().set_movement_type(eMovementTypeRun);
-        object().movement().set_body_state(eBodyStateStand);
+        object.movement().set_level_dest_vertex(point->level_vertex_id());
+        object.movement().set_desired_position(&point->position());
+        object.movement().set_movement_type(eMovementTypeRun);
+        object.movement().set_body_state(eBodyStateStand);
         m_grenade_escape_active = false;
     }
     else if (!keep_escape && (moved || now - m_grenade_last_query >= 400u))
     {
         m_grenade_last_query = now;
         m_grenade_last_position = position;
-        object().agent_manager().member().member(m_object).cover(0);
+        object.agent_manager().member().member(&object).cover(0);
         Fvector escape;
         u32 vertex;
-        if (stalker_grenade_escape(object(), position, escape_radius, escape, vertex))
+        if (stalker_grenade_escape(object, position, escape_radius, escape, vertex))
         {
-            object().movement().set_level_dest_vertex(vertex);
-            object().movement().set_desired_position(&escape);
-            object().movement().set_movement_type(eMovementTypeRun);
-            object().movement().set_body_state(eBodyStateStand);
+            object.movement().set_level_dest_vertex(vertex);
+            object.movement().set_desired_position(&escape);
+            object.movement().set_movement_type(eMovementTypeRun);
+            object.movement().set_body_state(eBodyStateStand);
             m_grenade_escape_active = true;
-            if (stalker_combat_diagnostics::enabled(object().ID()))
-                stalker_combat_diagnostics::log(object().ID(), stalker_combat_diagnostics::grenade,
+            if (stalker_combat_diagnostics::enabled(object.ID()))
+                stalker_combat_diagnostics::log(object.ID(), stalker_combat_diagnostics::grenade,
                     "escape_without_cover", "vertex=%u fuse_ms=%u step=%.2f", vertex, fuse_ms, escape_radius);
         }
         else
         {
-            object().movement().set_nearest_accessible_position();
-            object().movement().set_movement_type(eMovementTypeStand);
-            object().movement().set_body_state(eBodyStateCrouch);
+            object.movement().set_nearest_accessible_position();
+            object.movement().set_movement_type(eMovementTypeStand);
+            object.movement().set_body_state(eBodyStateCrouch);
             m_grenade_escape_active = false;
         }
     }
-    object().sight().setup(CSightAction(SightManager::eSightTypePathDirection, true, true));
+    object.sight().setup(CSightAction(SightManager::eSightTypePathDirection, true, true));
+    if (point && object.movement().path_completed())
+    {
+        object.movement().set_movement_type(eMovementTypeStand);
+        object.movement().set_body_state(eBodyStateCrouch);
+    }
+}
+
+void CStalkerActionHideFromGrenade::execute()
+{
+    inherited::execute();
+    m_escape.update(object());
     if (object().memory().enemy().selected()) aim_ready();
     else object().CObjectHandler::set_goal(eObjectActionIdle, object().best_weapon());
-    if (point && object().movement().path_completed())
-    {
-        object().movement().set_movement_type(eMovementTypeStand);
-        object().movement().set_body_state(eBodyStateCrouch);
-    }
 }
 
 void CStalkerActionHideFromGrenade::finalize()

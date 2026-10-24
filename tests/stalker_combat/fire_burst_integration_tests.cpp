@@ -27,7 +27,7 @@ void prepare(CAI_Stalker& npc, CEntityAlive& enemy, CWeaponMagazined& weapon, bo
     record.shared_time = 1000;
     record.visible = !hidden;
     record.has_snapshot = true;
-    record.snapshot.m_object_params.m_position = Fvector(0.f, 0.f, 10.f);
+    record.snapshot.m_object_params.m_position = Fvector(0.f, .9f, 10.f);
     auto& known = npc.memories.known[enemy.ID()];
     known.m_object = &enemy;
     known.m_object_params.m_position = record.snapshot.m_object_params.m_position;
@@ -256,10 +256,31 @@ void test_guard_matches_initial_burst_direction_and_actor_bypass()
     world = FixtureObjectSpace();
 }
 
+void test_live_deadline_and_budget_without_planner_update()
+{
+    {
+        CAI_Stalker npc; CEntityAlive enemy(10); CWeaponMagazined weapon(20,npc);
+        CObjectHandlerPlanner planner(npc); CStalkerActionCombatBase action(npc);
+        prepare(npc,enemy,weapon,true);Device.dwTimeGlobal=3999;action.fire();weapon.start_burst();
+        Device.dwTimeGlobal=4001;weapon.advance_for_test(1);
+        assert(weapon.fired==0 && weapon.ammo==30 && !weapon.IsWorking());
+        assert(std::strcmp(npc.combat_fire_block_reason(),"suppression_age")==0);
+    }
+    {
+        CAI_Stalker npc; CEntityAlive enemy(10); CWeaponMagazined weapon(20,npc);
+        CObjectHandlerPlanner planner(npc); CStalkerActionCombatBase action(npc);
+        prepare(npc,enemy,weapon,false);npc.fixture_min_queue=npc.fixture_max_queue=16;
+        action.fire();weapon.start_burst();npc.memories.visuals.records[enemy.ID()].visible=false;
+        enemy.live_reads_allowed=false;weapon.advance_for_test(20);
+        assert(npc.m_combat_suppression_shots==8 && weapon.ammo==22 && !weapon.IsWorking());
+        assert(std::strcmp(npc.combat_fire_block_reason(),"suppression_ammo")==0);
+    }
+}
 }
 
 int main()
 {
+    test_live_deadline_and_budget_without_planner_update();
     test_remaining_is_not_absolute_queue_length();
     test_completed_queue_is_not_reopened_by_next_profile();
     test_completion_boundary_and_live_profile_shrink();

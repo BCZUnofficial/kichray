@@ -15,6 +15,7 @@ ALLOWED_GAME_FILES = {
     "ai/stalker/ai_stalker_cover.cpp", "ai/stalker/ai_stalker_fire.cpp", "ai/stalker/ai_stalker_misc.cpp",
     "console_commands.cpp", "xrGame.vcxproj", "xrGame.vcxproj.filters",
     "stalker_sound_data_visitor.cpp", "sight_manager.cpp",
+    "stalker_danger_grenade_actions.cpp", "stalker_danger_grenade_actions.h",
     # AI-P7 owns a native prisluh gesture in the existing stalker animator.
     "stalker_animation_global.cpp", "stalker_animation_manager.cpp",
     "stalker_animation_manager.h", "stalker_animation_manager_inline.h",

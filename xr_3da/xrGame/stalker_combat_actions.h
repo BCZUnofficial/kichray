@@ -276,13 +276,21 @@ class CStalkerActionPostCombatWait : public CStalkerActionCombatBase
 // CStalkerActionHideFromGrenade
 //////////////////////////////////////////////////////////////////////////
 
+// Shared by combat and peaceful danger planners, with one destination lease.
+struct CStalkerGrenadeEscape
+{
+    u32 m_grenade_last_query;
+    u16 m_grenade_object_id;
+    Fvector m_grenade_last_position;
+    bool m_grenade_escape_active;
+    void reset(CAI_Stalker& object);
+    void update(CAI_Stalker& object);
+};
+
 class CStalkerActionHideFromGrenade : public CStalkerActionCombatBase
 {
   private:
-	u32 m_grenade_last_query;
-	u16 m_grenade_object_id;
-	Fvector m_grenade_last_position;
-	bool m_grenade_escape_active;
+    CStalkerGrenadeEscape m_escape;
   protected:
 	typedef CStalkerActionCombatBase inherited;
 

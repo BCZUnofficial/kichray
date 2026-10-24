@@ -34,7 +34,8 @@ void snapshot(CAI_Stalker& npc, CEntityAlive& enemy, const Fvector& position, u3
 void see(CAI_Stalker& npc, CEntityAlive& enemy, u32 time)
 {
     enemy.live_reads_allowed = true;
-    snapshot(npc, enemy, enemy.live_position, time);
+    ObjectParams actual; actual.fill(&enemy);
+    snapshot(npc, enemy, actual.m_position, time);
     auto& record = npc.memories.visuals.records[enemy.ID()];
     record.visible = true;
     record.direct_time = time;
@@ -67,7 +68,7 @@ void test_known_position_never_reads_hidden_entity()
     const unsigned reads = enemy.position_reads + enemy.center_reads;
 
     hide(npc, enemy);
-    snapshot(npc, enemy, Fvector(2.f, 0.f, 12.f), 1100);
+    snapshot(npc, enemy, Fvector(2.f, 1.2f, 12.f), 1100);
     assert(npc.combat_target_position(point, true));
     assert(equal(point, Fvector(2.f, 1.2f, 12.f)));
     assert(enemy.position_reads + enemy.center_reads == reads);
@@ -82,7 +83,7 @@ void test_known_position_never_reads_hidden_entity()
     npc.memories.enemies.value = &second;
     snapshot(npc, second, Fvector(0.f, 0.f, 20.f), 1200);
     assert(npc.combat_target_position(point, true));
-    assert(equal(point, Fvector(0.f, .9f, 20.f))); // No height borrowed from another target.
+    assert(equal(point, Fvector(0.f, 0.f, 20.f))); // No height borrowed from another target.
     assert(second.position_reads == 0 && second.center_reads == 0);
 }
 
@@ -97,7 +98,7 @@ void test_chest_pose_and_occlusion()
         assert(npc.combat_target_position(point,true));
         assert(equal(point,Fvector(0,elevation+height,distance)));
         hide(npc,enemy); skeleton.chest.c=Fvector(99,99,99);
-        snapshot(npc,enemy,Fvector(1,elevation,distance+1),1100);
+        snapshot(npc,enemy,Fvector(1,elevation+enemy.center_height,distance+1),1100);
         assert(npc.combat_target_position(point,true));
         assert(equal(point,Fvector(1,elevation+height,distance+1)));
     }
@@ -111,6 +112,19 @@ void test_chest_pose_and_occlusion()
     enemy.renderable.visual=&non_skeletal;
     assert(npc.combat_target_position(point,true));
     assert(std::fabs(point.y-enemy.live_position.y-1.25f)<.0001f);
+}
+
+void test_memory_baseline_and_graph_correction()
+{
+    for(bool feet:{false,true}) {
+        frame(1000); CAI_Stalker npc; CEntityAlive enemy(10); CWeapon weapon(20); CKinematics skeleton;
+        equip_and_select(npc,enemy,weapon); enemy.human=true;enemy.center_height=.9f;
+        enemy.memory_uses_feet=feet;enemy.renderable.visual=&skeleton;skeleton.chest.c=Fvector(0,1.4f,0);
+        see(npc,enemy,1000); Fvector before,after;
+        assert(npc.combat_target_position(before,true));
+        hide(npc,enemy);assert(npc.combat_target_position(after,true));
+        assert(equal(before,after)&&std::fabs(after.y-1.4f)<.0001f);
+    }
 }
 
 void test_absent_inputs_and_same_frame_identity_changes()
@@ -423,6 +437,14 @@ void test_live_friendly_volume_and_wall_filter()
     world.blocked = true;
     world.blocking_object = nullptr; // Static wall before the near side of the ally's volume.
     assert(npc.combat_safe_to_shoot(npc.fixture_origin, npc.fixture_direction));
+    for (float factor : {.2f, 1.f}) {
+        GMLib.material.fShootFactor=factor;
+        assert(!npc.combat_safe_to_shoot(npc.fixture_origin,npc.fixture_direction));
+    }
+    GMLib.material.fShootFactor=0.f;GMLib.available=false;
+    assert(!npc.combat_safe_to_shoot(npc.fixture_origin,npc.fixture_direction));
+    GMLib.available=true;world.blocking_object=&prop;
+    assert(!npc.combat_safe_to_shoot(npc.fixture_origin,npc.fixture_direction));
     world.blocking_object = &ally;
     assert(!npc.combat_safe_to_shoot(npc.fixture_origin, npc.fixture_direction));
     world.blocked = false;
@@ -456,6 +478,11 @@ void test_live_friendly_volume_and_wall_filter()
     assert(npc.combat_fire_solution());
     assert(npc.combat_fire_blocked_time() == 0);
     world = FixtureObjectSpace();
+    CEntityAlive replacement(99);npc.memories.enemies.value=&replacement;see(npc,replacement,2300);
+    assert(!npc.combat_safe_to_shoot(npc.fixture_origin,npc.fixture_direction));
+    assert(!npc.m_combat_fire_allowed); // An old burst cannot inherit a different target.
+    npc.memories.enemies.value=nullptr;
+    assert(!npc.combat_safe_to_shoot(npc.fixture_origin,npc.fixture_direction));
 
     // Preserve scripted/death shutdown behavior without touching released memory.
     npc.fixture_memory_available = false;
@@ -472,6 +499,7 @@ int main()
 {
     test_known_position_never_reads_hidden_entity();
     test_chest_pose_and_occlusion();
+    test_memory_baseline_and_graph_correction();
     test_absent_inputs_and_same_frame_identity_changes();
     test_center_friend_sweep_and_blocked_timer();
     test_pitch_tolerance_and_hysteresis();

@@ -9,6 +9,7 @@
 #pragma once
 
 #include "../../stalker_combat_awareness_policy.h"
+#include "../../stalker_combat_pickup_policy.h"
 
 #include "../../CustomMonster.h"
 #include "../../object_handler.h"
@@ -301,6 +302,7 @@ class CAI_Stalker : public CCustomMonster, public CObjectHandler, public CAI_Phr
 	bool ready_to_kill();
 	bool ready_to_detour();
 	void update_best_item_info();
+    bool update_combat_pickup(const CInventoryItem* item);
 	virtual float GetWeaponAccuracy() const;
 	virtual void spawn_supplies();
 	IC CAgentManager& agent_manager() const;
@@ -314,6 +316,7 @@ class CAI_Stalker : public CCustomMonster, public CObjectHandler, public CAI_Phr
 	bool inside_anomaly();
 
   private:
+    stalker_combat_pickup::Recovery m_combat_pickup;
 	bool m_can_kill_member;
 	bool m_can_kill_enemy;
 	float m_pick_distance;

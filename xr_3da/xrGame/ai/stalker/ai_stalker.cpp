@@ -148,6 +148,7 @@ void CAI_Stalker::reinit()
 	m_ce_ambush->set_inertia(3000);
 	m_ce_best_by_time->set_inertia(1000);
 
+    m_combat_pickup = stalker_combat_pickup::Recovery();
 	m_can_kill_enemy = false;
 	m_can_kill_member = false;
 	m_pick_distance = 0.f;
@@ -1041,6 +1042,7 @@ const MonsterSpace::SBoneRotation& CAI_Stalker::head_orientation() const
 
 void CAI_Stalker::net_Relcase(CObject* O)
 {
+    m_combat_pickup.forget(O->ID());
 	inherited::net_Relcase(O);
 
 	sight().remove_links(O);

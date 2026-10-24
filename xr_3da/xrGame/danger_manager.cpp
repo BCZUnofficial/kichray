@@ -155,8 +155,9 @@ void CDangerManager::update()
 
 void CDangerManager::remove_links(const CObject* object)
 {
-	if (m_selected && m_selected->object() && (m_selected->object()->ID() == object->ID()))
-		m_selected = 0;
+    // Erasing ANY entry may move the selected element. Never retain an interior
+    // vector pointer across compaction; the next memory update selects afresh.
+    m_selected = 0;
 
 	{
 		OBJECTS::iterator I = std::remove_if(m_objects.begin(), m_objects.end(), CDangerPredicate(object));
@@ -375,6 +376,7 @@ void CDangerManager::add(const CDangerObject& object)
 		return;
 	}
 
+    m_selected = 0;
 	m_objects.push_back(object);
 }
 
