@@ -5,6 +5,7 @@
 #include "xrRender/DetailManager.h"
 #include "xrRender/WallmarksEngine.h"
 #include "Fmesh.h"
+#include "KichR4NativeHOM.h"
 
 class CR4Target:public IRender_Target {
 public:
@@ -40,8 +41,7 @@ public:
     u32 phase;BOOL val_bHUD;
     CModelPool* Models;CDetailManager* Details;CWallmarksEngine* Wallmarks;
     CPSLibrary PSLibrary;
-    /* Detail cache uses this conservative CPU visibility service. */
-    struct Visibility {BOOL visible(vis_data& v){u32 m=::Render->ViewBase.getMask();return ::Render->ViewBase.testAABB(&v.box.min.x,m)!=fcvNone;} } HOM;
+    KichR4NativeHOM HOM;
     CRender();~CRender();
     GenerationLevel get_generation(){return GENERATION_R4;}
     void create();void destroy();void reset_begin();void reset_end();

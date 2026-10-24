@@ -13,6 +13,8 @@ struct KichR4GameFrame {
     KichR4LightingFrame lighting;
     float time,prepare_ms;
     float tree_wave[4],tree_wind[4],tree_sbc;
+    // EXE-only progressive geometry policy: bias, SSA start/end, camera FOV.
+    float geometry_lod[4];
     float postprocess[24];
 };
 bool KichR4_GameInitialize(const char*,KichR4LogFn,const KichR4LevelFiles*);

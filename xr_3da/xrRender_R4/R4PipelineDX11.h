@@ -5,6 +5,7 @@
 #include <array>
 #include "R4GeometryRules.h"
 #include "R4StreamRules.h"
+#include "R4DrawStateDX11.h"
 namespace kich_r4 {
 class PipelineDX11 {
     ID3D11InputLayout* layout_;
@@ -18,6 +19,11 @@ class PipelineDX11 {
     std::map<std::array<uint32_t,9>,ID3D11BlendState*> surface_blends_;
     std::map<std::array<uint32_t,10>,ID3D11DepthStencilState*> surface_depths_;
     std::map<std::array<uint32_t,10>,ID3D11SamplerState*> surface_samplers_;
+    std::array<uint32_t,9> last_blend_key_;
+    std::array<uint32_t,10> last_depth_key_,last_sampler_key_;
+    ID3D11BlendState* last_blend_;
+    ID3D11DepthStencilState* last_depth_;
+    ID3D11SamplerState* last_sampler_;
     HRESULT Sampler(ID3D11DeviceContext*,KichR4SamplerState,ID3D11SamplerState**);
     HRESULT Surface(ID3D11DeviceContext*,const KichR4StreamDrawDesc&,ID3D11BlendState**,ID3D11DepthStencilState**);
     HRESULT Blend(ID3D11DeviceContext*,const KichR4StreamDrawDesc&,ID3D11BlendState**);
@@ -29,7 +35,7 @@ public:
     PipelineDX11();
     ~PipelineDX11();
     HRESULT Create(ID3D11Device*,const KichR4PipelineDesc&,ID3D11VertexShader*,ID3D11PixelShader*,ID3DBlob*,bool=false,bool=false,bool=false,bool=false,bool=false);
-    HRESULT Draw(ID3D11DeviceContext*,const KichR4DrawIndexedDesc&,ID3D11Buffer*,ID3D11Buffer*,ID3D11Buffer*,uint32_t,ID3D11ShaderResourceView* = NULL,const KichR4StreamDrawDesc* = NULL,ID3D11ShaderResourceView* const* = NULL,ID3D11Buffer* = NULL,uint32_t=0,uint32_t=0,ID3D11Buffer* = NULL);
+    HRESULT Draw(ID3D11DeviceContext*,DrawStateDX11&,const KichR4DrawIndexedDesc&,ID3D11Buffer*,ID3D11Buffer*,ID3D11Buffer*,uint32_t,ID3D11ShaderResourceView* = NULL,const KichR4StreamDrawDesc* = NULL,ID3D11ShaderResourceView* const* = NULL,ID3D11Buffer* = NULL,uint32_t=0,uint32_t=0,ID3D11Buffer* = NULL);
 };
 }
 #endif

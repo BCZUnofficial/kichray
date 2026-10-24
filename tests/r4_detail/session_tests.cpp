@@ -66,6 +66,21 @@ void DetailBounds(){auto source=Source();KichR4DetailSession details;details.sou
     Require(details.ShadowVisible(mesh,instance,0,kich_r4_lighting::LocalShadow(point,0)) && !details.ShadowVisible(mesh,instance,0,kich_r4_lighting::LocalShadow(point,1)),"actual point-light positive and negative X faces select different casters");
     mesh.bounds_known=false;Require(details.ShadowVisible(mesh,instance,1,vp),"unknown bounds conservatively retained");
 }
+void SharedShadowSelection(){auto source=Source();source.meshes[0].CalculateBounds();source.shadow_instances[1].row[0][3]=20;
+    KichR4DetailSession details;details.source=&source;const auto camera=kich_r4_scene::Identity();const float direction[3]={0,1,0};
+    const auto volume=kich_r4_visibility::BuildSunCasterVolume(camera,direction);details.BeginVisibilityFrame(77,volume);
+    auto shadow=camera;shadow.m[0]=.01f;
+    const auto& local=details.SelectShadow(shadow,false);Require(local.valid && local.instances.size()==4,"independent local shadow view retains distant instance");
+    const auto tested=details.shadow_visibility_tests,built=details.shadow_bounds_built;
+    Require(&details.SelectShadow(shadow,false)==&local && details.shadow_visibility_tests==tested && details.shadow_bounds_built==built,"preflight/draw reuse detail selection and computed wind bounds");
+    const auto& sun=details.SelectShadow(shadow,true);Require(sun.instances.size()==3,"sun caster volume filters details outside receiver extrusion");
+    Require(local.instances.size()==4 && details.shadow_views.size()==2,"local and sun views cannot alias even with identical matrix");
+    for(const auto& g:sun.groups)Require(uint64_t(g.first)+g.count<=sun.instances.size(),"cached groups address compact selected instance list");
+    ++source.engine_frame;source.shadow_instances[1].row[0][3]=0;details.EnsureVisibilityFrame(source.engine_frame,volume);
+    Require(details.SelectShadow(shadow,true).instances.size()==4 && details.shadow_cache_hits==0,"new source frame invalidates selection and moving bounds");
+    ++source.generation;source.shadow_groups[0].count=UINT32_MAX;details.EnsureVisibilityFrame(source.engine_frame,volume);
+    Require(!details.SelectShadow(shadow,false).valid,"invalid candidate group fails validation before cached range access");
+}
 int ScenarioDetail(int fail=0){Fixture fixture;f=&fixture;f->fail=fail;ResetDeferredRecorder();detail_pipelines.clear();uploaded.clear();instance_uploads=detail_draws=0;
     const KichR4LevelFiles files={Open,Close};kich_r4_game::Session game(DeferredAPIs(),files,"l01_escape",NULL);
     auto source=Source();auto& details=game.deferred.details;details.source=&source;details.api={sizeof(details.api),KICH_R4_DETAIL_ABI,sizeof(void*),0,DetailPipeline,Instances,UploadInstances,DetailDraw};game.deferred.native_mode=true;
@@ -144,6 +159,6 @@ void IndependentShadowLists(){Fixture fixture;f=&fixture;ResetDeferredRecorder()
 int main(int argc,char** argv){try{(void)&Scenario;(void)&DDraw;Require(argc==2,"snapshot output directory");snapshot_directory=argv[1];
     Require(!ValidDetailCapacity(0) && !ValidDetailCapacity(UINT32_MAX) && ValidDetailCapacity(KICH_R4_MAX_DETAIL_INSTANCES),"instance budget boundaries");
     Require(!ValidDetailRange(UINT32_MAX,1,16) && !ValidDetailRange(1,UINT32_MAX,16) && !ValidDetailRange(0,0,16) && ValidDetailRange(16,1,17),"overflow-safe instance ranges");
-    DetailBounds();DetailSourceIdentity();IndependentShadowLists();const int positions=ScenarioDetail();for(int i=1;i<=positions;++i)ScenarioDetail(i);
+    DetailBounds();SharedShadowSelection();DetailSourceIdentity();IndependentShadowLists();const int positions=ScenarioDetail();for(int i=1;i<=positions;++i)ScenarioDetail(i);
     printf("G3b native detail submission: %d checks; %d failure positions passed\n",checks,positions);return 0;
 }catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

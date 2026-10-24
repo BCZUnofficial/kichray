@@ -11,6 +11,7 @@
 typedef uint32_t u32;
 typedef int BOOL;
 static const BOOL TRUE=1;
+static const BOOL FALSE=0;
 template<class T>using xr_vector=std::vector<T>;
 template<class T>struct Ref {
     T* value;
@@ -93,6 +94,9 @@ struct IRender_Visual {
     }
 };
 inline bool KichR4_NativeInlineGeometry(void* p){return static_cast<IRender_Visual*>(p)->native_model;}
+// Geometry policy is exercised by r4_level/lod_tests; routing must forward it
+// to every material pass of the same visual without changing selection.
+inline float NativeGeometryLOD(IRender_Visual*,const Fmatrix&,bool hud){return hud?1.f:.5f;}
 struct FHierrarhyVisual:IRender_Visual {xr_vector<IRender_Visual*> children;};
 struct CKinematics:FHierrarhyVisual {
     CKinematics* dcast_PKinematics(){return this;}

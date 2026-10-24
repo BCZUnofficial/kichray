@@ -20,6 +20,7 @@ struct CFrustum {
 struct IRenderable {unsigned rendered;IRenderable():rendered(0){}void renderable_Render(){++rendered;}};
 struct ISpatial {
     IRenderable* renderable;float low[3],high[3];unsigned updates;
+    struct Spatial {struct Sphere {Fvector P;float R;} sphere;} spatial;
     IRenderable* dcast_Renderable(){return renderable;}void spatial_updatesector(){++updates;}
 };
 struct ISpatial_DB {
@@ -44,18 +45,21 @@ class CRender {
 public:
     enum{PHASE_NORMAL=0};unsigned phase;bool loaded;std::vector<int> queue;std::vector<CFrustum> shadow_views;CFrustum ViewBase,*View;
     IRenderable* object;CRender():phase(0),loaded(true),View(NULL),object(NULL){}
+    struct FakeHOM {void Prepare(CFrustum&){} } HOM;
     void set_Object(IRenderable* p){object=p;}void Calculate();
 };
+struct NativeLodView {kich_r4_scene::Matrix vp;uint32_t resolution;};
+std::vector<NativeLodView> native_lod_shadow_views;
 #include "native_calculate_under_test.cpp"
 namespace {unsigned checks=0;void Require(bool good,const char* message){++checks;if(!good)throw std::runtime_error(message);}}
 int main(){try{
     const kich_r4_scene::Matrix identity=kich_r4_scene::Identity();std::memcpy(Device.mFullTransform.m,identity.m,64);Device.vCameraPosition={0,0,0};
     lights.count=1;lights.shadow_mask=1;lights.lights[0].type=1;lights.lights[0].range=10;
     IRenderable inside,shadow,outside;
-    ISpatial camera={&inside,{-.1f,-.1f,.4f},{.1f,.1f,.6f},0};
-    ISpatial caster={&shadow,{4.f,-.1f,-.1f},{5.f,.1f,.1f},0};
+    ISpatial camera={&inside,{-.1f,-.1f,.4f},{.1f,.1f,.6f},0,{{{0,0,.5f},.2f}}};
+    ISpatial caster={&shadow,{4.f,-.1f,-.1f},{5.f,.1f,.1f},0,{{{4.5f,0,0},.6f}}};
     ISpatial duplicate=caster;
-    ISpatial distant={&outside,{20.f,-.1f,-.1f},{21.f,.1f,.1f},0};
+    ISpatial distant={&outside,{20.f,-.1f,-.1f},{21.f,.1f,.1f},0,{{{20.5f,0,0},.6f}}};
     spatial.objects={&camera,&caster,&duplicate,&distant};CRender renderer;renderer.Calculate();
     Require(light_visibility_requested,"native selection receives the actual game camera frustum");
     Require(spatial.queries==7 && renderer.shadow_views.size()==6,"camera plus all selected point faces queried");

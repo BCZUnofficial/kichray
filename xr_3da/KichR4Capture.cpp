@@ -4,6 +4,7 @@
 #include "RenderSnapshot.h"
 namespace {
 kich_r4_capture::State* capture=NULL;
+KichR4LightVisibility light_visibility=NULL;
 template<class F>void GuardCapture(F action){if(!capture)return;try{action(*capture);}
     catch(const std::exception& e){try{capture->frame.Fail(e.what());}catch(...) {}}
     catch(...){try{capture->frame.Fail("CPU capture exception");}catch(...) {}}}
@@ -20,9 +21,11 @@ bool KichR4_CaptureLightIdentity(const void* id,const KichR4LightIdentity& sourc
 }
 void KichR4_CaptureLightForget(const void* id){if(!capture)return;capture->lights.erase(id);capture->light_sources.erase(id);capture->unshadowed_lights.erase(id);capture->light_observations.erase(id);}
 void KichR4_CaptureLightShadow(const void* id,bool shadow){if(!capture)return;if(shadow)capture->unshadowed_lights.erase(id);else capture->unshadowed_lights.insert(id);}
+void KichR4_SetLightVisibility(KichR4LightVisibility query){light_visibility=query;}
 void KichR4_CaptureLighting(const float* camera,KichR4LightingFrame& frame,bool r1_lights_enabled,const float* camera_vp){
-    frame.count=0;frame.shadow_mask=0;frame.r1_lights_requested=frame.r1_lights_applied=r1_lights_enabled?1u:0u;if(!capture || !camera)return;
-    try{capture->SelectLights(camera,frame,r1_lights_enabled,camera_vp);}catch(...){frame.count=0;frame.shadow_mask=0;}
+    frame.count=0;frame.shadow_mask=0;frame.occlusion_enabled=frame.occlusion_tested=0;frame.occlusion_rejected.clear();
+    frame.r1_lights_requested=frame.r1_lights_applied=r1_lights_enabled?1u:0u;if(!capture || !camera)return;
+    try{capture->SelectLights(camera,frame,r1_lights_enabled,camera_vp,light_visibility);}catch(...){frame.count=0;frame.shadow_mask=0;}
 }
 void KichR4_CaptureLightingDiagnostics(const float* camera,const KichR4LightingFrame& frame){
     if(!g_render_snapshot_active || !capture)return;

@@ -23,6 +23,8 @@ struct KichR4ModelSession {
     struct PoseSlot {KichR4Handle handle;uint32_t capacity;bool used;PoseSlot(uint32_t c):handle(0),capacity(c),used(false){}};
     KichR4Handle vs[KICH_R4_MODEL_CAPACITY_CLASSES],pipelines[KICH_R4_MODEL_CAPACITY_CLASSES][PassCount],rigid_pose,white,plain_pipeline[KICH_R4_MODEL_CAPACITY_CLASSES];
     std::map<const Source*,Mesh> meshes;
+    kich_r4_visibility::SunCasterVolume sun_casters;
+    void SetSunCasterVolume(const kich_r4_visibility::SunCasterVolume& volume){sun_casters=volume;}
     std::vector<PoseSlot> poses;std::vector<KichR4Handle> command_poses;std::vector<uint32_t> command_classes;size_t pose_cursor[KICH_R4_MODEL_CAPACITY_CLASSES];
     const kich_r4_capture::Batch* prepared;bool rigid_ready;
     uint32_t frame,commands,pose_uploads,mesh_uploads,draw_calls[PassCount];
@@ -86,8 +88,8 @@ struct KichR4ModelSession {
             for(size_t i=0;i<c.bones.size();++i)if(!ValidMatrix(c.bones[i]))return false;}
         /* Progressive meshes use an indexed prefix; reject a range referencing
          * beyond its advertised vertex prefix, without uploading a second mesh. */
-        for(uint32_t i=0;i<c.count;++i)if(c.mesh->indices[c.first+i]>=c.vertex_count)return false;
-        return true;
+        Source::RangeInfo range;
+        return c.mesh->Range(c.first,c.count,c.vertex_count,range);
     }
     int32_t ReleaseMesh(KichR4FrameSession& s,KichR4LevelSession& l,Mesh& m){
         for(auto& p:m.basis)if(p.second.ib){if(l.Expect(s,"E1 retire basis partition",l.bridge.resources.release_resource(s.device,p.second.ib))<0)return s.failure;p.second.ib=0;}
@@ -213,13 +215,24 @@ struct KichR4ModelSession {
         if(pass==ForwardAdd && c.effect && c.effect!=6)return false;
         return !Opaque(c);
     }
+    static bool LightAffects(const Command& c,const kich_r4_lighting::Constants& frame){
+        if(!c.bounds_known || !c.bounds.valid || !kich_r4_capture::Finite(frame.light_position[3]) || frame.light_position[3]<=0)return true;
+        double distance=0;
+        for(unsigned i=0;i<3;++i){const double p=frame.light_position[i];
+            if(!kich_r4_capture::Finite(frame.light_position[i]) || !kich_r4_capture::Finite(c.bounds.min[i]) ||
+                !kich_r4_capture::Finite(c.bounds.max[i]) || c.bounds.min[i]>c.bounds.max[i])return true;
+            const double delta=p<c.bounds.min[i]?c.bounds.min[i]-p:p>c.bounds.max[i]?p-c.bounds.max[i]:0;distance+=delta*delta;}
+        const double range=frame.light_position[3],conservative=range+1.e-4*(1+range);
+        return distance<=conservative*conservative;
+    }
     static bool Visible(const Command& c,const kich_r4_lighting::Constants& frame,Pass pass){
+        // VSModelGPU supplies world-space lighting coordinates even for HUD:
+        // the separate hands VP affects clip position only. The same world
+        // bounds can reject zero-contribution local lights without applying
+        // the ordinary camera frustum to the HUD projection.
+        if((pass==ForwardAdd || pass==HUDAdd) && !LightAffects(c,frame))return false;
         if(!c.bounds_known || !c.bounds.valid || pass==HUD || pass==HUDAdd)return true;
-        if(!kich_r4_visibility::Visible(c.bounds.min,c.bounds.max,frame.mvp))return false;
-        if(pass==ForwardAdd && frame.light_position[3]>0){double distance=0;for(unsigned i=0;i<3;++i){
-                const double p=frame.light_position[i],delta=p<c.bounds.min[i]?c.bounds.min[i]-p:p>c.bounds.max[i]?p-c.bounds.max[i]:0;distance+=delta*delta;}
-            const double range=frame.light_position[3];if(distance>range*range)return false;}
-        return true;
+        return kich_r4_visibility::Visible(c.bounds.min,c.bounds.max,frame.mvp);
     }
     static double Distance(const Command& c,const kich_r4_lighting::Constants& frame){double distance=0;
         for(unsigned i=0;i<3;++i){const double center=c.bounds_known?(double(c.bounds.min[i])+c.bounds.max[i])*.5:c.world.m[12+i];const double d=center-frame.camera[i];distance+=d*d;}return distance;}
@@ -263,9 +276,8 @@ struct KichR4ModelSession {
     }
     static void SnapshotMaterialBasis(const Command& c,uint32_t flags){
         if(!RenderSnapshot_Detailed())return;
-        const uint32_t basis=kich_r4_material::ATTR_NORMAL|kich_r4_material::ATTR_TANGENT|kich_r4_material::ATTR_BINORMAL;
-        uint32_t valid=0;
-        for(uint32_t i=0;i<c.count;++i)if((c.mesh->vertices[c.mesh->indices[c.first+i]].attributes&basis)==basis)++valid;
+        Source::RangeInfo range;
+        const uint32_t valid=c.mesh->Range(c.first,c.count,c.vertex_count,range)?range.basis_indices:0;
         char id[64];kich_r4_material::ExecutionID(c.material,c.available_attributes,flags,false,id,sizeof(id));
         using namespace kich_r4_telemetry;
         Text("MODEL_MATERIAL_EXECUTION",id,"basis_scope","LAST_BOUND_COMMAND; INDEX_REFERENCES_INCLUDE_DUPLICATES; MESH_COUNTS_ARE_FULL_SOURCE");
@@ -310,11 +322,12 @@ struct KichR4ModelSession {
         std::vector<size_t> order;
         if(only_index==UINT32_MAX){order.resize(batch.native_models.size());for(size_t i=0;i<order.size();++i)order[i]=i;
             if(pass==Forward || pass==ForwardAdd || pass==Distortion)std::stable_sort(order.begin(),order.end(),[&](size_t a,size_t b){return Distance(batch.native_models[a],base)>Distance(batch.native_models[b],base);});}
-        const char* reason=pass==Shadow?"SHADOW_FRUSTUM":(pass==HUD || pass==HUDAdd)?"HUD_EXPLICIT":pass==ForwardAdd?"CAMERA_FRUSTUM_AND_LIGHT_RANGE":"CAMERA_FRUSTUM";
+        const bool sun_pass=pass==Shadow && phase && !strncmp(phase,"sun_",4);
+        const char* reason=sun_pass?"SHADOW_FRUSTUM_AND_SUN_RECEIVERS":pass==Shadow?"SHADOW_FRUSTUM":pass==HUD?"HUD_EXPLICIT":pass==HUDAdd?"HUD_WORLD_LIGHT_RANGE":pass==ForwardAdd?"CAMERA_FRUSTUM_AND_LIGHT_RANGE":"CAMERA_FRUSTUM";
         const size_t count=only_index==UINT32_MAX?order.size():1;
         for(size_t n=0;n<count;++n){const size_t index=only_index==UINT32_MAX?order[n]:only_index;const Command& c=batch.native_models[index];if(!Routes(c,pass))continue;
             ++candidates[pass];++phase_candidates;if(g_render_snapshot_active){Snapshot(c,pass_mask);Note(c,"CANDIDATE_CLASSIFIED",reason);}
-            if(!Visible(c,base,pass)){++culled[pass];++phase_culled;if(g_render_snapshot_active)Note(c,"CULLED",reason);continue;}
+            if(!Visible(c,base,pass) || (sun_pass && c.bounds_known && c.bounds.valid && !sun_casters.Visible(c.bounds.min,c.bounds.max))){++culled[pass];++phase_culled;if(g_render_snapshot_active)Note(c,"CULLED",reason);continue;}
             ++selected[pass];++phase_selected;if(g_render_snapshot_active)Note(c,"SELECTED",reason);
             const Mesh& mesh=meshes.at(c.mesh.get());kich_r4_lighting::Constants constants=base;
             constants.world=c.world;constants.mvp=kich_r4_scene::Multiply(c.world,(pass==HUD || pass==HUDAdd)?c.vp:base.mvp);constants.normal_matrix=kich_r4_lighting::NormalMatrix(c.world);

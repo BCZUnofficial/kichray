@@ -61,6 +61,7 @@ uint64_t draws=0,triangles=0,events=0,draw_bytes=0,dropped_draws=0,dropped_bytes
 uint64_t first_lost=0,last_lost=0,serialization_failures=0,invalid_draws=0;
 uint64_t summary_seen=0,summary_retained=0,summary_dropped=0,summary_omitted=0,visibility_seen=0;
 uint64_t source_telemetry_losses=0;
+uint64_t visibility_bulk_events=0;
 std::string first_lost_pass,last_lost_pass;
 RenderSnapshotInfo info={};
 RenderSnapshotProvenance provenance={};
@@ -257,6 +258,10 @@ void Observe(Observations& o,const char* status){
     else if(status && !strcmp(status,"SELECTED")){++o.selected;o.selected_known=true;}
     else ++o.other;
 }
+void ObserveTotals(Observations& o,uint64_t candidates,uint64_t culled,uint64_t selected){
+    o.candidates+=candidates;o.classified_candidates+=candidates;o.culled+=culled;o.selected+=selected;
+    o.candidates_known=o.culled_known=o.selected_known=true;
+}
 void WriteObservations(std::ostream& out,const Observations& o){
     out<<"candidates="<<(o.candidates_known?std::to_string(o.candidates):"NOT_INSTRUMENTED")
        <<"\nclassified_candidates="<<(o.candidates_known?std::to_string(o.classified_candidates):"NOT_INSTRUMENTED")
@@ -424,7 +429,7 @@ void RenderSnapshot_Begin(const RenderSnapshotInfo& input){
         incomplete=overflowed=summary_overflow=aggregation_overflow=false;draws=triangles=events=draw_bytes=dropped_draws=dropped_bytes=0;
         first_lost=last_lost=serialization_failures=invalid_draws=0;summary_seen=summary_retained=summary_dropped=summary_omitted=visibility_seen=source_telemetry_losses=0;
         first_lost_pass.clear();last_lost_pass.clear();first_lost_pass.reserve(96);last_lost_pass.reserve(96);
-        note_totals=Observations();ResetObject();light_id=light_scope=phase="NONE";
+        note_totals=Observations();visibility_bulk_events=0;ResetObject();light_id=light_scope=phase="NONE";
         draw_aggregate_totals=DrawTotals();draw_aggregate_failures=draw_aggregate_coalesced=0;memset(draw_aggregate_counts,0,sizeof(draw_aggregate_counts));
         for(auto& b:budgets)b.bytes=b.events=0;
         frame_start=pass_start=std::chrono::steady_clock::now();g_render_snapshot_active=true;RefreshDiagnostic();RenderSnapshot_Pass("FRAME_SETUP");
@@ -513,6 +518,13 @@ void SNAPSHOT_CALL RenderSnapshot_Draw(const RenderSnapshotDraw* d){
         for(uint32_t i=0;i<provenance.uv_count;++i)out<<"uv_sample"<<i<<"="<<provenance.uv[i*2]<<","<<provenance.uv[i*2+1]<<"\n";
         const std::string record=out.str();serialized_bytes=record.size();AddDraw(record,p);accounted=true;
     }catch(...){++serialization_failures;incomplete=true;if(!accounted)LoseDraw(current,serialized_bytes);}
+}
+void RenderSnapshot_VisibilityTotals(uint64_t candidates,uint64_t culled,uint64_t selected){
+    if(!g_render_snapshot_active || !(candidates || culled || selected))return;
+    visibility_seen+=candidates+culled+selected;visibility_bulk_events+=candidates+culled+selected;
+    ObserveTotals(note_totals,candidates,culled,selected);
+    if(frame_profile)return;
+    try{ObserveTotals(CurrentGroup().notes,candidates,culled,selected);}catch(...){incomplete=aggregation_overflow=true;}
 }
 void RenderSnapshot_Note(const char* status,const char* kind,const char* name,const char* reason){if(!g_render_snapshot_active)return;++visibility_seen;Observe(note_totals,status);if(frame_profile)return;try{
     Observe(CurrentGroup().notes,status);const std::string cat=Clean(kind,64),why=Clean(reason,256);
@@ -709,7 +721,8 @@ void RenderSnapshot_End(const char* status){
             <<"\ncategory="<<v.category<<"\nreason="<<v.reason<<"\n";WriteObservations(out,v.notes);
             out<<"resource_samples="<<v.samples_count<<"\nresource_sample_observations_omitted="<<v.samples_omitted<<"\n";
             for(uint32_t i=0;i<v.samples_count;++i)out<<"resource_sample"<<i<<"="<<v.samples[i]<<"\n";}
-        out<<"\n[VISIBILITY_TOTALS]\nsource_note_events="<<visibility_seen<<"\n";WriteObservations(out,note_totals);
+        out<<"\n[VISIBILITY_TOTALS]\nsource_note_events="<<visibility_seen<<"\nbulk_note_events="<<visibility_bulk_events
+           <<"\nbulk_policy=EXACT_CLASSIFIED_TOTALS; REJECTED_OBJECT_IDENTITIES_NOT_EXPANDED\n";WriteObservations(out,note_totals);
         size_t summary_bytes=0,summary_fields=0;for(unsigned i=0;i<summary_count;++i){summary_bytes+=summaries[i].bytes;summary_fields+=summaries[i].fields.size();}
         out<<"\n[TRACE_LOSS]\ndraw_records_observed="<<draws<<"\ndraw_records_retained="<<events<<"\ndraw_records_dropped="<<dropped_draws
             <<"\ndraw_bytes_observed="<<draw_bytes<<"\ndraw_bytes_retained="<<body.size()<<"\ndraw_bytes_dropped="<<dropped_bytes

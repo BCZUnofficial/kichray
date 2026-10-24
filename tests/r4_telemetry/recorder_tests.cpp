@@ -46,6 +46,17 @@ int main(int argc,char** argv){try{
     Require(!RenderSnapshot_GPUTiming(capture_id,info.frame,capture_render,"READY",values,1),"completed timing cannot be overwritten twice");
     Require(!RenderSnapshot_DiagnosticActive() && !RenderSnapshot_Wanted(),"completed request does not keep capture armed");
 
+    State();RenderSnapshot_Request();RenderSnapshot_Begin(info);RenderSnapshot_Pass("SUN_SHADOW");
+    RenderSnapshot_VisibilityTotals(900000,900000,0);
+    RenderSnapshot_Note("CANDIDATE_CLASSIFIED","STATIC","selected_leaf","FRUSTUM");
+    RenderSnapshot_Note("SELECTED","STATIC","selected_leaf","FRUSTUM");
+    RenderSnapshot_End("COMPLETE");report=Read(RenderSnapshot_LastPath());
+    const std::string bulk=Section(report,"VISIBILITY_TOTALS");
+    Require(Number(bulk,"candidates")==900001 && Number(bulk,"classified_candidates")==900001 && Number(bulk,"culled")==900000 && Number(bulk,"selected")==1,"bulk rejected leaves plus selected metadata retain exact visibility totals");
+    Require(Number(bulk,"source_note_events")==1800002 && Number(bulk,"bulk_note_events")==1800000,"bulk observations preserve comparable event accounting without per-leaf formatting");
+    Require(report.size()<50000,"large rejected population does not expand detailed trace");
+    State();RenderSnapshot_Request();report=Capture();Require(Number(Section(report,"VISIBILITY_TOTALS"),"bulk_note_events")==0,"bulk visibility counters reset at frame boundary");
+
     State();RenderSnapshot_Request();RenderSnapshot_Begin(info);RenderSnapshotDraw draw=Draw();RenderSnapshot_Pass("SUN_SHADOW");
     for(unsigned i=0;i<9000;++i)RenderSnapshot_Draw(&draw);
     for(unsigned i=0;i<400;++i){std::string id="material"+std::to_string(i);RenderSnapshot_Record("MATERIAL",id.c_str(),"source","world");}

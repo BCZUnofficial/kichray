@@ -19,7 +19,7 @@ struct EnvironmentType {CEnvDescriptorMixer CurrentEnv;} environment={};
 struct Persistent {Menu* m_pMainMenu;EnvironmentType& Environment(){return environment;}bool OnRenderPPUI_query(){return false;}} persistent={&menu};
 Persistent* g_pGamePersistent=&persistent;
 struct ConsoleType {bool bVisible;} console={false};ConsoleType* Console=&console;
-struct EngineDevice {void* m_hWnd;unsigned dwWidth,dwHeight,dwFrame,dwPrecacheFrame;float fTimeGlobal;
+struct EngineDevice {void* m_hWnd;unsigned dwWidth,dwHeight,dwFrame,dwPrecacheFrame;float fTimeGlobal,fFOV;
     struct {float m[4][4];} mFullTransform;struct {float x,y,z;} vCameraPosition;int b_is_Active;bool paused;bool Paused(){return paused;}} Device={};
 std::vector<int> g_loading_events;
 const int FALSE=0,VK_F8=119,VK_F9=120;
@@ -32,6 +32,7 @@ enum {R2FLAG_R1LIGHTS=1u<<10};
 const float PI_MUL_2=6.28318530718f;
 float _sin(float x){return sinf(x);}float _cos(float x){return cosf(x);}float _sqrt(float x){return sqrtf(x);}
 float ps_r__Tree_w_rot=10,ps_r__Tree_w_speed=1,ps_r__Tree_w_amp=.005f,ps_r__Tree_SBC=1.5f;
+float ps_r__LOD=.9f,ps_r__GLOD_ssa_start=320.f,ps_r__GLOD_ssa_end=48.f;
 WeatherVector ps_r__Tree_Wave={.1f,.01f,.11f,0};
 typedef uint32_t u32;
 #define CopyMemory memcpy
@@ -45,7 +46,7 @@ void KichR4_GamePrepare(const KichR4GameFrame& in){++prepared;captured=in;}
 // PRODUCTION_FUNCTION
 int main(){try {
     KichR4_GamePrepareEngineFrame();Require(!prepared,"unarmed engine does not touch bridge input");armed=true;
-    Device.m_hWnd=reinterpret_cast<void*>(1);Device.dwWidth=1280;Device.dwHeight=720;Device.dwFrame=123;Device.b_is_Active=1;
+    Device.m_hWnd=reinterpret_cast<void*>(1);Device.dwWidth=1280;Device.dwHeight=720;Device.dwFrame=123;Device.b_is_Active=1;Device.fFOV=67.5f;
     for(unsigned i=0;i<16;++i)(&Device.mFullTransform.m[0][0])[i]=static_cast<float>(i)+.25f;
     Device.vCameraPosition={1.f,2.f,3.f};key=true;KichR4_GamePrepareEngineFrame();
 #if defined(DEDICATED_SERVER) || defined(_EDITOR)
@@ -54,6 +55,7 @@ int main(){try {
 #else
     Require(prepared==1 && captured.allowed && captured.active && captured.toggle_down,"playable input and F8 sampled");
     Require(captured.width==1280 && captured.height==720 && captured.engine_frame==123 && captured.window==Device.m_hWnd,"game window and frame dimensions forwarded");
+    Require(captured.geometry_lod[0]==ps_r__LOD && captured.geometry_lod[1]==ps_r__GLOD_ssa_start && captured.geometry_lod[2]==ps_r__GLOD_ssa_end && captured.geometry_lod[3]==Device.fFOV,"progressive detail follows current R2 console settings and camera FOV");
     Require(!memcmp(captured.view_projection,Device.mFullTransform.m,64) && captured.position[0]==1 && captured.position[2]==3,"camera matrix passed byte-for-byte without a viewer camera");
     environment.CurrentEnv.sun_dir={.1f,-.9f,.2f,0};environment.CurrentEnv.sun_color={.5f,.6f,.7f,0};
     environment.CurrentEnv.ambient={.04f,.05f,.06f,0};environment.CurrentEnv.hemi_color={.2f,.3f,.4f,1};environment.CurrentEnv.fog_color={.6f,.5f,.4f,0};
@@ -67,6 +69,7 @@ int main(){try {
     Require(fabsf(captured.tree_wave[0]-.3f/PI_MUL_2)<1.e-6f && fabsf(captured.tree_wave[3]-7.5f/PI_MUL_2)<1.e-6f && captured.tree_sbc==2*1.3333f,"tree spatial/time phase and R2 color correction copied from current console settings");
     KichR4_NativePresentEngineFrame(false);
     Require(native_presented==1 && !memcmp(native_captured.tree_wave,captured.tree_wave,16) && !memcmp(native_captured.tree_wind,captured.tree_wind,16) && native_captured.tree_sbc==captured.tree_sbc,"native presenter and prepared path share exact tree frame parameters");
+    Require(!memcmp(native_captured.geometry_lod,captured.geometry_lod,sizeof(captured.geometry_lod)),"native and prepared frame paths share LOD policy");
     Device.fTimeGlobal=5;ps_r__Tree_w_amp=.5f;KichR4_NativePresentEngineFrame(true);
     Require(native_presented==2 && fabsf(native_captured.tree_wind[2]+.5f)<1.e-6f && native_captured.tree_wave[3]!=captured.tree_wave[3],"live tree time and settings are resampled without per-frame geometry generation");
     for(unsigned blocked=0;blocked<7;++blocked) {

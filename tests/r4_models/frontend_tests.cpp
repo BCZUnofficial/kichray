@@ -12,6 +12,38 @@ void Require(bool condition,const char* why){++checks;if(!condition)throw std::r
 template<class F>void Reject(F f,const char* why){bool rejected=false;try{f();}catch(const std::exception&){rejected=true;}Require(rejected,why);}
 Span View(const fixture::Bytes& b){return Span(b.data(),static_cast<uint32_t>(b.size()));}
 bool Near(float a,float b){return fabsf(a-b)<1.e-4f;}
+void ImmutableRanges(){
+    Mesh mesh;mesh.vertices.resize(4);mesh.indices={0,1,2,0,2,3};
+    const uint32_t basis=kich_r4_level::ATTR_NORMAL|kich_r4_level::ATTR_TANGENT|kich_r4_level::ATTR_BINORMAL;
+    for(auto& v:mesh.vertices)v.attributes=basis|kich_r4_level::ATTR_UV1;
+    mesh.vertices[3].attributes=kich_r4_level::ATTR_NORMAL;
+    Mesh::RangeInfo range;
+    Require(mesh.Range(0,3,3,range) && range.attributes==(basis|kich_r4_level::ATTR_UV1) && range.basis_indices==3,"range attributes use only referenced vertices");
+    mesh.indices[2]=3;
+    Require(!mesh.Range(0,3,3,range),"mutable mesh in-place index edits remain validated");
+    mesh.indices[2]=2;mesh.vertices[1].attributes=kich_r4_level::ATTR_NORMAL;
+    Require(mesh.Range(0,3,3,range) && range.attributes==kich_r4_level::ATTR_NORMAL && range.basis_indices==2,"mutable in-place attribute changes cannot reuse old metadata");
+    Require(mesh.CachedRanges()==0,"unfrozen source never allocates range cache");
+    mesh.FreezeRanges();const uint64_t start=mesh.RangeScannedIndices();
+    Require(mesh.Range(0,3,3,range),"frozen range initial validation");
+    for(unsigned i=0;i<100;++i)Require(mesh.Range(0,3,3,range),"warm frame reuses immutable range");
+    Require(mesh.RangeScannedIndices()==start+3 && mesh.RangeCacheHits()==100,"one index scan serves repeated immutable range uses");
+    Require(!mesh.Range(0,3,2,range),"cache hit still rejects smaller progressive vertex prefix");
+    Require(mesh.Range(3,3,4,range) && range.maximum==3 && range.basis_indices==2,"second SWI range has independent max index and attributes");
+    Require(!mesh.Range(UINT32_MAX,3,4,range) && !mesh.Range(3,UINT32_MAX,4,range) && !mesh.Range(0,2,4,range) && !mesh.Range(0,3,5,range),"invalid sizes and overflows rejected before cache access");
+    Mesh copy=mesh;copy.indices[2]=3;
+    Require(!copy.Range(0,3,3,range),"copy with new storage cannot inherit trusted source cache");
+    mesh.InvalidateRanges();mesh.indices[2]=3;mesh.vertices[1].attributes=basis;
+    Require(!mesh.Range(0,3,3,range),"explicit edit invalidates cached prefix proof");
+    mesh.FreezeRanges();Require(mesh.Range(0,3,4,range) && range.maximum==3 && range.attributes==kich_r4_level::ATTR_NORMAL,"new immutable generation revalidates changed source");
+    mesh.indices.push_back(0);mesh.indices.push_back(1);mesh.indices.push_back(2);
+    Require(mesh.Range(6,3,3,range),"changed storage shape falls back to validated uncached range");
+    Mesh many;many.vertices.resize(3);for(auto& v:many.vertices)v.attributes=basis;
+    for(unsigned i=0;i<100;++i)many.indices.insert(many.indices.end(),{0,1,2});
+    many.FreezeRanges();
+    for(unsigned i=0;i<100;++i)Require(many.Range(i*3,3,3,range),"valid ranges survive bounded cache replacement");
+    Require(many.CachedRanges()==64 && many.Range(0,3,3,range),"range metadata remains bounded and evicted ranges are revalidated");
+}
 void NativeModes(){for(unsigned weights=0;weights<3;++weights){const fixture::Bytes raw=capture_fixture::Model(weights);std::shared_ptr<Mesh> mesh=Decode(View(raw));
     Require(mesh->shader=="models\\model","original OGF material name retained");
     Matrix world=kich_r4_scene::Identity(),vp=world,bones[2]={world,world};Style style;
@@ -168,5 +200,5 @@ void StaticLightPolicy(){State state;KichR4LocalLight light={};light.type=1;ligh
     Require(output.find("selection_reason=STATIC_LIGHT_DISABLED_R2FLAG_R1LIGHTS")!=std::string::npos && output.find("selected_slot=7")!=std::string::npos && output.find("static_source=1")!=std::string::npos,"per-source policy exclusion static semantics and selected slot are explicit");
 }
 }
-int main(){try{NativeModes();WeightBounds();OwnershipAndRouting();EmissiveIdentity();SkeletonIdentity();LightIdentity();LightSelectionTelemetry();LightPopulation();StaticLightPolicy();printf("G3c native model frontend: %u checks passed\n",checks);return 0;}
+int main(){try{ImmutableRanges();NativeModes();WeightBounds();OwnershipAndRouting();EmissiveIdentity();SkeletonIdentity();LightIdentity();LightSelectionTelemetry();LightPopulation();StaticLightPolicy();printf("G3c native model frontend: %u checks passed\n",checks);return 0;}
 catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

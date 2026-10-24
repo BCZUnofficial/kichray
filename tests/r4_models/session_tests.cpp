@@ -154,6 +154,56 @@ void Rules(){KichR4ModelPose pose={};Require(ValidModelPose(pose),"rigid pose ha
     mesh=Source();auto cmd=Command(mesh);cmd.vertex_count=2;Require(!KichR4ModelSession::ValidCommand(cmd),"LOD prefix cannot reference missing vertex");cmd=Command(mesh);cmd.bones.pop_back();Require(!KichR4ModelSession::ValidCommand(cmd),"each instance supplies complete source palette");
     cmd=Command(mesh);mesh->hardware_weights_safe=false;Require(!KichR4ModelSession::ValidCommand(cmd),"unsafe hardware quantization rejected");cmd.skin_mode=KICH_R4_SKIN_SOFTWARE;Require(KichR4ModelSession::ValidCommand(cmd),"raw software mode retains extrapolating compatibility");
 }
+void SharedRangeValidation(){Harness h;Require(h.Start()==0,"range cache session setup");auto mesh=Source();mesh->FreezeRanges();
+    kich_r4_capture::Batch batch;batch.Begin(800,600,101);const auto identity=kich_r4_scene::Identity();const kich_r4_scene::Matrix bones[]={identity,identity};kich_r4_capture::Style style;
+    batch.NativeModel(mesh.get(),mesh,identity,identity,bones,2,3,3,1,style,KICH_R4_SKIN_HARDWARE,"range-cache");
+    Require(mesh->RangeScannedIndices()==3,"frontend checks frozen range once");
+    for(unsigned i=0;i<8;++i){batch.engine_frame=101+i;Require(h.models.Prepare(h.frame,h.level,batch)==0,"warm model prepare retains range proof");}
+    Require(mesh->RangeScannedIndices()==3 && mesh->RangeCacheHits()>=8,"backend validates same mesh range without another index scan");
+    auto malformed=batch.native_models[0];malformed.vertex_count=2;
+    Require(!KichR4ModelSession::ValidCommand(malformed),"backend does not reuse cached success for smaller vertex prefix");
+    malformed=batch.native_models[0];malformed.world.m[0]=std::numeric_limits<float>::quiet_NaN();
+    Require(!KichR4ModelSession::ValidCommand(malformed),"cached range does not bypass transform validation");
+    malformed=batch.native_models[0];malformed.bones[0].m[0]=std::numeric_limits<float>::infinity();
+    Require(!KichR4ModelSession::ValidCommand(malformed),"cached range does not bypass current pose validation");
+}
+void AffectedLocalLights(){Harness h;Require(h.Start()==0,"local model light setup");auto mesh=Source();auto hud=Command(mesh);hud.layer=1;
+    // A HUD VP can place hands on-screen although the ordinary camera matrix
+    // rejects their world AABB. Local lighting still consumes that world AABB.
+    hud.bounds.min[0]=100;hud.bounds.max[0]=100.5f;hud.world.m[12]=100;hud.vp.m[12]=-100;
+    h.base.light_position[0]=100;h.base.light_position[2]=.5f;h.base.light_position[3]=2;
+    Require(KichR4ModelSession::Visible(hud,h.base,KichR4ModelSession::HUDAdd),"near HUD light retained independently of ordinary camera frustum");
+    kich_r4_capture::Batch batch;batch.engine_frame=201;batch.native_models.push_back(hud);
+    Require(h.models.Prepare(h.frame,h.level,batch)==0 && h.Draw(batch,KichR4ModelSession::HUDAdd)==0 && model_draws.size()==1,"world-affecting light reaches HUD shader");
+    h.base.light_position[0]=0;
+    Require(h.Draw(batch,KichR4ModelSession::HUDAdd)==0 && model_draws.size()==1 && h.models.culled[KichR4ModelSession::HUDAdd]==1,"distant HUD light produces no draw or material work");
+    Require(KichR4ModelSession::Visible(hud,h.base,KichR4ModelSession::HUD),"base HUD pass remains unaffected by local-light filter");
+    h.base.light_position[0]=98;
+    Require(KichR4ModelSession::Visible(hud,h.base,KichR4ModelSession::HUDAdd),"range boundary retained conservatively");
+    auto forward=hud;forward.layer=0;forward.style.blend=1;h.base.mvp.m[12]=-100;
+    Require(KichR4ModelSession::Visible(forward,h.base,KichR4ModelSession::ForwardAdd),"forward local uses same world range contract");
+    h.base.light_position[0]=0;
+    Require(!KichR4ModelSession::Visible(forward,h.base,KichR4ModelSession::ForwardAdd),"known distant forward model omitted");
+    forward.bounds_known=false;
+    Require(KichR4ModelSession::Visible(forward,h.base,KichR4ModelSession::ForwardAdd),"unknown bounds including extrapolated skin remain conservative");
+    hud.bounds.min[0]=std::numeric_limits<float>::quiet_NaN();
+    Require(KichR4ModelSession::Visible(hud,h.base,KichR4ModelSession::HUDAdd),"invalid HUD bound cannot falsely reject light");
+    hud=batch.native_models[0];h.base.light_position[3]=0;
+    Require(KichR4ModelSession::Visible(hud,h.base,KichR4ModelSession::HUDAdd),"absent range descriptor falls open");
+}
+void SunReceiverFilter(){Harness h;Require(h.Start()==0,"sun receiver model setup");const auto camera=kich_r4_scene::Identity();const float sun[]={0,-1,0};
+    h.models.SetSunCasterVolume(kich_r4_visibility::BuildSunCasterVolume(camera,sun));
+    auto mesh=Source();auto command=Command(mesh);command.bounds.min[0]=5;command.bounds.max[0]=5.5f;
+    kich_r4_capture::Batch batch;batch.engine_frame=202;batch.native_models.push_back(command);
+    h.base.mvp.m[0]=h.base.mvp.m[5]=.1f;Require(h.models.Prepare(h.frame,h.level,batch)==0,"sun filter prepare");
+    Require(h.models.Draw(h.frame,h.level,h.cb,h.base,batch,KichR4ModelSession::Shadow,1,"sun_0")==0 && model_draws.empty(),"sun receiver volume rejects lateral offscreen caster");
+    Require(h.models.Draw(h.frame,h.level,h.cb,h.base,batch,KichR4ModelSession::Shadow,1,"local_0_face_0")==0 && model_draws.size()==1,"sun receiver volume never rejects a local shadow caster");
+    batch.native_models[0].bounds.min[0]=0;batch.native_models[0].bounds.max[0]=.5f;
+    batch.native_models[0].bounds.min[1]=5;batch.native_models[0].bounds.max[1]=5.5f;
+    Require(h.models.Draw(h.frame,h.level,h.cb,h.base,batch,KichR4ModelSession::Shadow,1,"sun_1")==0 && model_draws.size()==2,"upstream offscreen caster retained for sun receivers");
+    batch.native_models[0].bounds_known=false;
+    Require(h.models.Draw(h.frame,h.level,h.cb,h.base,batch,KichR4ModelSession::Shadow,1,"sun_0")==0 && model_draws.size()==3,"unknown model bounds stay conservative in focused sun pass");
+}
 void PaletteClassesAndIsolation(){Harness h;Require(h.Start()==0,"palette variants start");kich_r4_capture::Batch batch;batch.engine_frame=93;
     auto mesh=Source();auto a=Command(mesh);a.identity_measured=true;a.skeleton_id=100;a.source_frame=93;a.pose_hash_valid=true;a.pose_hash=77;a.bounds_known=false;
     auto part=a;part.visual_id=2;part.world.m[12]=3;auto npc=a;npc.skeleton_id=101;
@@ -194,6 +244,6 @@ void PalettePoolBudget(){Harness h;Require(h.Start()==0,"capacity pool budget se
     Require(h.models.AllocatedPoseBytes()<=KICH_R4_MODEL_POSE_BUDGET_BYTES && h.models.pose_uploads==1024,"more than legacy 1023 commands fit small palette classes within exact budget");
 }
 }
-int main(int argc,char** argv){try{(void)&Scenario;Require(argc==2,"snapshot output directory");Rules();const int positions=FailureScenario(0);for(int i=1;i<=positions;++i)FailureScenario(i);ReuseAndRouting();PointerReuse();AdmissionAndMaterial();RetirementFailure();OrderedSingleSubmission();ResolvedTextureTelemetry(argv[1]);IdentityAndPoseTelemetry(argv[1]);PaletteClassesAndIsolation();PalettePoolBudget();
+int main(int argc,char** argv){try{(void)&Scenario;Require(argc==2,"snapshot output directory");Rules();SharedRangeValidation();AffectedLocalLights();SunReceiverFilter();const int positions=FailureScenario(0);for(int i=1;i<=positions;++i)FailureScenario(i);ReuseAndRouting();PointerReuse();AdmissionAndMaterial();RetirementFailure();OrderedSingleSubmission();ResolvedTextureTelemetry(argv[1]);IdentityAndPoseTelemetry(argv[1]);PaletteClassesAndIsolation();PalettePoolBudget();
     printf("G3c GPU model session: %d checks; %d injected failure positions passed\n",checks,positions);return 0;
 }catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

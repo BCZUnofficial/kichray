@@ -107,6 +107,7 @@ inline void RenderSnapshot_Texture(uint32_t,const char*){}
 inline void RenderSnapshot_Skin(const char*){}
 inline void SNAPSHOT_CALL RenderSnapshot_Draw(const RenderSnapshotDraw*){}
 inline void RenderSnapshot_Note(const char*,const char*,const char*,const char*){}
+inline void RenderSnapshot_VisibilityTotals(uint64_t,uint64_t,uint64_t){}
 inline void RenderSnapshot_Value(const char*,const char*,double){}
 inline void RenderSnapshot_Text(const char*,const char*,const char*){}
 inline const char* RenderSnapshot_LastPath(){return "NOT_AVAILABLE_IN_EDITOR";}
@@ -180,6 +181,8 @@ SNAPSHOT_API void RenderSnapshot_Texture(uint32_t stage,const char* name);
 SNAPSHOT_API void RenderSnapshot_Skin(const char* mode);
 SNAPSHOT_API void SNAPSHOT_CALL RenderSnapshot_Draw(const RenderSnapshotDraw*);
 SNAPSHOT_API void RenderSnapshot_Note(const char* status,const char* category,const char* resource,const char* reason);
+// Classified source observations without allocating per-rejected-object metadata.
+SNAPSHOT_API void RenderSnapshot_VisibilityTotals(uint64_t candidates,uint64_t culled,uint64_t selected);
 SNAPSHOT_API void RenderSnapshot_Value(const char* section,const char* name,double value);
 SNAPSHOT_API void RenderSnapshot_Text(const char* section,const char* name,const char* value);
 SNAPSHOT_API const char* RenderSnapshot_LastPath();

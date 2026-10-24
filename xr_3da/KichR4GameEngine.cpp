@@ -21,6 +21,8 @@ static void KichR4_GameTreeFrame(KichR4GameFrame& input)
     input.tree_wave[2]=ps_r__Tree_Wave.z/PI_MUL_2;
     input.tree_wave[3]=Device.fTimeGlobal*ps_r__Tree_w_speed/PI_MUL_2;
     input.tree_sbc=ps_r__Tree_SBC*1.3333f;
+    input.geometry_lod[0]=ps_r__LOD;input.geometry_lod[1]=ps_r__GLOD_ssa_start;
+    input.geometry_lod[2]=ps_r__GLOD_ssa_end;input.geometry_lod[3]=Device.fFOV;
 }
 
 void KichR4_GamePrepareEngineFrame()

@@ -9,6 +9,8 @@
 #include "KichR4MaterialRules.h"
 #include "KichR4OpticalRules.h"
 #include "KichR4MaterialServices.h"
+#include "KichR4LodPolicy.h"
+#include "KichR4RosBudget.h"
 #include "RenderSnapshot.h"
 #include "KichR4TelemetryText.h"
 #include "RenderSnapshotMaterial.h"
@@ -16,6 +18,7 @@
 #include "Environment.h"
 #include "CustomHUD.h"
 #include "IRenderable.h"
+#include "xr_object.h"
 #include "ISpatial.h"
 #include "SkeletonCustom.h"
 #include "FHierrarhyVisual.h"
@@ -31,9 +34,43 @@ namespace {
 class R4Sector:public IRender_Sector {};
 kich_r4_level::Topology native_topology;
 CDB::COLLIDER native_sector_collider;
+kich_r4_ros::Budget native_ros_budget;
+struct NativeLodView {kich_r4_scene::Matrix vp;uint32_t resolution;};
+std::vector<NativeLodView> native_lod_shadow_views;
+float NativeGeometryLOD(IRender_Visual* visual,const Fmatrix& world,bool hud){
+    if(hud || !visual || !(visual->vis.sphere.R>0))return 1.f;
+    Fvector center;world.transform_tiny(center,visual->vis.sphere.P);
+    // Frobenius bound also covers scaled/sheared transforms conservatively.
+    const float scale=_sqrt(world.i.square_magnitude()+world.j.square_magnitude()+world.k.square_magnitude());
+    const kich_r4_lod::Parameters parameters=kich_r4_lod::CameraParameters(Device.dwWidth,Device.dwHeight,Device.fFOV,ps_r__LOD,ps_r__GLOD_ssa_start,ps_r__GLOD_ssa_end);
+    float detail=kich_r4_lod::Geometry(visual->vis.sphere.R*scale,center.distance_to_sqr(Device.vCameraPosition),parameters);
+    if(detail>=1.f)return 1.f;
+    float low[3]={},high[3]={};
+    for(unsigned corner=0;corner<8;++corner){Fvector p;p.set(corner&1?visual->vis.box.max.x:visual->vis.box.min.x,corner&2?visual->vis.box.max.y:visual->vis.box.min.y,corner&4?visual->vis.box.max.z:visual->vis.box.min.z);world.transform_tiny(p);
+        const float values[]={p.x,p.y,p.z};for(unsigned axis=0;axis<3;++axis){if(!_valid(values[axis]))return 1.f;
+            if(!corner || values[axis]<low[axis])low[axis]=values[axis];if(!corner || values[axis]>high[axis])high[axis]=values[axis];}}
+    // A command is captured once and reused for all passes. Use the most
+    // detailed request, including an off-camera local shadow near its source.
+    for(size_t i=0;i<native_lod_shadow_views.size() && detail<1.f;++i){const NativeLodView& view=native_lod_shadow_views[i];
+        if(kich_r4_visibility::Visible(low,high,view.vp))detail=(std::max)(detail,kich_r4_lod::Projected(low,high,view.vp,view.resolution,view.resolution,ps_r__GLOD_ssa_start,ps_r__GLOD_ssa_end));}
+    return detail;
+}
+const KichR4LightingFrame& NativeRosLights(){
+    static KichR4LightingFrame lights;static u32 frame=u32(-1);static IGame_Level* level=NULL;static bool r1=false;
+    const bool requested=ps_r2_ls_flags.test(R2FLAG_R1LIGHTS)!=0;
+    if(frame!=Device.dwFrame || level!=g_pGameLevel || r1!=requested){
+        frame=Device.dwFrame;level=g_pGameLevel;r1=requested;
+        // ROS may be requested by AI outside the camera. Capture all permitted
+        // sources once; object range/cone tests below retain their semantics.
+        KichR4_CaptureLighting(&Device.vCameraPosition.x,lights,requested);}
+    return lights;
+}
 class R4ROS:public IRender_ObjectSpecific {
-    IRenderable* parent;u32 updated;float total,sky,hemi_visibility=1,sun_visibility=1;
-    void Update(){if(!g_pGamePersistent)return;if(updated!=u32(-1) && Device.dwTimeGlobal-updated<200)return;updated=Device.dwTimeGlobal;
+    IRenderable* parent;kich_r4_ros::Entry scheduling;float total,sky,hemi_visibility=1,sun_visibility=1;
+    void Update(bool immediate){if(!g_pGamePersistent || !scheduling.Due(Device.dwTimeGlobal))return;
+        const bool actor=g_pGameLevel && static_cast<IRenderable*>(g_pGameLevel->CurrentViewEntity())==parent;
+        if(!immediate && !native_ros_budget.Request(scheduling,Device.dwFrame,Device.dwTimeGlobal,actor))return;
+        scheduling.updated=Device.dwTimeGlobal;scheduling.initialized=true;
         const CEnvDescriptor& e=g_pGamePersistent->Environment().CurrentEnv;Fvector p;p.set(0,0,0);
         if(parent){p=parent->renderable.xform.c;if(parent->renderable.visual)parent->renderable.xform.transform_tiny(p,parent->renderable.visual->vis.sphere.P);}
         float exposure=1;const bool trace=g_pGameLevel && g_pGameLevel->bReady;
@@ -43,18 +80,19 @@ class R4ROS:public IRender_ObjectSpecific {
         hemi_visibility=exposure;
         Fvector sun;sun.invert(e.sun_dir);sun_visibility=(!trace || !g_pGameLevel->ObjectSpace.RayTest(p,sun,256,collide::rqtStatic,NULL,NULL))?1.f:0.f;
         if(sun_visibility)total+=(e.sun_color.x+e.sun_color.y+e.sun_color.z)/3.f;
-        KichR4LightingFrame lights={};KichR4_CaptureLighting(&p.x,lights,ps_r2_ls_flags.test(R2FLAG_R1LIGHTS)!=0);
+        const KichR4LightingFrame& lights=NativeRosLights();
         for(u32 i=0;i<lights.count;++i){const KichR4LocalLight& l=lights.lights[i];Fvector d;d.set(l.position[0]-p.x,l.position[1]-p.y,l.position[2]-p.z);const float distance=d.magnitude();if(distance>=l.range || distance<EPS_L)continue;d.div(distance);
             if(l.type==IRender_Light::SPOT && -(d.x*l.direction[0]+d.y*l.direction[1]+d.z*l.direction[2])<cosf(l.cone*.5f))continue;
             if(trace && g_pGameLevel->ObjectSpace.RayTest(p,d,distance,collide::rqtStatic,NULL,NULL))continue;const float fade=1-distance/l.range;total+=(l.color[0]+l.color[1]+l.color[2])*fade*fade/3.f;}
         total=clampr(total,0.f,1.f);
     }
 public:
-    explicit R4ROS(IRenderable* p):parent(p),updated(u32(-1)),total(.5f),sky(.5f){}
-    void force_mode(u32){updated=u32(-1);}
-    float get_luminocity(){Update();return total;}
-    float get_luminocity_hemi(){Update();return sky;}
-    void Exposure(float& hemi,float& sun){Update();hemi=hemi_visibility;sun=sun_visibility;}
+    explicit R4ROS(IRenderable* p):parent(p),total(.5f),sky(.5f){native_ros_budget.Add(scheduling);}
+    ~R4ROS(){native_ros_budget.Remove(scheduling);}
+    void force_mode(u32){scheduling.initialized=false;}
+    float get_luminocity(){Update(true);return total;}
+    float get_luminocity_hemi(){Update(true);return sky;}
+    void Exposure(float& hemi,float& sun){native_ros_budget.Request(scheduling,Device.dwFrame,Device.dwTimeGlobal);Update(false);hemi=hemi_visibility;sun=sun_visibility;}
 };
 xr_vector<ref_light> static_lights;
 u32 native_level_light_records=0,native_level_directional_skips=0;
@@ -129,12 +167,15 @@ xr_vector<ref_glow> static_glows;
 }
 float r_ssaDISCARD=1.e-6f;
 CRender RImplementation;
+namespace {bool NativeLightVisible(const KichR4LocalLight& light,const float* camera_vp){
+    return RImplementation.HOM.LightVisible(light.position,light.range,camera_vp)!=FALSE;
+}}
 IRender_interface* KichR4_CreateNativeRenderer(){xrRender_initconsole();return &RImplementation;}
 CRender::CRender():object(NULL),invisible(false),loaded(false),phase(PHASE_NORMAL),val_bHUD(FALSE),Models(NULL),Details(NULL),Wallmarks(NULL){transform.identity();View=&ViewBase;m_skinning=-1;}
 CRender::~CRender(){}
-void CRender::create(){Device.seqFrame.Add(this,REG_PRIORITY_HIGH);Models=xr_new<CModelPool>();Wallmarks=xr_new<CWallmarksEngine>();PSLibrary.OnCreate();Msg("[R4 native B5] renderer queues/models/particles/wallmarks: DX11; no R1/R2 module, no DX9 device");}
-void CRender::destroy(){Device.seqFrame.Remove(this);level_Unload();xr_delete(Wallmarks);xr_delete(Models);PSLibrary.OnDestroy();}
-void CRender::reset_begin(){queue.clear();shadow_views.clear();}
+void CRender::create(){KichR4_SetLightVisibility(NativeLightVisible);Device.seqFrame.Add(this,REG_PRIORITY_HIGH);Models=xr_new<CModelPool>();Wallmarks=xr_new<CWallmarksEngine>();PSLibrary.OnCreate();Msg("[R4 native B5] renderer queues/models/particles/wallmarks: DX11; no R1/R2 module, no DX9 device");}
+void CRender::destroy(){KichR4_SetLightVisibility(NULL);Device.seqFrame.Remove(this);level_Unload();xr_delete(Wallmarks);xr_delete(Models);PSLibrary.OnDestroy();}
+void CRender::reset_begin(){queue.clear();shadow_views.clear();native_lod_shadow_views.clear();HOM.Invalidate();}
 void CRender::reset_end(){}
 void CRender::LoadBuffers(){IReader* f=FS.r_open("$level$","level.geom");R_ASSERT2(f,"R4 level.geom");IReader* v=f->open_chunk(fsL_VB);R_ASSERT(v);
     const u32 n=v->r_u32();declarations.resize(n);for(u32 i=0;i<n;++i){D3DVERTEXELEMENT9 e;do{v->r(&e,sizeof(e));declarations[i].push_back(e);}while(e.Stream!=255);
@@ -154,9 +195,9 @@ void CRender::level_Load(IReader* f){R_ASSERT(!loaded);
         R4Light* source_light=xr_new<R4Light>();source_light->SetLevelIdentity(ordinal,controller);ref_light l=source_light;
         l->set_shadow(true);l->set_type(source.type==D3DLIGHT_SPOT?IRender_Light::SPOT:IRender_Light::POINT);l->set_position(source.position);Fvector right;right.set(1,0,0);l->set_rotation(source.direction,right);l->set_range(source.range);l->set_color(source.diffuse);l->set_active(true);static_lights.push_back(l);}c->close();}
     c=f->open_chunk(fsL_GLOWS);if(c){while(c->elapsed()>=18){Fvector p;c->r(&p,sizeof(p));const float r=c->r_float();const u16 shader=c->r_u16();R4Glow* g=xr_new<R4Glow>();g->position=p;g->radius=r;if(shader<shaders.size())g->shader=shaders[shader];g->active=g->level_source=true;ref_glow owner=g;static_glows.push_back(owner);}c->close();}
-    Details=xr_new<CDetailManager>();Details->m_frame_calc=Device.dwFrame-1;Details->m_frame_rendered=Device.dwFrame-1;Details->Load();loaded=true;KichR4_NativeLevel(g_pGameLevel->name().c_str());
+    Details=xr_new<CDetailManager>();Details->m_frame_calc=Device.dwFrame-1;Details->m_frame_rendered=Device.dwFrame-1;Details->Load();HOM.Load();loaded=true;KichR4_NativeLevel(g_pGameLevel->name().c_str());
 }
-void CRender::level_Unload(){queue.clear();shadow_views.clear();KichR4_NativeLevel(NULL);static_glows.clear();static_lights.clear();if(Details){Details->Unload();xr_delete(Details);}if(Wallmarks)Wallmarks->clear();
+void CRender::level_Unload(){queue.clear();shadow_views.clear();native_lod_shadow_views.clear();HOM.Unload();KichR4_NativeLevel(NULL);static_glows.clear();static_lights.clear();if(Details){Details->Unload();xr_delete(Details);}if(Wallmarks)Wallmarks->clear();
     native_topology=kich_r4_level::Topology();
     for(u32 i=0;i<visuals.size();++i){visuals[i]->Release();xr_delete(visuals[i]);}visuals.clear();shaders.clear();for(u32 i=0;i<sectors.size();++i)xr_delete(sectors[i]);sectors.clear();
     for(u32 i=0;i<vertices.size();++i)_RELEASE(vertices[i]);vertices.clear();for(u32 i=0;i<indices.size();++i)_RELEASE(indices[i]);indices.clear();declarations.clear();for(u32 i=0;i<windows.size();++i)xr_free(windows[i].sw);windows.clear();loaded=false;
@@ -206,7 +247,11 @@ FSlideWindowItem* CRender::getSWI(int id){if(vertices.empty())LoadBuffers();R_AS
 void CRender::set_Transform(Fmatrix* v){transform=v?*v:Fidentity;RCache.set_xform_world(transform);}
 void CRender::set_HUD(BOOL v){val_bHUD=v;}
 void CRender::add_Visual(IRender_Visual* v){if(!v || invisible)return;Fvector center;transform.transform_tiny(center,v->vis.sphere.P);Queued q={v,transform,val_bHUD!=FALSE,center.distance_to_sqr(Device.vCameraPosition),false,1,1};
-    if(object && !q.hud){R4ROS* ros=dynamic_cast<R4ROS*>(object->renderable_ROS());if(ros){ros->Exposure(q.hemi,q.sun);q.light_valid=true;}}
+    const float radius=v->vis.sphere.R*_sqrt(transform.i.square_magnitude()+transform.j.square_magnitude()+transform.k.square_magnitude());
+    // Off-camera shadow-only commands do not consume object irradiance. They
+    // must not trigger ray work for an exposure their depth pass never uses.
+    const bool camera_needed=!(radius>0) || !_valid(radius) || ViewBase.testSphere_dirty(center,radius);
+    if(object && !q.hud && camera_needed){R4ROS* ros=dynamic_cast<R4ROS*>(object->renderable_ROS());if(ros){ros->Exposure(q.hemi,q.sun);q.light_valid=true;}}
     queue.push_back(q);}
 void CRender::add_Geometry(IRender_Visual* v){if(v && occ_visible(v->vis))add_Visual(v);}
 void CRender::Submit(IRender_Visual* v,CKinematics* parent){if(!v)return;CKinematics* k=v->dcast_PKinematics();if(k){k->CalculateBones(TRUE);k->CalculateWallmarks();parent=k;}
@@ -245,6 +290,7 @@ void CRender::Submit(IRender_Visual* v,CKinematics* parent){if(!v)return;CKinema
             const uint32_t candidates[3]={4,0,1};for(unsigned i=0;i<3;++i){const uint32_t index=candidates[i];if(elements[index].passes && elements[index].distort){RenderSnapshot_MaterialSelection(v->shader->E[index]._get(),UINT32_MAX,index,available_elements,"SPECIAL_DISTORTION_DISABLED_BY_SETTING");break;}}
         }
     }
+    const float geometry_lod=NativeGeometryLOD(v,original,val_bHUD!=FALSE);
     const uint32_t indices[2]={selected.normal,selected.distortion};
     for(u32 route=0;route<2;++route){const uint32_t index=indices[route];if(index==UINT32_MAX)continue;
         ShaderElement* element=v->shader->E[index]._get();
@@ -257,7 +303,7 @@ void CRender::Submit(IRender_Visual* v,CKinematics* parent){if(!v)return;CKinema
             RCache.set_xform_world(original);RCache.set_Element(element,pass);KichR4_NativeElementSource(index);
             if(RenderSnapshot_Detailed())RenderSnapshot_MaterialSelection(element,pass,index,available_elements,
                 route?(index==4?"SPECIAL_E4_FLAGGED_DISTORTION_ENABLED":index==0?"SPECIAL_E4_UNAVAILABLE_FLAGGED_E0_FALLBACK":"SPECIAL_E4_E0_UNAVAILABLE_FLAGGED_E1_FALLBACK"):index==1?"NORMAL_E0_UNAVAILABLE_OR_DISTORT_FALLBACK_E1":"NORMAL_E0_AVAILABLE");
-            v->Render(1.f);
+            v->Render(geometry_lod);
         }
     }
     RCache.set_xform_world(original);
@@ -271,7 +317,7 @@ void CRender::flush(){const Fmatrix original=Device.mProject;Fmatrix hands=origi
     KichR4_NativeObjectLight(false,1,1);
     queue.clear();val_bHUD=FALSE;rmNormal();RCache.set_xform_project(original);
 }
-void CRender::Calculate(){queue.clear();shadow_views.clear();if(!loaded || !g_pGameLevel)return;ViewBase.CreateFromMatrix(Device.mFullTransform,FRUSTUM_P_ALL);View=&ViewBase;phase=PHASE_NORMAL;
+void CRender::Calculate(){queue.clear();shadow_views.clear();native_lod_shadow_views.clear();if(!loaded || !g_pGameLevel)return;ViewBase.CreateFromMatrix(Device.mFullTransform,FRUSTUM_P_ALL);View=&ViewBase;phase=PHASE_NORMAL;HOM.Prepare(ViewBase);
     // Camera and shadow subspaces are independent in the donor renderer. The
     // native path gathers their conservative union, then culls immutable model
     // commands against the actual pass matrix in the backend.
@@ -284,17 +330,25 @@ void CRender::Calculate(){queue.clear();shadow_views.clear();if(!loaded || !g_pG
         RenderSnapshot_Text("LIGHT_POLICY","native_level_light_policy","REGISTER_ALL_NONDIRECTIONAL_LEVEL_RECORDS; BSTATIC_REQUIRES_R2FLAG_R1LIGHTS; SOURCE_FRUSTUM_CULL; NO_TOP_8_LIGHT_LIMIT");}
     if(g_pGamePersistent){const CEnvDescriptor& e=g_pGamePersistent->Environment().CurrentEnv;
         CopyMemory(lighting.sun_direction,&e.sun_dir.x,12);CopyMemory(lighting.sun_color,&e.sun_color.x,12);}
-    if(kich_r4_visibility::SunEnabled(lighting)){const kich_r4_scene::Matrix vp=kich_r4_lighting::SunShadow(&Device.vCameraPosition.x,lighting.sun_direction);
+    const bool sun_enabled=kich_r4_visibility::SunEnabled(lighting);
+    kich_r4_scene::Matrix camera_vp;CopyMemory(camera_vp.m,Device.mFullTransform.m,sizeof(camera_vp.m));
+    const kich_r4_visibility::SunCasterVolume sun_casters=kich_r4_visibility::BuildSunCasterVolume(camera_vp,lighting.sun_direction);
+    if(sun_enabled){const kich_r4_scene::Matrix vp=kich_r4_lighting::SunShadow(&Device.vCameraPosition.x,lighting.sun_direction);
+        const NativeLodView near_view={kich_r4_lighting::SunShadow(&Device.vCameraPosition.x,lighting.sun_direction,128.f),2048};native_lod_shadow_views.push_back(near_view);
+        const NativeLodView far_view={vp,2048};native_lod_shadow_views.push_back(far_view);
         Fmatrix matrix;CopyMemory(&matrix,vp.m,sizeof(matrix));CFrustum view;view.CreateFromMatrix(matrix,FRUSTUM_P_ALL);shadow_views.push_back(view);}
     std::vector<uint8_t> selected;kich_r4_visibility::SelectShadowLights(lighting,true,selected);
     for(u32 i=0;i<lighting.count;++i)if(selected[i]){const u32 faces=lighting.lights[i].type==2?1:6;
         for(u32 face=0;face<faces;++face){const kich_r4_scene::Matrix vp=kich_r4_lighting::LocalShadow(lighting.lights[i],face);
+            const NativeLodView lod_view={vp,512};native_lod_shadow_views.push_back(lod_view);
             Fmatrix matrix;CopyMemory(&matrix,vp.m,sizeof(matrix));CFrustum view;view.CreateFromMatrix(matrix,FRUSTUM_P_ALL);shadow_views.push_back(view);}}
     if(g_pGameLevel->pHUD){g_pGameLevel->pHUD->Render_First();g_pGameLevel->pHUD->Render_Last();}
     if(psDeviceFlags.test(rsDrawDynamic)){std::set<IRenderable*> seen;u32 camera_sources=0,shadow_sources=0;
         for(u32 pass=0;pass<=shadow_views.size();++pass){xr_vector<ISpatial*> objects;
             g_SpatialSpace->q_frustum(objects,ISpatial_DB::O_ORDERED,STYPE_RENDERABLE,pass?shadow_views[pass-1]:ViewBase);
-            for(u32 i=0;i<objects.size();++i){IRenderable* r=objects[i]->dcast_Renderable();if(!r || !seen.insert(r).second)continue;
+            for(u32 i=0;i<objects.size();++i){IRenderable* r=objects[i]->dcast_Renderable();if(!r)continue;
+                if(pass==1 && sun_enabled && !sun_casters.VisibleSphere(&objects[i]->spatial.sphere.P.x,objects[i]->spatial.sphere.R))continue;
+                if(!seen.insert(r).second)continue;
                 if(pass)++shadow_sources;else ++camera_sources;objects[i]->spatial_updatesector();set_Object(r);r->renderable_Render();}}
         set_Object(NULL);
         if(g_render_snapshot_active){RenderSnapshot_Text("MODEL_CANDIDATES","scope","SPATIAL_CAMERA_UNION_SELECTED_SHADOW_FRUSTUMS; UNIQUE_RENDERABLE_SOURCE");

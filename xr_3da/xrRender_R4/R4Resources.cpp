@@ -78,6 +78,7 @@ struct Resource {
     uint32_t buffer_stride;
     bool initialized;
     bool dynamic_instances,model_pose;
+    std::vector<unsigned char> constant_contents;
     uint32_t instance_count,model_bones,model_skin_mode,model_capacity;
     char shader_entry[96],pixel_entry[96],shader_name[64];
     KichR4Handle vertex_shader,pixel_shader;
@@ -111,6 +112,8 @@ struct Device {
     HMODULE runtime, compiler;
     ID3D11Device* hw;
     ID3D11DeviceContext* context;
+    DrawStateDX11 draw_state;
+    uint64_t unchanged_constant_updates=0;
     CompileFn compile;
     ReflectFn reflect;
     DWORD thread;
@@ -145,6 +148,7 @@ struct Device {
         memset(&geometry_stats,0,sizeof(geometry_stats));geometry_stats.struct_size=sizeof(geometry_stats);
     }
     void ClearResources() {
+        draw_state.Invalidate();
         pass_active=false;memset(bound_textures,0,sizeof(bound_textures));
         snapshot_sink=NULL;
         if (context) { context->ClearState(); context->Flush(); }
@@ -198,6 +202,9 @@ struct Device {
         Number("BACKEND_COUNTERS","registry","created_total",created_total);Number("BACKEND_COUNTERS","registry","released_total",released_total);
         Number("BACKEND_COUNTERS","registry","live_resources",resources.Size());Number("BACKEND_COUNTERS","registry","payload_bytes",stats.payload_bytes);
         Number("BACKEND_COUNTERS","registry","buffer_uploads_total",uploads_total);Number("BACKEND_COUNTERS","registry","buffer_uploaded_bytes_total",uploaded_bytes_total);
+        Number("BACKEND_COUNTERS","submission","draw_state_applications",draw_state.draws);Number("BACKEND_COUNTERS","submission","draw_state_api_calls",draw_state.state_calls);
+        Number("BACKEND_COUNTERS","submission","unchanged_constant_updates",unchanged_constant_updates);
+        Emit("BACKEND_COUNTERS","submission","counter_scope","DEVICE_LIFETIME; state_api_calls excludes pass/frame setup; unchanged CB calls perform no GPU upload");
         Number("BACKEND_COUNTERS","capture","resource_records",resource_records);Number("BACKEND_COUNTERS","capture","resource_records_dropped",resource_records_dropped);
         Number("BACKEND_COUNTERS","capture","binding_route_observations",route_observations);Number("BACKEND_COUNTERS","capture","binding_route_records",route_records);
         Number("BACKEND_COUNTERS","capture","binding_route_records_dropped",route_records_dropped);Number("BACKEND_COUNTERS","capture","callback_failures",callback_failures);
@@ -341,6 +348,8 @@ int32_t KICH_R4_CALL CreateBuffer(KichR4Handle device, const KichR4BufferDesc* d
         D3D11_BUFFER_DESC native={}; native.ByteWidth=desc->byte_size; native.Usage=D3D11_USAGE_DEFAULT;
         native.BindFlags=desc->kind==KICH_R4_VERTEX_BUFFER ? D3D11_BIND_VERTEX_BUFFER :
             desc->kind==KICH_R4_INDEX_BUFFER ? D3D11_BIND_INDEX_BUFFER : D3D11_BIND_CONSTANT_BUFFER;
+        if(desc->kind==KICH_R4_CONSTANT_BUFFER){native.Usage=D3D11_USAGE_DYNAMIC;native.CPUAccessFlags=D3D11_CPU_ACCESS_WRITE;
+            r->constant_contents.resize(desc->byte_size);if(data)memcpy(r->constant_contents.data(),data,bytes);}
         D3D11_SUBRESOURCE_DATA initial={}; initial.pSysMem=data;
         hr=d->hw->CreateBuffer(&native,data ? &initial : NULL,&r->buffer); if (FAILED(hr)) return hr;
         r->info.kind=desc->kind; r->info.byte_size=desc->byte_size;
@@ -483,6 +492,7 @@ int32_t KICH_R4_CALL ReleaseResource(KichR4Handle device, KichR4Handle handle)
         Resource* r=d->resources.Find(handle); if (!r) return KICH_R4_E_HANDLE;
         const uint32_t bytes=r->info.byte_size;
         char id[64];snprintf(id,sizeof(id),"resource_%llu",static_cast<unsigned long long>(handle));d->Emit("RESOURCE_EVENT",id,"action","RELEASED");
+        d->draw_state.Invalidate(); // Raw COM pointer addresses may be reused after release.
         ++d->released_total;d->resources.Erase(handle); --d->stats.live_resources; ++d->stats.released;
         d->stats.payload_bytes-=bytes; return KICH_R4_OK;
     });
@@ -500,28 +510,28 @@ int32_t KICH_R4_CALL CreateFrameTarget(KichR4Handle device,const KichR4FrameTarg
 {
     if(!desc)return KICH_R4_E_ARGUMENT;
     return Protect([&]() -> int32_t {
-        int32_t hr;Device* d=FindDevice(device,hr);return d?d->frame.Create(*desc):hr;
+        int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;d->draw_state.Invalidate();return d->frame.Create(*desc);
     });
 }
 int32_t KICH_R4_CALL DestroyFrameTarget(KichR4Handle device)
 {
     return Protect([&]() -> int32_t {
         int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;
-        d->pass_active=false;d->frame.Close();return KICH_R4_OK;
+        d->draw_state.Invalidate();d->pass_active=false;d->frame.Close();return KICH_R4_OK;
     });
 }
 int32_t KICH_R4_CALL ResizeFrame(KichR4Handle device,uint32_t w,uint32_t h)
 {
     return Protect([&]() -> int32_t {
         int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;
-        d->pass_active=false;return d->frame.Resize(w,h);
+        d->draw_state.Invalidate();d->pass_active=false;return d->frame.Resize(w,h);
     });
 }
 int32_t KICH_R4_CALL BeginFrame(KichR4Handle device)
 {
     return Protect([&]() -> int32_t {
         int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;
-        d->pass_active=false;return d->frame.Begin();
+        d->draw_state.Invalidate();d->pass_active=false;return d->frame.Begin();
     });
 }
 int32_t KICH_R4_CALL ClearFrame(KichR4Handle device,const KichR4FrameColor* color)
@@ -538,7 +548,7 @@ int32_t KICH_R4_CALL PresentFrame(KichR4Handle device,uint32_t interval)
 {
     return Protect([&]() -> int32_t {
         int32_t hr;Device* d=FindDevice(device,hr);if(!d)return hr;
-        d->pass_active=false;return d->frame.Present(interval);
+        d->draw_state.Invalidate();d->pass_active=false;return d->frame.Present(interval);
     });
 }
 int32_t KICH_R4_CALL GetFrameStats(KichR4Handle device,KichR4FrameStats* out,uint32_t bytes)
@@ -671,7 +681,14 @@ int32_t KICH_R4_CALL UpdateBuffer(KichR4Handle device,KichR4Handle buffer,const 
         Resource* r=d->resources.Find(buffer);if(!r)return KICH_R4_E_HANDLE;
         if(!r->buffer || r->dynamic_instances || r->model_pose || r->info.kind<KICH_R4_VERTEX_BUFFER || r->info.kind>KICH_R4_CONSTANT_BUFFER ||
             bytes!=r->info.byte_size)return KICH_R4_E_ARGUMENT;
-        d->context->UpdateSubresource(r->buffer,0,NULL,data,0,0);r->initialized=true;
+        if(r->info.kind==KICH_R4_CONSTANT_BUFFER){
+            if(r->constant_contents.size()!=bytes)return KICH_R4_E_STATE;
+            if(r->initialized && !memcmp(r->constant_contents.data(),data,bytes)){++d->unchanged_constant_updates;return KICH_R4_OK;}
+            D3D11_MAPPED_SUBRESOURCE mapped={};hr=d->context->Map(r->buffer,0,D3D11_MAP_WRITE_DISCARD,0,&mapped);if(FAILED(hr))return hr;
+            memcpy(mapped.pData,data,bytes);d->context->Unmap(r->buffer,0);
+            memcpy(r->constant_contents.data(),data,bytes);
+        }else d->context->UpdateSubresource(r->buffer,0,NULL,data,0,0);
+        r->initialized=true;
         if(r->info.kind==KICH_R4_CONSTANT_BUFFER && bytes==912)memcpy(r->alpha,static_cast<const unsigned char*>(data)+800,16);
         d->Upload(r,bytes);++d->geometry_stats.buffer_updates;return KICH_R4_OK;
     });
@@ -807,7 +824,9 @@ int32_t SubmitDraw(Device* d,const KichR4DrawIndexedDesc* desc,Resource* texture
         if(!vb->initialized || !ib->initialized || !cb->initialized)return KICH_R4_E_STATE;
         if(desc->depth_mode==KICH_R4_DEPTH_ON) {const int32_t hr=d->frame_driver.EnsureDepth();if(hr<0)return hr;}
         const KichR4FrameStats size=d->frame.Stats();d->frame_driver.Bind(size.width,size.height);
-        const int32_t drawn=p->pipeline->Draw(d->context,*desc,vb->buffer,ib->buffer,cb->buffer,ib->buffer_stride,texture?texture->srv:NULL,extra);
+        D3D11_VIEWPORT viewport={};viewport.Width=static_cast<float>(size.width);viewport.Height=static_cast<float>(size.height);viewport.MaxDepth=1;
+        d->draw_state.BeginPass(viewport); // Bind changed OM and viewport outside the deferred path.
+        const int32_t drawn=p->pipeline->Draw(d->context,d->draw_state,*desc,vb->buffer,ib->buffer,cb->buffer,ib->buffer_stride,texture?texture->srv:NULL,extra);
         if(drawn<0)return drawn;
         d->pass_active=false;d->bound_textures[0]=texture?texture->handle:0;
         SnapshotDraw(d,*desc,p,vb,cb,extra,d->bound_textures);
@@ -863,10 +882,12 @@ int32_t KICH_R4_CALL BeginDeferredPass(KichR4Handle device,const KichR4PassDesc*
             if(!r->dsv || r->info.width!=pass->width || r->info.height!=pass->height)return KICH_R4_E_ARGUMENT;
             if((pass->clear_flags&KICH_R4_CLEAR_STENCIL) && r->info.format!=KICH_R4_DEPTH24_STENCIL8)return KICH_R4_E_ARGUMENT;
             depth=r->dsv;}
+        d->draw_state.Invalidate(); // OM target changes may implicitly unbind SRV aliases.
         ID3D11ShaderResourceView* empty[8]={};d->context->PSSetShaderResources(0,8,empty);memset(d->bound_textures,0,sizeof(d->bound_textures));
         d->context->OMSetRenderTargets(pass->color_count,colors,depth);
         D3D11_VIEWPORT viewport={};viewport.Width=static_cast<float>(pass->width);viewport.Height=static_cast<float>(pass->height);viewport.MaxDepth=1;
         d->context->RSSetViewports(1,&viewport);
+        d->draw_state.BeginPass(viewport);
         if(pass->clear_flags&KICH_R4_CLEAR_COLOR)for(uint32_t i=0;i<pass->color_count;++i)d->context->ClearRenderTargetView(colors[i],pass->color);
         if(pass->clear_flags&(KICH_R4_CLEAR_DEPTH|KICH_R4_CLEAR_STENCIL))d->context->ClearDepthStencilView(depth,
             ((pass->clear_flags&KICH_R4_CLEAR_DEPTH)?D3D11_CLEAR_DEPTH:0)|((pass->clear_flags&KICH_R4_CLEAR_STENCIL)?D3D11_CLEAR_STENCIL:0),pass->depth_value,0);
@@ -913,7 +934,7 @@ int32_t DrawDeferredOrDetail(KichR4Handle device,const KichR4DeferredDrawDesc* d
         // and GPU-skinned models. Shadow maps never enter this path.
         if(d->pass.color_count==3 && d->pass.depth && draw.depth_mode && effective.depth_write &&
             d->resources.Find(d->pass.depth)->info.format==KICH_R4_DEPTH24_STENCIL8)KichR4ReceiverState(effective.surface,true);
-        hr=p->pipeline->Draw(d->context,draw,vb->buffer,ib->buffer,cb->buffer,ib->buffer_stride,NULL,&effective,inputs,
+        hr=p->pipeline->Draw(d->context,d->draw_state,draw,vb->buffer,ib->buffer,cb->buffer,ib->buffer_stride,NULL,&effective,inputs,
             instances?instances->buffer:NULL,detail?detail->instance_count:0,detail?detail->first_instance:0,pose?pose->buffer:NULL);
         if(hr<0)return hr;
         memcpy(d->bound_textures,desc->textures,sizeof(d->bound_textures));SnapshotDraw(d,draw,p,vb,cb,&effective,d->bound_textures,detail,model?model->pose_buffer:0);

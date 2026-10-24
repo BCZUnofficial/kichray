@@ -131,12 +131,34 @@ void AllVisibleShadows(){
     Require(game.deferred.PrepareLocalMaps(game.frame,game.level,input.lighting,selected)==0 && f->created==stable,"visibility fluctuation retains reusable bounded pool");
     KichR4GeometryReport r={};game.Stop(r);Require(!f->live && f->objects.empty(),"expanded shadow pool released on shutdown");
 }
+void SharedFrameQueues(){Fixture fixture;f=&fixture;ResetDeferredRecorder();const KichR4LevelFiles fs={Open,Close};kich_r4_game::Session game(DeferredAPIs(),fs,"l01_escape",NULL);
+    game.deferred.native_mode=true;auto input=DeferredInput();input.engine_frame=71;input.lighting.count=12;input.lighting.lights.resize(12);input.lighting.sources.resize(12);input.lighting.shadows.assign(12,0);
+    for(unsigned i=0;i<input.lighting.count;++i){auto& light=input.lighting.lights[i];light.type=1;light.range=15;light.position[0]=float(i);light.position[1]=2;light.color[0]=1;}
+    auto batch=Batch();Require(game.Render(input,&batch)==1,"native shared-order frame renders");
+    Require(game.deferred.forward_sorts==1,"base and twelve additive passes share one stable sort");
+    Require(game.deferred.visibility_plan.cache_hits>=1,"transparent and opaque static reuse camera visibility");
+    ++input.engine_frame;batch.vertices[0].world[2]+=5;Require(game.Render(input,&batch)==1,"changed next frame renders");
+    Require(game.deferred.forward_sorts==1,"new frame rebuilds ordering exactly once even with same batch address");
+    KichR4GeometryReport report={};Require(game.Stop(report)==0 && !f->live,"queue cache holds no GPU resource references");
+}
+void StreamBounds(){KichR4DeferredSession planner;auto batch=Batch();planner.PrepareStreamBounds(batch);
+    Require(planner.stream_bounds[0].valid && !planner.stream_bounds[1].valid && !planner.stream_bounds[3].valid,"world stream bounds do not reinterpret HUD/UI coordinates");
+    kich_r4_lighting::Constants frame={};frame.mvp=kich_r4_scene::Identity();
+    Require(!planner.StreamAffects(planner.stream_bounds[0],frame,KichR4DeferredSession::ShadowModels),"world command beyond shadow depth is rejected");
+    frame.mvp.m[14]=-1.5f;Require(planner.StreamAffects(planner.stream_bounds[0],frame,KichR4DeferredSession::ShadowModels),"independent shadow volume retains off-camera world command");
+    frame.light_position[0]=50;frame.light_position[3]=1;
+    Require(!planner.StreamAffects(planner.stream_bounds[2],frame,KichR4DeferredSession::ForwardAdd),"out-of-range additive world command rejected");
+    frame.light_position[0]=0;frame.light_position[2]=2;Require(planner.StreamAffects(planner.stream_bounds[2],frame,KichR4DeferredSession::ForwardAdd),"touching light/world bounds retained");
+    kich_r4_visibility::Bounds unknown;Require(planner.StreamAffects(unknown,frame,KichR4DeferredSession::ShadowModels),"unknown compatibility bounds fail open");
+    batch.commands[0].count=UINT32_MAX;planner.bounded_batch=NULL;planner.PrepareStreamBounds(batch);
+    Require(!planner.stream_bounds[0].valid,"invalid stream range never read while preparing bounds");
+}
 void Invalid(){
     for(unsigned which=0;which<3;++which){Fixture fixture;f=&fixture;ResetDeferredRecorder();const KichR4LevelFiles fs={Open,Close};kich_r4_game::Session game(DeferredAPIs(),fs,"l01_escape",NULL);
         auto input=DeferredInput();if(which==0)input.lighting.valid=0;else if(which==1)input.lighting.count=9;else memset(input.view_projection,0,64);
         Require(game.Render(input)<0 && !game.frame.rendered,"invalid deferred inputs never present partial image");KichR4GeometryReport r={};game.Stop(r);Require(!f->live && f->objects.empty(),"invalid input cleanup balanced");}
 }
 }
-int main(){try{(void)&Scenario;const int positions=ScenarioDeferred();for(int i=1;i<=positions;++i){ScenarioDeferred(i);ScenarioDeferred(i,7);}Invalid();Telemetry();MaterialExecution();WallmarkRoute();AllVisibleShadows();
+int main(){try{(void)&Scenario;const int positions=ScenarioDeferred();for(int i=1;i<=positions;++i){ScenarioDeferred(i);ScenarioDeferred(i,7);}Invalid();Telemetry();MaterialExecution();WallmarkRoute();AllVisibleShadows();SharedFrameQueues();StreamBounds();
     printf("B4.4 pass planner / lighting / reuse / F8-F9 / failures: %d checks, %d failure positions passed\n",checks,positions);return 0;
 }catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

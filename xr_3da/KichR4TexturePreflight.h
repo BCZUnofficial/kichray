@@ -20,36 +20,40 @@ inline void MaterialDemand(KichR4LevelSession& level,const kich_r4_material::Des
     }
     level.NeedTexture(m.detail,DETAIL);
 }
-inline bool AnyView(const kich_r4_capture::NativeModelCommand& model,const std::vector<kich_r4_scene::Matrix>& views){
-    if(!model.bounds_known)return !views.empty();
-    for(size_t i=0;i<views.size();++i)if(kich_r4_visibility::Visible(model.bounds.min,model.bounds.max,views[i]))return true;
+inline bool AnyView(const kich_r4_capture::NativeModelCommand& model,const std::vector<kich_r4_scene::Matrix>& views,
+                    const std::vector<unsigned char>& sun,const kich_r4_visibility::SunCasterVolume& volume){
+    if(!model.bounds_known || !model.bounds.valid)return !views.empty();
+    for(size_t i=0;i<views.size();++i)if(kich_r4_visibility::Visible(model.bounds.min,model.bounds.max,views[i]) && (!sun[i] || volume.Visible(model.bounds.min,model.bounds.max)))return true;
     return false;
 }
 // Build the union before any draw or DDS eviction. Shadows request alpha only;
 // a visible material reserves every texture slot, including late forward/UI.
 inline int32_t Preflight(KichR4FrameSession& frame,KichR4LevelSession& level,
                         const kich_r4_capture::Batch& batch,const KichR4GameFrame& input,
-                        const KichR4DetailSession& details,bool scene){
+                        KichR4DetailSession& details,bool scene,kich_r4_level::StaticFramePlan* shared_plan=NULL){
+    kich_r4_level::StaticFramePlan fallback;
+    if(!shared_plan){if(scene)fallback.Begin(level.scene,level.revision,input.tree_wind[0],input.tree_wind[2]);shared_plan=&fallback;}
     kich_r4_scene::Matrix camera;memcpy(camera.m,input.view_projection,sizeof(camera.m));
+    if(scene && shared_plan==&fallback)shared_plan->sun_casters=kich_r4_visibility::BuildSunCasterVolume(camera,input.lighting.sun_direction);
+    if(scene)details.EnsureVisibilityFrame(input.engine_frame,shared_plan->sun_casters);
     std::vector<kich_r4_scene::Matrix> shadows;
+    std::vector<unsigned char> shadow_sun;
     std::vector<unsigned char> shadow_static(level.scene.draws.size(),0);
-    auto add_shadow=[&](const kich_r4_scene::Matrix& vp,uint32_t seed){
-        shadows.push_back(vp);kich_r4_level::StaticVisibility mask;
-        kich_r4_level::SelectStatic(level.scene,vp,seed,input.tree_wind[0],input.tree_wind[2],mask);
-        for(size_t i=0;i<mask.draws.size();++i)shadow_static[i]|=mask.draws[i];
+    auto add_shadow=[&](const kich_r4_scene::Matrix& vp,uint32_t seed,bool sun){
+        shadows.push_back(vp);shadow_sun.push_back(sun?1:0);const kich_r4_level::StaticVisibility& mask=shared_plan->Select(vp,seed,sun);
+        for(size_t i=0;i<mask.selected.size();++i)shadow_static[mask.selected[i]]=1;
     };
     if(scene){
         if(kich_r4_visibility::SunEnabled(input.lighting)){
-            add_shadow(kich_r4_lighting::SunShadow(input.position,input.lighting.sun_direction,128.f),UINT32_MAX);
-            add_shadow(kich_r4_lighting::SunShadow(input.position,input.lighting.sun_direction,512.f),UINT32_MAX);}
+            add_shadow(kich_r4_lighting::SunShadow(input.position,input.lighting.sun_direction,128.f),UINT32_MAX,true);
+            add_shadow(kich_r4_lighting::SunShadow(input.position,input.lighting.sun_direction,512.f),UINT32_MAX,true);}
         std::vector<uint8_t> selected;kich_r4_visibility::SelectShadowLights(input.lighting,true,selected);
         for(size_t i=0;i<selected.size() && i<input.lighting.lights.size();++i)if(selected[i]){
             const KichR4LocalLight& light=input.lighting.lights[i];
             const uint32_t seed=level.files.sector?level.files.sector(light.position):UINT32_MAX;
-            for(unsigned face=0;face<(light.type==2?1u:6u);++face)add_shadow(kich_r4_lighting::LocalShadow(light,face),seed);}
-        kich_r4_level::StaticVisibility camera_static;
+            for(unsigned face=0;face<(light.type==2?1u:6u);++face)add_shadow(kich_r4_lighting::LocalShadow(light,face),seed,false);}
         const uint32_t camera_sector=level.files.sector?level.files.sector(input.position):UINT32_MAX;
-        kich_r4_level::SelectStatic(level.scene,camera,camera_sector,input.tree_wind[0],input.tree_wind[2],camera_static);
+        const kich_r4_level::StaticVisibility& camera_static=shared_plan->Select(camera,camera_sector);
         for(size_t i=0;i<level.scene.draws.size();++i){const kich_r4_level::Draw& mesh=level.scene.draws[i];
             const kich_r4_level::Material& material=level.scene.materials[mesh.material];
             const kich_r4_material::Descriptor& m=material.descriptor;
@@ -72,19 +76,17 @@ inline int32_t Preflight(KichR4FrameSession& frame,KichR4LevelSession& level,
         if(visible){const uint32_t role=c.layer?HUD:c.effect?EFFECT:BASE;
             level.NeedTexture(c.texture,role);
             if(c.has_material){level.NeedTexture(c.material.base,role);if(kich_r4_material::Geometry(c.material))MaterialDemand(level,c.material,role);}
-        }else if((c.has_material?c.material.alpha_func:c.style.alpha_func)!=8 && AnyView(c,shadows)){
+        }else if((c.has_material?c.material.alpha_func:c.style.alpha_func)!=8 && AnyView(c,shadows,shadow_sun,shared_plan->sun_casters)){
             level.NeedTexture(c.has_material && !c.material.base.empty()?c.material.base:c.texture,SHADOW_ALPHA);}
     }
     const kich_r4_detail::Frame* source=details.source;
     if(scene && source && source->source_frame_known && source->engine_frame==input.engine_frame){
         for(size_t i=0;i<source->groups.size();++i){const kich_r4_detail::Group& g=source->groups[i];
             if(g.count && g.mesh<source->meshes.size())level.NeedTexture(source->meshes[g.mesh].texture,BASE);}
-        for(size_t i=0;i<source->shadow_groups.size();++i){const kich_r4_detail::Group& g=source->shadow_groups[i];if(!g.count || g.mesh>=source->meshes.size())continue;
-            bool visible=false;
-            for(size_t view=0;view<shadows.size() && !visible;++view)for(uint32_t j=0;j<g.count && uint64_t(g.first)+j<source->shadow_instances.size();++j)
-                if(details.ShadowVisible(source->meshes[g.mesh],source->shadow_instances[g.first+j],g.variant,shadows[view])){visible=true;break;}
-            if(visible)level.NeedTexture(source->meshes[g.mesh].texture,SHADOW_ALPHA);
-        }
+        std::vector<unsigned char> needed(source->meshes.size(),0);
+        for(size_t view=0;view<shadows.size();++view){const KichR4DetailSession::ShadowSelection& selection=details.SelectShadow(shadows[view],shadow_sun[view]!=0);
+            for(size_t i=0;i<selection.groups.size();++i)if(selection.groups[i].mesh<needed.size())needed[selection.groups[i].mesh]=1;}
+        for(size_t i=0;i<needed.size();++i)if(needed[i])level.NeedTexture(source->meshes[i].texture,SHADOW_ALPHA);
     }
     return level.CommitTexturePlan(frame);
 }

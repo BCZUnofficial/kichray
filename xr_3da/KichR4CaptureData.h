@@ -48,8 +48,44 @@ struct Mesh {
     uint32_t bones,ignored_weights,outside_weights,diagnostic_modes,available_attributes,basis_vertices,derived_basis_vertices;bool skinned,two_weights,hardware_weights_safe;
     std::string first_weight_detail;
     mutable uint64_t snapshot_hash;mutable bool snapshot_hashed;
+    struct RangeInfo {uint32_t first,count,maximum,attributes,basis_indices;};
+private:
+    // Only registry-owned decoded geometry is frozen. Procedural/test meshes
+    // remain mutable and are checked on every use. A new Mesh owns a new cache;
+    // reusing a visual address never transfers range validation to its replacement.
+    bool ranges_frozen=false;
+    const SourceVertex* frozen_vertices=NULL;const uint16_t* frozen_indices=NULL;
+    size_t frozen_vertex_count=0,frozen_index_count=0;
+    mutable std::vector<RangeInfo> range_cache;
+    mutable size_t range_next=0;
+    mutable uint64_t range_scanned_indices=0,range_cache_hits=0;
+public:
     Mesh():bones(0),ignored_weights(0),outside_weights(0),diagnostic_modes(0),available_attributes(0),basis_vertices(0),derived_basis_vertices(0),skinned(false),two_weights(false),hardware_weights_safe(true),snapshot_hash(0),snapshot_hashed(false){}
     uint64_t Bytes()const{return uint64_t(vertices.size())*sizeof(SourceVertex)+uint64_t(indices.size())*2;}
+    void InvalidateRanges(){ranges_frozen=false;range_cache.clear();range_next=0;snapshot_hashed=false;}
+    void FreezeRanges(){InvalidateRanges();frozen_vertices=vertices.data();frozen_indices=indices.data();
+        frozen_vertex_count=vertices.size();frozen_index_count=indices.size();ranges_frozen=true;}
+    uint64_t RangeScannedIndices()const{return range_scanned_indices;}
+    uint64_t RangeCacheHits()const{return range_cache_hits;}
+    size_t CachedRanges()const{return range_cache.size();}
+    bool Range(uint32_t first,uint32_t count,uint32_t vertex_prefix,RangeInfo& result)const {
+        if(!vertex_prefix || vertex_prefix>vertices.size() || !count || count%3 || first>indices.size() || count>indices.size()-first)return false;
+        const bool frozen=ranges_frozen && frozen_vertices==vertices.data() && frozen_indices==indices.data() &&
+            frozen_vertex_count==vertices.size() && frozen_index_count==indices.size();
+        if(frozen)for(size_t i=0;i<range_cache.size();++i)if(range_cache[i].first==first && range_cache[i].count==count){
+            result=range_cache[i];++range_cache_hits;return result.maximum<vertex_prefix;}
+        result={first,count,0,~0u,0};
+        const uint32_t basis=kich_r4_level::ATTR_NORMAL|kich_r4_level::ATTR_TANGENT|kich_r4_level::ATTR_BINORMAL;
+        range_scanned_indices+=count;
+        for(uint32_t i=0;i<count;++i){const uint32_t index=indices[first+i];if(index>=vertices.size())return false;
+            result.maximum=(std::max)(result.maximum,index);result.attributes&=vertices[index].attributes;
+            if((vertices[index].attributes&basis)==basis)++result.basis_indices;}
+        // Cache validity of the immutable index range, never validity of one
+        // advertised LOD prefix. A smaller prefix is still checked on a hit.
+        if(frozen){if(range_cache.size()<64)range_cache.push_back(result);
+            else{range_cache[range_next]=result;range_next=(range_next+1)%64;}}
+        return result.maximum<vertex_prefix;
+    }
 };
 inline std::string WeightDetail(uint32_t vertex,uint32_t b0,uint32_t b1,uint32_t bits,const char* why){
     char text[224];float w;memcpy(&w,&bits,4);
@@ -326,12 +362,12 @@ struct Batch {
         Check(!mesh->two_weights || skin_mode==KICH_R4_SKIN_SOFTWARE || skin_mode==KICH_R4_SKIN_HARDWARE,"2W skin mode handshake missing; rebuild R1/R2");
         ValidateModelMatrix(world);ValidateModelMatrix(vp);
         if(mesh->skinned)for(uint32_t i=0;i<mesh->bones;++i)ValidateModelMatrix(bones[i]);
-        uint32_t attributes=~0u;
-        for(uint32_t i=0;i<tris*3;++i){Check(mesh->indices[first+i]<count,"native progressive model vertex range");attributes&=mesh->vertices[mesh->indices[first+i]].attributes;}
+        Mesh::RangeInfo range;
+        Check(mesh->Range(first,tris*3,count,range),"native progressive model vertex range");
         Check(!mesh->two_weights || skin_mode!=KICH_R4_SKIN_HARDWARE || mesh->hardware_weights_safe,"2W hardware weight exceeds safe quantization range");
         NativeModelCommand cmd;cmd.mesh=mesh;cmd.world=world;cmd.vp=vp;cmd.vertex_count=count;cmd.first=first;cmd.count=tris*3;
         Check(!light_valid || (Finite(object_hemi) && Finite(object_sun) && object_hemi>=0 && object_hemi<=1 && object_sun>=0 && object_sun<=1),"object exposure range");
-        cmd.available_attributes=attributes;cmd.object_light_valid=light_valid;cmd.object_hemi=object_hemi;cmd.object_sun=object_sun;
+        cmd.available_attributes=range.attributes;cmd.object_light_valid=light_valid;cmd.object_hemi=object_hemi;cmd.object_sun=object_sun;
         cmd.layer=style.max_z<.1f?1:0;cmd.style=style;cmd.skin_mode=skin_mode;cmd.effect=effect;
         if(material){cmd.material=*material;cmd.has_material=true;kich_r4_material::Apply(cmd.material,cmd.style);}
         cmd.shader_element=shader_element;cmd.shader_pass=shader_pass;
@@ -416,12 +452,13 @@ struct State {
         // numerical equality establishes bStatic for a runtime registration.
         return !r1_lights_enabled && source!=light_sources.end() && (source->second.flags&KICH_R4_LIGHT_STATIC)!=0;
     }
-    void SelectLights(const float* camera,KichR4LightingFrame& out,bool r1_lights_enabled=false,const float* camera_vp=NULL)const {
+    void SelectLights(const float* camera,KichR4LightingFrame& out,bool r1_lights_enabled=false,const float* camera_vp=NULL,KichR4LightVisibility occlusion=NULL)const {
         struct Choice {float score;KichR4LocalLight light;bool shadow;const void* source;};std::vector<Choice> choices;
         out.count=0;out.shadow_mask=0;out.shadows.clear();out.sources.clear();out.lights.clear();out.visibility_valid=camera_vp?1u:0u;
         if(camera_vp)memcpy(out.visibility_vp,camera_vp,sizeof(out.visibility_vp));
         else memset(out.visibility_vp,0,sizeof(out.visibility_vp));
         out.r1_lights_requested=out.r1_lights_applied=r1_lights_enabled?1u:0u;
+        out.occlusion_enabled=(occlusion && camera_vp)?1u:0u;out.occlusion_tested=0;out.occlusion_rejected.clear();
         if(!camera)return;
         Matrix vp={};if(camera_vp)memcpy(vp.m,camera_vp,sizeof(vp.m));
         for(std::map<const void*,KichR4LocalLight>::const_iterator it=lights.begin();it!=lights.end();++it){
@@ -430,6 +467,12 @@ struct State {
             for(unsigned a=0;a<3;++a){const float d=l.position[a]-camera[a];distance+=d*d;}
             const float brightness=std::max(l.color[0],std::max(l.color[1],l.color[2]));
             if(brightness<=0 || (camera_vp && !kich_r4_visibility::VisibleSphere(l.position,l.range,vp)))continue;
+            if(out.occlusion_enabled){++out.occlusion_tested;bool visible=true;
+                try{visible=occlusion(l,camera_vp);}catch(...){visible=true;}
+                if(!visible){KichR4LightIdentity identity={};const auto source=light_sources.find(it->first);
+                    if(source!=light_sources.end())identity=source->second;
+                    else identity.process_handle=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(it->first));
+                    out.occlusion_rejected.push_back(identity);continue;}}
             Choice c={brightness*l.range*l.range/(distance+1)+(l.type==2 && distance<4?1.e10f:0),l,unshadowed_lights.count(it->first)==0,it->first};choices.push_back(c);
         }
         // Sorting is deterministic scheduling only. Every visible source is
@@ -459,16 +502,18 @@ struct State {
             const bool in_registry=lights.count(it->first)!=0;
             const bool policy_passed=in_registry && !StaticLightDisabled(it->first,selected.r1_lights_applied!=0);
             const bool visible=!selected.visibility_valid || kich_r4_visibility::VisibleSphere(l.position,l.range,selection_vp);
-            const bool candidate=policy_passed && visible && brightness>0;
+            bool occluded=false;for(const auto& rejected:selected.occlusion_rejected)
+                if(rejected.process_handle==identity.process_handle && rejected.serial==identity.serial){occluded=true;break;}
+            const bool candidate=policy_passed && visible && brightness>0 && !occluded;
             unsigned slot=selected.count;for(unsigned i=0;i<selected.count && i<selected.sources.size();++i)if(selected.sources[i].process_handle==identity.process_handle && selected.sources[i].serial==identity.serial){slot=i;break;}
             const bool chosen=slot<selected.count;
-            const char* reason=!o.active?"INACTIVE":!o.valid?"INVALID_DESCRIPTOR":!in_registry?"REGISTRY_CAPACITY_LIMIT":!policy_passed?"STATIC_LIGHT_DISABLED_R2FLAG_R1LIGHTS":brightness<=0?"NONPOSITIVE_COLOR":!visible?"OUTSIDE_CAMERA_FRUSTUM":!chosen?"SELECTION_NOT_CAPTURED":"SELECTED_VISIBLE_SOURCE";
+            const char* reason=!o.active?"INACTIVE":!o.valid?"INVALID_DESCRIPTOR":!in_registry?"REGISTRY_CAPACITY_LIMIT":!policy_passed?"STATIC_LIGHT_DISABLED_R2FLAG_R1LIGHTS":brightness<=0?"NONPOSITIVE_COLOR":!visible?"OUTSIDE_CAMERA_FRUSTUM":occluded?"OCCLUDED_LIGHT_VOLUME":!chosen?"SELECTION_NOT_CAPTURED":"SELECTED_VISIBLE_SOURCE";
             if(o.active)++active;
             if(in_registry)++valid;
             if(candidate)++admitted;
             if(!o.active)++rejected_inactive;else if(!o.valid)++rejected_invalid;else if(!in_registry)++rejected_capacity;
             else if(!policy_passed)++policy_rejected;else if(brightness<=0)++rejected_color;
-            else if(!visible)++rejected_frustum;else if(!chosen)++rejected_missing;
+            else if(!visible)++rejected_frustum;else if(!chosen && !occluded)++rejected_missing;
             if(chosen){++selected_count;if(identity.role==KICH_R4_LIGHT_ROLE_LEVEL)++selected_level;else if(identity.role==KICH_R4_LIGHT_ROLE_RUNTIME)++selected_runtime;else ++selected_unknown;
                 if(selected.CastsShadow(slot))++selected_shadow;}
             if(!RenderSnapshot_Detailed())continue;
@@ -501,6 +546,8 @@ struct State {
         RenderSnapshot_U64("LIGHT_REGISTRY","rejected_INACTIVE",rejected_inactive);RenderSnapshot_U64("LIGHT_REGISTRY","rejected_INVALID_DESCRIPTOR",rejected_invalid);
         RenderSnapshot_U64("LIGHT_REGISTRY","rejected_REGISTRY_CAPACITY_LIMIT",rejected_capacity);RenderSnapshot_U64("LIGHT_REGISTRY","rejected_OUTSIDE_CAMERA_FRUSTUM",rejected_frustum);
         RenderSnapshot_U64("LIGHT_REGISTRY","rejected_NONPOSITIVE_COLOR",rejected_color);RenderSnapshot_U64("LIGHT_REGISTRY","rejected_SELECTION_NOT_CAPTURED",rejected_missing);
+        RenderSnapshot_U64("LIGHT_REGISTRY","occlusion_query_candidates",selected.occlusion_tested);
+        RenderSnapshot_U64("LIGHT_REGISTRY","rejected_OCCLUDED_LIGHT_VOLUME",selected.occlusion_rejected.size());
         RenderSnapshot_U64("LIGHT_REGISTRY","admitted",admitted);RenderSnapshot_U64("LIGHT_REGISTRY","selected",selected_count);
         RenderSnapshot_U64("LIGHT_REGISTRY","selected_LEVEL_RECORD",selected_level);RenderSnapshot_U64("LIGHT_REGISTRY","selected_RUNTIME_REGISTERED",selected_runtime);RenderSnapshot_U64("LIGHT_REGISTRY","selected_UNKNOWN",selected_unknown);
         RenderSnapshot_U64("LIGHT_REGISTRY","slots_used",selected.count);RenderSnapshot_U64("LIGHT_REGISTRY","slots_capacity",KICH_R4_LIGHT_REGISTRY_CAPACITY);RenderSnapshot_U64("LIGHT_REGISTRY","selected_shadow_requested",selected_shadow);
@@ -508,7 +555,7 @@ struct State {
         RenderSnapshot_U64("LIGHT_REGISTRY","identity_registration_rejections",light_identity_rejections);
         RenderSnapshot_Text("LIGHT_REGISTRY","counter_scope","BOUNDED_OBSERVATION_REGISTRY_AT_CALCULATE; RETAINS_INACTIVE_UNTIL_FORGET; BEFORE_DICTIONARY_LIMIT");
         RenderSnapshot_Text("LIGHT_REGISTRY","policy","BSTATIC_REQUIRES_R2FLAG_R1LIGHTS; ALL_VISIBLE_POSITIVE_SOURCES; NO_GLOBAL_DRAW_LIGHT_LIMIT; ENVIRONMENT_SUN_SEPARATE; NO_DEDUP");
-        RenderSnapshot_Text("LIGHT_REGISTRY","visibility_filter",selected.visibility_valid?"SOURCE_RANGE_SPHERE_INTERSECTS_CAMERA_FRUSTUM":"NO_CAMERA_FRUSTUM_SUPPLIED; CONSERVATIVE_ALL_SOURCES");
+        RenderSnapshot_Text("LIGHT_REGISTRY","visibility_filter",selected.occlusion_enabled?"SOURCE_RANGE_SPHERE_FRUSTUM; CURRENT_CAMERA_CPU_HOM_FULL_LIGHT_VOLUME; FAIL_OPEN":selected.visibility_valid?"SOURCE_RANGE_SPHERE_INTERSECTS_CAMERA_FRUSTUM":"NO_CAMERA_FRUSTUM_SUPPLIED; CONSERVATIVE_ALL_SOURCES");
     }
     void Diagnostic(const std::string& message){if(log && diagnostics<64){++diagnostics;log(("[R4 bridge B4.3b.1] "+message).c_str());}}
     void Begin(uint32_t w,uint32_t h,uint32_t f){frame.Begin(w,h,f);stream_bytes=0;
@@ -520,7 +567,8 @@ struct State {
             if(total>ModelRegistryBudgetBytes){const uint64_t requested=entry.mesh->Bytes();char reason[192];
                 snprintf(reason,sizeof(reason),"model registry CPU budget: used=%llu requested=%llu limit=%llu bytes",
                     static_cast<unsigned long long>(total-requested),static_cast<unsigned long long>(requested),
-                    static_cast<unsigned long long>(ModelRegistryBudgetBytes));Check(false,reason);}}}
+                    static_cast<unsigned long long>(ModelRegistryBudgetBytes));Check(false,reason);}
+            entry.mesh->FreezeRanges();}}
         catch(const std::exception& e){entry.mesh.reset();entry.error=ModelError(entry,e.what());Diagnostic("model rejected: "+entry.error);return;}
         if(entry.mesh && (entry.mesh->ignored_weights || entry.mesh->outside_weights)){char counts[128];snprintf(counts,sizeof(counts),"; ignored_unused=%u active_outside_01=%u; ",entry.mesh->ignored_weights,entry.mesh->outside_weights);
             Diagnostic("2W compatibility: model="+entry.name+counts+entry.mesh->first_weight_detail);}}

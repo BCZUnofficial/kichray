@@ -17,6 +17,9 @@ struct KichR4LightIdentity {
     uint64_t process_handle,serial;
     uint32_t role,level_record,controller,flags;
 };
+// Native renderer installs a conservative current-camera light-volume query.
+// NULL and non-camera callers (ROS/AI) preserve the complete source registry.
+typedef bool (*KichR4LightVisibility)(const KichR4LocalLight&,const float* camera_vp);
 struct KichR4LightingFrame {
     uint32_t valid,count,shadow_mask;
     float sun_direction[3],sun_color[3],ambient[3],hemi[3],fog[3];
@@ -27,10 +30,12 @@ struct KichR4LightingFrame {
     float visibility_vp[16];uint32_t visibility_valid;
     // CPU-side selection provenance, never copied into GPU light constants.
     uint32_t r1_lights_requested,r1_lights_applied;
+    uint32_t occlusion_enabled,occlusion_tested;
+    std::vector<KichR4LightIdentity> occlusion_rejected;
     // Small direct/test producers can still fill the original first eight
     // entries. Captured frames resize to every visible registry source.
     KichR4LightingFrame():valid(0),count(0),shadow_mask(0),sun_direction(),sun_color(),ambient(),hemi(),fog(),
-        lights(8),sources(8),visibility_vp(),visibility_valid(0),r1_lights_requested(0),r1_lights_applied(0){}
+        lights(8),sources(8),visibility_vp(),visibility_valid(0),r1_lights_requested(0),r1_lights_applied(0),occlusion_enabled(0),occlusion_tested(0){}
     bool CastsShadow(unsigned index)const {
         if(index>=count)return false;
         if(index<shadows.size())return shadows[index]!=0;
@@ -57,4 +62,5 @@ KICH_R4_LIGHT_EXPORT void KichR4_CaptureLightForget(const void*);
 /* EXE-only helper keeps allocation/exception handling out of the PCH adapter. */
 void KichR4_CaptureLighting(const float*,KichR4LightingFrame&,bool r1_lights_enabled=false,const float* camera_vp=NULL);
 void KichR4_CaptureLightingDiagnostics(const float*,const KichR4LightingFrame&);
+void KichR4_SetLightVisibility(KichR4LightVisibility);
 #endif

@@ -230,7 +230,12 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
                 double(loaded.QuadPart-start.QuadPart)*1000.0/double(frequency.QuadPart),c.level.texture_io_ms,c.level.texture_parse_ms,c.level.texture_create_ms,c.level.textures_loaded);
         }
         const kich_r4_capture::Batch* batch=KichR4_CapturedFrame();if(!batch || !batch->Ready()){Write("[R4 native B5] rejected CPU frame: %s",batch?batch->error.c_str():"queue unavailable");return false;}
-        if(kich_r4_texture::Preflight(c.frame,c.level,*batch,input,c.deferred.details,c.loaded && input.allowed)<0)return false;
+        const kich_r4_metrics::Clock::time_point plan_started=kich_r4_metrics::Clock::now();
+        if(c.loaded && input.allowed)c.deferred.BeginFramePlan(c.level,input);
+        const double plan_ms=kich_r4_metrics::Elapsed(plan_started);
+        const kich_r4_metrics::Clock::time_point preflight_started=kich_r4_metrics::Clock::now();
+        if(kich_r4_texture::Preflight(c.frame,c.level,*batch,input,c.deferred.details,c.loaded && input.allowed,c.loaded && input.allowed?&c.deferred.visibility_plan:NULL)<0)return false;
+        const double preflight_ms=kich_r4_metrics::Elapsed(preflight_started);
         if(c.stream.PrepareUI(c.frame,c.level,*batch)<0)return false;
         if(input.debug_down && !native.debug_key){native.debug=(native.debug+1)%kich_r4_optics::DebugViewCount;
             Write("[R4 G3e] F9 view=%u %s; diagnostic views bypass postprocess",native.debug,kich_r4_optics::DebugView(native.debug));}native.debug_key=input.debug_down;
@@ -304,6 +309,7 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
                 RenderSnapshot_RecordU64("DDS_RESIDENCY",item.first.c_str(),"retry_epoch",e.retry);RenderSnapshot_RecordU64("DDS_RESIDENCY",item.first.c_str(),"failure_kind",e.reason);
                 RenderSnapshot_RecordU64("DDS_RESIDENCY",item.first.c_str(),"hresult",static_cast<uint32_t>(e.failure));}
             RenderSnapshot_Value("TIMING","cpu_prepare_ms",input.prepare_ms);RenderSnapshot_Value("TIMING","cpu_native_submit_ms",double(submitted.QuadPart-start.QuadPart)*1000.0/double(frequency.QuadPart));
+            RenderSnapshot_Value("TIMING","cpu_frame_plan_ms",plan_ms);RenderSnapshot_Value("TIMING","cpu_texture_preflight_ms",preflight_ms);
             RenderSnapshot_Value("TIMING","cpu_present_ms",double(end.QuadPart-submitted.QuadPart)*1000.0/double(frequency.QuadPart));RenderSnapshot_Value("TIMING","cpu_backend_telemetry_record_ms",double(native.telemetry_cpu_ticks)*1000.0/double(frequency.QuadPart));
             RenderSnapshot_Text("TIMING","cpu_native_submit_scope","INCLUDES_SCENE_INIT_UPLOADS_AND_TELEMETRY; EXCLUDES_PRESENT");
             if(hr<0){RenderSnapshot_GPUTiming(RenderSnapshot_CaptureID(),input.engine_frame,RenderSnapshot_RenderFrameID(),"CANCELLED",NULL,0);ForgetTiming(RenderSnapshot_CaptureID());RenderSnapshot_End("GPU_SUBMISSION_FAILED");}
@@ -322,6 +328,11 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
                 !c.gpu_quarantine?profile.ready:0,!c.gpu_quarantine?profile.milliseconds[0]:0,!c.gpu_quarantine?profile.milliseconds[1]:0,!c.gpu_quarantine?profile.milliseconds[2]:0,!c.gpu_quarantine?profile.milliseconds[3]:0,!c.gpu_quarantine?profile.milliseconds[4]:0,!c.gpu_quarantine?profile.milliseconds[5]:0,!c.gpu_quarantine?profile.milliseconds[6]:0);
             Write("[R4 G3e stability] since_last_report_created=%llu mesh_uploads=%llu CPU_submit_peak_ms=%.3f model_prepare_current_ms=%.3f; interval_window=120; low=reciprocal_mean_slowest_ceil_1pct; GPU_async_not_current_CPU_frame; snapshot_debug_screenshot_excluded",
                 static_cast<unsigned long long>(c.created_window),static_cast<unsigned long long>(c.meshes_window),c.submit_peak_ms,c.deferred.model_prepare_ms);
+            Write("[R4 E1.3 work] lights=%u light_volume_queries=%u occluded_lights=%u static_view_queries=%u static_view_reuses=%u static_leaf_tests=%llu static_node_tests=%llu forward_sorts=%u frame_plan_ms=%.3f texture_preflight_ms=%.3f",
+                input.lighting.count,input.lighting.occlusion_tested,static_cast<unsigned>(input.lighting.occlusion_rejected.size()),
+                c.deferred.visibility_plan.queries,c.deferred.visibility_plan.cache_hits,
+                static_cast<unsigned long long>(c.deferred.visibility_plan.bounds_tests),static_cast<unsigned long long>(c.deferred.visibility_plan.node_tests),
+                c.deferred.forward_sorts,plan_ms,preflight_ms);
             c.created_window=c.meshes_window=0;c.submit_peak_ms=0;}
         if(stats_ok){c.last_created=resources.created;c.last_released=resources.released;}
         {std::lock_guard<std::mutex> lock(runtime_mutex);std::set<std::string> alive;for(const auto& item:runtime)alive.insert(item.second.key);retired.clear();

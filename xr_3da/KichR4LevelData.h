@@ -2,12 +2,13 @@
 #define KICH_R4_LEVEL_DATA_H
 /* SoC XRLC v14 / OGF v4 reader. Constants/layouts follow this repository's
  * Fmesh.h, xrLevel.h, xrLC/OGF_Face_Save.cpp and xrMU_Model_export_geometry.cpp.
- * The viewer decodes base UVs, selects highest-detail SWI records and draws
- * each static/tree leaf once; hierarchy and billboard proxy nodes are skipped.
+ * The viewer decodes base UVs and retains progressive SWI records for existing
+ * static/tree leaves; hierarchy and billboard proxy nodes are not drawn.
  */
 #include "KichR4TestScene.h"
 #include "KichR4LevelFiles.h"
 #include "KichR4Material.h"
+#include "KichR4LodPolicy.h"
 #include <vector>
 #include <string>
 #include <stdexcept>
@@ -58,8 +59,9 @@ struct Buffer {std::vector<Vertex> vertices;uint32_t available_attributes,basis_
 };
 struct Draw {
     uint32_t vb,ib,first,count,material,available_attributes,visual;Matrix world;Vec3 low,high;
-    float tree_scale[5],tree_bias[5];bool tree;
+    float tree_scale[5],tree_bias[5];bool tree;uint32_t lod;
 };
+struct DrawRange {uint32_t first,count,available_attributes;};
 // Portal topology is optional: unsupported/corrupt topology must never make
 // otherwise valid static geometry disappear.
 struct Portal {uint32_t front,back;std::vector<Vec3> vertices;Vec3 normal;float distance;};
@@ -75,12 +77,20 @@ struct VisualNode {
 struct Scene {
     std::vector<Material> materials;std::vector<Buffer> vertices;
     std::vector<std::vector<uint32_t> > indices;std::vector<Draw> draws;
+    std::vector<std::vector<DrawRange> > lods;
     std::vector<VisualNode> nodes;Topology topology;
-    std::vector<unsigned char> sector_owned;bool hierarchy_valid;
-    Vec3 low,high;uint32_t visuals,skipped,trees,triangles;uint64_t cpu_bytes;
-    Scene():hierarchy_valid(true),visuals(0),skipped(0),trees(0),triangles(0),cpu_bytes(0){low={1.e20f,1.e20f,1.e20f};high={-1.e20f,-1.e20f,-1.e20f};}
+    std::vector<unsigned char> sector_owned;bool hierarchy_valid,keep_lods;
+    Vec3 low,high;uint32_t visuals,skipped,trees,triangles,lod_budget_fallbacks;uint64_t cpu_bytes,geometry_budget;
+    Scene():hierarchy_valid(true),keep_lods(true),visuals(0),skipped(0),trees(0),triangles(0),lod_budget_fallbacks(0),cpu_bytes(0),geometry_budget(192u*1024u*1024u){low={1.e20f,1.e20f,1.e20f};high={-1.e20f,-1.e20f,-1.e20f};}
 };
-inline void Budget(Scene& s,uint64_t bytes){Check(bytes<=192u*1024u*1024u-s.cpu_bytes,"level geometry exceeds 192 MiB viewer budget");s.cpu_bytes+=bytes;}
+inline DrawRange SelectDrawRange(const Scene& scene,const Draw& draw,float detail){
+    if(draw.lod && draw.lod<=scene.lods.size()){
+        const std::vector<DrawRange>& ranges=scene.lods[draw.lod-1];
+        if(!ranges.empty())return ranges[kich_r4_lod::Window(detail,static_cast<uint32_t>(ranges.size()))];}
+    const DrawRange range={draw.first,draw.count,draw.available_attributes};return range;
+}
+struct GeometryBudgetExceeded:std::runtime_error {GeometryBudgetExceeded():std::runtime_error("level geometry exceeds viewer budget"){} };
+inline void Budget(Scene& s,uint64_t bytes){if(s.cpu_bytes>s.geometry_budget || bytes>s.geometry_budget-s.cpu_bytes)throw GeometryBudgetExceeded();s.cpu_bytes+=bytes;}
 inline uint32_t TypeBytes(uint32_t type){const unsigned char sizes[]={4,8,12,16,4,4,4,8,4,4,8,4,8,4,4,4,8};return type<17?sizes[type]:0;}
 struct Element {uint32_t offset,type;bool found;Element():offset(0),type(0),found(false){}};
 inline float Short(const unsigned char* p){const uint32_t n=uint32_t(p[0])|(uint32_t(p[1])<<8);return static_cast<float>(n>=32768?int32_t(n)-65536:int32_t(n));}
@@ -158,12 +168,15 @@ inline std::vector<Span> Indices(Span file){Reader r(Chunk(file,10));const uint3
     Check(!r.Left(),"unexpected index buffer tail");return buffers;
 }
 struct Window {uint32_t offset,triangles,vertices;};
-inline Window FirstWindow(Span data){Reader r(data);r.Take(16);const uint32_t count=r.U32();Check(count && count<=r.Left()/8,"invalid progressive window count");
-    const Window w={r.U32(),r.U16(),r.U16()};Check(w.triangles && w.vertices,"empty progressive window");return w;}
-inline std::vector<Window> TreeWindows(Span file){const Span c=Chunk(file,11,false);std::vector<Window> list;if(!c.p)return list;
+inline std::vector<Window> ReadWindows(Span data){Reader r(data);r.Take(16);const uint32_t count=r.U32();Check(count && count<=r.Left()/8,"invalid progressive window count");
+    std::vector<Window> windows;windows.reserve(count);
+    for(uint32_t i=0;i<count;++i){const Window w={r.U32(),r.U16(),r.U16()};Check(w.triangles && w.vertices,"empty progressive window");windows.push_back(w);}
+    Check(!r.Left(),"unexpected progressive window tail");return windows;}
+inline Window FirstWindow(Span data){return ReadWindows(data).front();}
+inline std::vector<std::vector<Window> > TreeWindows(Span file){const Span c=Chunk(file,11,false);std::vector<std::vector<Window> > list;if(!c.p)return list;
     Reader r(c);const uint32_t count=r.U32();Check(count<=100000,"tree SWI limit");
     for(uint32_t i=0;i<count;++i){const uint32_t start=r.at;r.Take(16);const uint32_t n=r.U32();Check(n && n<=r.Left()/8,"invalid tree SWI");
-        list.push_back(FirstWindow(Span(c.p+start,20+n*8)));r.Take(n*8);}
+        list.push_back(ReadWindows(Span(c.p+start,20+n*8)));r.Take(n*8);}
     Check(!r.Left(),"unexpected tree SWI tail");return list;
 }
 inline void Materials(Span level,Scene& out){Reader r(Chunk(level,2));const uint32_t count=r.U32();Check(count && count<=65536,"shader table limit");
@@ -176,7 +189,7 @@ inline void Materials(Span level,Scene& out){Reader r(Chunk(level,2));const uint
         out.materials.push_back(m);
     }Check(!r.Left(),"unexpected shader table tail");
 }
-inline void Visuals(Span level,const std::vector<Span>& ibs,const std::vector<Window>& swis,Scene& out){Reader table(Chunk(level,3));uint64_t hierarchy_links=0;
+inline void Visuals(Span level,const std::vector<Span>& ibs,const std::vector<std::vector<Window> >& swis,Scene& out){Reader table(Chunk(level,3));uint64_t hierarchy_links=0;
     while(table.Left()){const uint32_t id=table.U32(),size=table.U32();Check(id==out.visuals && id<100000,"non-sequential or excessive visual table");
         const Span visual(table.Take(size),size);++out.visuals;Reader h(Chunk(visual,1));const unsigned char* prefix=h.Take(2);
         Check(prefix[0]==4,"expected OGF format 4");const uint32_t type=prefix[1],shader=h.U16();
@@ -196,8 +209,8 @@ inline void Visuals(Span level,const std::vector<Span>& ibs,const std::vector<Wi
         else{Reader v(Chunk(visual,7)),i(Chunk(visual,8));vb=v.U32();vbase=v.U32();vcount=v.U32();ib=i.U32();ibase=i.U32();icount=i.U32();}
         Check(vb<out.vertices.size() && ib<ibs.size(),"geometry container index out of range");
         const size_t capacity=out.vertices[vb].vertices.size();Check(vcount && vbase<=capacity && vcount<=capacity-vbase,"vertex container range");
-        uint32_t offset=0,count=icount;
-        if(type==2){const Window w=FirstWindow(Chunk(visual,6));offset=w.offset;count=w.triangles*3;Check(w.vertices<=vcount,"progressive vertex range");}
+        std::vector<Window> windows;
+        if(type==2)windows=ReadWindows(Chunk(visual,6));
         if(type==7 || type==11){Reader tree(Chunk(visual,12));
             for(unsigned a=0;a<16;++a){if(a%4==3){tree.Take(4);draw.world.m[a]=a==15?1.f:0.f;}
                 else{draw.world.m[a]=tree.Float();Check(fabsf(draw.world.m[a])<=1.e6f,"tree transform limit");}}
@@ -205,19 +218,32 @@ inline void Visuals(Span level,const std::vector<Span>& ibs,const std::vector<Wi
             for(unsigned a=0;a<5;++a)draw.tree_scale[a]=tree.Float()*.5f;
             for(unsigned a=0;a<5;++a)draw.tree_bias[a]=tree.Float()*.5f;
             draw.tree=true;++out.trees;
-            if(type==11){Reader link(Chunk(visual,20));const uint32_t sw=link.U32();Check(sw<swis.size(),"tree SWI index out of range");const Window w=swis[sw];offset=w.offset;count=w.triangles*3;Check(w.vertices<=vcount,"tree progressive vertex range");}}
-        Check(count && count%3==0 && offset<=icount && count<=icount-offset,"visual triangle range");
+            if(type==11){Reader link(Chunk(visual,20));const uint32_t sw=link.U32();Check(sw<swis.size(),"tree SWI index out of range");windows=swis[sw];}}
+        if(windows.empty()){Check(icount && icount%3==0,"visual triangle count");const Window window={0,icount/3,vcount};windows.push_back(window);}
+        uint32_t first=UINT32_MAX,last=0;
+        for(size_t i=0;i<windows.size();++i){const Window& w=windows[i];const uint32_t count=w.triangles*3;
+            Check(w.vertices && w.vertices<=vcount && count && w.offset<=icount && count<=icount-w.offset,"progressive visual range");
+            first=(std::min)(first,w.offset);last=(std::max)(last,w.offset+count);}
         const Span indices=ibs[ib];const uint32_t available=indices.n/2;Check(ibase<=available && icount<=available-ibase,"index container range");
-        if(out.indices.empty() || out.indices.back().size()+count>4u*1024u*1024u)out.indices.push_back(std::vector<uint32_t>());
-        Check(count<=4u*1024u*1024u,"single visual index limit");Budget(out,uint64_t(count)*4);
-        draw.vb=vb;draw.ib=static_cast<uint32_t>(out.indices.size()-1);draw.first=static_cast<uint32_t>(out.indices.back().size());draw.count=count;
-        Reader source(Span(indices.p+(ibase+offset)*2,count*2));std::vector<uint32_t>& target=out.indices.back();
-        // Only referenced vertices can constrain this draw. Shared VBs often
-        // contain unrelated surfaces with a different or damaged basis.
-        draw.available_attributes=~0u;
-        for(uint32_t i=0;i<count;++i){const uint32_t vertex=source.U16();Check(vertex<vcount,"index addresses outside visual vertex slice");target.push_back(vbase+vertex);
-            draw.available_attributes&=out.vertices[vb].vertices[vbase+vertex].attributes;}
-        out.nodes.back().draw=static_cast<uint32_t>(out.draws.size());out.triangles+=count/3;out.draws.push_back(draw);
+        // Retain the union once, not one duplicate IB per SWI. If optional LOD
+        // storage would exceed the established budget, keep the original max
+        // detail slice instead of making an otherwise loadable level fail.
+        uint64_t bytes=uint64_t(last-first)*4+(windows.size()>1?uint64_t(windows.size())*sizeof(DrawRange):0);
+        if(windows.size()>1 && (!out.keep_lods || last-first>4u*1024u*1024u || out.cpu_bytes>out.geometry_budget || bytes>out.geometry_budget-out.cpu_bytes)){
+            windows.resize(1);first=windows[0].offset;last=first+windows[0].triangles*3;bytes=uint64_t(last-first)*4;++out.lod_budget_fallbacks;}
+        Check(last-first<=4u*1024u*1024u,"single visual index limit");Budget(out,bytes);
+        if(out.indices.empty() || out.indices.back().size()+last-first>4u*1024u*1024u)out.indices.push_back(std::vector<uint32_t>());
+        draw.vb=vb;draw.ib=static_cast<uint32_t>(out.indices.size()-1);const uint32_t base=static_cast<uint32_t>(out.indices.back().size());
+        std::vector<uint32_t>& target=out.indices.back();target.resize(base+last-first,0);
+        std::vector<DrawRange> ranges;ranges.reserve(windows.size());
+        for(size_t range=0;range<windows.size();++range){const Window& w=windows[range];const uint32_t count=w.triangles*3;
+            Reader source(Span(indices.p+(ibase+w.offset)*2,count*2));DrawRange selected={base+w.offset-first,count,~0u};
+            for(uint32_t i=0;i<count;++i){const uint32_t vertex=source.U16();Check(vertex<w.vertices,"index addresses outside progressive vertex prefix");
+                target[selected.first+i]=vbase+vertex;selected.available_attributes&=out.vertices[vb].vertices[vbase+vertex].attributes;}
+            ranges.push_back(selected);}
+        draw.first=ranges[0].first;draw.count=ranges[0].count;draw.available_attributes=ranges[0].available_attributes;
+        if(ranges.size()>1){out.lods.push_back(ranges);draw.lod=static_cast<uint32_t>(out.lods.size());}
+        out.nodes.back().draw=static_cast<uint32_t>(out.draws.size());out.triangles+=draw.count/3;out.draws.push_back(draw);
         for(unsigned a=0;a<3;++a){Axis(out.low,a)=std::min(Axis(out.low,a),Axis(draw.low,a));Axis(out.high,a)=std::max(Axis(out.high,a),Axis(draw.high,a));}
     }
     Check(!out.draws.empty(),"no supported static geometry in level");
@@ -274,9 +300,18 @@ inline void MapSectorDraws(Scene& scene){
                 for(size_t child=0;child<node.children.size();++child)pending.push_back(node.children[child]);}}
     }catch(const std::runtime_error&){scene.topology.valid=false;scene.sector_owned.assign(scene.draws.size(),0);}
 }
-inline void Parse(Span level,Span geometry,Scene& out){Header(level);Header(geometry);Materials(level,out);Vertices(geometry,out);
-    const std::vector<Span> ibs=Indices(geometry);const std::vector<Window> swis=TreeWindows(geometry);Visuals(level,ibs,swis,out);
+inline void ParseContents(Span level,Span geometry,Scene& out){Header(level);Header(geometry);Materials(level,out);Vertices(geometry,out);
+    const std::vector<Span> ibs=Indices(geometry);const std::vector<std::vector<Window> > swis=TreeWindows(geometry);Visuals(level,ibs,swis,out);
     LoadTopology(level,out.topology);MapSectorDraws(out);}
+inline void Parse(Span level,Span geometry,Scene& out){
+    try{ParseContents(level,geometry,out);}
+    catch(const GeometryBudgetExceeded&){
+        if(!out.keep_lods || out.lods.empty())throw;
+        // Earlier optional tables must not consume storage needed by a later
+        // mandatory visual. Retry the established max-detail representation.
+        const uint64_t budget=out.geometry_budget;out=Scene();out.geometry_budget=budget;out.keep_lods=false;ParseContents(level,geometry,out);
+    }
+}
 struct File {
     const KichR4LevelFiles& api;KichR4FileView view;
     explicit File(const KichR4LevelFiles& a):api(a){memset(&view,0,sizeof(view));}

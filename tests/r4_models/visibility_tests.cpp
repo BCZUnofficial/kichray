@@ -63,6 +63,55 @@ void SunStability(){using namespace kich_r4_lighting;
     Require(kich_r4_visibility::Visible(high_low,high_high,base) && kich_r4_visibility::Visible(high_low,high_high,distant),"near cascade preserves far upstream caster coverage through 500m");
     Require(LocalShadowNear(13)==.1f && LocalShadowNear(.2f)==.05f,"local near plane is 10cm except lights shorter than 40cm use quarter range");
 }
+void SunCasters(){using namespace kich_r4_visibility;using namespace kich_r4_lighting;
+    const float down[]={0,-1,0};const SunCasterVolume box=BuildSunCasterVolume(Identity(),down);
+    Require(box.valid && box.count<=14,"orthographic receiver caster volume has bounded plane storage");
+    const float upstream_low[]={-.1f,199,.4f},upstream_high[]={.1f,201,.6f};
+    Require(!Visible(upstream_low,upstream_high,Identity()) && box.Visible(upstream_low,upstream_high),"upstream caster outside camera still shadows a receiver");
+    const float downstream_low[]={-.1f,-3,.4f},downstream_high[]={.1f,-2,.6f};
+    Require(!box.Visible(downstream_low,downstream_high),"downstream object cannot shadow any camera receiver");
+    const float lateral_low[]={2,199,.4f},lateral_high[]={3,201,.6f};
+    Require(!box.Visible(lateral_low,lateral_high),"sun silhouette rejects lateral geometry unrelated to visible receivers");
+    const float touching[]={1.5f,20,.5f};Require(box.VisibleSphere(touching,.5f),"sphere touching silhouette is conservatively retained");
+    const float outside[]={3,20,.5f};Require(!box.VisibleSphere(outside,.5f),"sphere wholly outside sun footprint rejected");
+
+    // Every point in the camera frustum and every upstream point on its light
+    // ray must survive. Cover oblique/low sun, frustum boundaries, near/far
+    // disparity, camera rotation and large translated world coordinates.
+    const kich_r4_scene::Vec3 eyes[]={{0,0,0},{231,-18,149},{100000,200,-100000}};
+    const kich_r4_scene::Vec3 directions[]={{0,0,1},{1,.2f,-.7f},{-.8f,-.3f,.2f}};
+    const float suns[][3]={{0,-1,0},{1,-.001f,.3f},{0,0,1},{0,0,-1},{-.37f,-.51f,.77f}};
+    const double distances[]={0,1,200,500,2000};
+    for(unsigned camera=0;camera<3;++camera){const Matrix vp=Multiply(StableView(eyes[camera],directions[camera]),Projection(1.1f,.1f,640));
+        // Independent adjugate unprojection: do not lose the far plane to the
+        // float inverse used by the legacy constants path, and do not repeat
+        // the production Gaussian elimination algorithm in this oracle.
+        double adjugate[4][4];
+        for(unsigned col=0;col<4;++col)for(unsigned row=0;row<4;++row){double minor[3][3];unsigned y=0;
+            for(unsigned r=0;r<4;++r)if(r!=col){unsigned x=0;for(unsigned c=0;c<4;++c)if(c!=row)minor[y][x++]=vp.m[r*4+c];++y;}
+            const double determinant=minor[0][0]*(minor[1][1]*minor[2][2]-minor[1][2]*minor[2][1])-minor[0][1]*(minor[1][0]*minor[2][2]-minor[1][2]*minor[2][0])+minor[0][2]*(minor[1][0]*minor[2][1]-minor[1][1]*minor[2][0]);
+            adjugate[row][col]=((row+col)&1)?-determinant:determinant;
+        }
+        for(unsigned s=0;s<5;++s){const SunCasterVolume volume=BuildSunCasterVolume(vp,suns[s]);
+            Require(volume.valid && volume.count<=14,"perspective sun caster volume built");
+            const kich_r4_scene::Vec3 sun=kich_r4_scene::Normalize(kich_r4_scene::Vec3{suns[s][0],suns[s][1],suns[s][2]});
+            for(unsigned ix=0;ix<5;++ix)for(unsigned iy=0;iy<5;++iy)for(unsigned iz=0;iz<5;++iz){
+                const double clip[4]={double(ix)*.5-1,double(iy)*.5-1,double(iz)*.25,1};double world[4]={};
+                for(unsigned a=0;a<4;++a)for(unsigned b=0;b<4;++b)world[a]+=clip[b]*adjugate[b][a];
+                for(unsigned d=0;d<5;++d){const float direction[3]={sun.x,sun.y,sun.z};float point[3],low[3],high[3];
+                    for(unsigned a=0;a<3;++a){point[a]=static_cast<float>(world[a]/world[3]-direction[a]*distances[d]);low[a]=point[a]-.01f;high[a]=point[a]+.01f;}
+                    Require(volume.Visible(low,high),"receiver ray caster survives the extruded volume");
+                    Require(volume.VisibleSphere(point,.01f),"receiver ray sphere survives the extruded volume");}
+            }
+        }
+    }
+    Matrix singular={};Require(!BuildSunCasterVolume(singular,down).valid,"singular camera falls open");
+    Matrix infinite=Projection(1.f,.1f,100);infinite.m[10]=1;Require(!BuildSunCasterVolume(infinite,down).valid,"infinite camera projection falls open");
+    const float zero[]={0,0,0};Require(!BuildSunCasterVolume(Identity(),zero).valid,"zero sun direction falls open");
+    const float invalid[]={std::numeric_limits<float>::quiet_NaN(),0,0};
+    Require(!BuildSunCasterVolume(Identity(),invalid).valid && box.Visible(invalid,upstream_high),"invalid sun and bounds cannot hide geometry");
+    Require(SunCasterVolume().Visible(lateral_low,lateral_high),"uninitialized volume cannot cull");
+}
 void Selection(){using namespace kich_r4_visibility;KichR4LightingFrame f={};f.count=5;f.shadow_mask=31;
     f.lights[0].type=1;f.lights[1].type=f.lights[2].type=f.lights[3].type=2;f.lights[4].type=1;
     std::vector<uint8_t> selected;SelectShadowLights(f,true,selected);
@@ -76,5 +125,5 @@ void Selection(){using namespace kich_r4_visibility;KichR4LightingFrame f={};f.c
     f.sun_direction[1]=-1;Require(!SunEnabled(f),"dark sun disabled");f.sun_color[0]=.1f;Require(SunEnabled(f),"lit sun selected");
 }
 }
-int main(){try{Frustums();LightRectangles();SunStability();Selection();printf("G3b conservative camera/light visibility: %u checks passed\n",checks);return 0;}
+int main(){try{Frustums();LightRectangles();SunStability();SunCasters();Selection();printf("G3b/E1.3 conservative camera/light visibility: %u checks passed\n",checks);return 0;}
 catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}
