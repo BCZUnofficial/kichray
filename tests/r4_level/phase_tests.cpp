@@ -96,6 +96,27 @@ void InvalidLifetimes(){
     tracker.Begin(10,0,Hz);tracker.MarkEligible(10,true);tracker.End(10,Hz*10);
     Require(!tracker.TakeReport(report),"invalid clock cannot produce an event");
 }
+void OrdinaryFrameAggregates(){
+    Tracker tracker;const int64_t start=180000000000LL;
+    const int64_t durations[]={100000,166666,166667,333333,333334,499999,500000};
+    int64_t total=0;
+    for(unsigned i=0;i<sizeof(durations)/sizeof(durations[0]);++i){
+        tracker.Gap();tracker.Begin(i+1,start+i*Hz,Hz);
+        tracker.Span(i+1,FrameMove,10000);tracker.Span(i+1,Render,durations[i]-10000);
+        tracker.MarkEligible(i+1,true);tracker.End(i+1,start+i*Hz+durations[i]);total+=durations[i];
+    }
+    Report report;Require(tracker.TakeReport(report),"aggregate retains a threshold slow frame");
+    Require(report.samples==7 && report.frequency==Hz,"aggregate includes fast and slow completed frames");
+    Require(report.total_cycle_ticks==total && report.total_device_ticks==total && !report.total_gap_ticks,"aggregate sums exact integer durations without nested spans");
+    Require(report.cycle_min_ticks==100000 && report.cycle_max_ticks==500000,"aggregate preserves minimum and maximum frame durations");
+    Require(report.at_least_60hz==5 && report.at_least_30hz==3 && report.at_least_20hz==1,"integer threshold bins handle both sides of 60/30/20Hz exactly");
+    Require(report.phase_ticks[FrameMove]==70000 && report.phase_ticks[Render]==total-70000,"phase aggregate includes ordinary frames below hitch threshold");
+    Require(report.phase_max_ticks[FrameMove]==10000 && report.phase_max_ticks[Render]==490000,"phase maxima retained independently");
+    Require(report.phase_samples[FrameMove]==7 && !report.phase_samples[Present],"unmeasured phase stays distinct from zero-cost phase");
+    tracker.Gap();Frame(tracker,20,start+20*Hz,Hz/40);tracker.Gap();Frame(tracker,21,start+21*Hz,Hz/40);
+    Require(!tracker.TakeReport(report) && report.samples==2 && report.total_cycle_ticks==Hz/20,"TakeReport yields steady 40FPS aggregate even with no >50ms hitch");
+    Require(!tracker.TakeReport(report) && !report.samples && !report.total_cycle_ticks,"draining clears aggregate counters");
+}
 void TranslationUnits(){
     Require(PhasePeer()==&Global(),"device/presenter translation units share one EXE tracker");
     Global().Reset();Global().Begin(19,1,Hz);PhasePeerMark(19);Global().End(19,Hz);
@@ -107,7 +128,7 @@ int main(){try{
 #if defined(KICH_TEST_X87)
     fpu_control_t saved;_FPU_GETCW(saved);fpu_control_t single=(saved&~_FPU_EXTENDED)|_FPU_SINGLE;_FPU_SETCW(single);
 #endif
-    LongClockAndPhases();InterFrameAndEligibility();ExactThresholdAndBound();InvalidLifetimes();TranslationUnits();
+    LongClockAndPhases();InterFrameAndEligibility();ExactThresholdAndBound();InvalidLifetimes();OrdinaryFrameAggregates();TranslationUnits();
 #if defined(KICH_TEST_X87)
     _FPU_SETCW(saved);
 #endif

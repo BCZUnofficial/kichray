@@ -3,6 +3,7 @@
 #include "KichR4DetailData.h"
 #include "KichR4LevelSession.h"
 #include "KichR4LightingMath.h"
+#include "KichR4ShadowRecord.h"
 #include "KichR4Visibility.h"
 #include "KichR4FrameMetrics.h"
 #include "RenderSnapshot.h"
@@ -71,6 +72,12 @@ struct KichR4DetailSession {
         RenderSnapshot_U64("DETAIL_RENDERER","shadow_selection_cache_hits",visibility_current?shadow_cache_hits:0);
         RenderSnapshot_Value("DETAIL_RENDERER","cpu_shadow_index_ms",visibility_current?shadow_index_ms:0);
         RenderSnapshot_Value("DETAIL_RENDERER","cpu_shadow_select_ms",visibility_current?shadow_select_ms:0);
+        RenderSnapshot_Value("DETAIL_RENDERER","cpu_shadow_bounds_ms",visibility_current?shadow_bounds_ms:0);
+        RenderSnapshot_Value("DETAIL_RENDERER","cpu_shadow_bvh_build_ms",visibility_current?shadow_bvh_build_ms:0);
+        RenderSnapshot_Value("DETAIL_RENDERER","cpu_shadow_bvh_refit_ms",visibility_current?shadow_bvh_refit_ms:0);
+        RenderSnapshot_Value("DETAIL_RENDERER","cpu_sun_selection_ms",visibility_current?shadow_sun_select_ms:0);
+        RenderSnapshot_Value("DETAIL_RENDERER","cpu_local_selection_ms",visibility_current?shadow_local_select_ms:0);
+        RenderSnapshot_U64("DETAIL_RENDERER","shadow_rebuild_reason_bits",visibility_current?shadow_rebuild_reasons:0);
         RenderSnapshot_U64("DETAIL_RENDERER","shadow_candidate_observations",attempted?shadow_candidates:0);RenderSnapshot_U64("DETAIL_RENDERER","shadow_culled_observations",attempted?shadow_culled:0);
         RenderSnapshot_U64("DETAIL_RENDERER","instanced_draw_calls",attempted?draw_calls:0);RenderSnapshot_U64("DETAIL_RENDERER","shadow_draw_calls",attempted?shadow_draw_calls:0);
         RenderSnapshot_U64("DETAIL_RENDERER","geometry_submitted_instances",attempted?submitted_instances:0);RenderSnapshot_U64("DETAIL_RENDERER","shadow_submitted_instances",attempted?shadow_submitted_instances:0);
@@ -113,6 +120,13 @@ struct KichR4DetailSession {
     uint64_t shadow_node_tests=0,shadow_queries=0;
     uint32_t shadow_index_builds=0,shadow_index_refits=0;
     double shadow_index_ms=0,shadow_select_ms=0;
+    // Disjoint detail CPU work. Legacy index_ms = bounds + build + refit;
+    // legacy select_ms = sun + local. Both may be nested in preflight/plan.
+    double shadow_bounds_ms=0,shadow_bvh_build_ms=0,shadow_bvh_refit_ms=0;
+    double shadow_sun_select_ms=0,shadow_local_select_ms=0;
+    enum RebuildReason { SourceChanged=1, CountChanged=2, OriginOrderChanged=4,
+        KnownBoundsChanged=8, EmptyOrInvalid=16, NoRetainedTopology=32 };
+    uint32_t shadow_rebuild_reasons=0;
     ShadowBounds BoundsFor(const kich_r4_detail::Mesh& mesh,const KichR4DetailInstance& instance,uint32_t variant)const{
         ShadowBounds result;if(!mesh.bounds_known || !source || variant>2)return result;
         for(unsigned corner=0;corner<8;++corner){const float p[3]={corner&1?mesh.maximum[0]:mesh.minimum[0],corner&2?mesh.maximum[1]:mesh.minimum[1],corner&4?mesh.maximum[2]:mesh.minimum[2]};
@@ -165,8 +179,9 @@ struct KichR4DetailSession {
     }
     void PrepareShadowSpatial(){
         if(shadow_spatial_ready)return;
-        const auto started=kich_r4_metrics::Clock::now();
-        if(!shadow_topology_valid){++shadow_index_builds;shadow_order.clear();shadow_unknown.clear();shadow_nodes.clear();shadow_order.reserve(shadow_bounds.size());
+        const auto started=kich_r4_metrics::Start(g_render_snapshot_active);
+        const bool rebuilding=!shadow_topology_valid;
+        if(rebuilding){++shadow_index_builds;shadow_order.clear();shadow_unknown.clear();shadow_nodes.clear();shadow_order.reserve(shadow_bounds.size());
             for(size_t i=0;i<shadow_bounds.size();++i)(shadow_bounds[i].bounds.known?shadow_order:shadow_unknown).push_back(static_cast<uint32_t>(i));
             if(!shadow_order.empty())BuildShadowNode(0,static_cast<uint32_t>(shadow_order.size()));
             shadow_topology_valid=true;
@@ -178,15 +193,20 @@ struct KichR4DetailSession {
                 else{node.bounds=shadow_bounds[shadow_order[node.first]].bounds;
                     for(uint32_t i=1;i<node.count;++i)IncludeShadowBounds(node.bounds,shadow_bounds[shadow_order[node.first+i]].bounds);}}
         }
-        shadow_spatial_ready=true;shadow_index_ms+=kich_r4_metrics::Elapsed(started);
+        shadow_spatial_ready=true;const double elapsed=kich_r4_metrics::Elapsed(started);shadow_index_ms+=elapsed;
+        if(rebuilding)shadow_bvh_build_ms+=elapsed;else shadow_bvh_refit_ms+=elapsed;
     }
     void BeginVisibilityFrame(uint32_t frame,const kich_r4_visibility::SunCasterVolume& volume){
-        const auto started=kich_r4_metrics::Clock::now();
-        if(visibility_source!=source || visibility_generation!=(source?source->generation:UINT64_MAX))shadow_topology_valid=false;
+        const auto started=kich_r4_metrics::Start(g_render_snapshot_active);
+        const bool probing=started.measured;
+        shadow_rebuild_reasons=probing && !shadow_topology_valid?NoRetainedTopology:0;
+        if(visibility_source!=source || visibility_generation!=(source?source->generation:UINT64_MAX)){
+            shadow_topology_valid=false;if(probing)shadow_rebuild_reasons|=SourceChanged;}
         visibility_frame=frame;visibility_source=source;visibility_generation=source?source->generation:UINT64_MAX;sun_casters=volume;
         shadow_views.clear();shadow_hits.clear();shadow_spatial_ready=false;
         shadow_bounds_built=shadow_visibility_tests=shadow_cache_hits=shadow_cached_bytes=shadow_source_candidates=shadow_node_tests=shadow_queries=0;
         shadow_index_ms=shadow_select_ms=0;shadow_index_builds=shadow_index_refits=0;visibility_valid=true;
+        shadow_bounds_ms=shadow_bvh_build_ms=shadow_bvh_refit_ms=shadow_sun_select_ms=shadow_local_select_ms=0;
         if(source && source->source_frame_known && source->engine_frame==frame){
             for(size_t i=0;i<source->shadow_groups.size();++i){const kich_r4_detail::Group& g=source->shadow_groups[i];shadow_source_candidates+=g.count;
                 if(g.mesh>=source->meshes.size() || g.variant>2 || g.first>source->shadow_instances.size() || g.count>source->shadow_instances.size()-g.first)visibility_valid=false;}
@@ -194,20 +214,23 @@ struct KichR4DetailSession {
             // as Draw rejects malformed groups, never truncate casters.
             if(shadow_source_candidates>UINT32_MAX || source->shadow_groups.size()>UINT32_MAX)visibility_valid=false;
             if(visibility_valid){
-                if(shadow_bounds.size()!=shadow_source_candidates)shadow_topology_valid=false;
+                if(shadow_bounds.size()!=shadow_source_candidates){shadow_topology_valid=false;if(probing)shadow_rebuild_reasons|=CountChanged;}
                 shadow_bounds.resize(static_cast<size_t>(shadow_source_candidates));size_t at=0;
                 for(size_t i=0;i<source->shadow_groups.size();++i){const kich_r4_detail::Group& g=source->shadow_groups[i];
                     for(uint32_t j=0;j<g.count;++j,++at){const auto& instance=source->shadow_instances[g.first+j];
                         const ShadowCandidate candidate={BoundsFor(source->meshes[g.mesh],instance,g.variant),g.first+j,static_cast<uint32_t>(i),{instance.row[0][3],instance.row[1][3],instance.row[2][3]}};
                         const ShadowCandidate& previous=shadow_bounds[at];
-                        if(previous.bounds.known!=candidate.bounds.known || memcmp(previous.origin,candidate.origin,sizeof(candidate.origin)))shadow_topology_valid=false;
+                        const bool known_changed=previous.bounds.known!=candidate.bounds.known;
+                        const bool origin_changed=memcmp(previous.origin,candidate.origin,sizeof(candidate.origin))!=0;
+                        if(known_changed || origin_changed){shadow_topology_valid=false;
+                            if(probing)shadow_rebuild_reasons|=(known_changed?KnownBoundsChanged:0)|(origin_changed?OriginOrderChanged:0);}
                         shadow_bounds[at]=candidate;++shadow_bounds_built;}}
             }
         }else shadow_bounds.clear();
         if(!visibility_valid)shadow_bounds.clear();
-        if(shadow_bounds.empty())shadow_topology_valid=false;
+        if(shadow_bounds.empty()){shadow_topology_valid=false;if(probing)shadow_rebuild_reasons|=EmptyOrInvalid;}
         if(!shadow_topology_valid){shadow_nodes.clear();shadow_order.clear();shadow_unknown.clear();}
-        shadow_index_ms=kich_r4_metrics::Elapsed(started);
+        shadow_bounds_ms=kich_r4_metrics::Elapsed(started);shadow_index_ms=shadow_bounds_ms;
     }
     void EnsureVisibilityFrame(uint32_t frame,const kich_r4_visibility::SunCasterVolume& volume){
         if(visibility_frame!=frame || visibility_source!=source || visibility_generation!=(source?source->generation:UINT64_MAX))BeginVisibilityFrame(frame,volume);
@@ -228,7 +251,7 @@ struct KichR4DetailSession {
         const bool spatial=current && visibility_valid && shadow_bounds.size()>64 && shadow_queries-shadow_cache_hits>2;
         if(spatial)PrepareShadowSpatial();
         // Index time is separate from selection time, including a lazy build.
-        const auto started=kich_r4_metrics::Clock::now();ShadowSelection selected;selected.valid=visibility_valid;
+        const auto started=kich_r4_metrics::Start(g_render_snapshot_active);ShadowSelection selected;selected.valid=visibility_valid;
         if(current){selected.candidates=shadow_source_candidates;
             if(selected.valid){uint32_t previous=UINT32_MAX;
                 if(!spatial){
@@ -246,7 +269,8 @@ struct KichR4DetailSession {
                 }
             }
         }
-        shadow_select_ms+=kich_r4_metrics::Elapsed(started);
+        const double elapsed=kich_r4_metrics::Elapsed(started);shadow_select_ms+=elapsed;
+        if(sun)shadow_sun_select_ms+=elapsed;else shadow_local_select_ms+=elapsed;
         const uint64_t bytes=sizeof(ShadowSelection)+sizeof(key)+selected.instances.size()*sizeof(uint32_t)+selected.groups.size()*sizeof(kich_r4_detail::Group);
         if(bytes<=16u*1024u*1024u && shadow_cached_bytes<=16u*1024u*1024u-bytes){shadow_cached_bytes+=bytes;return shadow_views.emplace(key,std::move(selected)).first->second;}
         uncached_shadow=std::move(selected);return uncached_shadow;
@@ -312,6 +336,8 @@ struct KichR4DetailSession {
         } summary(phase,shadow);
         summary.allocated_capacity=shadow?shadow_capacity:capacity;
         if(!source || source->engine_frame!=frame || generation!=source->generation || telemetry_frame!=frame)return 0;
+        kich_r4_shadow_record::Pass* record=shadow?kich_r4_shadow_record::Active():NULL;
+        kich_r4_shadow_record::Work detail_selection;
         const std::vector<kich_r4_detail::Group>* groups=&source->groups;
         if(shadow){selected_instances.clear();selected_groups.clear();
             EnsureVisibilityFrame(frame,sun_casters);
@@ -319,7 +345,19 @@ struct KichR4DetailSession {
             if(!selected.valid)return s.Record("G3b detail shadow group range",KICH_R4_E_ARGUMENT);
             if(selected.instances.size()>KICH_R4_MAX_DETAIL_INSTANCES)return s.Record("G3b selected detail budget",KICH_R4_E_MEMORY);
             selected_groups=selected.groups;selected_instances.reserve(selected.instances.size());
-            for(size_t i=0;i<selected.instances.size();++i)selected_instances.push_back(source->shadow_instances[selected.instances[i]]);
+            size_t record_group=0;
+            for(size_t i=0;i<selected.instances.size();++i){
+                const KichR4DetailInstance& instance=source->shadow_instances[selected.instances[i]];
+                selected_instances.push_back(instance);
+                if(record && record->signatures){
+                    while(record_group<selected.groups.size() && i>=uint64_t(selected.groups[record_group].first)+selected.groups[record_group].count)++record_group;
+                    if(record_group<selected.groups.size() && selected.groups[record_group].mesh<meshes.size()){
+                        const kich_r4_detail::Group& group=selected.groups[record_group];
+                        detail_selection.Caster(kich_r4_shadow_record::DetailID(group.mesh,instance.row[0][3],instance.row[1][3],instance.row[2][3]),group.variant,meshes[group.mesh].indices);
+                    }else detail_selection.Caster(0,0,0,false);
+                }
+            }
+            if(record && !record->signatures)detail_selection.casters=detail_selection.unknown_ids=selected.instances.size();
             summary.candidates=selected.candidates;summary.selected=selected.instances.size();summary.culled=selected.candidates-summary.selected;
             shadow_candidates+=summary.candidates;shadow_culled+=summary.culled;
             if(UploadShadow(s,l)<0)return s.failure;
@@ -358,9 +396,12 @@ struct KichR4DetailSession {
             state.source_blend=2;state.dest_blend=1;state.depth_write=1;state.max_depth=1;
             d.surface.textures[0]=l.Texture(s,source->meshes[g.mesh].texture);d.instance_buffer=shadow?shadow_instance_buffer:instance_buffer;d.first_instance=g.first;d.instance_count=g.count;
             if(l.Expect(s,shadow?"G3a detail shadow DrawIndexedInstanced":"G3a detail G-buffer DrawIndexedInstanced",api.draw(s.device,&d))<0)return s.failure;
+            if(record)record->work[kich_r4_shadow_record::Detail].Draw(mesh.indices,g.count);
             ++summary.calls;summary.variants[g.variant]+=g.count;
             if(shadow){++shadow_draw_calls;shadow_submitted_instances+=g.count;}else{++draw_calls;submitted_instances+=g.count;}
-        }return 0;
+        }
+        if(record)record->work[kich_r4_shadow_record::Detail].Add(detail_selection);
+        return 0;
     }
 };
 #endif

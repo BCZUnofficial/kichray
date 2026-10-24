@@ -1,5 +1,7 @@
 #include "../../xr_3da/KichR4Capture.h"
 #include "../../xr_3da/KichR4CaptureData.h"
+#include "../../xr_3da/KichR4RecordControl.h"
+#include "../../xr_3da/KichR4LightTransitions.h"
 #include <cstdio>
 #include <cstdlib>
 #include <new>
@@ -23,6 +25,29 @@ void Require(bool value,const char* why){++checks;if(!value)throw std::runtime_e
 bool Visible(const KichR4LocalLight&,const float*){++queries;return !reject_light;}
 void Log(const char* value){messages.push_back(value);}
 bool Contains(size_t line,const char* text){return line<messages.size() && messages[line].find(text)!=std::string::npos;}
+void ThrowingLog(const char*){throw std::bad_alloc();}
+void DiagnosticFailures(){
+    using namespace kich_r4_record;
+    KichR4_CaptureEnable(true);KichR4_SetLightVisibility(Visible);
+    int id=0;KichR4LocalLight light={};light.type=2;light.range=10;light.direction[2]=1;light.cone=1;light.color[0]=1;
+    KichR4_CaptureLight(&id,light,true);const float camera[3]={};const kich_r4_scene::Matrix vp=kich_r4_scene::Identity();
+    Request(true);BeginFrame(1);KichR4_CaptureBeginFrame(640,480,1);
+    KichR4LightingFrame value;const unsigned before=injected_failures;
+    failure_size=sizeof(kich_r4_light_transitions::Tracker);failure_skip=0;
+    KichR4_FreezeLighting(1,1000,camera,value,false,vp.m);failure_skip=-1;
+    Require(injected_failures==before+1,"fault injected in optional transition tracker construction");
+    Require(value.count==1 && KichR4_CapturedFrame()->error.empty(),"diagnostic allocation failure cannot reject actual rendering");
+    KichR4LightingFrame copy;Require(KichR4_CopyFrozenLighting(1,camera,vp.m,copy) && copy.count==1,"diagnostic OOM leaves successful frozen publication available");
+    KichR4_ReportLightingTransitions(1,Log);Require(messages.size()==1 && Contains(0,"transition_history=UNAVAILABLE"),"diagnostic failure is explicitly observable");
+    failure_size=sizeof(kich_r4_light_transitions::Tracker);failure_skip=0;
+    KichR4_FreezeLighting(2,1016,camera,value,false,vp.m);
+    Require(failure_skip==0 && injected_failures==before+1 && value.count==1,"failed optional allocation is not retried every frame");failure_skip=-1;
+    Request(false);BeginFrame(3);KichR4_FreezeLighting(3,1032,camera,value,false,vp.m);
+    Request(true);BeginFrame(4);KichR4_FreezeLighting(4,1048,camera,value,false,vp.m);
+    KichR4_ReportLightingTransitions(4,ThrowingLog);
+    Require(KichR4_CapturedFrame()->error.empty() && KichR4_CopyFrozenLighting(4,camera,vp.m,copy),"report callback failure cannot poison CPU frame or frozen rendering");
+    KichR4_CaptureEnable(false);messages.clear();queries=0;failure_size=0;
+}
 void AdmissionGates(const float* camera,const float* vp,int* id,KichR4LocalLight light){
     KichR4LightingFrame value;reject_light=true;
     KichR4_FreezeLighting(126,4248,camera,value,false,vp);
@@ -79,8 +104,41 @@ void AllocationFailures(const float* camera,const float* vp,int* ids,KichR4Local
     Require(Contains(logged,"observed_snapshots=1 ") && Contains(logged,"added_to_observed=1 "),"only successful freezes advance source history");
     KichR4_CaptureLightForget(&extra[0]);KichR4_CaptureLightForget(&extra[1]);
 }
+void RecordingEpochs(const float* camera,const float* vp,int* ids,KichR4LocalLight light){
+    using namespace kich_r4_record;
+    for(unsigned i=1;i<66;++i)KichR4_CaptureLight(&ids[i],light,false);
+    KichR4_ResetFrozenLighting();reject_light=false;
+    Request(false);BeginFrame(300);KichR4_CaptureBeginFrame(640,480,300);
+    KichR4LightingFrame frame;KichR4_FreezeLighting(300,10000,camera,frame,false,vp);
+    const size_t before=messages.size();KichR4_ReportLightingTransitions(300,Log);
+    Require(frame.count==1 && messages.size()==before,"recording OFF still renders visible source without emitting diagnostics");
+    reject_light=true;KichR4_FreezeLighting(301,10016,camera,frame,false,vp);
+    Require(frame.count==1,"HOM grace remains operational with recording OFF");
+    Request(true);BeginFrame(302);KichR4_FreezeLighting(302,10032,camera,frame,false,vp);
+    Require(frame.count==1,"enabling diagnostics preserves previously visible HOM history");
+    KichR4_ReportLightingTransitions(302,Log);
+    Require(messages.size()==before+1 && Contains(before,"observed_snapshots=1 ") && Contains(before,"transitions=0 "),"new recording epoch starts one fresh baseline without old transitions");
+    Request(false);BeginFrame(303);KichR4_FreezeLighting(303,10140,camera,frame,false,vp);
+    Require(!frame.count,"disabling diagnostics does not prolong HOM admission");
+    KichR4_ReportLightingTransitions(303,Log);Require(messages.size()==before+1,"OFF does not dump pending diagnostic changes");
+    Request(true);BeginFrame(304);KichR4_FreezeLighting(304,10156,camera,frame,false,vp);KichR4_ReportLightingTransitions(304,Log);
+    Require(messages.size()==before+2 && Contains(before+1,"transitions=0 ") && Contains(before+1,"observed_snapshots=1 "),"ON-OFF-ON never joins separate transition histories");
+    reject_light=false;for(unsigned i=1;i<66;++i)KichR4_CaptureLight(&ids[i],light,true);
+    Request(false);BeginFrame(305);KichR4_FreezeLighting(305,10172,camera,frame,false,vp);
+    Require(frame.count==66 && frame.local_shadow_size==256,"shadow pool pressure policy continues with recording OFF");
+    Request(true);BeginFrame(306);KichR4_FreezeLighting(306,10188,camera,frame,false,vp);
+    Require(frame.count==66 && frame.local_shadow_size==256 && frame.shadow_resolution_changes==1,"enabling recording does not reset shadow resolution state");
+    Request(false);BeginFrame(307);g_render_snapshot_active=true;
+    KichR4_FreezeLighting(307,10204,camera,frame,false,vp);const size_t snapshot=messages.size();KichR4_ReportLightingTransitions(307,Log);
+    Require(messages.size()==snapshot+1 && Contains(snapshot,"observed_snapshots=1 "),"explicit snapshot can request diagnostics while recording OFF");
+    g_render_snapshot_active=false;KichR4_ReportLightingTransitions(307,Log);
+    Require(messages.size()==snapshot+1,"leaving explicit snapshot disables diagnostic report path again");
+}
 }
 int main(){try{
+    Require(!kich_r4_record::Enabled() && !kich_r4_record::Requested(),"recording defaults OFF");
+    DiagnosticFailures();
+    kich_r4_record::Request(true);kich_r4_record::BeginFrame(100);
     KichR4_CaptureEnable(true);KichR4_SetLightVisibility(Visible);
     const float camera[3]={};const kich_r4_scene::Matrix vp=kich_r4_scene::Identity();
     int ids[66]={};KichR4LocalLight light={};light.type=2;light.range=10;light.direction[2]=1;light.cone=1;light.color[0]=1;
@@ -140,6 +198,7 @@ int main(){try{
     Require(messages.size()==color_start+1 && Contains(color_start,"transitions=0 "),"animated intensity changes are not misreported as visibility flicker");
     AdmissionGates(camera,vp.m,&ids[0],light);
     AllocationFailures(camera,vp.m,ids,light);
+    RecordingEpochs(camera,vp.m,ids,light);
     KichR4_CaptureEnable(false);
     Require(!KichR4_CopyFrozenLighting(121,camera,vp.m,present),"disabled capture cannot reuse previous game");
     const size_t disabled=messages.size();KichR4_ReportLightingTransitions(202,Log);Require(messages.size()==disabled,"disabled capture cannot report stale lighting");

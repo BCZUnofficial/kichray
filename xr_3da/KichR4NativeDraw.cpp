@@ -13,6 +13,7 @@
 #include "KichR4WallmarkRules.h"
 #include "KichR4OpticalRules.h"
 #include "KichR4MaterialServices.h"
+#include "KichR4RecordControl.h"
 #include "RenderSnapshot.h"
 #include <map>
 #include <string>
@@ -24,6 +25,8 @@ uint32_t texture_budget_mb=384;
 bool celestial_source=false;
 bool lens_effect=false,glow_scope=false,object_light_valid=false;float object_hemi=1,object_sun=1;
 std::chrono::steady_clock::time_point queue_begin;
+bool queue_measured=false;
+void BeginQueueClock(){queue_measured=kich_r4_record::Measure(g_render_snapshot_active);if(queue_measured)queue_begin=std::chrono::steady_clock::now();}
 uint32_t states[256]={};
 uint32_t sampler_states[8][14]={};
 kich_r4_capture::Style style;
@@ -141,8 +144,8 @@ void KichR4_NativeModelMaterial(kich_r4_capture::ModelInput& input){
         input.material=active_material;if(active_material)kich_r4_material::Apply(*active_material,input.style);
     }catch(...){KichR4_CaptureFail("G3c model material snapshot failed");}
 }
-double KichR4_NativeQueueTime(){return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-queue_begin).count();}
-void KichR4_NativeBegin(uint32_t width,uint32_t height,uint32_t frame){wallmark_scope=wallmark_color=0;celestial_source=lens_effect=glow_scope=object_light_valid=false;object_hemi=object_sun=1;menu_pp=menu_overlay=false;queue_begin=std::chrono::steady_clock::now();memset(states,0,sizeof(states));style=kich_r4_capture::Style();states[D3DRS_ZENABLE]=states[D3DRS_ZWRITEENABLE]=1;
+double KichR4_NativeQueueTime(){if(!queue_measured || !kich_r4_record::Measure(g_render_snapshot_active))return 0;return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-queue_begin).count();}
+void KichR4_NativeBegin(uint32_t width,uint32_t height,uint32_t frame){wallmark_scope=wallmark_color=0;celestial_source=lens_effect=glow_scope=object_light_valid=false;object_hemi=object_sun=1;menu_pp=menu_overlay=false;BeginQueueClock();memset(states,0,sizeof(states));style=kich_r4_capture::Style();states[D3DRS_ZENABLE]=states[D3DRS_ZWRITEENABLE]=1;
     KichR4_DetailFrame().ClearFrame(frame);active_material=NULL;
     states[23]=4;states[171]=states[209]=1;states[207]=2;states[208]=1;
     memset(sampler_states,0,sizeof(sampler_states));for(unsigned i=0;i<8;++i){sampler_states[i][1]=sampler_states[i][2]=sampler_states[i][3]=sampler_states[i][10]=1;

@@ -223,8 +223,8 @@ struct NativeModelCommand {
     uint32_t available_attributes=0;bool object_light_valid=false;float object_hemi=1,object_sun=1;
     std::shared_ptr<RenderSnapshotProvenance> provenance;
     Bounds bounds;bool bounds_known;
-    uint64_t visual_id,skeleton_id,pose_hash;uint32_t source_frame;bool identity_measured,pose_hash_valid;
-    NativeModelCommand():vertex_count(0),first(0),count(0),layer(0),skin_mode(KICH_R4_SKIN_UNKNOWN),effect(0),shader_element(UINT32_MAX),shader_pass(UINT32_MAX),has_material(false),bounds_known(false),visual_id(0),skeleton_id(0),pose_hash(0),source_frame(0),identity_measured(false),pose_hash_valid(false){}
+    uint64_t visual_id,skeleton_id,pose_hash,lifecycle_serial;uint32_t source_frame;bool identity_measured,pose_hash_valid;
+    NativeModelCommand():vertex_count(0),first(0),count(0),layer(0),skin_mode(KICH_R4_SKIN_UNKNOWN),effect(0),shader_element(UINT32_MAX),shader_pass(UINT32_MAX),has_material(false),bounds_known(false),visual_id(0),skeleton_id(0),pose_hash(0),lifecycle_serial(0),source_frame(0),identity_measured(false),pose_hash_valid(false){}
 };
 inline void ValidateModelMatrix(const Matrix& matrix){for(unsigned i=0;i<16;++i)Check(Finite(matrix.m[i]),"nonfinite native model matrix");}
 inline bool AddTransformedBounds(Bounds& out,const Bounds& source,const Matrix& matrix){
@@ -356,7 +356,7 @@ struct Batch {
         const Matrix* bones,uint32_t bone_count,uint32_t count,uint32_t first,uint32_t tris,const Style& style,
         uint32_t skin_mode,const char* name,const char* shader=NULL,const char* texture=NULL,const char* secondary=NULL,uint32_t effect=0,
         uint32_t shader_element=UINT32_MAX,uint32_t shader_pass=UINT32_MAX,const void* skeleton=NULL,const kich_r4_material::Descriptor* material=NULL,
-        bool light_valid=false,float object_hemi=1,float object_sun=1){
+        bool light_valid=false,float object_hemi=1,float object_sun=1,uint64_t lifecycle_serial=0){
         Check(mesh.get()!=NULL,"native model geometry missing");
         Check(count && count<=mesh->vertices.size() && tris && uint64_t(first)+uint64_t(tris)*3<=mesh->indices.size(),"native model draw range");
         Check(bone_count<=256 && (!mesh->skinned || (bones && mesh->bones<=bone_count)),"native model bone pose range");
@@ -390,7 +390,7 @@ struct Batch {
         Check(native_models.size()+commands.size()<16384,"native model frame draw limit");Check(pose_bytes+bytes<=16u*1024u*1024u,"native model frame palette budget");
         if(mesh->skinned)cmd.bones.assign(bones,bones+mesh->bones);
         cmd.bounds_known=NativeModelBounds(cmd);
-        cmd.identity_measured=true;cmd.visual_id=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(identity));cmd.skeleton_id=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(skeleton));cmd.source_frame=engine_frame;
+        cmd.identity_measured=true;cmd.visual_id=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(identity));cmd.skeleton_id=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(skeleton));cmd.source_frame=engine_frame;cmd.lifecycle_serial=lifecycle_serial;
             if(g_render_snapshot_active && mesh->skinned && RenderSnapshot_Detailed()){cmd.pose_hash=SnapshotHash(UINT64_C(14695981039346656037),cmd.bones.data(),cmd.bones.size()*sizeof(Matrix));cmd.pose_hash_valid=true;}
         if(g_render_snapshot_active && RenderSnapshot_Detailed()){try{cmd.provenance.reset(new RenderSnapshotProvenance());RenderSnapshotProvenance& p=*cmd.provenance;RenderSnapshot_GetProvenance(&p);
             snprintf(p.semantic_type,sizeof(p.semantic_type),"%s",mesh->skinned?"SKINNED_MODEL":"RIGID_MODEL");
@@ -413,7 +413,10 @@ struct Batch {
         for(unsigned c=0;c<4;++c){Check(Finite(out.p[c]),"HUD clip coordinates");}out.uv[0]=u;out.uv[1]=v;out.color=RGBA(argb);return out;
     }
 };
-struct Entry {std::shared_ptr<Mesh> mesh;std::string error,name;};
+// Registration identity survives pointer reuse and shared geometry copies. It
+// performs no per-frame allocation and is intentionally separate from mesh ID.
+inline uint64_t NextModelLifetime(){static uint64_t serial=0;return ++serial;}
+struct Entry {std::shared_ptr<Mesh> mesh;std::string error,name;uint64_t lifecycle_serial;Entry():lifecycle_serial(0){}};
 inline std::string ModelError(const Entry& entry,const char* why){return "model="+entry.name+"; "+why;}
 struct Segment {uint32_t offset;std::vector<unsigned char> bytes;};
 struct Buffer {
@@ -564,7 +567,7 @@ struct State {
         for(std::map<void*,Buffer>::iterator i=buffers.begin();i!=buffers.end();++i)if(!i->second.fixed){i->second.segments.clear();i->second.pending=NULL;}}
     uint64_t ModelBytes()const {uint64_t result=0;std::set<const Mesh*> counted;
         for(std::map<const void*,Entry>::const_iterator i=models.begin();i!=models.end();++i){if(i->second.mesh && counted.insert(i->second.mesh.get()).second)result+=i->second.mesh->Bytes();}return result;}
-    void Load(void* visual,Span source,const char* name=NULL){Entry& entry=models[visual];entry=Entry();entry.name=name && *name?std::string(name).substr(0,240):"<unnamed>";
+    void Load(void* visual,Span source,const char* name=NULL){Entry& entry=models[visual];entry=Entry();entry.lifecycle_serial=NextModelLifetime();entry.name=name && *name?std::string(name).substr(0,240):"<unnamed>";
         try{entry.mesh=Decode(source);if(entry.mesh){const uint64_t total=ModelBytes();
             if(total>ModelRegistryBudgetBytes){const uint64_t requested=entry.mesh->Bytes();char reason[192];
                 snprintf(reason,sizeof(reason),"model registry CPU budget: used=%llu requested=%llu limit=%llu bytes",
@@ -575,7 +578,7 @@ struct State {
         if(entry.mesh && (entry.mesh->ignored_weights || entry.mesh->outside_weights)){char counts[128];snprintf(counts,sizeof(counts),"; ignored_unused=%u active_outside_01=%u; ",entry.mesh->ignored_weights,entry.mesh->outside_weights);
             Diagnostic("2W compatibility: model="+entry.name+counts+entry.mesh->first_weight_detail);}}
     void Copy(void* visual,const void* source){const std::map<const void*,Entry>::const_iterator i=models.find(source);
-        if(i!=models.end())models[visual]=i->second;else{Entry e;e.error="model copy without source registration";models[visual]=e;}}
+        if(i!=models.end())models[visual]=i->second;else{Entry e;e.error="model copy without source registration";models[visual]=e;}models[visual].lifecycle_serial=NextModelLifetime();}
     void Lock(void* buffer,const void* data,uint32_t at,uint32_t capacity,uint32_t discard){if(!frame.ui_scope)return;
         Buffer& b=buffers[buffer];Check(!b.pending && !b.fixed,"HUD nested buffer lock");if(b.discard!=discard)b.segments.clear();
         b.pending=data;b.offset=at;b.capacity=capacity;b.discard=discard;}

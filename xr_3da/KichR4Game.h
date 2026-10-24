@@ -5,6 +5,15 @@
 #include "KichR4Lighting.h"
 
 /* EXE integration only. No changes to CRenderDevice or IRender_interface ABI. */
+struct KichR4GameObservation {
+    // Valid only while optional recording is enabled. CurrentEntity is the
+    // controlled object, not a type-checked actor; the view object may differ.
+    bool valid,current_entity_valid,view_entity_valid;
+    bool demo_active,paused,console_visible;
+    uint32_t current_entity_id,view_entity_id;
+    float camera_direction[3],current_entity_position[3],view_entity_position[3];
+    float detail_radius;
+};
 struct KichR4GameFrame {
     void* window;
     uint32_t width,height,engine_frame;
@@ -19,6 +28,7 @@ struct KichR4GameFrame {
     // EXE-only progressive geometry policy: bias, SSA start/end, camera FOV.
     float geometry_lod[4];
     float postprocess[24];
+    KichR4GameObservation observation;
 };
 bool KichR4_GameInitialize(const char*,KichR4LogFn,const KichR4LevelFiles*);
 bool KichR4_GameWindowed();

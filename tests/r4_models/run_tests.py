@@ -7,7 +7,7 @@ import tempfile
 ROOT=Path(__file__).resolve().parents[2]
 HERE=Path(__file__).resolve().parent
 with tempfile.TemporaryDirectory(prefix='kich-g3b-models-') as directory:
-    for name in ('session', 'material_session'):
+    for name in ('session', 'material_session', 'watch'):
         binary=Path(directory)/name
         subprocess.run([os.environ.get('CXX','g++'),'-std=c++11','-O2','-Wall','-Wextra','-Werror',str(HERE/(name+'_tests.cpp')),str(ROOT/'xr_3da/RenderSnapshot.cpp'),'-o',str(binary)],check=True)
         subprocess.run([str(binary),directory],check=True)

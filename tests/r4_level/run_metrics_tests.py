@@ -15,7 +15,7 @@ def main():
         variants.append(("x87-pc24", ["-mfpmath=387", "-DKICH_TEST_X87"]))
     with tempfile.TemporaryDirectory(prefix="kich-e15-metrics-") as folder:
         for name, flags in variants:
-            for source in ("metrics_tests.cpp", "phase_tests.cpp"):
+            for source in ("metrics_tests.cpp", "phase_tests.cpp", "probe_tests.cpp"):
                 output = Path(folder) / (name + "-" + Path(source).stem)
                 peers = [str(HERE / "phase_peer.cpp")] if source == "phase_tests.cpp" else []
                 subprocess.run([os.environ.get("CXX", "g++"), "-std=c++11", "-O2", "-Wall", "-Wextra", "-Werror",

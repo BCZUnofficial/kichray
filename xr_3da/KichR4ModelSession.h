@@ -7,6 +7,8 @@
 #include <stddef.h>
 #include "KichR4TelemetryText.h"
 #include "KichR4MaterialSession.h"
+#include "KichR4Watch.h"
+#include "KichR4ShadowRecord.h"
 /* EXE-owned immutable-source cache. Device destruction remains the final owner
  * of every successfully created handle, including partial construction. Weak
  * source ownership lets visual deletion retire GPU storage without retaining
@@ -382,11 +384,14 @@ struct KichR4ModelSession {
             if(g_render_snapshot_active && maps)for(unsigned j=0;j<6;++j){char name[48];snprintf(name,sizeof(name),"SELECTED_SHADOW_FACE_%u",j);RenderSnapshot_Texture(j+2,maps[j]?name:"UNBOUND");}
             if(l.Expect(s,"G3c model material constants",l.bridge.api.update_buffer(s.device,cb,&constants,sizeof(constants)))<0)return s.failure;
             d.pose_buffer=command_poses[index];if(l.Expect(s,"G3b native model DrawIndexed",api.draw(s.device,&d))<0)return s.failure;
+            if(kich_r4_record::Enabled())kich_r4_watch::Global().ObserveModel(c,unsigned(pass),constants,d.surface,split!=NULL,state.draw.pipeline==plain_pipeline[command_classes[index]]);
+            if(pass==Shadow)if(kich_r4_shadow_record::Pass* recorded=kich_r4_shadow_record::Active())recorded->Submitted(kich_r4_shadow_record::Model,recorded->signatures?c.visual_id^kich_r4_shadow_record::Mix(c.lifecycle_serial):0,c.first,c.count,c.identity_measured && c.visual_id!=0);
             if(split){const bool mapped=(uint32_t(constants.material[0])&kich_r4_material::SHADER_BUMP)!=0;state.draw.start_index=split->good;state.draw.index_count=split->bad;
                 constants.material[0]=float(uint32_t(constants.material[0])&~kich_r4_material::SHADER_BUMP);d.surface.textures[1]=d.surface.textures[2]=0;
                 if(g_render_snapshot_active){RenderSnapshot_Texture(1,"UNBOUND");RenderSnapshot_Texture(2,"UNBOUND");}
                 if(l.Expect(s,"E1 geometric subset constants",l.bridge.api.update_buffer(s.device,cb,&constants,sizeof(constants)))<0 ||
                     l.Expect(s,"E1 geometric subset draw",api.draw(s.device,&d))<0)return s.failure;
+                if(kich_r4_record::Enabled())kich_r4_watch::Global().ObserveModel(c,unsigned(pass),constants,d.surface,true,state.draw.pipeline==plain_pipeline[command_classes[index]]);
                 ++draw_calls[pass];++phase_draws;
                 if(g_render_snapshot_active){char id[96];snprintf(id,sizeof(id),"frame_%u_command_%u",frame,static_cast<unsigned>(index));
                     kich_r4_telemetry::U64("MODEL_BASIS_PARTITION",id,"mapped_indices",mapped?split->good:0);

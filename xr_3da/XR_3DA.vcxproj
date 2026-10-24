@@ -572,6 +572,11 @@
     <ClInclude Include="KichR4LightTransitions.h" />
     <ClInclude Include="KichR4LightAdmission.h" />
     <ClInclude Include="KichR4FramePhases.h" />
+    <ClInclude Include="KichR4RecordControl.h" />
+    <ClInclude Include="KichR4RecordSession.h" />
+    <ClInclude Include="KichR4RecordTiming.h" />
+    <ClInclude Include="KichR4ShadowRecord.h" />
+    <ClInclude Include="KichR4Watch.h" />
     <ClInclude Include="KichR4CandidateScratch.h" />
     <ClInclude Include="KichR4RosExposure.h" />
     <ClInclude Include="KichR4ShadowPoolPolicy.h" />

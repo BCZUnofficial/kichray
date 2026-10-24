@@ -6,6 +6,9 @@
 #include "XR_IOConsole.h"
 #include "Environment.h"
 #include "xrRender/xrRender_console.h"
+#include "CameraManager.h"
+#include "xr_object.h"
+#include "KichR4RecordControl.h"
 
 /* Match FTreeVisual_setup::calculate and its R2 lighting correction. This
  * EXE-only copy is shared by geometry and shadow passes for the whole frame. */
@@ -25,6 +28,28 @@ static void KichR4_GameTreeFrame(KichR4GameFrame& input)
     input.geometry_lod[2]=ps_r__GLOD_ssa_end;input.geometry_lod[3]=Device.fFOV;
 }
 
+static void KichR4_GameObservationFrame(KichR4GameFrame& input)
+{
+    if(!kich_r4_record::Enabled())return;
+    KichR4GameObservation& observation=input.observation;
+    memcpy(observation.camera_direction,&Device.vCameraDirection.x,12);
+    observation.detail_radius=ps_r__Detail_radius;
+    observation.paused=Device.Paused();
+    observation.console_visible=Console && Console->bVisible;
+    if(g_pGameLevel && g_pGameLevel->bReady){
+        // cefDemo covers record/play camera effectors in Release as well as
+        // Debug. Never infer flight mode from distance to the controlled object.
+        observation.demo_active=g_pGameLevel->Cameras().GetCamEffector(cefDemo)!=NULL;
+        const CObject* controlled=g_pGameLevel->CurrentEntity();
+        if(controlled){observation.current_entity_valid=true;observation.current_entity_id=controlled->ID();
+            memcpy(observation.current_entity_position,&controlled->Position().x,12);}
+        const CObject* viewed=g_pGameLevel->CurrentViewEntity();
+        if(viewed){observation.view_entity_valid=true;observation.view_entity_id=viewed->ID();
+            memcpy(observation.view_entity_position,&viewed->Position().x,12);}
+    }
+    observation.valid=true;
+}
+
 void KichR4_GamePrepareEngineFrame()
 {
 #if !defined(DEDICATED_SERVER) && !defined(_EDITOR)
@@ -32,6 +57,7 @@ void KichR4_GamePrepareEngineFrame()
     KichR4GameFrame input={};
     input.window=Device.m_hWnd;input.width=Device.dwWidth;input.height=Device.dwHeight;
     input.engine_frame=Device.dwFrame;input.time=Device.fTimeGlobal;KichR4_GameTreeFrame(input);
+    KichR4_GameObservationFrame(input);
     /* Fmatrix::mul(project,view) stores the row-vector view*projection matrix.
      * Both old DX9 and the SM5 shader use D3D clip depth [0,w]; no transpose. */
     memcpy(input.view_projection,Device.mFullTransform.m,sizeof(input.view_projection));
@@ -58,6 +84,7 @@ void KichR4_NativePostprocess(float*);
 void KichR4_NativePresentEngineFrame(bool loading,bool precaching)
 {
     KichR4GameFrame input={};input.window=Device.m_hWnd;input.width=Device.dwWidth;input.height=Device.dwHeight;input.engine_frame=Device.dwFrame;input.time=Device.fTimeGlobal;KichR4_GameTreeFrame(input);
+    KichR4_GameObservationFrame(input);
     CopyMemory(input.view_projection,Device.mFullTransform.m,64);CopyMemory(input.position,&Device.vCameraPosition.x,12);input.active=Device.b_is_Active!=FALSE;
     input.prepare_ms=static_cast<float>(KichR4_NativeQueueTime());input.time=Device.fTimeGlobal;KichR4_NativePostprocess(input.postprocess);input.allowed=!loading && g_pGameLevel && g_pGameLevel->bReady && !(g_pGamePersistent && g_pGamePersistent->OnRenderPPUI_query());input.debug_down=(GetAsyncKeyState(VK_F9)&0x8000)!=0;
     input.warmup=loading && precaching && g_pGameLevel && g_pGameLevel->bReady && g_pGameLevel->CurrentViewEntity() &&

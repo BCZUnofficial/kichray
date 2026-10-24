@@ -16,8 +16,9 @@ def main():
                  for source in ("data_tests", "basis_tests", "files_tests", "session_tests", "e1_tests", "residency_tests", "prepared_tests", "lod_tests")]
         for cc, standard, source, name in jobs:
             output = Path(folder)/name
+            snapshot = [str(HERE.parents[1]/"xr_3da/RenderSnapshot.cpp")] if name in ("residency_tests", "prepared_tests") else []
             subprocess.run([cc, standard, "-Wall", "-Wextra", "-Werror",
-                            str(HERE/source), "-o", str(output)], check=True)
+                            str(HERE/source), *snapshot, "-o", str(output)], check=True)
             subprocess.run([str(output)], check=True)
     print("PASS: B4.2 portable tests; real level assets and Windows GPU remain separate")
 

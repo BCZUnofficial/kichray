@@ -3,6 +3,7 @@
 #include <assert.h>
 #include <vector>
 #include <stdio.h>
+#include <set>
 #include "xr_3da/KichR4NativeTools.h"
 #include "xr_3da/xrRender_R4/R4TelemetryRules.h"
 using namespace kich_r4;
@@ -11,6 +12,9 @@ typedef int32_t HRESULT;typedef uint64_t UINT64;
 #define S_FALSE 1
 #define FALSE 0
 #define FAILED(x) ((x)<0)
+#define SUCCEEDED(x) ((x)>=0)
+#define CP_UTF8 65001
+#define __uuidof(x) 0
 #define D3D11_QUERY_TIMESTAMP_DISJOINT 10
 #define D3D11_QUERY_TIMESTAMP 11
 #define D3D11_ASYNC_GETDATA_DONOTFLUSH 1
@@ -18,7 +22,13 @@ struct D3D11_QUERY_DESC {uint32_t Query,MiscFlags;};
 struct D3D11_QUERY_DATA_TIMESTAMP_DISJOINT {uint64_t Frequency;int Disjoint;};
 struct ID3D11Query {uint32_t kind;uint64_t stamp;explicit ID3D11Query(uint32_t k):kind(k),stamp(0){}void Release(){delete this;}};
 template<class T>void Release(T*& p){if(p)p->Release();p=NULL;}
-struct Hardware {unsigned calls,fail_call;Hardware():calls(0),fail_call(0){}HRESULT CreateQuery(const D3D11_QUERY_DESC* d,ID3D11Query** q){if(++calls==fail_call)return -1;*q=new ID3D11Query(d->Query);return 0;}};
+struct LARGE_INTEGER {int64_t QuadPart;};
+struct DXGI_ADAPTER_DESC {wchar_t Description[128];uint32_t VendorId,DeviceId;uint64_t DedicatedVideoMemory;};
+struct IDXGIAdapter {HRESULT GetDesc(DXGI_ADAPTER_DESC*){return -1;}HRESULT CheckInterfaceSupport(int,LARGE_INTEGER*){return -1;}};
+struct IDXGIDevice {HRESULT GetAdapter(IDXGIAdapter**){return -1;}};
+template<class T>struct Com {T* pointer;Com():pointer(NULL){}T** Out(){return &pointer;}T* operator->(){return pointer;}};
+inline int WideCharToMultiByte(unsigned,unsigned,const wchar_t*,int,char*,int,void*,void*){return 0;}
+struct Hardware {unsigned calls,fail_call,adapter_queries,feature_queries;Hardware():calls(0),fail_call(0),adapter_queries(0),feature_queries(0){}HRESULT CreateQuery(const D3D11_QUERY_DESC* d,ID3D11Query** q){if(++calls==fail_call)return -1;*q=new ID3D11Query(d->Query);return 0;}HRESULT QueryInterface(int,void**){++adapter_queries;return -1;}unsigned GetFeatureLevel(){++feature_queries;return 0xb000;}};
 struct Context {bool ready,disjoint,failed;uint64_t frequency,stamp;unsigned reads,begins,ends;
     Context():ready(false),disjoint(false),failed(false),frequency(1000),stamp(0),reads(0),begins(0),ends(0){}
     void Begin(ID3D11Query*){++begins;}void End(ID3D11Query* q){q->stamp=stamp;stamp+=10;++ends;}
@@ -30,8 +40,14 @@ struct Device {
         ProfileSlot():disjoint(NULL),pending(false),valid_mask(127),status(0),poll_count(0){memset(stamp,0,sizeof(stamp));memset(&origin,0,sizeof(origin));}
         void Reset(){Release(disjoint);for(unsigned i=0;i<8;++i)Release(stamp[i]);pending=false;memset(&origin,0,sizeof(origin));status=0;poll_count=0;}~ProfileSlot(){Reset();}} profile[4];
     Hardware hardware;Context commands;Hardware* hw;Context* context;KichR4TelemetryContext telemetry;bool capture_query_requested,profile_open;uint32_t profile_write,timing_count;KichR4TelemetryTiming timing_results[8];
-    Device():hw(&hardware),context(&commands),capture_query_requested(false),profile_open(false),profile_write(0),timing_count(0){memset(&telemetry,0,sizeof(telemetry));memset(timing_results,0,sizeof(timing_results));}
+    KichR4TelemetrySink telemetry_sink;
+    uint64_t telemetry_epoch,pass_ordinal,draw_ordinal,resource_records,resource_records_dropped,route_observations,route_records,route_records_dropped,created_total,released_total,backbuffer_generation,backbuffer_write;
+    std::set<uint64_t> pass_routes;unsigned counter_calls,number_calls;
+    struct Frame {KichR4FrameStats Stats(){KichR4FrameStats result={};return result;}} frame;
+    Device():hw(&hardware),context(&commands),capture_query_requested(false),profile_open(false),profile_write(0),timing_count(0),telemetry_sink(NULL),telemetry_epoch(0),pass_ordinal(0),draw_ordinal(0),resource_records(0),resource_records_dropped(0),route_observations(0),route_records(0),route_records_dropped(0),created_total(0),released_total(0),backbuffer_generation(0),backbuffer_write(UINT64_MAX),counter_calls(0),number_calls(0){memset(&telemetry,0,sizeof(telemetry));memset(timing_results,0,sizeof(timing_results));}
     void Emit(const char*,const char*,const char*,const char*){}
+    void Number(const char*,const char*,const char*,uint64_t){++number_calls;}
+    void Counters(){++counter_calls;}
     void TimingResult(const KichR4TelemetryContext& origin,uint32_t status,uint32_t mask,const double* ms=NULL){if(!origin.capture_id)return;assert(timing_count<8);KichR4TelemetryTiming& result=timing_results[timing_count++];memset(&result,0,sizeof(result));result.struct_size=sizeof(result);result.status=status;result.valid_mask=mask;result.capture_id=origin.capture_id;result.engine_frame=origin.engine_frame;result.render_frame=origin.render_frame;if(ms)memcpy(result.milliseconds,ms,sizeof(result.milliseconds));}
 };
 static Device* current=NULL;

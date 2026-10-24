@@ -194,11 +194,17 @@ struct Device {
         snprintf(record.key,sizeof(record.key),"%s",key);snprintf(record.value,sizeof(record.value),"%s",value?value:"NOT_MEASURED");
         try{telemetry_sink(&record);}catch(...){++callback_failures;}
     }
-    void Number(const char* category,const char* id,const char* key,uint64_t value){char text[32];snprintf(text,sizeof(text),"%llu",static_cast<unsigned long long>(value));Emit(category,id,key,text);}
+    void Number(const char* category,const char* id,const char* key,uint64_t value){
+        // Timing-only sessions carry exact frame identity without serializing
+        // detailed records. Gate before formatting, not only inside Emit.
+        if(!telemetry_sink || !(telemetry.flags&KICH_R4_TELEMETRY_DETAILED))return;
+        char text[32];snprintf(text,sizeof(text),"%llu",static_cast<unsigned long long>(value));Emit(category,id,key,text);
+    }
     void Write(Resource* r,uint32_t kind=2){if(!r)return;r->initialized=true;++r->write_generation;r->last_write_kind=kind;r->last_write_pass=kind==1?0:pass_ordinal;if(telemetry.struct_size)r->last_write_frame=telemetry.engine_frame;}
     void Upload(Resource* r,uint32_t bytes){++uploads_total;uploaded_bytes_total+=bytes;Write(r,1);}
     void Outputs(bool depth_write){for(unsigned i=0;i<pass.color_count;++i){if(pass.colors[i])Write(resources.Find(pass.colors[i]));else{backbuffer_write=telemetry.struct_size?telemetry.engine_frame:UINT64_MAX;++backbuffer_generation;}}if(depth_write && pass.depth)Write(resources.Find(pass.depth));}
     void Counters(){
+        if(!telemetry_sink || !(telemetry.flags&KICH_R4_TELEMETRY_DETAILED))return;
         Number("BACKEND_COUNTERS","registry","created_total",created_total);Number("BACKEND_COUNTERS","registry","released_total",released_total);
         Number("BACKEND_COUNTERS","registry","live_resources",resources.Size());Number("BACKEND_COUNTERS","registry","payload_bytes",stats.payload_bytes);
         Number("BACKEND_COUNTERS","registry","buffer_uploads_total",uploads_total);Number("BACKEND_COUNTERS","registry","buffer_uploaded_bytes_total",uploaded_bytes_total);
@@ -781,7 +787,7 @@ void TelemetryDraw(Device* d,const KichR4DrawIndexedDesc& desc,Resource* pipelin
                 if(handle){SnapshotResource(d,handle);ResourceHistory(d,"GPU_TEXTURE_BINDING",slot_id,handle);d->Emit("GPU_TEXTURE_BINDING",slot_id,"rt_srv_conflict",d->pass_active?"NO_OVERLAPPING_SUBRESOURCE; PROVIDER_REJECTS_OVERLAP_BEFORE_DRAW":"BACKBUFFER_OUTPUT; REGISTERED_TEXTURE_CANNOT_ALIAS_BACKBUFFER");}
             }
             snprintf(value,sizeof(value),"filter=MIN_MAG_MIP_LINEAR;U=%s;V=%s;W=%s;comparison=NEVER;lod_min=0;lod_max=FLT_MAX",state && state->clamp_texture?"CLAMP":"WRAP",state && state->clamp_texture?"CLAMP":"WRAP",state && state->clamp_texture?"CLAMP":"WRAP");d->Emit("GPU_BINDING",id,"ps_s0",pipeline->pipeline->textured?value:"UNCHANGED_OR_NULL_BY_THIS_PIPELINE; UNUSED_BY_VALIDATED_SHADER");
-            d->Emit("GPU_BINDING",id,"ps_s1",pipeline->pipeline->advanced?"COMPARISON_MIN_MAG_LINEAR_MIP_POINT;UVW=BORDER;BORDER=1,1,1,1;COMPARE=LESS_EQUAL;LOD=0..FLT_MAX":"UNCHANGED_OR_NULL_BY_THIS_PIPELINE; UNUSED_BY_VALIDATED_SHADER");
+            d->Emit("GPU_BINDING",id,"ps_s1",pipeline->pipeline->advanced?"COMPARISON_MIN_MAG_MIP_POINT;UVW=BORDER;BORDER=1,1,1,1;COMPARE=LESS_EQUAL;LOD=0..FLT_MAX":"UNCHANGED_OR_NULL_BY_THIS_PIPELINE; UNUSED_BY_VALIDATED_SHADER");
         }
     }
     }catch(...){++d->callback_failures;}
@@ -1083,6 +1089,10 @@ int32_t KICH_R4_CALL SetTelemetryCapture(KichR4Handle device,const KichR4Telemet
         }
         d->telemetry=*capture;d->telemetry_sink=sink;d->capture_query_requested=false;++d->telemetry_epoch;d->pass_ordinal=0;d->draw_ordinal=0;d->pass_routes.clear();
         d->resource_records=d->resource_records_dropped=d->route_observations=d->route_records=d->route_records_dropped=0;
+        // Keep context and resource-writer provenance current even when the
+        // optional text sink is off; adapter queries and formatting are not
+        // part of rendering or a timing-only measurement.
+        if(!sink || !(capture->flags&KICH_R4_TELEMETRY_DETAILED))return KICH_R4_OK;
         d->Number("GPU_CONTEXT","device","engine_frame",capture->engine_frame);d->Number("GPU_CONTEXT","device","render_frame",capture->render_frame);
         d->Number("GPU_CONTEXT","device","native_present_attempt_ordinal",capture->present_frame);d->Number("GPU_CONTEXT","device","device_generation",capture->device_generation);d->Number("GPU_CONTEXT","device","level_generation",capture->level_generation);
         const KichR4FrameStats frame=d->frame.Stats();d->Number("GPU_BACKBUFFER","swapchain","width",frame.width);d->Number("GPU_BACKBUFFER","swapchain","height",frame.height);d->Number("GPU_BACKBUFFER","swapchain","write_generation",d->backbuffer_generation);d->Emit("GPU_BACKBUFFER","swapchain","owner","FRAME_DRIVER_SWAPCHAIN; EXCLUDED_FROM_RESOURCE_REGISTRY_PAYLOAD");

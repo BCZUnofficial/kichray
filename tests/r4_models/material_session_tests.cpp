@@ -137,7 +137,21 @@ void DrawBasisAndExposure(){Harness h;Require(h.Start()==0,"object exposure setu
     const auto& c=constants_drawn.back();Require(c.color_bias[3]==1 && c.color_scale[3]==.2f && c.sun_scale_bias[2]==0,"raw object visibility reaches model shader without weather multiplication");
     Require((uint32_t(c.material[0])&33)==33,"valid bump and object sun mask coexist");
 }
+void WatchActualBindings(){Harness h;Require(h.Start()==0,"watch production model setup");auto mesh=MaterialMesh();const auto material=CutoutMaterial();SeedTextures(h,material);
+    kich_r4_capture::Batch batch;batch.Begin(640,480,130);Capture(batch,mesh,material);auto& target=batch.native_models[0];target.lifecycle_serial=500;
+    // The recording fixture bypasses OGF Decode/BuildBounds; supply its known triangle box.
+    target.bounds_known=target.bounds.valid=true;target.bounds.min[0]=target.bounds.min[1]=0;target.bounds.max[0]=target.bounds.max[1]=.5f;target.bounds.min[2]=target.bounds.max[2]=.5f;
+    auto& watch=kich_r4_watch::Global();kich_r4_record::Request(true);kich_r4_record::BeginFrame(130);watch.Request(true);
+    const float camera[]={.1f,.1f,0},direction[]={0,0,1};watch.Begin(130,1000,1,batch,camera,direction);Require(watch.Active(),"watch locks actual captured model command");
+    Require(h.models.Prepare(h.frame,h.level,batch)==0 && h.Draw(batch,KichR4ModelSession::Geometry)==0,"watched model uses production draw");
+    const auto& recorded=watch.Latest().passes[KichR4ModelSession::Geometry];Require(recorded.observed && recorded.draws==1,"production hook records successful draw without synthetic observation");
+    for(unsigned i=0;i<6;++i)Require(recorded.handles[i]==model_draws.back().surface.textures[i],"watch records exact production binding handles");
+    Require(recorded.flags==uint32_t(constants_drawn.back().material[0]),"watch records exact production material flags");
+    kich_r4_shadow_record::Pass shadow;{kich_r4_shadow_record::Scope scope(&shadow);Require(h.Draw(batch,KichR4ModelSession::Shadow)==0,"shadow recording production hook");}
+    Require(shadow.work[kich_r4_shadow_record::Model].draws==1 && shadow.work[kich_r4_shadow_record::Model].casters==1,"shadow counts one successful caster model");
+    watch.Finish(constants_drawn.front());watch.Reset();kich_r4_record::Request(false);kich_r4_record::BeginFrame(131);
 }
-int main(int argc,char** argv){try{Require(argc==2,"snapshot output directory");MaterialCaptureOwnership();MaterialBindingsAndRouting(argv[1]);MaterialFallbacks(argv[1]);BasisFallbackTelemetry(argv[1]);RepairedModelBindsBump(argv[1]);DrawBasisAndExposure();MixedBasis();
+}
+int main(int argc,char** argv){try{Require(argc==2,"snapshot output directory");MaterialCaptureOwnership();MaterialBindingsAndRouting(argv[1]);MaterialFallbacks(argv[1]);BasisFallbackTelemetry(argv[1]);RepairedModelBindsBump(argv[1]);DrawBasisAndExposure();MixedBasis();WatchActualBindings();
     printf("G3c native model material integration: %d checks passed\n",checks);return 0;
 }catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

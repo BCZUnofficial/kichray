@@ -493,6 +493,11 @@
     <ClInclude Include="KichR4FrameSession.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="KichR4LightAdmission.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="KichR4FramePhases.h"><Filter>Interfaces\Render</Filter></ClInclude>
+    <ClInclude Include="KichR4RecordControl.h"><Filter>Interfaces\Render</Filter></ClInclude>
+    <ClInclude Include="KichR4RecordSession.h"><Filter>Interfaces\Render</Filter></ClInclude>
+    <ClInclude Include="KichR4RecordTiming.h"><Filter>Interfaces\Render</Filter></ClInclude>
+    <ClInclude Include="KichR4ShadowRecord.h"><Filter>Interfaces\Render</Filter></ClInclude>
+    <ClInclude Include="KichR4Watch.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="KichR4CandidateScratch.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="KichR4Geometry.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="KichR4GeometrySession.h"><Filter>Interfaces\Render</Filter></ClInclude>

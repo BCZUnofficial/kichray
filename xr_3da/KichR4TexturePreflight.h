@@ -51,6 +51,8 @@ inline bool AnyView(const kich_r4_capture::NativeModelCommand& model,const std::
 inline int32_t Preflight(KichR4FrameSession& frame,KichR4LevelSession& level,
                         const kich_r4_capture::Batch& batch,const KichR4GameFrame& input,
                         KichR4DetailSession& details,bool scene,kich_r4_level::StaticFramePlan* shared_plan=NULL,bool pump_loading=false){
+    KichR4LevelSession::PreflightProbeScope probe(level,g_render_snapshot_active);
+    const auto traversal_started=kich_r4_metrics::Start(g_render_snapshot_active);
     KichR4LevelSession::PreparedScope prepared(level);
     FrameDemand demand(level);
     kich_r4_level::StaticFramePlan fallback;
@@ -122,7 +124,11 @@ inline int32_t Preflight(KichR4FrameSession& frame,KichR4LevelSession& level,
     // evict world textures late in Process, and never request noise for menus.
     if(scene && kich_r4_noise::Amount(input.postprocess[7])>0 && input.postprocess[9]>0 && std::isfinite(input.postprocess[9]))
         demand.NeedTexture(kich_r4_noise::Texture(),EFFECT);
-    return level.CommitTexturePlan(frame,pump_loading);
+    level.preflight_probe.traversal_ms=kich_r4_metrics::Elapsed(traversal_started);
+    const auto commit_started=kich_r4_metrics::Start(g_render_snapshot_active);
+    const int32_t result=level.CommitTexturePlan(frame,pump_loading);
+    level.preflight_probe.commit_ms=kich_r4_metrics::Elapsed(commit_started);
+    return result;
 }
 }
 #endif

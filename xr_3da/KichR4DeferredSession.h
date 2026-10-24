@@ -15,6 +15,7 @@
 #include "KichR4LodPolicy.h"
 #include "KichR4PostprocessNoise.h"
 #include "KichR4ShadowPoolPolicy.h"
+#include "KichR4ShadowRecord.h"
 #include <set>
 /* EXE-side pass planner. Native resources remain owned by the R4 device;
  * destroying that device releases partial construction and all cached maps. */
@@ -27,6 +28,8 @@ struct KichR4DeferredSession {
     // Successful submissions in this frame, not a measurement of visible shadow pixels.
     uint32_t frame_sun_cascades=0,frame_spot_shadow_lights=0,frame_point_shadow_lights=0;
     uint32_t frame_local_shadow_faces=0;
+    kich_r4_shadow_record::Frame shadow_record;
+    uint64_t sun_map_generation[2]={0,0},local_pool_generation=0;
     // One bounded pool, shared by deferred, forward and HUD lighting. A point
     // source keeps all six faces; pressure reduces resolution, never drops it.
     std::vector<KichR4Handle> local_maps;
@@ -48,9 +51,9 @@ struct KichR4DeferredSession {
             return s.Record("E1.5 local shadow plan/budget",KICH_R4_E_ARGUMENT);
         if(size!=local_shadow_size){
             for(size_t i=0;i<local_maps.size();++i)if(l.Expect(s,"E1 shadow pool resize",l.bridge.resources.release_resource(s.device,local_maps[i]))<0)return s.failure;
-            local_maps.clear();local_shadow_size=size;
+            local_maps.clear();local_shadow_size=size;++local_pool_generation;
         }
-        while(local_maps.size()<faces){KichR4Handle map=0;if(Target(s,l,map,size,size,KICH_R4_DEPTH32F,true)<0)return s.failure;local_maps.push_back(map);}
+        while(local_maps.size()<faces){KichR4Handle map=0;if(Target(s,l,map,size,size,KICH_R4_DEPTH32F,true)<0)return s.failure;local_maps.push_back(map);++local_pool_generation;}
         if(g_render_snapshot_active){RenderSnapshot_U64("SHADOW_POOL","requested_faces",faces);RenderSnapshot_U64("SHADOW_POOL","allocated_faces",local_maps.size());
             RenderSnapshot_U64("SHADOW_POOL","resolution",size);RenderSnapshot_U64("SHADOW_POOL","budget_bytes",LocalShadowBudget);
             RenderSnapshot_U64("SHADOW_POOL","allocated_bytes",uint64_t(local_maps.size())*size*size*4);
@@ -107,8 +110,9 @@ struct KichR4DeferredSession {
     }
     uint32_t snapshot_pass_mask=0;
     char snapshot_phase[64]={};
-    bool ordinary_profile=true;
-    void Mark(KichR4FrameSession& s,unsigned n){if(native_mode && (ordinary_profile || g_render_snapshot_active) && tools.profile_mark)tools.profile_mark(s.device,n);}
+    bool ordinary_profile=false;
+    bool profile_context_valid=true;
+    void Mark(KichR4FrameSession& s,unsigned n){if(native_mode && profile_context_valid && (ordinary_profile || g_render_snapshot_active) && tools.profile_mark)tools.profile_mark(s.device,n);}
     void SnapshotPass(const char* name,uint32_t mask,const char* phase="main"){
         snapshot_pass_mask=mask;SnapshotPhase(phase);
         if(!g_render_snapshot_active)return;
@@ -321,6 +325,7 @@ struct KichR4DeferredSession {
             if(Constants(s,l,c)<0)return s.failure;
             SnapshotResolvedTexture(l,0,m.texture.c_str(),d.textures[0]);
             if(l.Expect(s,"G3c static material draw",api.draw(s.device,&d))<0)return s.failure;
+            if(shadow)if(kich_r4_shadow_record::Pass* record=kich_r4_shadow_record::Active())record->Submitted(kich_r4_shadow_record::Static,i,mesh.first,mesh.count);
             if(!shadow){++l.visible;++l.submitted_draws;l.submitted_triangles+=mesh.count/3;}
         }if(!shadow)++l.frames;return 0;
     }
@@ -507,6 +512,7 @@ struct KichR4DeferredSession {
                 }catch(...){RenderSnapshot_Context("UNKNOWN","NOT_AVAILABLE","NOT_AVAILABLE");RenderSnapshot_PassMask(snapshot_pass_mask);RenderSnapshot_Text("TELEMETRY_LOSS","r4_model_provenance","ALLOCATION_FAILED");}}
             SnapshotResolvedTexture(l,0,c.texture.c_str(),d.textures[0]);
             if(l.Expect(s,"B4.4 model/forward/UI draw",api.draw(s.device,&d))<0)return s.failure;
+            if(pass==ShadowModels)if(kich_r4_shadow_record::Pass* record=kich_r4_shadow_record::Active())record->Submitted(kich_r4_shadow_record::Stream,0,c.first,c.count,false);
             if(g_render_snapshot_active && pass==Celestial){
                 char id[64];snprintf(id,sizeof(id),"source_%u",static_cast<unsigned>(order[sorted]));
                 kich_r4_telemetry::Text("CELESTIAL",id,"mask",frame.screen[2]>=11?"DIAGNOSTIC_UNMASKED":"GBUFFER_DEPTH_INTEGER_LOAD; DISCARD_DEPTH_LT_1; NO_DSV; STENCIL_NOT_USED");
@@ -633,9 +639,10 @@ struct KichR4DeferredSession {
     double model_prepare_ms=0;
     int32_t Draw(KichR4FrameSession& s,KichR4LevelSession& l,KichR4StreamSession& stream,const KichR4GameFrame& input,const kich_r4_capture::Batch* captured,uint32_t debug){
         frame_sun_cascades=frame_spot_shadow_lights=frame_point_shadow_lights=frame_local_shadow_faces=0;
+        shadow_record.Begin(input.engine_frame);
         if(!native_mode)l.texture_registry.Begin(); // Native presenter owns its submission epoch.
         if(!native_mode || visibility_frame!=input.engine_frame || visibility_revision!=l.revision)BeginFramePlan(l,input);
-        ordinary_profile=debug==0; // diagnostic GPU timings must not enter the normal profile ring
+        ordinary_profile=ordinary_profile && debug==0; // Presenter explicitly requests sparse normal-frame GPU probes.
         SnapshotCPU(captured);native_models.ResetFrame();details.ResetFrame(input.engine_frame);
         if(g_render_snapshot_active){RenderSnapshot_U64("LIGHT_REGISTRY","selected_frame_inputs",input.lighting.count);RenderSnapshot_Text("ENVIRONMENT","source","COPIED_CURRENT_ENV_LIGHTING_FRAME");
             kich_r4_telemetry::Vector("ENVIRONMENT","weather","sun_direction",input.lighting.sun_direction,3);kich_r4_telemetry::Vector("ENVIRONMENT","weather","sun_color",input.lighting.sun_color,3);
@@ -657,7 +664,7 @@ struct KichR4DeferredSession {
         if(native_mode && details.source){
             if(details.Start(s,l,KichR4DeferredShaderSource(),shaders[4],shaders[5])<0 || details.Upload(s,l,input.engine_frame)<0)return s.failure;}
         if(captured && stream.Upload(s,l,*captured)<0)return s.failure;
-        const auto model_started=kich_r4_metrics::Clock::now();
+        const auto model_started=kich_r4_metrics::Start(g_render_snapshot_active);
         if(captured && PrepareModels(s,l,*captured)<0)return s.failure;
         model_prepare_ms=kich_r4_metrics::Elapsed(model_started);
         memset(&base,0,sizeof(base));base.material[3]=1;base.world=base.normal_matrix=kich_r4_scene::Identity();memcpy(base.mvp.m,input.view_projection,64);
@@ -675,14 +682,19 @@ struct KichR4DeferredSession {
             base.shadow[0]=kich_r4_lighting::SunShadow(input.position,input.lighting.sun_direction,native_mode?128.f:512.f);
             base.shadow[1]=kich_r4_lighting::SunShadow(input.position,input.lighting.sun_direction,512.f);
             for(unsigned cascade=0;cascade<cascades;++cascade){KichR4Handle& map=cascade?sun_far_map:sun_map;
-                if(!map && Target(s,l,map,2048,2048,KICH_R4_DEPTH32F,true)<0)return s.failure;
+                if(!map){if(Target(s,l,map,2048,2048,KICH_R4_DEPTH32F,true)<0)return s.failure;++sun_map_generation[cascade];}
+                kich_r4_shadow_record::Pass* record=shadow_record.Sun(cascade,map,sun_map_generation[cascade],2048,cascade || !native_mode?512.f:128.f,base.shadow[cascade].m);
+                kich_r4_shadow_record::Scope record_scope(record);
                 char phase[24];snprintf(phase,sizeof(phase),"sun_%u",cascade);SnapshotPass("SUN_SHADOW",RENDER_SNAPSHOT_PASS_SUN_SHADOW,phase);
                 if(g_render_snapshot_active){RenderSnapshot_Light("sun","SCENE_ENVIRONMENT");RenderSnapshot_U64("LIGHT sun","shadow_map_count",cascades);}
                 sun_inputs[cascade]=map;
                 SnapshotShadow(phase,"sun",cascade,base.shadow[cascade],map,true,1024,2048,cascade || !native_mode?512.f:128.f);
-                if(Pass(s,l,2048,2048,0,0,0,map,KICH_R4_CLEAR_DEPTH)<0 || Static(s,l,base.shadow[cascade],true)<0)return s.failure;
+                if(Pass(s,l,2048,2048,0,0,0,map,KICH_R4_CLEAR_DEPTH)<0)return s.failure;
+                if(record)record->begun=true;
+                if(Static(s,l,base.shadow[cascade],true)<0)return s.failure;
                 kich_r4_lighting::Constants c=base;c.mvp=base.shadow[cascade];
                 if(Models(s,l,stream,captured,ShadowModels,c)<0 || details.Draw(s,l,cb,c,true,input.engine_frame,phase,RENDER_SNAPSHOT_PASS_SUN_SHADOW)<0)return s.failure;
+                if(record)record->completed=true;
                 kich_r4_telemetry::Text("SHADOW",phase,"execution","PASS_COMPLETED");++shadow_passes;++frame_sun_cascades;
             }
             if(!native_mode){base.shadow[1]=base.shadow[0];sun_inputs[1]=sun_map;}
@@ -697,11 +709,16 @@ struct KichR4DeferredSession {
             for(unsigned face=0;face<(light_source.type==2?1u:6u);++face){
                 char phase[48];snprintf(phase,sizeof(phase),"local_%u_face_%u",i,face);SnapshotPass("LOCAL_SHADOW",RENDER_SNAPSHOT_PASS_LOCAL_SHADOW,phase);SnapshotLocalLight(light_source,input.lighting.sources[i],i,true);
                 const KichR4Handle map=LocalMap(i,face);
+                kich_r4_shadow_record::Pass* record=shadow_record.Local(face,map,local_pool_generation,local_shadow_size,local.shadow[face].m,input.lighting.sources[i].serial);
+                kich_r4_shadow_record::Scope record_scope(record);
                 char source_id[64];if(input.lighting.sources[i].serial)kich_r4_telemetry::Handle(source_id,sizeof(source_id),"source",input.lighting.sources[i].serial);else snprintf(source_id,sizeof(source_id),"local_%u",i);
                 SnapshotShadow(phase,source_id,face,local.shadow[face],map,false,light_source.range,local_shadow_size);
-                if(Pass(s,l,local_shadow_size,local_shadow_size,0,0,0,map,KICH_R4_CLEAR_DEPTH)<0 || Static(s,l,local.shadow[face],true,light_sector)<0)return s.failure;
+                if(Pass(s,l,local_shadow_size,local_shadow_size,0,0,0,map,KICH_R4_CLEAR_DEPTH)<0)return s.failure;
+                if(record)record->begun=true;
+                if(Static(s,l,local.shadow[face],true,light_sector)<0)return s.failure;
                 kich_r4_lighting::Constants c=local;c.mvp=local.shadow[face];
                 if(Models(s,l,stream,captured,ShadowModels,c)<0 || details.Draw(s,l,cb,c,true,input.engine_frame,phase,RENDER_SNAPSHOT_PASS_LOCAL_SHADOW)<0)return s.failure;
+                shadow_record.FinishLocal();
                 kich_r4_telemetry::Text("SHADOW",phase,"execution","PASS_COMPLETED");++shadow_passes;++frame_local_shadow_faces;}
             if(light_source.type==2)++frame_spot_shadow_lights;else ++frame_point_shadow_lights;}
         Mark(s,1);

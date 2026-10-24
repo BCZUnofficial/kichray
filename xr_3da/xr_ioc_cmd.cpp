@@ -15,6 +15,9 @@
 #include "ResourceManager.h"
 
 #include "xr_object.h"
+#include "KichR4Native.h"
+#include "KichR4RecordControl.h"
+#include "KichR4OpticalRules.h"
 
 xr_token snd_freq_token[] = {{"22khz", sf_22K}, {"44khz", sf_44K}, {0, 0}};
 xr_token snd_model_token[] = {{"Default", 0}, {"Normal", 1}, {"Light", 2}, {"High", 3}, {0, 0}};
@@ -24,6 +27,78 @@ extern xr_token* vid_mode_token;
 xr_token vid_quality_token[] = {{"renderer_r1", 0}, {"renderer_r2a", 1}, {"renderer_r2", 2}, {0, 0}};
 
 xr_token vid_bpp_token[] = {{"16", 16}, {"32", 32}, {0, 0}};
+// E1.7 recording commands. Kept in the EXE; none launches a full snapshot.
+#if !defined(DEDICATED_SERVER) && !defined(_EDITOR)
+namespace {
+bool R4RecordCommandAvailable(){
+    if(KichR4_NativeActive())return true;
+    Msg("! R4 recording commands require native R4 (-kich_r4_game).");return false;
+}
+bool R4RecordBoolean(LPCSTR args,bool& value){
+    if(!args || (args[0]!='0' && args[0]!='1') || args[1])return false;
+    value=args[0]=='1';return true;
+}
+}
+class CCC_LogRecord : public IConsole_Command {
+public:
+    CCC_LogRecord(LPCSTR name):IConsole_Command(name){bEmptyArgsHandled=TRUE;}
+    void Execute(LPCSTR args){
+        if(!R4RecordCommandAvailable())return;
+        if(!args || !args[0]){Msg("[R4 record] requested=%u active=%u; log_record 1 starts, 0 stops; errors remain enabled",
+            unsigned(kich_r4_record::Requested()),unsigned(kich_r4_record::Enabled()));return;}
+        bool value=false;if(!R4RecordBoolean(args,value)){Msg("! usage: log_record 0|1");return;}
+        KichR4_RecordSet(value);
+        Msg("[R4 record] requested=%u; applies at next frame boundary; errors remain enabled",unsigned(value));
+    }
+    void Status(TStatus& value){sprintf_s(value,"%u",unsigned(kich_r4_record::Requested()));}
+    void Save(IWriter*){}
+};
+class CCC_LogMark : public IConsole_Command {
+public:
+    CCC_LogMark(LPCSTR name):IConsole_Command(name){bEmptyArgsHandled=TRUE;bLowerCaseArgs=FALSE;}
+    void Execute(LPCSTR args){
+        if(!R4RecordCommandAvailable())return;
+        unsigned length=0;
+        if(args)for(;length<64 && args[length];++length){const unsigned char c=static_cast<unsigned char>(args[length]);
+            if(!((c>='a' && c<='z') || (c>='A' && c<='Z') || (c>='0' && c<='9') || c=='_' || c=='-' || c=='.' || c==':'))break;}
+        if(!args || !length || length>=64 || args[length]){Msg("! usage: log_mark label (1..63 letters/digits or _-.:)");return;}
+        if(!kich_r4_record::Requested()){Msg("! log_mark requires log_record 1");return;}
+        KichR4_RecordMark(args);
+    }
+    void Save(IWriter*){}
+};
+class CCC_LogWatch : public IConsole_Command {
+public:
+    CCC_LogWatch(LPCSTR name):IConsole_Command(name){bEmptyArgsHandled=TRUE;}
+    void Execute(LPCSTR args){
+        if(!R4RecordCommandAvailable())return;
+        bool value=false;if(!R4RecordBoolean(args,value)){Msg("! usage: log_watch 0|1 (1 selects an object along the camera ray)");return;}
+        if(value && !kich_r4_record::Requested()){Msg("! log_watch 1 requires log_record 1");return;}
+        KichR4_RecordWatch(value);
+    }
+    void Save(IWriter*){}
+};
+class CCC_R4DebugView : public IConsole_Command {
+public:
+    CCC_R4DebugView(LPCSTR name):IConsole_Command(name){bEmptyArgsHandled=TRUE;}
+    void Execute(LPCSTR args){
+        if(!R4RecordCommandAvailable())return;
+        if(!args || !args[0]){const unsigned view=KichR4_RecordView();Msg("[R4 record] debug_view=%u %s",view,kich_r4_optics::DebugView(view));return;}
+        unsigned view=kich_r4_optics::DebugViewCount;
+        const char* aliases[]={"normal","hemi","baked_rgb","sun_mask","sun_shadow"};
+        const unsigned values[]={0,5,6,7,8};
+        for(unsigned i=0;i<sizeof(values)/sizeof(values[0]);++i)if(!xr_strcmp(args,aliases[i])){view=values[i];break;}
+        if(view==kich_r4_optics::DebugViewCount){unsigned value=0,i=0;
+            for(;args[i]>='0' && args[i]<='9' && i<3;++i)value=value*10+unsigned(args[i]-'0');
+            if(i && !args[i] && value<kich_r4_optics::DebugViewCount)view=value;}
+        if(view>=kich_r4_optics::DebugViewCount){Msg("! usage: r4_debug_view normal|hemi|baked_rgb|sun_mask|sun_shadow or 0..12");return;}
+        KichR4_RecordView(view);Msg("[R4 record] debug_view=%u %s; diagnostic frames excluded from normal FPS",view,kich_r4_optics::DebugView(view));
+    }
+    void Status(TStatus& value){sprintf_s(value,"%u",KichR4_RecordView());}
+    void Save(IWriter*){}
+};
+#endif
+// End E1.7 recording commands.
 //-----------------------------------------------------------------------
 class CCC_Quit : public IConsole_Command
 {
@@ -614,6 +689,12 @@ ENGINE_API int ps_r__Supersample = 1;
 void CCC_Register()
 {
 	// General
+#if !defined(DEDICATED_SERVER) && !defined(_EDITOR)
+    CMD1(CCC_LogRecord, "log_record");
+    CMD1(CCC_LogMark, "log_mark");
+    CMD1(CCC_LogWatch, "log_watch");
+    CMD1(CCC_R4DebugView, "r4_debug_view");
+#endif
 	CMD1(CCC_Help, "help");
 	CMD1(CCC_Quit, "quit");
 	CMD1(CCC_Start, "start");

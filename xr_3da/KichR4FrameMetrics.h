@@ -4,9 +4,22 @@
 #include <chrono>
 #include <cmath>
 #include <stdint.h>
+#include "KichR4RecordControl.h"
 namespace kich_r4_metrics {
 typedef std::chrono::steady_clock Clock;
 inline double Elapsed(Clock::time_point start){return std::chrono::duration<double,std::milli>(Clock::now()-start).count();}
+// Disabled probes do not read a clock at either endpoint. Freeze the decision
+// for this short scope so a later recording request cannot create a fake span.
+template<class TimeSource> struct Measurement {
+    typename TimeSource::time_point started;
+    bool measured;
+    explicit Measurement(bool enabled):started(),measured(enabled){if(measured)started=TimeSource::now();}
+};
+template<class TimeSource> inline double Elapsed(const Measurement<TimeSource>& stamp){
+    return stamp.measured?std::chrono::duration<double,std::milli>(TimeSource::now()-stamp.started).count():0;
+}
+typedef Measurement<Clock> Stamp;
+inline Stamp Start(bool snapshot=false){return Stamp(kich_r4_record::Measure(snapshot));}
 // Present-to-present wall time, including game work and vsync. No GPU/CPU-frame correlation implied.
 struct Window {
     double times[120],interval,report_ms;

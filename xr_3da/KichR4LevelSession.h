@@ -23,6 +23,26 @@ struct KichR4LevelSession {
     uint32_t textures_loaded,texture_fallbacks,budget_skips,frames,visible,culled,camera_steps,revision,cull,depth;
     uint64_t texture_bytes,submitted_triangles,submitted_draws;
     double texture_io_ms=0,texture_parse_ms=0,texture_create_ms=0;
+    // Preflight probes reuse actual residency work; no diagnostic traversal.
+    // traversal/commit are inclusive scopes. planning/io/parse/upload are
+    // nested attribution and must not be added to their parent times.
+    struct PreflightProbe {
+        bool measured=false;
+        double traversal_ms=0,planning_ms=0,commit_ms=0,io_ms=0,parse_ms=0,upload_ms=0;
+        uint64_t opens=0,open_failures=0,source_bytes=0,prepared_hits=0,prepared_bytes=0;
+        uint64_t metadata_hits=0,retry_skips=0,resident_hits=0,uploads=0,upload_bytes=0,upload_failures=0,evictions=0;
+    } preflight_probe;
+    PreflightProbe* texture_probe=NULL;
+    bool texture_measure_snapshot=false;
+    struct PreflightProbeScope {
+        KichR4LevelSession& level;PreflightProbe* previous;bool snapshot_before;uint64_t evictions_before;
+        PreflightProbeScope(KichR4LevelSession& owner,bool snapshot):level(owner),previous(owner.texture_probe),snapshot_before(owner.texture_measure_snapshot),evictions_before(owner.texture_registry.evictions){
+            level.preflight_probe=PreflightProbe();level.preflight_probe.measured=kich_r4_record::Measure(snapshot);
+            level.texture_probe=level.preflight_probe.measured?&level.preflight_probe:NULL;level.texture_measure_snapshot=snapshot;
+        }
+        ~PreflightProbeScope(){if(level.preflight_probe.measured)level.preflight_probe.evictions=level.texture_registry.evictions-evictions_before;
+            level.texture_probe=previous;level.texture_measure_snapshot=snapshot_before;}
+    };
     bool textured,cancelled;
     std::string detail;
     void (*log)(const char*);
@@ -55,6 +75,7 @@ struct KichR4LevelSession {
     void TakePreparedTexture(const std::string& key,std::vector<unsigned char>& bytes){
         SyncPreparedTextures();const auto found=prepared_textures.find(key);if(found==prepared_textures.end())return;
         bytes.swap(found->second);prepared_texture_bytes-=bytes.size();prepared_textures.erase(found);
+        if(texture_probe){++texture_probe->prepared_hits;texture_probe->prepared_bytes+=bytes.size();}
     }
     int32_t Expect(KichR4FrameSession& s,const char* step,int32_t hr){return bridge.Expect(s,step,hr);}
     int32_t Compile(KichR4FrameSession& s,uint32_t kind,const char* source,KichR4Handle* out){
@@ -94,12 +115,15 @@ struct KichR4LevelSession {
     }
     int32_t OpenTexture(kich_r4_level::File& file,const std::string& name){
         std::string path=name;if(path.size()<4 || kich_r4_level::Lower(path.substr(path.size()-4))!=".dds")path+=".dds";
-        const auto started=kich_r4_metrics::Clock::now();int32_t opened;
+        const auto started=kich_r4_metrics::Start(texture_measure_snapshot);int32_t opened;
         if(texture_override){const bool absolute=name.find(':')!=std::string::npos || name[0]=='\\' || name[0]=='/';
             if(absolute)opened=file.Open("$r4_absolute$",path.c_str());
             else{opened=file.Open("$level$",path.c_str());if(opened!=0)opened=file.Open("$game_saves$",path.c_str());if(opened!=0)opened=file.Open("$game_textures$",path.c_str());}}
         else opened=file.Open("$game_textures$",path.c_str());
-        texture_io_ms+=kich_r4_metrics::Elapsed(started);return opened;
+        const double elapsed=kich_r4_metrics::Elapsed(started);texture_io_ms+=elapsed;
+        if(texture_probe){texture_probe->io_ms+=elapsed;++texture_probe->opens;
+            if(opened)++texture_probe->open_failures;else texture_probe->source_bytes+=file.view.bytes;}
+        return opened;
     }
     static void TextureLevels(kich_r4_texture::Entry& entry,const kich_r4_dds::Image& image){
         entry.faces=image.faces;entry.levels.clear();uint64_t remaining=kich_r4_dds::UploadBytes(image);
@@ -120,16 +144,18 @@ struct KichR4LevelSession {
         kich_r4_texture::Entry& e=texture_registry.entries[key];
         if(e.source.empty())e.source=name;
         e.role=e.wanted==texture_registry.epoch?(std::min)(e.role,role):role;e.wanted=texture_registry.epoch;
-        if(!e.levels.empty() || e.retry>texture_registry.epoch)return;
+        if(!e.levels.empty() || e.retry>texture_registry.epoch){if(texture_probe){
+            if(!e.levels.empty())++texture_probe->metadata_hits;else ++texture_probe->retry_skips;}return;}
         kich_r4_level::File file(files);const int32_t opened=OpenTexture(file,e.source);
-        const auto started=kich_r4_metrics::Clock::now();kich_r4_dds::Image image={};
+        const auto started=kich_r4_metrics::Start(texture_measure_snapshot);kich_r4_dds::Image image={};
         const bool parsed=opened==0 && kich_r4_dds::Parse(file.view.data,file.view.bytes,16384,image);
         if(parsed){TextureLevels(e,image);PrepareTexture(key,file.view);}
         else{e.reason=opened?kich_r4_texture::SourceUnavailable:kich_r4_texture::InvalidLayout;e.failure=opened?opened:KICH_R4_E_UNSUPPORTED;e.retry=texture_registry.epoch+300;}
-        texture_parse_ms+=kich_r4_metrics::Elapsed(started);
+        const double elapsed=kich_r4_metrics::Elapsed(started);texture_parse_ms+=elapsed;if(texture_probe)texture_probe->parse_ms+=elapsed;
     }
     int32_t CommitTexturePlan(KichR4FrameSession& s,bool pump_loading=false){
         PreparedScope prepared(*this);try{
+        const auto planning_started=kich_r4_metrics::Start(texture_measure_snapshot);
         texture_registry.Plan();uint64_t required=0;
         auto release=[&](uint64_t h){const int32_t hr=bridge.resources.release_resource(s.device,h);if(hr<0)s.Record("E1.2 texture residency release",hr);return hr;};
         std::vector<kich_r4_texture::Entry*> work;
@@ -144,6 +170,7 @@ struct KichR4LevelSession {
         }
         if(!texture_registry.MakeRoom(required,release))return s.failure<0?s.failure:s.Record("E1.2 planned texture capacity",KICH_R4_E_MEMORY);
         std::stable_sort(work.begin(),work.end(),[](const kich_r4_texture::Entry* a,const kich_r4_texture::Entry* b){return a->role<b->role;});
+        const double planning_elapsed=kich_r4_metrics::Elapsed(planning_started);if(texture_probe)texture_probe->planning_ms+=planning_elapsed;
         for(size_t i=0;i<work.size();++i){if(pump_loading && !work[i]->handle)Continue();Texture(s,work[i]->source);if(s.failure<0)return s.failure;}
         texture_bytes=texture_registry.bytes;return KICH_R4_OK;
         }catch(const Cancel&){cancelled=true;return KICH_R4_FRAME_SUSPENDED;}
@@ -157,21 +184,21 @@ struct KichR4LevelSession {
         entry.touched=texture_registry.epoch;
         if(entry.source.empty())entry.source=name;
         if(entry.planned==texture_registry.epoch && entry.choice==UINT32_MAX)return checker;
-        if(entry.handle)return entry.handle;
+        if(entry.handle){if(texture_probe)++texture_probe->resident_hits;return entry.handle;}
         // UI admission precedes world submission and may now evict yesterday's
         // world textures. Do not keep a previous late-frame budget failure on
         // cooldown when this ordered admission explicitly requests a retry.
         if(retry_budget && entry.reason==kich_r4_texture::BudgetPressure)entry.retry=0;
-        if(entry.retry>texture_registry.epoch)return checker;
+        if(entry.retry>texture_registry.epoch){if(texture_probe)++texture_probe->retry_skips;return checker;}
         KichR4Handle result=checker;kich_r4_level::File file(files);std::vector<unsigned char> prepared;
         TakePreparedTexture(key,prepared);
-        const int32_t opened=prepared.empty()?OpenTexture(file,name):KICH_R4_OK;auto measured=kich_r4_metrics::Clock::now();
+        const int32_t opened=prepared.empty()?OpenTexture(file,name):KICH_R4_OK;auto measured=kich_r4_metrics::Start(texture_measure_snapshot);
         const unsigned char* data=prepared.empty()?file.view.data:prepared.data();
         const uint32_t bytes=prepared.empty()?file.view.bytes:static_cast<uint32_t>(prepared.size());
         kich_r4_dds::Image image={};int32_t hr=opened;
         const bool parsed=opened==0 && kich_r4_dds::Parse(data,bytes,16384,image);
         entry.reason=opened!=0?kich_r4_texture::SourceUnavailable:!parsed?kich_r4_texture::InvalidLayout:kich_r4_texture::UploadFailed;
-        texture_parse_ms+=kich_r4_metrics::Elapsed(measured);
+        const double parse_elapsed=kich_r4_metrics::Elapsed(measured);texture_parse_ms+=parse_elapsed;if(texture_probe)texture_probe->parse_ms+=parse_elapsed;
         if(parsed){
             if(entry.levels.empty())TextureLevels(entry,image);
             uint32_t dimension=entry.planned==texture_registry.epoch?entry.levels[entry.choice].dimension:16384;
@@ -185,9 +212,11 @@ struct KichR4LevelSession {
                 kich_r4_dds::Image smaller={};if(!kich_r4_dds::Parse(data,bytes,dimension,smaller))break;
                 image=smaller;payload=kich_r4_dds::UploadBytes(image);room=texture_registry.MakeRoom(payload,release);}
             if(room){const KichR4DdsDesc d={sizeof(d),dimension,0};
-                measured=kich_r4_metrics::Clock::now();
+                measured=kich_r4_metrics::Start(texture_measure_snapshot);
                 KichR4Handle loaded=0;hr=api.create_texture_dds(s.device,&d,data,bytes,&loaded);
-                texture_create_ms+=kich_r4_metrics::Elapsed(measured);
+                const double upload_elapsed=kich_r4_metrics::Elapsed(measured);texture_create_ms+=upload_elapsed;
+                if(texture_probe){texture_probe->upload_ms+=upload_elapsed;
+                    if(hr==0 && loaded){++texture_probe->uploads;texture_probe->upload_bytes+=payload;}else ++texture_probe->upload_failures;}
                 if(hr==0 && loaded){result=loaded;++textures_loaded;entry.handle=loaded;entry.bytes=payload;texture_registry.bytes+=payload;entry.reason=kich_r4_texture::Ready;entry.width=image.width;entry.height=image.height;entry.mips=image.count;
                     for(size_t i=0;i<entry.levels.size();++i)if(entry.levels[i].width==image.width && entry.levels[i].height==image.height){entry.resident=static_cast<uint32_t>(i);break;}}
                 else if(loaded)bridge.resources.release_resource(s.device,loaded);
@@ -203,7 +232,7 @@ struct KichR4LevelSession {
     }
     int32_t Start(KichR4FrameSession& s,const char* name){try{
         ClearPreparedTextures();
-        const auto started=kich_r4_metrics::Clock::now();auto measured=started;double io_ms=0,parse_ms=0;
+        const auto started=kich_r4_metrics::Start(texture_measure_snapshot);auto measured=started;double io_ms=0,parse_ms=0;
         Continue();kich_r4_level::Check(files.open && files.close,"engine filesystem adapter unavailable");
         kich_r4_level::Check(name && kich_r4_level::SafeName(name) && strlen(name)<64 && !strchr(name,'\\') && !strchr(name,'/'),"invalid level name");
         Write("[R4 bridge B4.2] loading: $game_levels$/%s/level + level.geom",name);
@@ -211,7 +240,7 @@ struct KichR4LevelSession {
             kich_r4_level::File level(files),geom(files);const std::string prefix=std::string(name)+"\\";
             if(Expect(s,"B4.2 open level",level.Open("$game_levels$",(prefix+"level").c_str()))<0)return s.failure;
             if(Expect(s,"B4.2 open level.geom",geom.Open("$game_levels$",(prefix+"level.geom").c_str()))<0)return s.failure;
-            io_ms=kich_r4_metrics::Elapsed(measured);measured=kich_r4_metrics::Clock::now();
+            io_ms=kich_r4_metrics::Elapsed(measured);measured=kich_r4_metrics::Start(texture_measure_snapshot);
             kich_r4_level::Parse(level.Data(),geom.Data(),scene);parse_ms=kich_r4_metrics::Elapsed(measured);
         }
         Write("[R4 bridge B4.2] level=%s; visuals=%u static_meshes=%u trees=%u skipped_nodes=%u triangles=%u; CPU geometry=%u MiB",
@@ -225,7 +254,7 @@ struct KichR4LevelSession {
         p.elements[0]={KICH_R4_POSITION,0,KICH_R4_FLOAT3,0};p.elements[1]={KICH_R4_TEXCOORD,0,KICH_R4_FLOAT2,12};
         if(Expect(s,"B4.2 textured pipeline",api.create_pipeline(s.device,&p,&bridge.pipeline))<0)return s.failure;
         if((!white && Placeholder(s,false,&white)<0) || (!checker && Placeholder(s,true,&checker)<0))return s.failure;
-        measured=kich_r4_metrics::Clock::now();
+        measured=kich_r4_metrics::Start(texture_measure_snapshot);
         for(size_t i=0;i<scene.vertices.size();++i){Continue();std::vector<kich_r4_level::Vertex>& data=scene.vertices[i].vertices;KichR4Handle handle=0;
             b.kind=KICH_R4_VERTEX_BUFFER;b.stride=sizeof(data[0]);b.byte_size=static_cast<uint32_t>(data.size()*sizeof(data[0]));
             if(Expect(s,"B4.2 vertex buffer",bridge.resources.create_buffer(s.device,&b,data.data(),b.byte_size,&handle))<0)return s.failure;
@@ -240,7 +269,7 @@ struct KichR4LevelSession {
         for(size_t i=0;i<materials.size();++i)if(!texture_override && used[i]){Continue();materials[i]=Texture(s,scene.materials[i].texture);}
         Write("[R4 bridge B4.2] ready: VBs=%u IBs=%u; DDS loaded=%u fallback=%u budget_skips=%u; texture payload=%u MiB; base color / alpha cutout",
             static_cast<uint32_t>(vertex_buffers.size()),static_cast<uint32_t>(index_buffers.size()),textures_loaded,texture_fallbacks,budget_skips,static_cast<uint32_t>(texture_bytes/(1024u*1024u)));
-        if(texture_override)Write("[R4 G3e load] level_io_ms=%.3f parse_basis_ms=%.3f geometry_create_ms=%.3f level_setup_ms=%.3f; texture phases reported after material resolution; CPU wall times, not GPU durations",io_ms,parse_ms,buffers_ms,kich_r4_metrics::Elapsed(started));
+        if(texture_override && started.measured)Write("[R4 G3e load] level_io_ms=%.3f parse_basis_ms=%.3f geometry_create_ms=%.3f level_setup_ms=%.3f; texture phases reported after material resolution; CPU wall times, not GPU durations",io_ms,parse_ms,buffers_ms,kich_r4_metrics::Elapsed(started));
         return KICH_R4_OK;
     }catch(const Cancel&){cancelled=true;return KICH_R4_FRAME_SUSPENDED;}
      catch(const std::bad_alloc&){detail="viewer allocation failed";return s.Record("B4.2 load level",KICH_R4_E_MEMORY);}

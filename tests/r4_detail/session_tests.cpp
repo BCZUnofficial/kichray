@@ -139,9 +139,18 @@ void IndependentShadowLists(){Fixture fixture;f=&fixture;ResetDeferredRecorder()
     const KichR4FrameColor color={sizeof(color),{0,0,0,1}};Require(game.frame.BeginClear(color)==0,"begin explicit detail regression frame");BeginSnapshot(78);
     Require(game.deferred.Pass(game.frame,game.level,2048,2048,0,0,0,game.deferred.sun_map,KICH_R4_CLEAR_DEPTH)==0,"begin independent light volume");
     auto constants=game.deferred.base;constants.mvp=kich_r4_scene::Identity();constants.mvp.m[12]=-10;
+    kich_r4_shadow_record::Pass left_record,right_record;left_record.signatures=right_record.signatures=true;
+    {kich_r4_shadow_record::Scope scope(&left_record);
     Require(details.Draw(game.frame,game.level,game.deferred.cb,constants,true,78,"light_left",RENDER_SNAPSHOT_PASS_LOCAL_SHADOW)==0 && details.selected_instances.size()==1 && details.selected_instances[0].row[0][3]==10,"off-camera caster selected by first light volume");
+    }
     constants.mvp.m[12]=-30;
+    {kich_r4_shadow_record::Scope scope(&right_record);
     Require(details.Draw(game.frame,game.level,game.deferred.cb,constants,true,78,"light_right",RENDER_SNAPSHOT_PASS_LOCAL_SHADOW)==0 && details.selected_instances.size()==1 && details.selected_instances[0].row[0][3]==30,"second light volume gets distinct compact instance list");
+    }
+    const auto& left_work=left_record.work[kich_r4_shadow_record::Detail];const auto& right_work=right_record.work[kich_r4_shadow_record::Detail];
+    Require(left_work.draws==1 && left_work.casters==1 && left_work.indices==3 && !left_work.unknown_ids,"detail observer counts actual submitted instances and expanded index work");
+    Require(left_work.id_sum!=right_work.id_sum || left_work.id_xor!=right_work.id_xor,"equal-sized detail lists distinguish different world-space casters");
+    Require(!kich_r4_shadow_record::Active(),"detail observations do not remain bound after pass scope");
     constants.mvp.m[12]=-100;
     Require(details.Draw(game.frame,game.level,game.deferred.cb,constants,true,78,"empty_light",RENDER_SNAPSHOT_PASS_LOCAL_SHADOW)==0 && details.selected_instances.empty(),"empty light volume neither uploads nor replays stale instances");
     Require(instance_uploads==uploads+2 && details.shadow_upload_bytes==128 && details.shadow_candidates==6 && details.shadow_culled==4,"per-light selected upload sizes and culling accounting exact");

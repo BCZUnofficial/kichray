@@ -5,6 +5,7 @@
 #include "KichR4Game.h"
 #include "KichR4Native.h"
 #include "KichR4FramePhases.h"
+#include "KichR4RecordControl.h"
 #include "RenderSnapshot.h"
 
 #pragma warning(disable : 4995)
@@ -197,6 +198,10 @@ void CRenderDevice::Run()
 		{
 			if (b_is_Ready)
 			{
+				// Latch console requests before any work owned by the next frame.
+				// A recording epoch must not inherit a previous session's hitch gap.
+				if (kich_r4_record::BeginFrame(dwFrame + 1))
+					kich_r4_phases::Global().Reset();
 #ifdef DEDICATED_SERVER
 				u32 FrameStartTime = TimerGlobal.GetElapsed_ms();
 #endif
@@ -214,7 +219,7 @@ void CRenderDevice::Run()
 					continue;
 				}
 				kich_r4_phases::Tracker* phase_clock = 0;
-				if (KichR4_NativeActive() && b_is_Active && g_pGameLevel && !dwPrecacheFrame)
+				if (kich_r4_record::Measure(g_render_snapshot_active) && KichR4_NativeActive() && b_is_Active && g_pGameLevel && !dwPrecacheFrame)
 				{
 					phase_clock = &kich_r4_phases::Global();
 					phase_clock->Begin(dwFrame + 1, kich_r4_phases::Counter(), kich_r4_phases::Frequency());

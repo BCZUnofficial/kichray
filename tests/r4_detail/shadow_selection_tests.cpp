@@ -137,5 +137,33 @@ void Benchmark(){
     Equivalent(details,Box(0,0,0,3000),false);Require(details.shadow_hit_marks.size()==source.shadow_instances.size(),"wide spatial hits restore source order with linear marks");
 
 }
+void ProbeGating(){
+    auto source=Source();Grid(source,12);KichR4DetailSession details;details.source=&source;kich_r4_visibility::SunCasterVolume volume;
+    kich_r4_record::Request(false);kich_r4_record::BeginFrame(77);details.BeginVisibilityFrame(77,volume);
+    const Matrix views[]={Box(0,0,0,2),Box(2,0,0,3),Box(-2,0,0,4)};
+    for(unsigned i=0;i<3;++i)Equivalent(details,views[i],i<2);
+    const auto off=details.SelectShadow(views[2],false).instances;
+    Require(details.shadow_index_builds==1 && details.shadow_index_ms==0 && details.shadow_select_ms==0 && !details.shadow_rebuild_reasons,
+        "OFF performs same shadow work without diagnostic clocks/reason collection");
+    ++source.engine_frame;kich_r4_record::Request(true);kich_r4_record::BeginFrame(source.engine_frame);details.BeginVisibilityFrame(source.engine_frame,volume);
+    for(unsigned i=0;i<3;++i)Equivalent(details,views[i],i<2);
+    Require(details.SelectShadow(views[2],false).instances==off && details.shadow_index_refits==1 && !details.shadow_rebuild_reasons,
+        "recording cannot change shadow selection, reuse or rebuild policy");
+    Require(std::fabs(details.shadow_index_ms-details.shadow_bounds_ms-details.shadow_bvh_build_ms-details.shadow_bvh_refit_ms)<.00001 &&
+        std::fabs(details.shadow_select_ms-details.shadow_sun_select_ms-details.shadow_local_select_ms)<.00001,
+        "detail attribution splits legacy totals without overlapping bounds/build/refit or sun/local");
+    ++source.engine_frame;std::reverse(source.shadow_instances.begin(),source.shadow_instances.end());details.BeginVisibilityFrame(source.engine_frame,volume);
+    Require((details.shadow_rebuild_reasons & KichR4DetailSession::OriginOrderChanged)!=0 && !(details.shadow_rebuild_reasons & KichR4DetailSession::CountChanged),
+        "packed reorder is attributed separately from candidate count changes");
+    for(unsigned i=0;i<3;++i)Equivalent(details,views[i],i<2);
+    kich_r4_record::Request(false);kich_r4_record::BeginFrame(++source.engine_frame);g_render_snapshot_active=true;
+    ++source.generation;details.BeginVisibilityFrame(source.engine_frame,volume);
+    Require((details.shadow_rebuild_reasons & KichR4DetailSession::SourceChanged)!=0,"explicit snapshot still captures rebuild cause while ordinary recording OFF");
+    for(unsigned i=0;i<3;++i)Equivalent(details,views[i],i<2);
+    g_render_snapshot_active=false;++source.engine_frame;details.BeginVisibilityFrame(source.engine_frame,volume);
+    Require(!details.shadow_rebuild_reasons && details.shadow_bounds_ms==0 && details.shadow_bvh_build_ms==0 && details.shadow_bvh_refit_ms==0 &&
+        details.shadow_sun_select_ms==0 && details.shadow_local_select_ms==0,"OFF starts a clean probe after snapshot or recording ends");
 }
-int main(){try{SpatialEquivalence();BoundaryAndUnknown();Lifecycle();Benchmark();printf("E1.4 detail shadow selection: %u checks passed\n",checks);return 0;}catch(const std::exception& error){fprintf(stderr,"FAIL: %s\n",error.what());return 1;}}
+
+}
+int main(){try{SpatialEquivalence();BoundaryAndUnknown();Lifecycle();Benchmark();ProbeGating();printf("E1.4 detail shadow selection: %u checks passed\n",checks);return 0;}catch(const std::exception& error){fprintf(stderr,"FAIL: %s\n",error.what());return 1;}}

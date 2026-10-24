@@ -4,6 +4,7 @@
 #include "RenderSnapshot.h"
 #include "KichR4ShadowPoolPolicy.h"
 #include "KichR4LightTransitions.h"
+#include "KichR4RecordControl.h"
 #include <memory>
 #include <cstdio>
 namespace {
@@ -14,9 +15,20 @@ struct FrozenLighting {
     kich_r4_shadow_pool::ResolutionPolicy resolution;
     std::unique_ptr<kich_r4_light_transitions::Tracker> transitions;
     std::unique_ptr<kich_r4_light_admission::Policy> admission;
+    uint64_t diagnostic_epoch;bool diagnostics,diagnostic_failed;
     float camera[3];uint32_t frame;bool ready;
-    FrozenLighting():camera(),frame(0),ready(false){}
+    FrozenLighting():diagnostic_epoch(0),diagnostics(false),diagnostic_failed(false),camera(),frame(0),ready(false){}
 } frozen_lighting;
+void SyncLightingDiagnostics(){
+    const bool enabled=kich_r4_record::Measure(g_render_snapshot_active);
+    const uint64_t epoch=kich_r4_record::Epoch();
+    if(frozen_lighting.diagnostic_epoch==epoch && frozen_lighting.diagnostics==enabled)return;
+    frozen_lighting.diagnostic_epoch=epoch;frozen_lighting.diagnostics=enabled;frozen_lighting.diagnostic_failed=false;
+    if(frozen_lighting.transitions)frozen_lighting.transitions->Reset();
+    // Clear only report counters. Visibility admission and resolution history
+    // remain live rendering policy with recording either on or off.
+    if(frozen_lighting.admission)frozen_lighting.admission->Reported();
+}
 template<class F>void GuardCapture(F action){if(!capture)return;try{action(*capture);}
     catch(const std::exception& e){try{capture->frame.Fail(e.what());}catch(...) {}}
     catch(...){try{capture->frame.Fail("CPU capture exception");}catch(...) {}}}
@@ -46,6 +58,7 @@ void KichR4_CaptureLighting(const float* camera,KichR4LightingFrame& frame,bool 
     try{capture->SelectLights(camera,frame,r1_lights_enabled,camera_vp,light_visibility);}catch(...){frame.count=0;frame.shadow_mask=0;}
 }
 void KichR4_ResetFrozenLighting(){frozen_lighting.ready=false;frozen_lighting.resolution.Reset();
+    frozen_lighting.diagnostic_failed=false;
     if(frozen_lighting.admission)frozen_lighting.admission->Reset();
     if(frozen_lighting.transitions)frozen_lighting.transitions->Reset();}
 bool KichR4_CopyFrozenLighting(uint32_t engine_frame,const float* camera,const float* camera_vp,KichR4LightingFrame& out){
@@ -57,6 +70,7 @@ bool KichR4_CopyFrozenLighting(uint32_t engine_frame,const float* camera,const f
     return copied;
 }
 void KichR4_FreezeLighting(uint32_t engine_frame,uint32_t now_ms,const float* camera,KichR4LightingFrame& frame,bool r1_lights_enabled,const float* camera_vp){
+    SyncLightingDiagnostics();
     if(KichR4_CopyFrozenLighting(engine_frame,camera,camera_vp,frame))return;
     frozen_lighting.ready=false;
     frame.selection_frame=frame.local_shadow_size=frame.shadow_plan_faces=0;
@@ -76,11 +90,15 @@ void KichR4_FreezeLighting(uint32_t engine_frame,uint32_t now_ms,const float* ca
         frame.shadow_plan_faces=faces;frame.selection_frame=engine_frame;
         frame.shadow_resolution_changes=next.Downgrades()+next.Recoveries();
         frame.shadow_resolution_reason=frame.local_shadow_size<before?1u:frame.local_shadow_size>before?2u:0u;
-        if(!frozen_lighting.transitions)frozen_lighting.transitions.reset(new kich_r4_light_transitions::Tracker());
+        if(frozen_lighting.diagnostics && !frozen_lighting.diagnostic_failed && !frozen_lighting.transitions){
+            try{frozen_lighting.transitions.reset(new kich_r4_light_transitions::Tracker());}
+            catch(...){frozen_lighting.diagnostic_failed=true;}}
         // Publish only after every potentially allocating copy succeeded.
         // Later mutations enter the next frame, including weather changes.
         frozen_lighting.value=frame;
-        frozen_lighting.transitions->Observe(frozen_lighting.value);
+        if(frozen_lighting.diagnostics && !frozen_lighting.diagnostic_failed){
+            try{frozen_lighting.transitions->Observe(frozen_lighting.value);}
+            catch(...){frozen_lighting.diagnostic_failed=true;}}
         frozen_lighting.admission->Commit();
         frozen_lighting.resolution=next;memcpy(frozen_lighting.camera,camera,sizeof(frozen_lighting.camera));
         frozen_lighting.frame=engine_frame;frozen_lighting.ready=true;
@@ -88,10 +106,14 @@ void KichR4_FreezeLighting(uint32_t engine_frame,uint32_t now_ms,const float* ca
     if(!frozen_lighting.ready){frame.valid=frame.count=frame.shadow_mask=0;frame.local_shadow_size=frame.shadow_plan_faces=0;}
 }
 void KichR4_ReportLightingTransitions(uint32_t engine_frame,void (*log)(const char*)){
-    if(!log || !capture || !frozen_lighting.ready || frozen_lighting.frame!=engine_frame || !frozen_lighting.transitions)return;
+    SyncLightingDiagnostics();
+    if(!frozen_lighting.diagnostics)return;
+    if(!log || !capture || !frozen_lighting.ready || frozen_lighting.frame!=engine_frame)return;
+    if(frozen_lighting.diagnostic_failed){try{log("[R4 E1.7 lights] transition_history=UNAVAILABLE; diagnostic_failure; rendering_policy_unchanged; retry=NEXT_RECORDING_EPOCH");}catch(...){}return;}
+    if(!frozen_lighting.transitions)return;
     kich_r4_light_transitions::Tracker& tracker=*frozen_lighting.transitions;
     if(!tracker.window.snapshots)return;
-    GuardCapture([&](kich_r4_capture::State&){
+    try{
         const kich_r4_light_transitions::Counters& counts=tracker.window;
         const kich_r4_light_admission::Counts& hom=frozen_lighting.admission->last;
         const kich_r4_light_admission::Counts& hom_window=frozen_lighting.admission->window;
@@ -119,7 +141,7 @@ void KichR4_ReportLightingTransitions(uint32_t engine_frame,void (*log)(const ch
         }
         tracker.Reported();
         frozen_lighting.admission->Reported();
-    });
+    }catch(...){frozen_lighting.diagnostic_failed=true;}
 }
 void KichR4_CaptureLightingDiagnostics(const float* camera,const KichR4LightingFrame& frame){
     if(!g_render_snapshot_active || !capture)return;
@@ -164,7 +186,7 @@ void KichR4_CaptureSubmitModel(const kich_r4_capture::ModelInput& input){GuardCa
         const uint32_t bit=1u<<input.skin_mode;if(!(mesh.diagnostic_modes&bit)){mesh.diagnostic_modes|=bit;
             c.Diagnostic("2W skin path: model="+found->second.name+"; mode="+(input.skin_mode==KICH_R4_SKIN_HARDWARE?"hardware clamp/u8":"software raw")+"; "+mesh.first_weight_detail);}}
     try{if(c.native_models)c.frame.NativeModel(input.visual,found->second.mesh,world,vp,bones,input.bone_count,input.count,input.first,input.triangles,input.style,input.skin_mode,
-            found->second.name.c_str(),input.shader,input.texture,input.secondary,input.effect,input.shader_element,input.shader_pass,input.skeleton,input.material,input.object_light_valid,input.object_hemi,input.object_sun);
+            found->second.name.c_str(),input.shader,input.texture,input.secondary,input.effect,input.shader_element,input.shader_pass,input.skeleton,input.material,input.object_light_valid,input.object_hemi,input.object_sun,found->second.lifecycle_serial);
         else c.frame.Model(input.visual,mesh,world,vp,bones,input.bone_count,input.count,input.first,input.triangles,input.style,input.skin_mode,found->second.name.c_str(),g_render_snapshot_active);}
     catch(const std::exception& e){c.frame.Fail(ModelError(found->second,e.what()).c_str());}
 });}
