@@ -5,6 +5,7 @@ cbuffer Frame : register(b0) {
     float4 light_position,light_direction,light_color,alpha;
     float4 material,color_scale,color_bias,sun_scale_bias,tree_wave,tree_wind;
     float4 fog_params,fog_plane; // radial offset/scale, per-draw mode, valid plane
+    row_major float4x4 receiver_inverse;
 };
 Texture2D image0:register(t0); Texture2D image1:register(t1);
 Texture2D shadow0:register(t2); Texture2D shadow1:register(t3);
@@ -17,6 +18,10 @@ SamplerState surface5:register(s6); SamplerState surface6:register(s7); SamplerS
 // Model-only slots preserve every point-shadow face and the spot projector.
 Texture2D model_bump:register(t8); Texture2D model_bump_aux:register(t9);
 SamplerState model_bump_surface:register(s9); SamplerState model_bump_aux_surface:register(s10);
+// Terrain geometry shares t8/t9 with HUD maps in a mutually exclusive mode.
+Texture2D terrain_lmap:register(t10); SamplerState terrain_lmap_surface:register(s11);
+// Fullscreen-only linear clip W; D24 remains the coverage/stencil authority.
+Texture2D receiver_depth_texture:register(t11);
 // Material flags: bump=1, baked lightmap=2, hemi map=4, detail=8,
 // vertex baked RGB=16, source sun=32, tree light scale/bias=64, emissive=256, authored wallmark=512.
 struct StaticInput {float3 p:POSITION;float2 uv:TEXCOORD0;float4 n:NORMAL;
@@ -106,29 +111,45 @@ void AlphaTest(float a){float r=alpha.x;int f=(int)alpha.y;
         (f==5 && a>r) || (f==6 && a!=r) || (f==7 && a>=r);
     if(!keep)discard;
 }
-float4 Base(Varying v){float4 c=image0.Sample(surface,v.uv)*v.c;
+float4 TerrainWeights(Varying v){float4 mask=image1.Sample(surface1,v.uv);return mask/max(dot(mask,1),.0001);}
+float4 TerrainChannels(Varying v,float4 mask){float2 tc=v.uv*material.yz;
+    return shadow4.Sample(surface6,tc)*mask.r+shadow5.Sample(surface7,tc)*mask.g+
+        model_bump.Sample(model_bump_surface,tc)*mask.b+model_bump_aux.Sample(model_bump_aux_surface,tc)*mask.a;}
+float4 TerrainBump(Varying v){return TerrainChannels(v,TerrainWeights(v));}
+float3 TerrainNormalSample(float4 channels,float total){return channels.wzy-.5*total;}
+float4 BaseWithTerrain(Varying v,float4 mask){float4 c=image0.Sample(surface,v.uv)*v.c;
     if(((uint)material.x&8)!=0)c.rgb*=shadow3.Sample(surface5,v.uv*material.yz).rgb*2;
-    if(alpha.w>9.5 && alpha.w<10.5){float4 mask=shadow0.Sample(surface2,v.uv);mask/=max(dot(mask,1),.0001);
-        float2 tc=v.uv*50;float3 detail=shadow1.Sample(surface3,tc).rgb*mask.r+shadow2.Sample(surface4,tc).rgb*mask.g+
-            shadow3.Sample(surface5,tc).rgb*mask.b+shadow4.Sample(surface6,tc).rgb*mask.a;c.rgb*=detail*2;}
+    if(((uint)material.x&4096)!=0){float2 tc=v.uv*material.yz;
+        float3 detail=shadow0.Sample(surface2,tc).rgb*mask.r+shadow1.Sample(surface3,tc).rgb*mask.g+
+            shadow2.Sample(surface4,tc).rgb*mask.b+shadow3.Sample(surface5,tc).rgb*mask.a;
+        if(dot(mask,1)>0)c.rgb*=detail*2;}
     AlphaTest(c.a);return c;}
-float3 Normal(Varying v,bool front){float3 n=v.n.xyz;
+float4 Base(Varying v){float4 mask=0;
+    [branch] if(((uint)material.x&4096)!=0)mask=TerrainWeights(v);
+    return BaseWithTerrain(v,mask);}
+float3 NormalWithTerrain(Varying v,bool front,float4 channels,float total){float3 n=v.n.xyz;
     if(dot(n,n)<.05)n=cross(ddy(v.w),ddx(v.w));
     n=dot(n,n)>.000001?normalize(n):float3(0,1,0);
     float3 t=v.t-n*dot(n,v.t);float handed=dot(cross(n,t),v.b);
-    if(((uint)material.x&1)!=0 && dot(t,t)>1e-8 && abs(handed)>1e-8){
+    if(((uint)material.x&(1|8192))!=0 && dot(t,t)>1e-8 && abs(handed)>1e-8){
         t=normalize(t);float3 b=normalize(cross(n,t))*(handed<0?-1:1);
         // SoC R2 sload: bump stores gloss,x-normal in alpha,y in B,z in G;
         // bump# stores signed reconstruction error in RGB, height in alpha.
-        float4 Nu,NuE;
-        [branch] if(((uint)material.x&1024)!=0){Nu=model_bump.Sample(model_bump_surface,v.uv);NuE=model_bump_aux.Sample(model_bump_aux_surface,v.uv);}
-        else{Nu=image1.Sample(surface1,v.uv);NuE=shadow0.Sample(surface2,v.uv);}
-        float3 mapped=Nu.wzy+NuE.xyz-1;mapped.z*=.5;
+        float3 mapped;
+        [branch] if(((uint)material.x&8192)!=0)mapped=TerrainNormalSample(channels,total);
+        else{float4 Nu,NuE;
+            [branch] if(((uint)material.x&1024)!=0){Nu=model_bump.Sample(model_bump_surface,v.uv);NuE=model_bump_aux.Sample(model_bump_aux_surface,v.uv);}
+            else{Nu=image1.Sample(surface1,v.uv);NuE=shadow0.Sample(surface2,v.uv);}
+            mapped=Nu.wzy+NuE.xyz-1;}
+        mapped.z*=.5;
         float3 result=t*mapped.x+b*mapped.y+n*mapped.z;
         if(dot(result,result)>1e-8)n=normalize(result);
     }
     // Flip the complete mapped normal on the back face, preserving mirrored UV handedness.
     return front?n:-n;}
+float3 Normal(Varying v,bool front){float4 channels=0;float total=0;
+    [branch] if(((uint)material.x&8192)!=0){float4 weights=TerrainWeights(v);channels=TerrainChannels(v,weights);total=dot(weights,1);}
+    return NormalWithTerrain(v,front,channels,total);}
 // Octahedral normals free two GBuffer components without another render target.
 // The 11-bit integer in .w is exactly representable by RGBA16F: 7 gloss bits,
 // 4 material bits. The four SoC material slices clamp at class 3.
@@ -140,16 +161,20 @@ float3 DecodeNormal(float2 e){float3 n=float3(e,1-abs(e.x)-abs(e.y));
 float PackMaterial(float gloss,float m){return floor(saturate(gloss)*127+.5)*16+floor(clamp(m,0,3)*5+.5);}
 float MaterialGloss(float packed){return floor(packed/16)/127;}
 float MaterialClass(float packed){return fmod(packed,16)*.2;}
-float Gloss(Varying v){
+float GlossWithTerrain(Varying v,float4 channels,float total){
     // SoC sload.h: bump R is squared gloss, flat surfaces use def_gloss.
     float gloss=2.0/255;
+    if(((uint)material.x&8192)!=0)return total>0?saturate(channels.r):gloss;
     if(((uint)material.x&1)!=0){float g;
         [branch] if(((uint)material.x&1024)!=0)g=model_bump.Sample(model_bump_surface,v.uv).r;
         else {g=image1.Sample(surface1,v.uv).r;}gloss=g*g;}
     if(((uint)material.x&9)==9)gloss*=shadow3.Sample(surface5,v.uv*material.yz).a*2;
     return saturate(gloss);
 }
-struct GeometryOutput {float4 albedo:SV_Target0;float4 normal:SV_Target1;float4 baked:SV_Target2;};
+float Gloss(Varying v){float4 channels=0;float total=0;
+    [branch] if(((uint)material.x&8192)!=0){float4 weights=TerrainWeights(v);channels=TerrainChannels(v,weights);total=dot(weights,1);}
+    return GlossWithTerrain(v,channels,total);}
+struct GeometryOutput {float4 albedo:SV_Target0;float4 normal:SV_Target1;float4 baked:SV_Target2;float receiver_depth:SV_Target3;};
 GeometryOutput PSGeometry(Varying v,bool front:SV_IsFrontFace){GeometryOutput o;
     uint flags=(uint)material.x;float h=v.n.w,s=(flags&32)!=0?v.baked_sun.w:.5;float3 baked=0;
     if((flags&16)!=0)baked=v.baked_sun.rgb;
@@ -157,9 +182,18 @@ GeometryOutput PSGeometry(Varying v,bool front:SV_IsFrontFace){GeometryOutput o;
     // response to direct lights. Do not reinterpret it as albedo or hemi.
     if((flags&2)!=0){float4 lm=shadow1.Sample(surface3,v.uv1);baked+=lm.rgb;s=lm.a;}
     if((flags&4)!=0){float4 lm=shadow2.Sample(surface4,v.uv1);h=dot(lm.rgb,float3(1.0/3,1.0/3,1.0/3));s=lm.a;}
-    o.albedo=float4(Base(v).rgb,saturate(s));
-    float gloss=Gloss(v);
-    o.normal=float4(EncodeNormal(Normal(v,front)),saturate(h),PackMaterial(gloss,material.w));o.baked=float4(baked,0);
+    // Geometry shares each authored terrain sample across albedo, normal and
+    // gloss explicitly; do not depend on cross-branch compiler CSE.
+    float4 terrain_weights=0,terrain_channels=0;
+    [branch] if((flags&(4096|8192))!=0)terrain_weights=TerrainWeights(v);
+    [branch] if((flags&8192)!=0)terrain_channels=TerrainChannels(v,terrain_weights);
+    float terrain_total=dot(terrain_weights,1);
+    float4 base_color=BaseWithTerrain(v,terrain_weights);
+    if((flags&2048)!=0)h=base_color.a;
+    if((flags&16384)!=0)s=terrain_lmap.Sample(terrain_lmap_surface,v.uv).a;
+    o.albedo=float4(base_color.rgb,saturate(s));
+    float gloss=GlossWithTerrain(v,terrain_channels,terrain_total);
+    o.normal=float4(EncodeNormal(NormalWithTerrain(v,front,terrain_channels,terrain_total)),saturate(h),PackMaterial(gloss,material.w));o.baked=float4(baked,0);
     // SoC E[4] accum_emissive[l] writes constant irradiance/specular. Fold it
     // into this base surface's accumulator once, retaining its depth/coverage.
     if((flags&256)!=0){o.baked.rgb+=ambient.www;o.baked.a+=hemi.w*gloss;}
@@ -168,6 +202,8 @@ GeometryOutput PSGeometry(Varying v,bool front:SV_IsFrontFace){GeometryOutput o;
     if((int)screen.z==9){float3 n=v.n.xyz;if(dot(n,n)<.05)n=cross(ddy(v.w),ddx(v.w));
         n=dot(n,n)>1e-6?normalize(n):float3(0,1,0);o.albedo.rgb=(front?n:-n)*.5+.5;}
     if((int)screen.z==8)o.baked=0;
+    // D3D11 PS SV_Position.w is interpolated clip W (not reciprocal W).
+    o.receiver_depth=v.p.w;
     return o;}
 void PSShadow(Varying v){if((int)alpha.y!=8)Base(v);}
 float FogAmount(float distance){return fog_params.y>0?saturate(distance*fog_params.y+fog_params.x):0;}
@@ -211,6 +247,14 @@ float4 PSCelestial(Varying v,uint primitive_id:SV_PrimitiveID):SV_Target {
 float3 RelativePosition(float2 pixel,float depth){float4 p=float4(pixel.x*2/screen.x-1,1-pixel.y*2/screen.y,depth,1);
     p=mul(p,inverse_vp);return p.xyz/p.w;}
 float3 WorldPosition(float2 pixel,float depth){return RelativePosition(pixel,depth)+camera.xyz;}
+float3 ReceiverPosition(float2 pixel,float linear_depth,float depth){
+    if(receiver_inverse[3][3]==0)return RelativePosition(pixel,depth);
+    float2 ndc=float2(pixel.x*2/screen.x-1,1-pixel.y*2/screen.y);
+    return mul(float4(ndc*linear_depth,linear_depth,1),receiver_inverse).xyz;
+}
+float3 LoadReceiverPosition(float2 pixel,float depth){
+    return ReceiverPosition(pixel,receiver_depth_texture.Load(int3(int2(pixel),0)).r,depth);
+}
 // Derivatives are captured before depth rejection, alpha discard, attenuation
 // and cube-face selection. Taking ddx/ddy inside those branches is undefined.
 bool ShadowPlaneStable(float distance_squared,float step_squared,float plane_error_squared){
@@ -275,10 +319,22 @@ float PCF(Texture2D map,float4 projected,float4 dx,float4 dy){if(projected.w<=0)
     }
     return weight>0?result/weight:0;
 }
+float3 ShadowNumericalOffset(float3 p,float3 dx,float3 dy,float3 towards){
+    // Receiver-plane extrapolation magnifies floating point error near grazing
+    // incidence. Use the geometric plane, never the mapped shading normal.
+    // The allowance follows coordinate precision and incidence, capped at 2 mm;
+    // it cannot turn a close 2 cm blocker into a lit receiver.
+    float3 n=cross(dx,dy);float squared=dot(n,n);
+    if(squared<=1e-20)return p;
+    n*=rsqrt(squared);float facing=dot(n,towards);if(facing<0)n=-n;
+    float coordinate=max(max(max(abs(p.x),abs(p.y)),abs(p.z)),length(p-camera.xyz));
+    float allowance=min(.002,16*1.192092896e-7*coordinate/max(abs(facing),.02));
+    return p+n*allowance;
+}
 float SunVisibility(float3 p,float3 dx,float3 dy){
     if(sun_color.w<=0)return 0;
     // Precision allowance only: plane correction handles the filter footprint.
-    p-=sun_direction.xyz*.01;
+    p=ShadowNumericalOffset(p,dx,dy,-sun_direction.xyz)-sun_direction.xyz*.01;
     float4 near_position=mul(float4(p,1),shadow[0]);
     float3 q=near_position.xyz/near_position.w;
     float edge=max(abs(q.x),abs(q.y));
@@ -330,6 +386,7 @@ float LocalVisibility(float3 p,float3 dx,float3 dy){if(alpha.w<.5)return 1;uint 
     // A fixed projected-depth subtraction scales to meters near the far plane.
     // Move the receiver by only 3 mm instead, preserving nearby blockers.
     float3 towards=light_position.xyz-p;
+    p=ShadowNumericalOffset(p,dx,dy,towards/max(length(towards),.003));
     p+=towards*(.003/max(length(towards),.003));
     float4 projected=mul(float4(p,1),shadow[face]);
     float4 sx=mul(float4(dx,0),shadow[face]),sy=mul(float4(dy,0),shadow[face]);
@@ -353,13 +410,13 @@ float4 LocalLight(float3 p,float3 n,float gloss,float m,float3 dx,float3 dy){flo
     if(attenuation<=0)return 0;
     return DirectLight(p,n,direction,light_color.rgb,gloss,m)*(attenuation*LocalVisibility(p,dx,dy))*profile;}
 float4 PSSun(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=image1.Load(int3(at,0)).r;
-    float3 relative=RelativePosition(v.p.xy,depth),p=relative+camera.xyz,dx,dy;ShadowDerivatives(relative,dx,dy);
+    float3 relative=LoadReceiverPosition(v.p.xy,depth),p=relative+camera.xyz,dx,dy;ShadowDerivatives(relative,dx,dy);
     if(depth>=1)return 0;float4 n=image0.Load(int3(at,0));
     if((int)screen.z==8)return float4(SunVisibility(p,dx,dy).xxx,0);
     // Albedo alpha retains source sun occlusion for diagnostics, not dynamic lighting.
     return SunLighting(p,DecodeNormal(n.xy),n.z,MaterialGloss(n.w),MaterialClass(n.w),dx,dy);}
 float4 PSLocal(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=image1.Load(int3(at,0)).r;
-    float3 relative=RelativePosition(v.p.xy,depth),p=relative+camera.xyz,dx,dy;ShadowDerivatives(relative,dx,dy);
+    float3 relative=LoadReceiverPosition(v.p.xy,depth),p=relative+camera.xyz,dx,dy;ShadowDerivatives(relative,dx,dy);
     if(depth>=1)return 0;float4 n=image0.Load(int3(at,0));
     return LocalLight(p,DecodeNormal(n.xy),MaterialGloss(n.w),MaterialClass(n.w),dx,dy);}
 float4 PSForwardSun(Varying v,bool front:SV_IsFrontFace):SV_Target {float3 dx,dy;ShadowDerivatives(v.w-camera.xyz,dx,dy);float4 c=Base(v);
@@ -373,10 +430,10 @@ float4 PSCombine(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=shadow1.
     if(depth>=1){if(alpha.w>19.5)discard;return float4(fog.rgb,1);}float4 a=image0.Load(int3(at,0)),n=shadow0.Load(int3(at,0));
     float4 light=image1.Load(int3(at,0));int mode=(int)screen.z;
     if(mode==1)return float4(a.rgb,1);if(mode==2)return float4(DecodeNormal(n.xy)*.5+.5,1);
-    if(mode==3)return float4(saturate(length(WorldPosition(v.p.xy,depth)-camera.xyz)/camera.w).xxx,1);
+    if(mode==3)return float4(saturate(length(LoadReceiverPosition(v.p.xy,depth))/camera.w).xxx,1);
     if(mode==4 || mode==8)return float4(light.rgb+light.aaa,1);if(mode==5)return float4(n.zzz,1);
     if(mode==6 || mode==9)return float4(a.rgb,1);if(mode==7)return float4(a.aaa,1);
-    float amount=FogAmount(length(RelativePosition(v.p.xy,depth)));
+    float amount=FogAmount(length(LoadReceiverPosition(v.p.xy,depth)));
     return float4(lerp(a.rgb*light.rgb+light.aaa,fog.rgb,amount),amount*amount);}
 
 // Native environment entries use the engine's two weather cubemaps.

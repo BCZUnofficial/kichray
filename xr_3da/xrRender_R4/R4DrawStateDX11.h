@@ -1,11 +1,12 @@
 #ifndef KICH_R4_DRAW_STATE_DX11_H
 #define KICH_R4_DRAW_STATE_DX11_H
 #include <d3d11.h>
+#include "../KichR4Deferred.h"
 #include <stdint.h>
 #include <string.h>
 
 namespace kich_r4 {
-enum {DrawTextureSlots=10,DrawSamplerSlots=11};
+enum {DrawTextureSlots=KICH_R4_DEFERRED_TEXTURE_SLOTS,DrawSamplerSlots=DrawTextureSlots+1};
 // Immediate-context state, shared by ALL pipelines on one device. These are
 // borrowed pointers: the owner invalidates before releasing resources, and
 // whenever a pass/frame/reset changes context state outside Apply().

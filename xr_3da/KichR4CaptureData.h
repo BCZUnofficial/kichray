@@ -273,8 +273,9 @@ inline void SnapshotCommand(Command& cmd,const std::vector<Vertex>& vertices,con
          * It is deliberately named CAPTURE, not claimed to equal an R2 material ID. */
         if(!p->material_id[0] || !strcmp(p->material_id,"UNKNOWN")){uint64_t h=SnapshotStringHash(UINT64_C(14695981039346656037),cmd.shader);
             h=SnapshotStringHash(h,cmd.texture);h=SnapshotStringHash(h,cmd.secondary);
-            const uint32_t state[]={cmd.effect,cmd.style.blend,cmd.style.src,cmd.style.dst,cmd.style.clamp,cmd.style.cull,cmd.style.depth,cmd.style.write,cmd.style.alpha_func};
+            const uint32_t state[]={cmd.effect,cmd.style.blend,cmd.style.src,cmd.style.dst,cmd.style.clamp,cmd.style.cull,cmd.style.depth,cmd.style.write,cmd.style.alpha_func,cmd.style.shadow_alpha_func};
             h=SnapshotHash(h,state,sizeof(state));h=SnapshotHash(h,&cmd.style.alpha_ref,sizeof(cmd.style.alpha_ref));
+            h=SnapshotHash(h,&cmd.style.shadow_alpha_ref,sizeof(cmd.style.shadow_alpha_ref));
             const float emission[]={cmd.style.emissive_gain,cmd.style.emissive_specular};h=SnapshotHash(h,emission,sizeof(emission));
             h=SnapshotHash(h,&cmd.style.surface,sizeof(cmd.style.surface));
             snprintf(p->material_id,sizeof(p->material_id),"CAPTURE_DESCRIPTOR_FNV64:%016llx",static_cast<unsigned long long>(h));}
@@ -375,8 +376,9 @@ struct Batch {
         cmd.resource=name?name:"<unnamed model>";cmd.shader=shader?shader:mesh->shader;cmd.texture=texture?texture:mesh->texture;cmd.secondary=secondary?secondary:"";
         std::string key(reinterpret_cast<const char*>(&identity),sizeof(identity));const Mesh* source=mesh.get();key.append(reinterpret_cast<const char*>(&source),sizeof(source));
         key.append(reinterpret_cast<const char*>(&world),sizeof(world));key.append(reinterpret_cast<const char*>(&vp),sizeof(vp));
-        const uint32_t words[]={first,tris,count,skin_mode,cmd.layer,effect,shader_element,shader_pass,style.blend,style.src,style.dst,style.clamp,style.cull,style.depth,style.write,style.alpha_func};
+        const uint32_t words[]={first,tris,count,skin_mode,cmd.layer,effect,shader_element,shader_pass,style.blend,style.src,style.dst,style.clamp,style.cull,style.depth,style.write,style.alpha_func,style.shadow_alpha_func};
         key.append(reinterpret_cast<const char*>(words),sizeof(words));key.append(reinterpret_cast<const char*>(&style.alpha_ref),sizeof(style.alpha_ref));
+        key.append(reinterpret_cast<const char*>(&style.shadow_alpha_ref),sizeof(style.shadow_alpha_ref));
         const float emission[]={style.emissive_gain,style.emissive_specular};key.append(reinterpret_cast<const char*>(emission),sizeof(emission));
         key.append(reinterpret_cast<const char*>(&style.surface),sizeof(style.surface));
         const float exposure[]={light_valid?1.f:0.f,object_hemi,object_sun};key.append(reinterpret_cast<const char*>(exposure),sizeof(exposure));
@@ -396,6 +398,7 @@ struct Batch {
             snprintf(p.semantic_type,sizeof(p.semantic_type),"%s",mesh->skinned?"SKINNED_MODEL":"RIGID_MODEL");
             snprintf(p.evidence,sizeof(p.evidence),"OGF_SHARED_GPU_MODEL");SnapshotModelID(*mesh,p.mesh_id,sizeof(p.mesh_id),first,cmd.count);
             uint64_t hash=SnapshotStringHash(UINT64_C(14695981039346656037),cmd.shader);hash=SnapshotStringHash(hash,cmd.texture);hash=SnapshotStringHash(hash,cmd.secondary);hash=SnapshotHash(hash,words+5,sizeof(words)-5*sizeof(uint32_t));hash=SnapshotHash(hash,&style.alpha_ref,sizeof(style.alpha_ref));
+            hash=SnapshotHash(hash,&style.shadow_alpha_ref,sizeof(style.shadow_alpha_ref));
             hash=SnapshotHash(hash,emission,sizeof(emission));
             snprintf(p.material_id,sizeof(p.material_id),"MODEL_DESCRIPTOR_FNV64:%016llx",static_cast<unsigned long long>(hash));
             p.flags=0;p.uv_count=0;uint32_t sample[4]={};for(uint32_t i=0;i<cmd.count && i<32 && p.uv_count<4;++i){const uint32_t at=mesh->indices[first+i];bool used=false;

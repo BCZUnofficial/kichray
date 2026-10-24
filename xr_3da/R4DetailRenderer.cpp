@@ -3,6 +3,7 @@
 #include "KichR4Native.h"
 #include "KichR4FrameMetrics.h"
 #include "RenderSnapshot.h"
+#include <functional>
 extern float r_ssaDISCARD;
 
 namespace {
@@ -49,6 +50,12 @@ void KichR4_DetailLoad(CDetailManager& manager){
 void KichR4_DetailPrepare(CDetailManager& manager){
     using namespace kich_r4_detail;
     const auto start=kich_r4_metrics::Start(g_render_snapshot_active);Frame& frame=KichR4_DetailFrame();frame.ClearFrame(Device.dwFrame);
+    // UpdateVisibleM caches scale and wind/still admission for 15-30 frames.
+    // Keep the same pose for camera-visible items in every shadow pass; a
+    // second distance calculation would make their shadows shrink/stop early.
+    // Index cache-part lists, not individual instances, and retain scratch space.
+    static std::vector<const CDetailManager::SlotItemVec*> camera_parts;
+    camera_parts.clear();
     const CDetailManager::SSwingValue& swing=manager.swing_current;
     if(!Finite(swing.rot1) || !Finite(swing.rot2) || swing.rot1<=0 || swing.rot2<=0 || !Finite(swing.speed) || !Finite(swing.amp1) || !Finite(swing.amp2))
         throw std::runtime_error("invalid detail swing settings");
@@ -65,6 +72,7 @@ void KichR4_DetailPrepare(CDetailManager& manager){
             CDetailManager::vis_list& list=manager.m_visibles[variant];
             kich_r4_detail::Group group={static_cast<uint32_t>(mesh),variant,static_cast<uint32_t>(frame.instances.size()),0};
             for(size_t slot=0;slot<list[mesh].size();++slot){CDetailManager::SlotItemVec& items=*list[mesh][slot];
+                if(!items.empty())camera_parts.push_back(&items);
                 for(size_t i=0;i<items.size();++i){const CDetailManager::SlotItem& item=*items[i];
                     frame.Append(DetailInstance(item,item.scale_calculated,variant));++group.count;++frame.variants[variant];}
             }
@@ -77,6 +85,7 @@ void KichR4_DetailPrepare(CDetailManager& manager){
      * Coverage remains the loaded cache and configured detail radius. */
     const float radius=std::max(20.f,std::min(dm_fade,ps_r__Detail_radius));
     const float limit=radius*radius,fade_range=limit-1.f;
+    std::sort(camera_parts.begin(),camera_parts.end(),std::less<const CDetailManager::SlotItemVec*>());
     std::vector<std::vector<ShadowDetailItem> > buckets(manager.objects.size()*3);
     frame.shadow_cells.resize(dm_cache_size);
     size_t candidates=0;
@@ -86,10 +95,24 @@ void KichR4_DetailPrepare(CDetailManager& manager){
         provenance.center[0]=cell.vis.sphere.P.x;provenance.center[1]=cell.vis.sphere.P.y;provenance.center[2]=cell.vis.sphere.P.z;
         if(cell.empty || cell.type!=CDetailManager::stReady)continue;
         const float dx=cell.vis.sphere.P.x-Device.vCameraPosition.x,dy=cell.vis.sphere.P.y-Device.vCameraPosition.y,dz=cell.vis.sphere.P.z-Device.vCameraPosition.z;
-        const float distance=dx*dx+dy*dy+dz*dz;if(!Finite(distance) || distance>limit)continue;
-        const float fade=distance<1.f?1.f:1.f-(distance-1.f)/fade_range;
+        const float distance=dx*dx+dy*dy+dz*dz;
+        const bool within_radius=Finite(distance) && distance<=limit;
+        const float fade=within_radius?(distance<1.f?1.f:1.f-(distance-1.f)/fade_range):0;
         for(unsigned part=0;part<dm_obj_in_slot;++part){const CDetailManager::SlotPart& source=cell.G[part];
             if(source.id==DetailSlot::ID_Empty || source.id>=manager.objects.size())continue;
+            bool camera_part=false;
+            for(unsigned variant=0;variant<3;++variant){const CDetailManager::SlotItemVec& items=source.r_items[variant];
+                if(items.empty() || !std::binary_search(camera_parts.begin(),camera_parts.end(),&items,std::less<const CDetailManager::SlotItemVec*>()))continue;
+                camera_part=true;
+                for(size_t i=0;i<items.size();++i){
+                    if(++candidates>KICH_R4_MAX_DETAIL_INSTANCES)throw std::runtime_error("detail shadow candidate safety limit");
+                    const ShadowDetailItem candidate={items[i],items[i]->scale_calculated,slot};
+                    buckets[source.id*3+variant].push_back(candidate);}
+            }
+            // Preserve independent off-camera casters and their full configured
+            // radius. Visible cached parts may straddle that radius until their
+            // next update; their still-drawn geometry must retain its shadow.
+            if(camera_part || !within_radius)continue;
             const float r=manager.objects[source.id]->bv_sphere.R;
             const float projected=r*r/std::max(distance,1.e-6f);
             for(size_t i=0;i<source.items.size();++i){const CDetailManager::SlotItem& item=*source.items[i];

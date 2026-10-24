@@ -6,6 +6,46 @@ float ps_r__Detail_radius=50.f,r_ssaDISCARD=1.e-6f;
 #include "frontend_under_test.cpp"
 static unsigned checks=0;
 void Require(bool good){++checks;if(!good)throw std::runtime_error("detail frontend check failed");}
+void CoherentCachedPose(){
+    const float saved_radius=ps_r__Detail_radius,saved_discard=r_ssaDISCARD;
+    ps_r__Detail_radius=60;r_ssaDISCARD=.0005f;
+    CDetail::fvfVertexIn vertices[3]={{{0,0,0},0,0},{{1,2,0},1,1},{{0,1,1},0,.5f}};uint16_t indices[3]={0,1,2};
+    CDetail mesh={vertices,indices,3,3,{{0,0,0},{1,2,1}},NULL,{2}};CDetailManager manager;
+    manager.objects.push_back(&mesh);manager.swing_current={10,20,.1f,.2f,1};
+    for(unsigned i=0;i<3;++i)manager.m_visibles[i].resize(1);
+    const float cached_distance=18.5f,cached_scale=1-(cached_distance*cached_distance-1)/3599;
+    CDetailManager::SlotItem visible={cached_scale,{1,0,0,0,0,1,0,0,0,0,1,0,0,0,20,1},.5f,.75f,1,2};
+    CDetailManager::SlotItem offcamera=visible;offcamera.mRotY._41=10;offcamera.mRotY._43=-20;
+    for(unsigned i=0;i<2;++i){auto& cell=manager.cache_pool[i];cell.empty=false;cell.vis.sphere.P={0,0,i?-20.f:20.f};cell.G[0].id=0;}
+    auto& part=manager.cache_pool[0].G[0];part.items.push_back(&visible);part.r_items[2].push_back(&visible);
+    manager.cache_pool[1].G[0].items.push_back(&offcamera);
+    KichR4_DetailLoad(manager);auto& frame=KichR4_DetailFrame();Device.fTimeGlobal=17;
+    // Reproduce the existing cache cadence while moving through the SSA
+    // wind/still boundary. Before E1.9 the camera kept variant 2 but its shadow
+    // immediately used variant 0 and a smaller, independently computed scale.
+    for(unsigned step=0;step<20;++step){
+        manager.cache_pool[0].vis.sphere.P.z=20.f+step*.1f;
+        manager.m_visibles[2][0].push_back(&part.r_items[2]);Device.dwFrame=300+step;KichR4_DetailPrepare(manager);
+        Require(frame.instances.size()==1 && frame.shadow_instances.size()==2);
+        bool matched=false,independent=false;
+        for(const auto& group:frame.shadow_groups)for(uint32_t i=0;i<group.count;++i){const auto& shadow=frame.shadow_instances[group.first+i];
+            if(shadow.row[0][3]==visible.mRotY._41){matched=true;Require(group.variant==frame.groups[0].variant);
+                Require(memcmp(&shadow,&frame.instances[0],sizeof(shadow))==0);}
+            else{independent=true;Require(group.variant==0);Require(std::fabs(shadow.row[1][1]-(1.f-399.f/3599))<1.e-6f);}}
+        Require(matched && independent);
+    }
+    // A still-drawn cached part can briefly extend beyond the fresh radius.
+    // Keep its matching caster, without extending off-camera admission.
+    manager.cache_pool[0].vis.sphere.P.z=61;manager.cache_pool[1].vis.sphere.P.z=-61;
+    manager.m_visibles[2][0].push_back(&part.r_items[2]);KichR4_DetailPrepare(manager);
+    Require(frame.instances.size()==1 && frame.shadow_instances.size()==1 && frame.shadow_groups[0].variant==2);
+    Require(memcmp(&frame.instances[0],&frame.shadow_instances[0],sizeof(frame.instances[0]))==0);
+    // Leaving the camera list must not leave a stale pointer/pose override.
+    manager.cache_pool[0].vis.sphere.P.z=20;KichR4_DetailPrepare(manager);
+    Require(frame.instances.empty() && frame.shadow_instances.size()==1 && frame.shadow_groups[0].variant==0);
+    Require(std::fabs(frame.shadow_instances[0].row[1][1]-(1.f-399.f/3599))<1.e-6f);
+    KichR4_DetailUnload();ps_r__Detail_radius=saved_radius;r_ssaDISCARD=saved_discard;
+}
 int main(){try{
     CDetail::fvfVertexIn vertices[3]={{{0,0,0},-.1f,0},{{1,2,0},1,1},{{0,1,1},0,.5f}};uint16_t indices[3]={0,1,2};
     Texture texture={"grass\\test"};VS vs={"deffer_detail_w_flat"};STextureList textures={{0,&texture}};SPass pass={&vs,&textures};Element e;e.passes.push_back(&pass);Shader shader={{&e,&e}};
@@ -56,5 +96,5 @@ int main(){try{
     const auto generation=frame.generation;KichR4_DetailUnload();Require(frame.meshes.empty() && frame.instances.empty() && frame.shadow_cells.empty() && frame.shadow_instance_cells.empty() && frame.generation==generation+1);
     mesh.bv_bb.max.y=0;mesh.bv_bb.min.y=0;KichR4_DetailLoad(manager);Require(frame.meshes[0].vertices[2].misc[2]==0);
     indices[2]=99;rejected=false;try{KichR4_DetailLoad(manager);}catch(const std::exception&){rejected=true;}Require(rejected);
-    printf("G3b real detail frontend: %u checks passed\n",checks);return 0;
+    CoherentCachedPose();printf("G3b real detail frontend: %u checks passed\n",checks);return 0;
 }catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

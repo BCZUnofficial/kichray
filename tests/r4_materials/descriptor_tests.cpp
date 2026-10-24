@@ -13,10 +13,15 @@ int main(){
     Descriptor tree=Build(source,pass);assert(tree.semantic==CUTOUT && Geometry(tree) && Shadow(tree) && tree.tree_wave);
     kich_r4_capture::Style geometry,shadow;Apply(tree,geometry);Apply(tree,shadow);
     assert(!geometry.blend && geometry.write && geometry.alpha_ref==shadow.alpha_ref && geometry.alpha_func==shadow.alpha_func);
+    assert(AlphaFunction(geometry,false)==7 && AlphaFunction(shadow,true)==5 && AlphaReference(shadow,true)==200.f/255.f);
     source.blend=false;assert(Build(source,pass).semantic==MATERIAL_OPAQUE);
     source.not_tree=true;assert(!Build(source,pass).tree_wave);
     source.family=FAMILY_AREF;source.blend=false;source.alpha_reference=91;
     Descriptor fence=Build(source,pass);assert(fence.semantic==CUTOUT && fence.alpha_ref==200.f/255.f && fence.alpha_func==7 && fence.source_alpha_reference==91);
+    assert(AlphaFunction(fence,true)==5 && AlphaReference(fence,true)==220.f/255.f);
+    source.descriptor.shadow_alpha_func=4;source.descriptor.shadow_alpha_ref=.4f;
+    Descriptor authored=Build(source,pass);assert(AlphaFunction(authored,true)==4 && AlphaReference(authored,true)==.4f);
+    source.descriptor.shadow_alpha_func=0;source.descriptor.shadow_alpha_ref=0;
     source.blend=true;Descriptor glass=Build(source,pass);assert(glass.semantic==BLENDED && !glass.depth_write && !Shadow(glass));
     source.family=FAMILY_MODEL;source.alpha_reference=15;assert(Build(source,pass).semantic==BLENDED);
     source.alpha_reference=16;assert(Build(source,pass).semantic==CUTOUT);
@@ -56,6 +61,8 @@ int main(){
     assert(bump.bump_aux=="walls\\stone_bump#" && bump.detail_scale[0]==4.f);
     const uint64_t key=Key(bump);assert(key==Key(bump));Descriptor changed=bump;changed.alpha_ref=.5f;assert(key!=Key(changed));
     changed=bump;changed.fog_enabled=!bump.fog_enabled;assert(key!=Key(changed));
+    changed=bump;changed.shadow_alpha_func=5;assert(key!=Key(changed));
+    changed=bump;changed.shadow_alpha_ref=.4f;assert(key!=Key(changed));
     pass.fog_enabled=true;Descriptor fogged=Build(source,pass);Apply(fogged,geometry);
     assert(fogged.fog_enabled && geometry.fog_enabled);pass.fog_enabled=false;
     // Exact compiled VS identity, never texture-name or bWmark guessing.
@@ -86,5 +93,15 @@ int main(){
     assert(cache.conflicts==1 && cache.Find(&element,0)->semantic==UNKNOWN && !Geometry(*cache.Find(&element,0)));
     cache.Forget(&element);assert(!cache.Find(&element,0));cache.Register(&element,std::vector<Descriptor>(1,bump));
     assert(Geometry(*cache.Find(&element,0)));assert(!cache.Find(&element,1));
-    std::cout<<"PASS: source class+parameters, cutout/forward separation, identical shadow cutoff, cached source maps/UV scale and alias-safe lifecycle\n";
+    // BMM source identity includes the authored layers and branch; two compiled
+    // R1 elements must not silently share different native landscape metadata.
+    Descriptor terrain;terrain.special=SPECIAL_TERRAIN;terrain.terrain_detail=true;terrain.terrain_mask="ground_mask";
+    terrain.terrain_layers[0]="grass";terrain.terrain_bumps[0]="grass_bump";terrain.terrain_lmap="ground_sun";
+    assert(TerrainLayers(terrain));const uint64_t terrain_key=Key(terrain);
+    changed=terrain;changed.terrain_layers[0]="sand";assert(Key(changed)!=terrain_key);
+    changed=terrain;changed.terrain_bumps[3]="rock_bump";assert(Key(changed)!=terrain_key);
+    changed=terrain;changed.terrain_lmap="other_sun";assert(Key(changed)!=terrain_key);
+    changed=terrain;changed.terrain_detail=false;assert(Key(changed)!=terrain_key && !TerrainLayers(changed));
+    changed=terrain;changed.bump="authored_base_bump";assert(!TerrainLayers(changed));
+    std::cout<<"PASS: source class+parameters, independent R2 camera/shadow cutoff, cached source maps/UV scale and alias-safe lifecycle\n";
 }

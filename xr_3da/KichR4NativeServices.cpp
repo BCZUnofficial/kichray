@@ -67,7 +67,7 @@ bool KichR4_NativeMaterialState(const char* name,const char* textures,kich_r4_ca
     style.surface=KichR4ReadSurface([&](uint32_t key,uint32_t fallback){return state.get_RS(key,fallback);});
     for(unsigned i=0;i<8;++i)style.surface.samplers[i]=KichR4ReadSampler([&](uint32_t key,uint32_t fallback){return state.get_SAMP(i,key,fallback);});
     style.depth=state.get_RS(D3DRS_ZENABLE,1)!=0;const uint32_t cull=state.get_RS(D3DRS_CULLMODE,D3DCULL_CCW);style.cull=cull==D3DCULL_CW?KICH_R4_CULL_FRONT:cull==D3DCULL_CCW?KICH_R4_CULL_BACK:KICH_R4_CULL_NONE;
-    style.alpha_func=state.get_RS(D3DRS_ALPHATESTENABLE,0)?state.get_RS(D3DRS_ALPHAFUNC,7):8;style.alpha_ref=(state.get_RS(D3DRS_ALPHAREF,0)&255)/255.f;style.write=state.get_RS(D3DRS_ZWRITEENABLE,1)!=0;return true;
+    style.alpha_func=state.get_RS(D3DRS_ALPHATESTENABLE,0)?state.get_RS(D3DRS_ALPHAFUNC,D3DCMP_GREATER):8;style.alpha_ref=(state.get_RS(D3DRS_ALPHAREF,0)&255)/255.f;style.write=state.get_RS(D3DRS_ZWRITEENABLE,1)!=0;return true;
 }
 
 namespace {
@@ -84,7 +84,7 @@ kich_r4_material::PassState NativePassState(const ShaderElement& element,const S
     out.surface=KichR4ReadSurface([&](uint32_t key,uint32_t fallback){return state.get_RS(key,fallback);});
     for(unsigned i=0;i<8;++i)out.surface.samplers[i]=KichR4ReadSampler([&](uint32_t key,uint32_t fallback){return state.get_SAMP(i,key,fallback);});
     out.blend=state.get_RS(D3DRS_ALPHABLENDENABLE,0)!=0;out.src=state.get_RS(D3DRS_SRCBLEND,D3DBLEND_ONE);out.dst=state.get_RS(D3DRS_DESTBLEND,D3DBLEND_ZERO);
-    out.alpha_test=state.get_RS(D3DRS_ALPHATESTENABLE,0)!=0;out.alpha_func=state.get_RS(D3DRS_ALPHAFUNC,D3DCMP_ALWAYS);out.alpha_reference=state.get_RS(D3DRS_ALPHAREF,0);
+    out.alpha_test=state.get_RS(D3DRS_ALPHATESTENABLE,0)!=0;out.alpha_func=state.get_RS(D3DRS_ALPHAFUNC,D3DCMP_GREATER);out.alpha_reference=state.get_RS(D3DRS_ALPHAREF,0);
     out.depth_test=state.get_RS(D3DRS_ZENABLE,1)!=0;out.depth_write=state.get_RS(D3DRS_ZWRITEENABLE,1)!=0;
     out.fog_enabled=state.get_RS(D3DRS_FOGENABLE,0)!=0;
     const uint32_t cull=state.get_RS(D3DRS_CULLMODE,D3DCULL_CCW);
@@ -122,14 +122,24 @@ void KichR4_NativeRegisterMaterial(const void* pointer,uint32_t index,const char
         }else if(CBlender_Tree* tree=dynamic_cast<CBlender_Tree*>(blender)){
             source.family=FAMILY_TREE;source.blend=tree->oBlend.value!=0;source.not_tree=tree->oNotAnTree.value!=0;
             descriptor.source+=";SoC_Blender_tree_R2";
+        }else if(CBlender_BmmD* terrain=dynamic_cast<CBlender_BmmD*>(blender)){
+            source.family=FAMILY_OPAQUE;descriptor.special=SPECIAL_TERRAIN;descriptor.source+=";SoC_BmmD_HQ";
+            descriptor.terrain_mask=descriptor.base+"_mask";
+            descriptor.terrain_detail=(usage&3)!=0;
+            const char* layers[]={terrain->oR_Name,terrain->oG_Name,terrain->oB_Name,terrain->oA_Name};
+            for(unsigned layer=0;layer<4;++layer){descriptor.terrain_layers[layer]=MaterialTexture(layers[layer]);
+                if(!descriptor.terrain_layers[layer].empty())descriptor.terrain_bumps[layer]=descriptor.terrain_layers[layer]+"_bump";}
+            if(texture_list.size()>1)descriptor.terrain_lmap=MaterialTexture(texture_list[1].c_str());
+            // uber_deffer's authored replacement applies to the ordinary
+            // base-bump branch. Four-layer BMM uses the same dt_params scale.
+            if(terrain->oT2_Name[0])descriptor.detail=MaterialTexture(terrain->oT2_Name);
         }else if(class_id==B_DEFAULT || class_id==B_VERT || class_id==B_LmBmmD){
             source.family=FAMILY_OPAQUE;descriptor.source+=";SoC_opaque_blender";
-            if(class_id==B_LmBmmD){descriptor.special=SPECIAL_TERRAIN;descriptor.unsupported_reason="terrain_layers_preserved;terrain_layer_bump_not_implemented";}
         }else if(class_id==B_DETAIL){source.family=FAMILY_DETAIL;descriptor.source+=";detail_preserve_source";}
         else {source.family=FAMILY_SPECIAL;descriptor.source+=";special_preserve_source";}
         // R2 uber_deffer's lmap branch requires the explicit third lmap texture;
         // base alpha is never used as evidence of cutout or lightmapping.
-        if(blender->canBeLMAPped() && texture_list.size()>2){
+        if(descriptor.special!=SPECIAL_TERRAIN && blender->canBeLMAPped() && texture_list.size()>2){
             const char* hemi=texture_list[2].c_str();
             if(hemi && strncmp(hemi,"lmap",4)==0){descriptor.lightmap=MaterialTexture(texture_list[1].c_str());descriptor.hemi=MaterialTexture(hemi);}
         }

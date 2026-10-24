@@ -116,6 +116,10 @@ bool KichR4_NativeStyle(kich_r4_capture::Style& out){out=style;out.blend=states[
     out.depth=states[D3DRS_ZENABLE]!=0;out.write=states[D3DRS_ZWRITEENABLE]!=0;out.alpha_func=states[D3DRS_ALPHATESTENABLE]?states[D3DRS_ALPHAFUNC]:8;
     out.fog_enabled=states[D3DRS_FOGENABLE]!=0;
     out.alpha_ref=float(states[D3DRS_ALPHAREF]&255)/255.f;out.clamp=0;
+    // Generated world streams retain their visible state, with the registered
+    // source's independent caster alpha test carried to ShadowModels.
+    out.shadow_alpha_func=active_material && active_material->semantic!=kich_r4_material::UNKNOWN?active_material->shadow_alpha_func:0;
+    out.shadow_alpha_ref=out.shadow_alpha_func?active_material->shadow_alpha_ref:0;
     out.cull=states[D3DRS_CULLMODE]==D3DCULL_CW?KICH_R4_CULL_FRONT:states[D3DRS_CULLMODE]==D3DCULL_CCW?KICH_R4_CULL_BACK:KICH_R4_CULL_NONE;return true;}
 void KichR4_NativeElement(ShaderElement* e){KichR4_NativeElementPass(e,0);}
 void KichR4_NativeElementSource(uint32_t element){source_element=element;}

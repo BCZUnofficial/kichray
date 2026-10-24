@@ -9,7 +9,8 @@
 // feature explicitly; a checker texture must never be decoded as a normal/map.
 namespace kich_r4_material {
 enum ShaderFlag { SHADER_BUMP=1,SHADER_LIGHTMAP=2,SHADER_HEMI=4,SHADER_DETAIL=8,
-    SHADER_VERTEX_LIGHT=16,SHADER_SUN=32,SHADER_TREE_LIGHT=64,SHADER_TREE_WIND=128,SHADER_EMISSIVE=256,SHADER_MODEL_MAPS=1024 };
+    SHADER_VERTEX_LIGHT=16,SHADER_SUN=32,SHADER_TREE_LIGHT=64,SHADER_TREE_WIND=128,SHADER_EMISSIVE=256,SHADER_MODEL_MAPS=1024,
+    SHADER_TERRAIN_HEMI=2048,SHADER_TERRAIN_LAYERS=4096,SHADER_TERRAIN_NORMAL=8192,SHADER_TERRAIN_SUN=16384 };
 inline void SnapshotMetadata(const Descriptor& m,const char* category,const char* id) {
     if(!g_render_snapshot_active)return;
     using namespace kich_r4_telemetry;
@@ -18,6 +19,8 @@ inline void SnapshotMetadata(const Descriptor& m,const char* category,const char
     U64(category,id,"source_family",m.source_family);U64(category,id,"source_flags",m.source_flags);
     U64(category,id,"source_alpha_reference",m.source_alpha_reference);
     U64(category,id,"effective_alpha_func",m.alpha_func);Float(category,id,"effective_alpha_ref",m.alpha_ref);
+    U64(category,id,"shadow_alpha_func",AlphaFunction(m,true));Float(category,id,"shadow_alpha_ref",AlphaReference(m,true));
+    Text(category,id,"shadow_alpha_policy",m.shadow_alpha_func?"INDEPENDENT_SOURCE_SHADOW_PASS":"INHERITS_VISIBLE_SOURCE_PASS");
     U64(category,id,"pass_mask",m.passes);U64(category,id,"required_attributes",m.required_attributes);
     U64(category,id,"cull",m.cull);U64(category,id,"depth_test",m.depth_test);U64(category,id,"depth_write",m.depth_write);
     U64(category,id,"source_blend",m.src_blend);U64(category,id,"destination_blend",m.dst_blend);
@@ -52,7 +55,7 @@ inline void Bind(KichR4FrameSession& s,KichR4LevelSession& level,const Descripto
     uint32_t attributes,kich_r4_lighting::Constants& c,KichR4DeferredDrawDesc& draw,
     bool shadow,bool vertex_baked=false,uint32_t extra_flags=0,const char* main_category="MATERIAL_EXECUTION") {
     c.material[0]=0;c.material[1]=m.detail_scale[0];c.material[2]=m.detail_scale[1];c.material[3]=MaterialClass(m.material);
-    c.alpha[0]=m.alpha_ref;c.alpha[1]=static_cast<float>(m.alpha_func);
+    c.alpha[0]=AlphaReference(m,shadow);c.alpha[1]=static_cast<float>(AlphaFunction(m,shadow));
     uint32_t flags=extra_flags;std::string fallback=m.unsupported_reason;bool auxiliary_dummy=false;
     if(!shadow){
         if(!m.bump.empty() && BindBump(s,level,m,attributes,draw.textures[1],draw.textures[2],fallback,auxiliary_dummy))flags|=SHADER_BUMP;
@@ -63,7 +66,7 @@ inline void Bind(KichR4FrameSession& s,KichR4LevelSession& level,const Descripto
                 if(draw.textures[3+i] && draw.textures[3+i]!=level.checker)flags|=bits[i];
                 else {draw.textures[3+i]=0;fallback+=";lightmap_dds_unavailable";}}
         }
-        if(!m.detail.empty() && (m.detail_usage&1)){
+        if(!TerrainLayers(m) && !m.detail.empty() && (m.detail_usage&(Terrain(m)?3u:1u))){
             draw.textures[5]=level.Texture(s,m.detail);
             if(draw.textures[5] && draw.textures[5]!=level.checker)flags|=SHADER_DETAIL;
             else {draw.textures[5]=0;fallback+=";detail_dds_unavailable";}
@@ -81,6 +84,9 @@ inline void Bind(KichR4FrameSession& s,KichR4LevelSession& level,const Descripto
         kich_r4_telemetry::U64(category,id,"descriptor_key",Key(m));
         kich_r4_telemetry::U64(category,id,"source_attributes",attributes);
         kich_r4_telemetry::U64(category,id,"shader_flags",flags);
+        // Reuse the effective-state keys: extra fields would crowd the bounded
+        // shadow dictionary and the model's per-range basis diagnostics.
+        kich_r4_telemetry::U64(category,id,"effective_alpha_func",AlphaFunction(m,shadow));kich_r4_telemetry::Float(category,id,"effective_alpha_ref",AlphaReference(m,shadow));
         kich_r4_telemetry::Text(category,id,"semantic",Name(m.semantic));
         kich_r4_telemetry::Text(category,id,"normal_path",flags&SHADER_BUMP?"SOC_R2_BUMP_WZY_PLUS_BUMP_AUX_RGB_MINUS_ONE; TBN; GBUFFER_NORMAL":"GEOMETRIC_NORMAL");
         kich_r4_telemetry::Text(category,id,"lightmap_path",flags&SHADER_LIGHTMAP?"UV1; RGB_BAKED_ADDED_BEFORE_DIRECT_LIGHT; ALPHA_SUN_DIAGNOSTIC_ONLY":"NO_BAKED_LIGHTMAP");

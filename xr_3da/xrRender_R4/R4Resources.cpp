@@ -761,7 +761,7 @@ void SnapshotPass(Device* d){
     for(uint32_t i=0;i<d->pass.color_count;++i){char key[32];snprintf(key,sizeof(key),"rtv_%u",i);d->Number("GPU_PASS",id,key,d->pass.colors[i]);SnapshotResource(d,d->pass.colors[i]);}
     d->Number("GPU_PASS",id,"dsv",d->pass.depth);SnapshotResource(d,d->pass.depth);
     d->Emit("GPU_PASS",id,"output_view_range","MIP_0_SLICE_0; HANDLE_0_RTV_IS_BACKBUFFER; HANDLE_0_DSV_IS_UNBOUND");
-    d->Emit("GPU_PASS",id,"input_transition","PS_SRV_SLOTS_0_TO_9_UNBOUND_BEFORE_OM_TARGETS");
+    d->Emit("GPU_PASS",id,"input_transition","PS_SRV_SLOTS_0_TO_11_UNBOUND_BEFORE_OM_TARGETS");
 }
 void TelemetryDraw(Device* d,const KichR4DrawIndexedDesc& desc,Resource* pipeline,const KichR4StreamDrawDesc* state,const KichR4Handle* textures,const KichR4DetailDrawDesc* detail,KichR4Handle pose){
     ++d->draw_ordinal;
@@ -928,8 +928,16 @@ int32_t DrawDeferredOrDetail(KichR4Handle device,const KichR4DeferredDrawDesc* d
             if(!instances->initialized)return KICH_R4_E_STATE;}
         ID3D11ShaderResourceView* inputs[DrawTextureSlots]={};KichR4Handle handles[DrawTextureSlots]={};
         memcpy(handles,desc->textures,sizeof(desc->textures));
+        KichR4SamplerState extra_samplers[KICH_R4_DEFERRED_EXTRA_SAMPLERS];
+        memcpy(extra_samplers,desc->extra_samplers,sizeof(extra_samplers));
         if(model){KichR4SurfaceState sampler_state=KichR4DefaultSurface();
-            for(unsigned i=0;i<2;++i){handles[8+i]=model->material_textures[i];sampler_state.samplers[i]=model->material_samplers[i];}
+            for(unsigned i=0;i<2;++i){
+                sampler_state.samplers[i]=model->material_samplers[i];
+                if(model->material_textures[i] || model->material_samplers[i].u){
+                    // Dedicated model maps and generic terrain maps cannot own
+                    // the same slot in one draw. Never silently replace an input.
+                    if(handles[8+i] || extra_samplers[i].u)return KICH_R4_E_ARGUMENT;
+                    handles[8+i]=model->material_textures[i];extra_samplers[i]=model->material_samplers[i];}}
             if(!KichR4ValidSurface(sampler_state))return KICH_R4_E_ARGUMENT;}
         for(unsigned i=0;i<DrawTextureSlots;++i)if(handles[i]){
             const KichR4Handle handle=handles[i];
@@ -940,12 +948,12 @@ int32_t DrawDeferredOrDetail(KichR4Handle device,const KichR4DeferredDrawDesc* d
             inputs[i]=r->srv;
         }
         KichR4StreamDrawDesc effective=desc->state;
-        // The three-target GBuffer writes receiver coverage, including details
+        // The four-target GBuffer writes receiver coverage, including details
         // and GPU-skinned models. Shadow maps never enter this path.
-        if(d->pass.color_count==3 && d->pass.depth && draw.depth_mode && effective.depth_write &&
+        if(d->pass.color_count==4 && d->pass.depth && draw.depth_mode && effective.depth_write &&
             d->resources.Find(d->pass.depth)->info.format==KICH_R4_DEPTH24_STENCIL8)KichR4ReceiverState(effective.surface,true);
         hr=p->pipeline->Draw(d->context,d->draw_state,draw,vb->buffer,ib->buffer,cb->buffer,ib->buffer_stride,NULL,&effective,inputs,
-            instances?instances->buffer:NULL,detail?detail->instance_count:0,detail?detail->first_instance:0,pose?pose->buffer:NULL,model?model->material_samplers:NULL);
+            instances?instances->buffer:NULL,detail?detail->instance_count:0,detail?detail->first_instance:0,pose?pose->buffer:NULL,extra_samplers);
         if(hr<0)return hr;
         memcpy(d->bound_textures,handles,sizeof(d->bound_textures));SnapshotDraw(d,draw,p,vb,cb,&effective,d->bound_textures,detail,model?model->pose_buffer:0);
         ++d->geometry_stats.draw_calls;

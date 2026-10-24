@@ -21,8 +21,8 @@ def function(signature):
 helpers = '\n'.join(function(signature) for signature in (
     'float FogAmount(', 'float FogTransmittance(', 'float3 ForwardFog(', 'float4 PSCombine('))
 helpers = helpers.replace(':SV_Target', '').replace('discard;', 'throw Discard();')
-helpers = helpers.replace('saturate(length(WorldPosition(v.p.xy,depth)-camera.xyz)/camera.w).xxx',
-                          'splat3(saturate(length(WorldPosition(v.p.xy,depth)-camera.xyz)/camera.w))')
+helpers = helpers.replace('saturate(length(LoadReceiverPosition(v.p.xy,depth))/camera.w).xxx',
+                          'splat3(saturate(length(LoadReceiverPosition(v.p.xy,depth))/camera.w))')
 helpers = re.sub(r'\b(\w+(?:\.\w+)*)\.(?:rgb|xyz)\b', r'xyz(\1)', helpers)
 helpers = re.sub(r'\b(\w+(?:\.\w+)*)\.xy\b', r'xy(\1)', helpers)
 helpers = re.sub(r'\b(\w+(?:\.\w+)*)\.aaa\b', r'splat3(\1.w)', helpers)

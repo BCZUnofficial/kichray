@@ -134,7 +134,7 @@ HRESULT PipelineDX11::Surface(ID3D11DeviceContext* ctx,const KichR4StreamDrawDes
     last_blend_key_=bk;last_depth_key_=zk;last_blend_=b;last_depth_=z;*blend=b;*depth=z;return S_OK;
 }
 HRESULT PipelineDX11::Draw(ID3D11DeviceContext* ctx,DrawStateDX11& state,const KichR4DrawIndexedDesc& d,
-    ID3D11Buffer* vb,ID3D11Buffer* ib,ID3D11Buffer* cb,uint32_t index_stride,ID3D11ShaderResourceView* texture,const KichR4StreamDrawDesc* extra,ID3D11ShaderResourceView* const* inputs,ID3D11Buffer* instances,uint32_t count,uint32_t first,ID3D11Buffer* pose,const KichR4SamplerState* material_samplers)
+    ID3D11Buffer* vb,ID3D11Buffer* ib,ID3D11Buffer* cb,uint32_t index_stride,ID3D11ShaderResourceView* texture,const KichR4StreamDrawDesc* extra,ID3D11ShaderResourceView* const* inputs,ID3D11Buffer* instances,uint32_t count,uint32_t first,ID3D11Buffer* pose,const KichR4SamplerState* extra_samplers)
 {
     ID3D11BlendState* blend=NULL;
     ID3D11DepthStencilState* depth=depth_[extra && d.depth_mode && !extra->depth_write?2:d.depth_mode];
@@ -147,8 +147,9 @@ HRESULT PipelineDX11::Draw(ID3D11DeviceContext* ctx,DrawStateDX11& state,const K
         if(extra && extra->surface.valid && extra->surface.samplers[i].u){KichR4SamplerState s=extra->surface.samplers[i];
             if(extra->clamp_texture)s.u=s.v=s.w=3;
             const HRESULT hr=Sampler(ctx,s,&bindings.samplers[slot]);if(FAILED(hr))return hr;}}
-    if(model && material_samplers)for(unsigned i=0;i<2;++i){bindings.samplers[9+i]=sampler_[0];
-        if(material_samplers[i].u){const HRESULT hr=Sampler(ctx,material_samplers[i],&bindings.samplers[9+i]);if(FAILED(hr))return hr;}}
+    if(advanced && extra_samplers)for(unsigned i=0;i<KICH_R4_DEFERRED_EXTRA_SAMPLERS;++i){
+        if(inputs[8+i] || extra_samplers[i].u)bindings.samplers[9+i]=sampler_[0];
+        if(extra_samplers[i].u){const HRESULT hr=Sampler(ctx,extra_samplers[i],&bindings.samplers[9+i]);if(FAILED(hr))return hr;}}
     if(advanced)memcpy(bindings.textures,inputs,sizeof(bindings.textures));else bindings.textures[0]=texture;
     bindings.raster=raster_[d.cull_mode+(extra && extra->scissor_enable?3:0)];bindings.depth=depth;bindings.blend=blend;
     bindings.stencil_ref=extra && extra->surface.valid?extra->surface.stencil_ref:0;

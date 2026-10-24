@@ -39,6 +39,12 @@ inline void MaterialDemand(FrameDemand& demand,const kich_r4_material::Descripto
             demand.NeedTexture("ed\\ed_dummy_bump#",NORMAL);
     }
     demand.NeedTexture(m.detail,DETAIL);
+    if(kich_r4_material::Terrain(m)){
+        demand.NeedTexture(m.terrain_lmap,LIGHTING);
+        if(kich_r4_material::TerrainLayers(m)){
+            demand.NeedTexture(m.terrain_mask,LIGHTING);
+            for(unsigned i=0;i<4;++i){demand.NeedTexture(m.terrain_layers[i],DETAIL);demand.NeedTexture(m.terrain_bumps[i],NORMAL);}}
+    }
 }
 inline bool AnyView(const kich_r4_capture::NativeModelCommand& model,const std::vector<kich_r4_scene::Matrix>& views,
                     const std::vector<unsigned char>& sun,const kich_r4_visibility::SunCasterVolume& volume){
@@ -96,8 +102,7 @@ inline int32_t Preflight(KichR4FrameSession& frame,KichR4LevelSession& level,
                 if(requested&2)continue;
                 requested|=2;demand.NeedTexture(material.texture,BASE);
                 if(kich_r4_material::Geometry(m))MaterialDemand(demand,m,BASE);
-                if(material.kind==1){demand.NeedTexture(material.texture+"_mask",LIGHTING);for(unsigned j=0;j<4;++j)demand.NeedTexture(material.layers[j],DETAIL);}
-            }else if(!(requested&1) && (m.semantic!=kich_r4_material::UNKNOWN?m.alpha_func!=8:material.cutout) && shadow_static[i]){
+            }else if(!(requested&1) && (m.semantic!=kich_r4_material::UNKNOWN?kich_r4_material::AlphaFunction(m,true)!=8:material.cutout) && shadow_static[i]){
                 requested|=1;demand.NeedTexture(material.texture,SHADOW_ALPHA);demand.NeedTexture(m.base,SHADOW_ALPHA);}
         }
     }
@@ -112,7 +117,7 @@ inline int32_t Preflight(KichR4FrameSession& frame,KichR4LevelSession& level,
         if(visible){const uint32_t role=c.layer?HUD:c.effect?EFFECT:BASE;
             demand.NeedTexture(c.texture,role);
             if(c.has_material){demand.NeedTexture(c.material.base,role);if(kich_r4_material::Geometry(c.material))MaterialDemand(demand,c.material,role);}
-        }else if((c.has_material?c.material.alpha_func:c.style.alpha_func)!=8 && AnyView(c,shadows,shadow_sun,shared_plan->sun_casters)){
+        }else if((c.has_material?kich_r4_material::AlphaFunction(c.material,true):kich_r4_material::AlphaFunction(c.style,true))!=8 && AnyView(c,shadows,shadow_sun,shared_plan->sun_casters)){
             demand.NeedTexture(c.has_material && !c.material.base.empty()?c.material.base:c.texture,SHADOW_ALPHA);}
     }
     const kich_r4_detail::Frame* source=details.source;

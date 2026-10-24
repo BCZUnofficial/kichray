@@ -9,8 +9,8 @@
 #include "xr_3da/xrRender_R4/R4DrawStateDX11.h"
 using namespace kich_r4;
 struct Pipeline {
-    bool advanced=true,instanced=false,model=true;uint32_t stride=64,constant_bytes=944,model_capacity=16;
-    unsigned calls=0;ID3D11ShaderResourceView* observed[DrawTextureSlots]={};KichR4SamplerState samplers[2]={};
+    bool advanced=true,instanced=false,model=true;uint32_t stride=64,constant_bytes=DeferredConstantsBytes,model_capacity=16;
+    unsigned calls=0;ID3D11ShaderResourceView* observed[DrawTextureSlots]={};KichR4SamplerState samplers[KICH_R4_DEFERRED_EXTRA_SAMPLERS]={};
     int32_t Draw(void*,int&,const KichR4DrawIndexedDesc&,void*,void*,void*,uint32_t,void*,const KichR4StreamDrawDesc*,ID3D11ShaderResourceView* const* inputs,void*,uint32_t,uint32_t,void*,const KichR4SamplerState* material){
         ++calls;memcpy(observed,inputs,sizeof(observed));if(material)memcpy(samplers,material,sizeof(samplers));return 0;}
 };

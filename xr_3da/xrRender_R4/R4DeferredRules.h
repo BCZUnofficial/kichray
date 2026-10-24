@@ -5,7 +5,7 @@
 #include <float.h>
 namespace kich_r4 {
 // HLSL cbuffer wire layout; keep the DLL independent of EXE scene types.
-enum {DeferredConstantsBytes=944,DeferredAlphaOffset=800};
+enum {DeferredConstantsBytes=1008,DeferredAlphaOffset=800};
 inline bool PassFinite(float v){return v==v && v>=-FLT_MAX && v<=FLT_MAX;}
 inline bool ValidPass(const KichR4PassDesc& p){
     if(p.struct_size!=sizeof(p) || p.flags || p.color_count>4 ||
@@ -25,7 +25,9 @@ inline bool ValidPass(const KichR4PassDesc& p){
 }
 inline bool ValidDeferredDraw(const KichR4DeferredDrawDesc& d){
     KichR4StreamDrawDesc state=d.state;state.texture=1;
-    return d.struct_size==sizeof(d) && ValidStreamDraw(state);
+    KichR4SurfaceState extras=KichR4DefaultSurface();
+    for(unsigned i=0;i<KICH_R4_DEFERRED_EXTRA_SAMPLERS;++i)extras.samplers[i]=d.extra_samplers[i];
+    return d.struct_size==sizeof(d) && ValidStreamDraw(state) && KichR4ValidSurface(extras);
 }
 }
 #endif

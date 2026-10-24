@@ -21,6 +21,7 @@
 #include "KichR4RecordSession.h"
 #include "KichR4RecordTiming.h"
 #include "KichR4Watch.h"
+#include "KichR4NormalMapProbe.h"
 bool KichR4_NativeTerrain(const char* shader,char (*layers)[128]);
 bool KichR4_NativeMaterialState(const char*,const char*,kich_r4_capture::Style&);
 bool KichR4_NativeNeedScreenshot();
@@ -290,6 +291,7 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
         native.pending_mark_count=0;
     }
     native.current_engine_frame=input.engine_frame;
+    kich_r4_normal_probe::Global().BeginFrame(input.engine_frame);
     struct PhaseTail {uint32_t frame;int64_t started;explicit PhaseTail(uint32_t f):frame(f),started(0){}
         ~PhaseTail(){if(started)kich_r4_phases::Global().Span(frame,kich_r4_phases::PostPresent,kich_r4_phases::Counter()-started);}} phase_tail(input.engine_frame);
     PollTimings();Context* context=native.context.get();
@@ -500,8 +502,10 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
                 KichR4_ReportLightingTransitions(input.engine_frame,RecordOutput);
                 const double projection_a=input.camera_projection[10],projection_b=input.camera_projection[14];
                 const bool projection_valid=kich_r4_lighting::Finite(float(projection_a)) && kich_r4_lighting::Finite(float(projection_b)) && projection_a>1.0 && projection_b<0;
-                native.record.Emit("[R4 E1.8 projection] frame=%u valid=%u near_m=%.7g far_m=%.7g depth_a=%.9g depth_b=%.9g; source=Device_mProject; receiver=camera_relative_inverse_exact_raster_VP",
-                    input.engine_frame,unsigned(projection_valid),projection_valid?-projection_b/projection_a:0,projection_valid?-projection_b/(projection_a-1):0,projection_a,projection_b);
+                native.record.Emit("[R4 E1.9 projection] frame=%u valid=%u near_m=%.7g far_m=%.7g depth_a=%.9g depth_b=%.9g; source=Device_mProject; receiver=%s; camera_relative; D24_kept_for_visibility_and_stencil",
+                    input.engine_frame,unsigned(projection_valid),projection_valid?-projection_b/projection_a:0,projection_valid?-projection_b/(projection_a-1):0,projection_a,projection_b,
+                    !world_current?"NO_CURRENT_WORLD_FRAME":c.deferred.base.receiver_inverse.m[15]!=0?"LINEAR_CLIP_W_R32F":"D24_ORTHOGRAPHIC_COMPATIBILITY");
+                kich_r4_normal_probe::EmitReport(native.record,input.engine_frame,world_current);
                 native.record.Emit("[R4 E1.8 projectors] frame=%u current_world=%u spots=%u named=%u ready=%u fallback=%u; selected_opaque_lights_once; named_unavailable_uses_analytic_light; not_visible_pixels",
                     input.engine_frame,unsigned(world_current),world_current?c.deferred.frame_projector_spots:0,world_current?c.deferred.frame_projector_named:0,
                     world_current?c.deferred.frame_projector_ready:0,world_current?c.deferred.frame_projector_fallback:0);

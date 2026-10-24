@@ -16,7 +16,7 @@ struct ID3D11DeviceContext {
     ID3D11InputLayout* layout=NULL;ID3D11Buffer* vb[2]={};UINT stride[2]={};ID3D11Buffer* ib=NULL;UINT index_format=0;
     ID3D11VertexShader* vs=NULL;ID3D11PixelShader* ps=NULL;
     ID3D11Buffer* vcb[2]={};ID3D11Buffer* pcb=NULL;
-    ID3D11ShaderResourceView* textures[10]={};ID3D11SamplerState* samplers[11]={};
+    ID3D11ShaderResourceView* textures[128]={};ID3D11SamplerState* samplers[16]={};
     ID3D11RasterizerState* raster=NULL;ID3D11DepthStencilState* depth=NULL;ID3D11BlendState* blend=NULL;
     UINT stencil_ref=0;D3D11_VIEWPORT viewport={};D3D11_RECT scissor={};
     void Log(const char* n,UINT first=0,UINT count=1){calls.push_back({n,first,count});}

@@ -30,6 +30,17 @@ inline bool Inverse(const Matrix& a,Matrix& out,const float* relative_origin=NUL
     }
     return true;
 }
+inline bool ReceiverInverse(const Matrix& raster_vp,Matrix& out,const float* relative_origin){
+    // The receiver target stores interpolated clip W. Invert the affine map
+    // world -> (clip X, clip Y, clip W), retaining the exact raster matrix.
+    // This never re-encodes linear depth into a near-plane-dependent D24 value.
+    Matrix affine=raster_vp;
+    for(unsigned row=0;row<4;++row){affine.m[row*4+2]=raster_vp.m[row*4+3];affine.m[row*4+3]=row==3?1.f:0.f;}
+    if(Inverse(affine,out,relative_origin))return true;
+    // Orthographic/test projections have constant W. The zero validity slot
+    // selects the existing inverse/depth path, rather than stale coefficients.
+    memset(&out,0,sizeof(out));return false;
+}
 inline Matrix NormalMatrix(const Matrix& world){Matrix inv;
     if(!Inverse(world,inv))return Identity();
     Matrix n={};for(unsigned i=0;i<3;++i)for(unsigned j=0;j<3;++j)n.m[i*4+j]=inv.m[j*4+i];n.m[15]=1;return n;
@@ -83,11 +94,13 @@ struct Constants {
     float light_position[4],light_direction[4],light_color[4],alpha[4];
     float material[4],color_scale[4],color_bias[4],sun_scale_bias[4],tree_wave[4],tree_wind[4];
     float fog_params[4],fog_plane[4];
+    Matrix receiver_inverse;
 };
-static_assert(sizeof(Constants)==944,"E1.8 HLSL cbuffer size");
+static_assert(sizeof(Constants)==1008,"E1.9 HLSL cbuffer size");
 static_assert(offsetof(Constants,normal_matrix)==128 && offsetof(Constants,inverse_vp)==192 &&
     offsetof(Constants,shadow)==256 && offsetof(Constants,camera)==640 && offsetof(Constants,alpha)==800 &&
-    offsetof(Constants,fog_params)==912 && offsetof(Constants,fog_plane)==928,"E1.8 HLSL offsets");
+    offsetof(Constants,fog_params)==912 && offsetof(Constants,fog_plane)==928 &&
+    offsetof(Constants,receiver_inverse)==944,"E1.9 HLSL offsets");
 inline void FogConstants(const KichR4LightingFrame& input,const Matrix& vp,Constants& out){
     memset(out.fog_params,0,sizeof(out.fog_params));memset(out.fog_plane,0,sizeof(out.fog_plane));
     if(!input.fog_valid || !Finite(input.fog_near) || !Finite(input.fog_far) || input.fog_far<=input.fog_near)return;

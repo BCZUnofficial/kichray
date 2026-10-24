@@ -500,6 +500,8 @@
     <ClInclude Include="KichR4RecordTiming.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="KichR4ShadowRecord.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="KichR4Watch.h"><Filter>Interfaces\Render</Filter></ClInclude>
+    <ClInclude Include="KichR4NormalMapProbe.h"><Filter>Interfaces\Render</Filter></ClInclude>
+    <ClInclude Include="KichR4TerrainMaterial.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="KichR4CandidateScratch.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="KichR4Geometry.h"><Filter>Interfaces\Render</Filter></ClInclude>
     <ClInclude Include="KichR4GeometrySession.h"><Filter>Interfaces\Render</Filter></ClInclude>

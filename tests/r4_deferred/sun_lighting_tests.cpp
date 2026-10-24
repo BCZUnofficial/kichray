@@ -49,7 +49,7 @@ float4 camera,screen,sun_direction,sun_color,ambient,hemi,material,fog,fog_param
 float visibility=1,surface_gloss=0;
 float3 surface_normal(0,1,0);
 float3 WorldPosition(float2,float){return float3(0,0,0);}
-float3 RelativePosition(float2,float){return -xyz(camera);}
+float3 LoadReceiverPosition(float2,float){return -xyz(camera);}
 void ShadowDerivatives(float3,float3& dx,float3& dy){dx=float3(.01f,0,0);dy=float3(0,0,.01f);}
 float SunVisibility(float3,float3,float3){return visibility;}
 float3 DecodeNormal(float2){return surface_normal;}

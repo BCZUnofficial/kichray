@@ -5,7 +5,7 @@
  * dynamic WRITE_DISCARD, uploaded once and reused by geometry/shadow passes.
  * All resources use the existing single device registry and release_resource.
  * Borrowed input is copied before return. No engine/D3D/STL pointers in ABI. */
-#define KICH_R4_DETAIL_ABI UINT32_C(0x00020000)
+#define KICH_R4_DETAIL_ABI UINT32_C(0x00030000)
 #define KICH_R4_MAX_DETAIL_INSTANCES UINT32_C(1048576)
 #pragma pack(push,4)
 typedef struct KichR4DetailVertex {float position[3],misc[4];} KichR4DetailVertex;
@@ -27,7 +27,7 @@ typedef struct KichR4DetailAPI {
 #pragma pack(pop)
 typedef char KichR4DetailVertex_size[(sizeof(KichR4DetailVertex)==28)?1:-1];
 typedef char KichR4DetailInstance_size[(sizeof(KichR4DetailInstance)==64)?1:-1];
-typedef char KichR4DetailDrawDesc_size[(sizeof(KichR4DetailDrawDesc)==584)?1:-1];
+typedef char KichR4DetailDrawDesc_size[(sizeof(KichR4DetailDrawDesc)==776)?1:-1];
 #ifdef __cplusplus
 extern "C" {
 #endif

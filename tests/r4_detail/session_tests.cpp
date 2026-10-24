@@ -38,7 +38,7 @@ int32_t DetailDraw(KichR4Handle,const KichR4DetailDrawDesc* desc){const int32_t 
     kich_r4_lighting::Constants c;memcpy(&c,f->Find(draw.constant_buffer).bytes.data(),sizeof(c));
     Require(c.alpha[1]==7 && std::fabs(c.alpha[0]-200.f/255)<1.e-6f,"same alpha cutout in geometry and shadow");
     const auto& p=detail_pipelines.at(draw.pipeline);const std::string ps=shader_entries.at(p.ps);
-    Require((ps=="PSGeometry" && active_pass.color_count==3) || (ps=="PSShadow" && active_pass.color_count==0),"detail pipeline matches target pass");
+    Require((ps=="PSGeometry" && active_pass.color_count==4) || (ps=="PSShadow" && active_pass.color_count==0),"detail pipeline matches target pass including linear receiver depth");
     Require(c.world.m[8]>=0 && c.world.m[8]<=2,"still/wave1/wave2 constants");
     if(g_render_snapshot_active){RenderSnapshotProvenance provenance={};RenderSnapshot_GetProvenance(&provenance);
         Require(std::string(provenance.semantic_type)=="DETAIL" && std::string(provenance.queue)=="R4_DETAIL_INSTANCED","detail identity independent of queue");
@@ -155,7 +155,7 @@ void IndependentShadowLists(){Fixture fixture;f=&fixture;ResetDeferredRecorder()
     Require(details.Draw(game.frame,game.level,game.deferred.cb,constants,true,78,"empty_light",RENDER_SNAPSHOT_PASS_LOCAL_SHADOW)==0 && details.selected_instances.empty(),"empty light volume neither uploads nor replays stale instances");
     Require(instance_uploads==uploads+2 && details.shadow_upload_bytes==128 && details.shadow_candidates==6 && details.shadow_culled==4,"per-light selected upload sizes and culling accounting exact");
     Require(f->Find(camera_handle).bytes==camera_bytes && uploaded[camera_handle]==1 && details.shadow_instance_buffer!=camera_handle,"shadow upload never overwrites camera instance buffer");
-    Require(game.deferred.Pass(game.frame,game.level,input.width,input.height,3,game.deferred.albedo,game.deferred.normal,game.deferred.depth,3,NULL,game.deferred.light)==0,"begin independent camera pass");constants.mvp=kich_r4_scene::Identity();
+    Require(game.deferred.Pass(game.frame,game.level,input.width,input.height,4,game.deferred.albedo,game.deferred.normal,game.deferred.depth,3,NULL,game.deferred.light,game.deferred.receiver_depth)==0,"begin independent camera pass");constants.mvp=kich_r4_scene::Identity();
     Require(details.Draw(game.frame,game.level,game.deferred.cb,constants,false,78,"camera_geometry",RENDER_SNAPSHOT_PASS_GBUFFER)==0 && details.submitted_instances==1 && details.shadow_submitted_instances==2,"camera list stays independent of light lists");
     details.SnapshotSummary(78,true);const auto snapshot=EndSnapshot();Require(Has(snapshot,"[DETAIL_PASS light_left]") && Has(snapshot,"candidate_instances=2") && Has(snapshot,"culled_instances=1") && Has(snapshot,"selected_instances=1") && Has(snapshot,"shadow_instance_upload_bytes=128"),"actual light candidates, culls, selected instances and uploaded bytes reported");
     Require(game.frame.Present()==0,"present explicit selection frame");

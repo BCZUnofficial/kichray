@@ -30,7 +30,7 @@ struct Texture {float4 value;float4 Load(int3){return value;}} image0,image1,sha
 struct Varying {float4 p;};struct Discard {};
 float4 fog,fog_params,fog_plane,camera,screen,alpha;
 float3 relative_position;
-float3 RelativePosition(float2,float){return relative_position;}
+float3 LoadReceiverPosition(float2,float){return relative_position;}
 float3 WorldPosition(float2,float){return relative_position+xyz(camera);}
 float3 DecodeNormal(float2){return float3(0,1,0);}
 // PRODUCTION_FOG_HELPERS

@@ -10,6 +10,7 @@
 #include "KichR4Watch.h"
 #include "KichR4ShadowRecord.h"
 #include "KichR4LightProjector.h"
+#include "KichR4NormalMapProbe.h"
 /* EXE-owned immutable-source cache. Device destruction remains the final owner
  * of every successfully created handle, including partial construction. Weak
  * source ownership lets visual deletion retire GPU storage without retaining
@@ -363,6 +364,19 @@ struct KichR4ModelSession {
             Text("HUD_MATERIAL_EXECUTION",id,"sun_policy",SourceOpaque(command)?"CURRENT_PCF; ROS_HEMI_ONLY":"SOURCE_FORWARD_ROS_TIMES_CURRENT_PCF");
             Text("HUD_MATERIAL_EXECUTION",id,"pixel_contribution","NOT_MEASURED");}
     }
+    static void RecordNormalSubmission(const Command& command,Pass pass,const kich_r4_lighting::Constants& constants,
+        const KichR4ModelDrawDesc& draw,uint32_t attributes,bool plain){
+        if(!kich_r4_record::Enabled() || (pass!=Geometry && pass!=HUD))return;
+        const auto& material=command.material;const uint32_t basis=kich_r4_material::ATTR_NORMAL|kich_r4_material::ATTR_TANGENT|kich_r4_material::ATTR_BINORMAL;
+        kich_r4_normal_probe::Input input;input.known=command.has_material && material.semantic!=kich_r4_material::UNKNOWN;
+        input.authored=!material.bump.empty();input.basis=(attributes&basis)==basis;input.metadata=!material.bump_aux.empty();input.path_enabled=!plain;
+        input.flags=uint32_t(constants.material[0]);input.attributes=attributes;input.index_count=draw.surface.state.draw.index_count;input.identity=command.visual_id;
+        input.mapped=(input.flags&kich_r4_material::SHADER_BUMP)!=0 && (pass==HUD?
+            draw.material_textures[0] && draw.material_textures[1]:draw.surface.textures[1] && draw.surface.textures[2]);
+        input.resource=command.resource.c_str();input.base=material.base.empty()?command.texture.c_str():material.base.c_str();
+        input.bump=material.bump.c_str();input.auxiliary=material.bump_aux.c_str();
+        kich_r4_normal_probe::Global().Observe(pass==HUD?kich_r4_normal_probe::HUD:kich_r4_normal_probe::Model,input);
+    }
     int32_t Draw(KichR4FrameSession& s,KichR4LevelSession& l,KichR4Handle cb,const kich_r4_lighting::Constants& base,
                  const kich_r4_capture::Batch& batch,Pass pass,uint32_t pass_mask,const char* phase,const KichR4Handle* maps=NULL,KichR4Handle scene_color=0,uint32_t only_index=UINT32_MAX){
         if(pass>=PassCount || prepared!=&batch || frame!=batch.engine_frame || command_poses.size()!=batch.native_models.size() || command_classes.size()!=batch.native_models.size() || command_normals.size()!=batch.native_models.size())return s.Record("G3b unprepared model frame",KICH_R4_E_STATE);
@@ -389,7 +403,7 @@ struct KichR4ModelSession {
             ++selected[pass];++phase_selected;if(g_render_snapshot_active)Note(c,"SELECTED",reason);
             const Mesh& mesh=meshes.at(c.mesh.get());kich_r4_lighting::Constants constants=base;
             constants.world=c.world;constants.mvp=kich_r4_scene::Multiply(c.world,(pass==HUD || pass==HUDAdd)?c.vp:base.mvp);constants.normal_matrix=command_normals[index];
-            constants.alpha[0]=c.style.alpha_ref;constants.alpha[1]=static_cast<float>(c.style.alpha_func);constants.alpha[2]=c.style.blend?1.f:0.f;
+            constants.alpha[0]=kich_r4_material::AlphaReference(c.style,pass==Shadow);constants.alpha[1]=static_cast<float>(kich_r4_material::AlphaFunction(c.style,pass==Shadow));constants.alpha[2]=c.style.blend?1.f:0.f;
             if(pass==Distortion)constants.alpha[3]=0;
             if(c.has_material){constants.material[3]=kich_r4_material::MaterialClass(c.material.material);
                 constants.ambient[3]=c.material.emissive_gain;constants.hemi[3]=c.material.emissive_specular;}
@@ -405,7 +419,7 @@ struct KichR4ModelSession {
             state.blend_enable=style.blend;state.source_blend=style.src;state.dest_blend=style.dst;state.clamp_texture=style.clamp;state.surface=style.surface;
             if((pass==ForwardAdd || pass==HUDAdd) && kich_r4_projector::Enabled(constants))kich_r4_projector::Sampler(state.surface);
             state.depth_write=style.write;state.scissor_enable=style.scissor?1:0;memcpy(state.scissor,style.rect,sizeof(state.scissor));state.min_depth=style.min_z;state.max_depth=style.max_z;
-            const std::string& texture=c.has_material && !c.material.base.empty()?c.material.base:c.texture;d.surface.textures[0]=pass==Shadow && (c.has_material?c.material.alpha_func:c.style.alpha_func)==8?0:texture.empty()?white:l.Texture(s,texture);
+            const std::string& texture=c.has_material && !c.material.base.empty()?c.material.base:c.texture;d.surface.textures[0]=pass==Shadow && (c.has_material?kich_r4_material::AlphaFunction(c.material,true):kich_r4_material::AlphaFunction(c.style,true))==8?0:texture.empty()?white:l.Texture(s,texture);
             if(g_render_snapshot_active){if(texture.empty())RenderSnapshot_Texture(0,"$white");
                 else if(d.surface.textures[0]==l.checker){char resolved[256];snprintf(resolved,sizeof(resolved),"CHECKER_FALLBACK:%s",texture.c_str());RenderSnapshot_Texture(0,resolved);}}
             if(maps)for(unsigned j=0;j<6;++j)d.surface.textures[j+2]=maps[j];
@@ -437,6 +451,7 @@ struct KichR4ModelSession {
             if(g_render_snapshot_active && maps)for(unsigned j=0;j<6;++j){char name[48];snprintf(name,sizeof(name),"SELECTED_SHADOW_FACE_%u",j);RenderSnapshot_Texture(j+2,maps[j]?name:"UNBOUND");}
             if(l.Expect(s,"G3c model material constants",l.bridge.api.update_buffer(s.device,cb,&constants,sizeof(constants)))<0)return s.failure;
             d.pose_buffer=command_poses[index];if(l.Expect(s,"G3b native model DrawIndexed",api.draw(s.device,&d))<0)return s.failure;
+            RecordNormalSubmission(c,pass,constants,d,attributes,state.draw.pipeline==plain_pipeline[command_classes[index]]);
             if(pass==HUD && kich_r4_record::Enabled()){
                 ++hud_recorded_draws;if(c.object_light_valid){++hud_exposure_valid_draws;hud_hemi_min=std::min(hud_hemi_min,c.object_hemi);hud_hemi_max=std::max(hud_hemi_max,c.object_hemi);}
                 if(d.material_textures[0] && d.material_textures[1] && (uint32_t(constants.material[0])&kich_r4_material::SHADER_BUMP))++hud_mapped_draws;
@@ -448,6 +463,7 @@ struct KichR4ModelSession {
                 if(g_render_snapshot_active){RenderSnapshot_Texture(1,"UNBOUND");RenderSnapshot_Texture(2,"UNBOUND");}
                 if(l.Expect(s,"E1 geometric subset constants",l.bridge.api.update_buffer(s.device,cb,&constants,sizeof(constants)))<0 ||
                     l.Expect(s,"E1 geometric subset draw",api.draw(s.device,&d))<0)return s.failure;
+                RecordNormalSubmission(c,pass,constants,d,c.available_attributes,false);
                 if(kich_r4_record::Enabled())kich_r4_watch::Global().ObserveModel(c,unsigned(pass),constants,d.surface,true,state.draw.pipeline==plain_pipeline[command_classes[index]]);
                 ++draw_calls[pass];++phase_draws;
                 if(g_render_snapshot_active){char id[96];snprintf(id,sizeof(id),"frame_%u_command_%u",frame,static_cast<unsigned>(index));

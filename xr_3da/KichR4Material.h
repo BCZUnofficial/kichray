@@ -21,12 +21,16 @@ struct Descriptor {
     Special special;
     Family source_family;
     std::string shader,source,base,bump,bump_aux,detail,lightmap,hemi,unsupported_reason;
+    // SoC BmmD is a separate authored material: four masked detail layers
+    // when its base has no bump, plus a UV0 sun mask and base-alpha hemi.
+    std::string terrain_mask,terrain_lmap,terrain_layers[4],terrain_bumps[4];
+    bool terrain_detail=false;
     uint64_t class_id;
-    float detail_scale[2],material,alpha_ref,emissive_gain,emissive_specular;
-    uint32_t alpha_func,cull,src_blend,dst_blend,required_attributes,passes,detail_usage,source_flags,source_alpha_reference;
+    float detail_scale[2],material,alpha_ref,shadow_alpha_ref,emissive_gain,emissive_specular;
+    uint32_t alpha_func,shadow_alpha_func,cull,src_blend,dst_blend,required_attributes,passes,detail_usage,source_flags,source_alpha_reference;
     uint32_t base_uv,bump_uv,detail_uv,lightmap_uv,hemi_uv;
     bool depth_test,depth_write,tree_wave,fog_enabled;
-    Descriptor():semantic(UNKNOWN),special(SPECIAL_NONE),source_family(FAMILY_UNKNOWN),class_id(UINT64_MAX),material(1),alpha_ref(0),emissive_gain(0),emissive_specular(0),alpha_func(8),cull(0),
+    Descriptor():semantic(UNKNOWN),special(SPECIAL_NONE),source_family(FAMILY_UNKNOWN),class_id(UINT64_MAX),material(1),alpha_ref(0),shadow_alpha_ref(0),emissive_gain(0),emissive_specular(0),alpha_func(8),shadow_alpha_func(0),cull(0),
         src_blend(2),dst_blend(1),required_attributes(ATTR_NORMAL),passes(0),detail_usage(0),source_flags(0),source_alpha_reference(0),base_uv(0),bump_uv(0),detail_uv(0),lightmap_uv(1),hemi_uv(1),
         depth_test(true),depth_write(true),tree_wave(false),fog_enabled(false){detail_scale[0]=detail_scale[1]=1;}
 };
@@ -49,8 +53,14 @@ inline bool AuthoredWallmarkSource(uint32_t element,const char* vertex_shader){
 }
 inline bool Geometry(const Descriptor& d){return (d.passes&PASS_GEOMETRY)!=0;}
 inline bool Shadow(const Descriptor& d){return (d.passes&PASS_SHADOW)!=0;}
+// Zero means an unresolved/legacy source inherits its captured alpha test.
+// A known shadow pass may differ from the camera pass without changing its UVs.
+template<class State> inline uint32_t AlphaFunction(const State& s,bool shadow){return shadow && s.shadow_alpha_func?s.shadow_alpha_func:s.alpha_func;}
+template<class State> inline float AlphaReference(const State& s,bool shadow){return shadow && s.shadow_alpha_func?s.shadow_alpha_ref:s.alpha_ref;}
 inline bool AuthoredWallmark(const Descriptor& d){return d.special==SPECIAL_WALLMARK;}
 inline bool Bumped(const Descriptor& d){return Geometry(d) && !d.bump.empty();}
+inline bool Terrain(const Descriptor& d){return d.special==SPECIAL_TERRAIN;}
+inline bool TerrainLayers(const Descriptor& d){return Terrain(d) && d.bump.empty() && d.terrain_detail;}
 inline float MaterialClass(float material){return material==material?material<0?0:material>3?3:material:1;}
 inline const char* Name(Semantic s){switch(s){case MATERIAL_OPAQUE:return "opaque";case CUTOUT:return "cutout";
     case BLENDED:return "blended";case ADDITIVE:return "additive";case DISTORTION:return "distortion";
@@ -59,11 +69,14 @@ inline uint64_t Key(const Descriptor& d){
     uint64_t key=UINT64_C(14695981039346656037);
     const std::string* strings[]={&d.shader,&d.source,&d.base,&d.bump,&d.bump_aux,&d.detail,&d.lightmap,&d.hemi,&d.unsupported_reason};
     for(unsigned s=0;s<sizeof(strings)/sizeof(strings[0]);++s){for(size_t i=0;i<strings[s]->size();++i){key^=static_cast<unsigned char>((*strings[s])[i]);key*=UINT64_C(1099511628211);}key^=255;key*=UINT64_C(1099511628211);}
-    const uint64_t integers[]={uint64_t(d.semantic),uint64_t(d.special),uint64_t(d.source_family),d.class_id,d.alpha_func,d.cull,d.src_blend,d.dst_blend,d.required_attributes,d.passes,d.detail_usage,d.source_flags,d.source_alpha_reference,
+    const std::string* terrain[]={&d.terrain_mask,&d.terrain_lmap,&d.terrain_layers[0],&d.terrain_layers[1],&d.terrain_layers[2],&d.terrain_layers[3],
+        &d.terrain_bumps[0],&d.terrain_bumps[1],&d.terrain_bumps[2],&d.terrain_bumps[3]};
+    for(unsigned s=0;s<sizeof(terrain)/sizeof(terrain[0]);++s){for(size_t i=0;i<terrain[s]->size();++i){key^=static_cast<unsigned char>((*terrain[s])[i]);key*=UINT64_C(1099511628211);}key^=255;key*=UINT64_C(1099511628211);}
+    const uint64_t integers[]={uint64_t(d.semantic),uint64_t(d.special),uint64_t(d.source_family),d.class_id,d.alpha_func,d.shadow_alpha_func,d.cull,d.src_blend,d.dst_blend,d.required_attributes,d.passes,d.detail_usage,d.source_flags,d.source_alpha_reference,
         d.base_uv,d.bump_uv,d.detail_uv,d.lightmap_uv,d.hemi_uv,
-        uint64_t(d.depth_test),uint64_t(d.depth_write),uint64_t(d.tree_wave),uint64_t(d.fog_enabled)};
+        uint64_t(d.depth_test),uint64_t(d.depth_write),uint64_t(d.tree_wave),uint64_t(d.fog_enabled),uint64_t(d.terrain_detail)};
     for(unsigned v=0;v<sizeof(integers)/sizeof(integers[0]);++v)for(unsigned b=0;b<8;++b){key^=(integers[v]>>(b*8))&255;key*=UINT64_C(1099511628211);}
-    const float floats[]={d.detail_scale[0],d.detail_scale[1],d.material,d.alpha_ref,d.emissive_gain,d.emissive_specular};
+    const float floats[]={d.detail_scale[0],d.detail_scale[1],d.material,d.alpha_ref,d.shadow_alpha_ref,d.emissive_gain,d.emissive_specular};
     const unsigned char* bytes=reinterpret_cast<const unsigned char*>(floats);
     for(unsigned b=0;b<sizeof(floats);++b){key^=bytes[b];key*=UINT64_C(1099511628211);}
     bytes=reinterpret_cast<const unsigned char*>(&d.surface);
@@ -132,6 +145,12 @@ inline Descriptor Build(const Source& source,const PassState& state) {
             // resources/shaders/r2/common.h def_aref, used by flat and bumped
             // deffer_base_aref shaders. clip(alpha-ref) accepts equality.
             d.alpha_ref=200.f/255.f;d.alpha_func=7;
+            // Current SoC R2 hardware shadow passes return sampled alpha to
+            // fixed GREATER: aref/model use 220, tree cards use 200. Do not
+            // replace an explicit source shadow policy or infer one by texture.
+            if(!d.shadow_alpha_func && (source.family==FAMILY_AREF || source.family==FAMILY_MODEL || source.family==FAMILY_TREE)){
+                d.shadow_alpha_func=5;d.shadow_alpha_ref=(source.family==FAMILY_TREE?200.f:220.f)/255.f;
+            }
         }
     } else if(d.semantic==DISTORTION){d.passes=PASS_DISTORTION;d.depth_write=false;}
     else {d.passes=PASS_FORWARD;if(d.semantic==BLENDED || d.semantic==ADDITIVE)d.depth_write=false;}
@@ -142,12 +161,13 @@ inline Descriptor Build(const Source& source,const PassState& state) {
     if(!d.hemi.empty() || !d.lightmap.empty())d.required_attributes|=ATTR_UV1;
     return d;
 }
-// Preserve the exact alpha comparison and UV0 between geometry and shadows.
+// Preserve visible and shadow alpha policies independently; both use base UV0.
 template<class Style> inline void Apply(const Descriptor& d,Style& s) {
     if(d.semantic==UNKNOWN)return;
     s.blend=d.semantic==BLENDED || d.semantic==ADDITIVE || d.semantic==DISTORTION ||
         (d.semantic==EMISSIVE && !(d.src_blend==2 && d.dst_blend==1));
     s.src=d.src_blend;s.dst=d.dst_blend;s.alpha_func=d.alpha_func;s.alpha_ref=d.alpha_ref;
+    s.shadow_alpha_func=d.shadow_alpha_func;s.shadow_alpha_ref=d.shadow_alpha_ref;
     s.depth=d.depth_test;s.write=d.depth_write;s.cull=d.cull;s.surface=d.surface;s.fog_enabled=d.fog_enabled;
 }
 class Cache {

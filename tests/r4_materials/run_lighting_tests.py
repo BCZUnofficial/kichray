@@ -11,7 +11,7 @@ source = (root / "resources/shaders/r4/bridge_deferred.hlsl").read_text()
 
 
 def function(name):
-    start = re.search(r"float[23]? " + name + r"\(", source).start()
+    start = re.search(r"float[234]? " + name + r"\(", source).start()
     brace = source.index("{", start)
     depth, end = 1, brace + 1
     while depth:
@@ -30,6 +30,12 @@ struct float2 {float x,y;float2(float a,float b):x(a),y(b){}};
 struct float3 {float x,y,z;float3(float a,float b,float c):x(a),y(b),z(c){}
     float3(float2 xy,float a):x(xy.x),y(xy.y),z(a){}
     void operator/=(float a){x/=a;y/=a;z/=a;}};
+struct float4 {float r,g,b,a;float4(float x=0,float y=0,float z=0,float w=0):r(x),g(y),b(z),a(w){}};
+float4 operator+(float4 x,float4 y){return float4(x.r+y.r,x.g+y.g,x.b+y.b,x.a+y.a);}
+float4 operator*(float4 x,float y){return float4(x.r*y,x.g*y,x.b*y,x.a*y);}
+float4 operator/(float4 x,float y){return x*(1/y);}
+float3 operator-(float3 x,float y){return float3(x.x-y,x.y-y,x.z-y);}
+float dot(float4 x,float y){return (x.r+x.g+x.b+x.a)*y;}
 float clamp(float a,float lo,float hi){return max(lo,min(hi,a));}
 float saturate(float a){return clamp(a,0,1);}
 float frac(float a){return a-std::floor(a);}
@@ -44,12 +50,11 @@ void SetXY(float3& n,float2 v){n.x=v.x;n.y=v.y;}
 typedef unsigned uint;
 struct Varying{float2 uv;};
 struct MaterialConstants{float x;float2 yz;MaterialConstants():x(0),yz(1,1){}}material;
-struct SampleValue{float r,a;};
-struct SampleTexture{SampleValue value;SampleValue Sample(int,float2){return value;}}image1,shadow3,model_bump;
-int surface1=0,surface5=0,model_bump_surface=0;
+struct SampleTexture{float4 value;float2 last=float2(0,0);unsigned reads=0;float4 Sample(int,float2 uv){last=uv;++reads;return value;}}image1,shadow3,shadow4,shadow5,model_bump,model_bump_aux;
+int surface1=0,surface5=0,surface6=0,surface7=0,model_bump_surface=0,model_bump_aux_surface=0;
 '''
 for name in ("NormalSign", "EncodeNormal", "DecodeNormal", "PackMaterial", "MaterialGloss",
-             "MaterialClass", "MaterialSlice", "MaterialResponse", "SpecularIntensity", "LocalAttenuation", "Gloss"):
+             "MaterialClass", "MaterialSlice", "MaterialResponse", "SpecularIntensity", "LocalAttenuation", "TerrainWeights", "TerrainChannels", "TerrainBump", "TerrainNormalSample", "GlossWithTerrain", "Gloss"):
     body = function(name)
     # Translate HLSL swizzle syntax only; all numerical expressions are production code.
     body = re.sub(r"n\.xy=([^;]+);", r"SetXY(n,\1);", body)
@@ -58,17 +63,33 @@ for name in ("NormalSign", "EncodeNormal", "DecodeNormal", "PackMaterial", "Mate
     body = body.replace("max(range*.95,.0001)", "max(range*.95f,.0001f)")
     body = body.replace("max(0,dot(color", "max(0.f,dot(color")
     body = body.replace("[branch]", "")
+    body = body.replace("max(dot(mask,1),.0001)", "max(dot(mask,1),.0001f)")
+    body = body.replace("channels.wzy", "float3(channels.a,channels.b,channels.g)")
     adapter += body + "\n"
 
 adapter += r'''
 int main(){
-    Varying sample={float2(.2f,.4f)};image1.value={.4f,1};shadow3.value={1,.25f};
+    Varying sample={float2(.2f,.4f)};image1.value={.4f,0,0,1};shadow3.value={1,0,0,.25f};
     material.x=0;assert(abs(Gloss(sample)-2.f/255)<1e-6);
     material.x=1;assert(abs(Gloss(sample)-.16f)<1e-6);
     material.x=9;assert(abs(Gloss(sample)-.08f)<1e-6); // Bumped sload detail alpha*2.
     material.x=8;assert(abs(Gloss(sample)-2.f/255)<1e-6); // Flat deffer keeps def_gloss.
     material.x=9;image1.value.r=1;shadow3.value.a=1;assert(Gloss(sample)==1);
-    model_bump.value={.6f,1};material.x=1025;assert(abs(Gloss(sample)-.36f)<1e-6); // HUD samples t8, not any shadow/legacy slot.
+    model_bump.value={.6f,0,0,1};material.x=1025;assert(abs(Gloss(sample)-.36f)<1e-6); // HUD samples t8, not any shadow/legacy slot.
+    // Independent SoC BMM oracle: four authored mask weights, WZY normal
+    // channels centered at .5, gloss linear (not the ordinary bump R squared).
+    image1.value={1,2,3,4};shadow4.value={.1f,.2f,.3f,.4f};shadow5.value={.2f,.4f,.6f,.8f};
+    model_bump.value={.3f,.6f,.9f,.2f};model_bump_aux.value={.4f,.8f,.2f,.6f};material.yz=float2(7,11);material.x=8192;
+    const auto weights=TerrainWeights(sample);assert(abs(weights.a-.4f)<1e-6 && abs(dot(weights,1)-1)<1e-6);
+    const auto mixed=TerrainBump(sample);assert(abs(mixed.r-.3f)<1e-6 && abs(Gloss(sample)-.3f)<1e-6);
+    const auto normal=TerrainNormalSample(mixed,1);assert(abs(normal.x-0.f)<1e-6 && abs(normal.y-0.f)<1e-6 && abs(normal.z-.1f)<1e-6);
+    assert(abs(shadow4.last.x-1.4f)<1e-6 && abs(model_bump_aux.last.y-4.4f)<1e-6); // Authored scale, no fixed 50.
+    image1.reads=shadow4.reads=shadow5.reads=model_bump.reads=model_bump_aux.reads=0;
+    const auto shared_weights=TerrainWeights(sample);const auto shared_channels=TerrainChannels(sample,shared_weights);
+    const auto shared_normal=TerrainNormalSample(shared_channels,dot(shared_weights,1));
+    assert(abs(shared_normal.z-normal.z)<1e-6 && abs(GlossWithTerrain(sample,shared_channels,dot(shared_weights,1))-.3f)<1e-6);
+    assert(image1.reads==1 && shadow4.reads==1 && shadow5.reads==1 && model_bump.reads==1 && model_bump_aux.reads==1);
+    image1.value={0,0,0,0};assert(dot(TerrainWeights(sample),1)==0 && abs(Gloss(sample)-2.f/255)<1e-6);
     for(int gloss=0;gloss<128;++gloss)for(int material=0;material<16;++material){
         float packed=PackMaterial(float(gloss)/127,float(material)/5);
         assert(packed==gloss*16+material);

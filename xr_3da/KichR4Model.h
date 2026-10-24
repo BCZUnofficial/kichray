@@ -6,7 +6,7 @@
  * one skeleton in one capture frame, independently of world transforms.
  * No engine/STL/D3D pointers cross this boundary; upload_pose consumes only
  * its 16-byte header and bone_count matrices before returning. */
-#define KICH_R4_MODEL_ABI UINT32_C(0x00040000)
+#define KICH_R4_MODEL_ABI UINT32_C(0x00050000)
 #define KICH_R4_MAX_MODEL_BONES UINT32_C(256)
 #define KICH_R4_MODEL_POSE_BUDGET_BYTES UINT32_C(16777216)
 #define KICH_R4_MAX_MODEL_POSE_SLOTS UINT32_C(16384)
@@ -44,7 +44,7 @@ typedef struct KichR4ModelAPI {
 #pragma pack(pop)
 typedef char KichR4ModelVertex_size[(sizeof(KichR4ModelVertex)==64)?1:-1];
 typedef char KichR4ModelPose_size[(sizeof(KichR4ModelPose)==16400)?1:-1];
-typedef char KichR4ModelDrawDesc_size[(sizeof(KichR4ModelDrawDesc)==672)?1:-1];
+typedef char KichR4ModelDrawDesc_size[(sizeof(KichR4ModelDrawDesc)==864)?1:-1];
 #ifdef __cplusplus
 extern "C" {
 #endif

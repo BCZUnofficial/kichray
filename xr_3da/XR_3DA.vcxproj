@@ -584,6 +584,8 @@
     <ClInclude Include="KichR4ShadowPoolPolicy.h" />
     <ClInclude Include="KichR4LightingMath.h" />
     <ClInclude Include="KichR4Material.h" />
+    <ClInclude Include="KichR4TerrainMaterial.h" />
+    <ClInclude Include="KichR4NormalMapProbe.h" />
     <ClInclude Include="KichR4MaterialServices.h" />
     <ClInclude Include="KichR4MaterialSession.h" />
     <ClInclude Include="KichR4Dds.h" />

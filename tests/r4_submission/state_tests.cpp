@@ -27,10 +27,12 @@ int main(){
     context.calls.clear();b.textures[1]=NULL;b.textures[7]=NULL;cache.Apply(&context,b);
     Require(context.calls.size()==1 && context.calls[0].first==1 && context.calls[0].count==7 && context.textures[5]==a.textures[5],"spanning SRV range lost unchanged slots");
     b.samplers[8]=NULL;context.calls.clear();cache.Apply(&context,b);Require(context.calls.size()==1 && context.calls[0].first==8,"sampler dirty range");
-    // Model-only bump inputs cannot leak into ordinary world, UI or point-light draws.
-    b.textures[8]=b.textures[9]=NULL;b.samplers[9]=b.samplers[10]=NULL;context.calls.clear();cache.Apply(&context,b);
-    Require(context.calls.size()==2 && context.calls[0].first==8 && context.calls[0].count==2 && context.calls[1].first==9 && context.calls[1].count==2,"model material extra dirty ranges");
-    Require(!context.textures[8] && !context.textures[9] && !context.samplers[9] && !context.samplers[10],"model material extras not cleared");
+    // Model/terrain inputs cannot leak into ordinary world, UI or point-light draws.
+    for(unsigned i=8;i<DrawTextureSlots;++i)b.textures[i]=NULL;
+    for(unsigned i=9;i<DrawSamplerSlots;++i)b.samplers[i]=NULL;
+    context.calls.clear();cache.Apply(&context,b);
+    Require(context.calls.size()==2 && context.calls[0].first==8 && context.calls[0].count==4 && context.calls[1].first==9 && context.calls[1].count==4,"model and terrain extra dirty ranges");
+    for(unsigned i=8;i<DrawTextureSlots;++i)Require(!context.textures[i] && !context.samplers[i+1],"model and terrain extras not cleared");
     // GPU model/detail -> ordinary geometry must clear the secondary VB and palette.
     b.pose=NULL;b.instances=NULL;b.vertex_stride=32;b.index_stride=4;cache.Apply(&context,b);
     Require(!context.vcb[1] && !context.vb[1] && context.stride[0]==32 && context.index_format==DXGI_FORMAT_R32_UINT,"geometry transition stale binding");

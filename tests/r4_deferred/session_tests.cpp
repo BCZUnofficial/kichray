@@ -17,7 +17,11 @@ int ScenarioDeferred(int failure=0,int32_t error_code=error){Fixture fixture;f=&
     if(!failure){Require(result==1 && game.deferred.frames==1 && game.frame.rendered==1,"complete deferred frame presented once");
         Require(game.deferred.shadow_passes==8 && game.deferred.local_passes==2,"sun + point six faces + spot shadows and two light passes");
         Require(game.deferred.frame_sun_cascades==1 && game.deferred.frame_spot_shadow_lights==1 && game.deferred.frame_point_shadow_lights==1 && game.deferred.frame_local_shadow_faces==7,"status counts successful sun cascades and local sources separately from cube faces");
-        Require(passes.size()==12 && passes[8].color_count==3 && passes[8].depth==game.deferred.depth,"shadow -> MRT -> irradiance -> combine -> forward/UI phases");
+        Require(passes.size()==12 && passes[8].color_count==4 && passes[8].colors[3]==game.deferred.receiver_depth && passes[8].depth==game.deferred.depth,"shadow -> four MRT -> irradiance -> combine -> forward/UI phases");
+        const KichR4Handle receiver=game.deferred.receiver_depth;
+        Require(targets.at(receiver).format==KICH_R4_R32F && targets.at(receiver).bindings==(KICH_R4_COLOR_TARGET|KICH_R4_SHADER_READ),"linear receiver uses float color storage independently of D24 stencil/coverage");
+        for(size_t i=0;i<draw_entries.size();++i){const bool consumes=draw_entries[i]=="PSSun" || draw_entries[i]=="PSLocal" || draw_entries[i]=="PSCombine";
+            Require(draw_descriptions[i].textures[11]==(consumes?receiver:0),"only world fullscreen receiver consumers bind linear depth");}
         Require(draw_entries.back()=="PSPlain" && game.stream.layer_draws[0]==2 && game.stream.layer_draws[1]==1 && game.stream.layer_draws[2]==1,"HUD last and main counters exclude repeated shadow/light draws");
         const uint32_t created=f->created;const KichR4Handle vb=game.stream.vb,gbuffer=game.deferred.albedo;
         Require(game.Render(input,&batch)==1 && created==f->created && vb==game.stream.vb,"warm frame reuses native targets/shadows/upload buffers");
@@ -30,6 +34,7 @@ int ScenarioDeferred(int failure=0,int32_t error_code=error){Fixture fixture;f=&
         input.toggle_down=false;game.Render(input,&batch);input.toggle_down=true;Require(game.Render(input,&batch)==1,"F8 returns to R4");
         input.toggle_down=false;input.width=1280;input.height=720;
         Require(game.Render(input,&batch)==1 && game.deferred.albedo!=gbuffer && !f->objects.count(gbuffer),"resize replaces all screen targets and releases old resources");
+        Require(game.deferred.receiver_depth!=receiver && !f->objects.count(receiver),"linear receiver is also released and recreated on resize");
         const uint32_t shadow_passes=game.deferred.shadow_passes;memset(input.lighting.sun_color,0,12);input.lighting.count=0;
         Require(game.Render(input,&batch)==1 && game.deferred.shadow_passes==shadow_passes,"night without lights skips shadow work");
         Require(!game.deferred.frame_sun_cascades && !game.deferred.frame_spot_shadow_lights && !game.deferred.frame_point_shadow_lights && !game.deferred.frame_local_shadow_faces,"night resets status even while old shadow resources remain allocated");
@@ -74,6 +79,7 @@ void MaterialExecution(){Fixture fixture;f=&fixture;ResetDeferredRecorder();cons
     m.bump_aux="missing";draw={};kich_r4_material::Bind(game.frame,game.level,m,127,c,draw,false);
     Require(!(uint32_t(c.material[0])&1) && !draw.textures[1] && !draw.textures[2],"missing bump auxiliary checker never reaches normal decoder");
     m.bump_aux="bump#";
+    m.shadow_alpha_ref=220.f/255.f;m.shadow_alpha_func=5;
     for(auto& material:game.level.scene.materials){material.descriptor=m;material.kind=3;}
     for(auto& draw:game.level.scene.draws)draw.available_attributes=127;
     game.deferred.native_mode=true;const KichR4FrameColor clear={sizeof(clear),{0,0,0,1}};Require(game.frame.BeginClear(clear)==0,"begin isolated material passes");
@@ -84,7 +90,7 @@ void MaterialExecution(){Fixture fixture;f=&fixture;ResetDeferredRecorder();cons
     Require(draw_descriptions.size()-split==split-first,"cutout shadow/main same candidate selection");
     for(size_t j=0;j<split-first;++j){const auto& main=draw_descriptions[first+j];const auto& shadow=draw_descriptions[split+j];
         Require(!main.state.blend_enable && main.state.depth_write && main.state.draw.depth_mode && main.state.draw.cull_mode==KICH_R4_CULL_NONE,"cutout uses opaque depth state and source two-sided cull");
-        Require(main.textures[0]==shadow.textures[0] && draw_constants[first+j].alpha[0]==draw_constants[split+j].alpha[0] && draw_constants[first+j].alpha[1]==draw_constants[split+j].alpha[1],"main and shadow preserve same base resource and alpha compare");}
+        Require(main.textures[0]==shadow.textures[0] && draw_constants[first+j].alpha[0]==.33f && draw_constants[first+j].alpha[1]==5 && draw_constants[split+j].alpha[0]==220.f/255.f && draw_constants[split+j].alpha[1]==5,"static main and shadow preserve base resource with independent source comparison");}
     Require(game.frame.Present()==0,"material pass frame completed");
     RenderSnapshotInfo info={};strcpy(info.renderer,"R4");strcpy(info.api,"D3D11");strcpy(info.directory,"/tmp");
     Require(RenderSnapshot_Request(),"material coverage request");RenderSnapshot_Begin(info);
@@ -199,12 +205,20 @@ void StreamBounds(){KichR4DeferredSession planner;auto batch=Batch();planner.Pre
     batch.commands[0].count=UINT32_MAX;planner.bounded_batch=NULL;planner.PrepareStreamBounds(batch);
     Require(!planner.stream_bounds[0].valid,"invalid stream range never read while preparing bounds");
 }
+void StreamShadowAlpha(){Fixture fixture;f=&fixture;ResetDeferredRecorder();const KichR4LevelFiles fs={Open,Close};kich_r4_game::Session game(DeferredAPIs(),fs,"l01_escape",NULL);
+    auto batch=Batch();auto& style=batch.commands[0].style;style.alpha_func=7;style.alpha_ref=200.f/255.f;style.shadow_alpha_func=5;style.shadow_alpha_ref=220.f/255.f;
+    Require(game.Render(DeferredInput(),&batch)==1,"streamed cutout renders both passes");bool geometry=false,shadow=false;
+    for(size_t i=0;i<draw_descriptions.size();++i)if(draw_descriptions[i].state.draw.vertex_buffer==game.stream.vb && draw_descriptions[i].state.draw.start_index==0){
+        if(draw_entries[i]=="PSGeometry"){geometry=true;Require(draw_constants[i].alpha[0]==200.f/255.f && draw_constants[i].alpha[1]==7,"stream camera keeps equality at 200");}
+        if(draw_entries[i]=="PSShadow"){shadow=true;Require(draw_constants[i].alpha[0]==220.f/255.f && draw_constants[i].alpha[1]==5 && draw_descriptions[i].textures[0],"stream shadow uses copied strict 220 policy and base texture");}}
+    Require(geometry && shadow,"both actual stream bindings verified");KichR4GeometryReport report={};Require(game.Stop(report)==0 && !f->live,"stream alpha fixture cleans up");
+}
 void Invalid(){
     for(unsigned which=0;which<3;++which){Fixture fixture;f=&fixture;ResetDeferredRecorder();const KichR4LevelFiles fs={Open,Close};kich_r4_game::Session game(DeferredAPIs(),fs,"l01_escape",NULL);
         auto input=DeferredInput();if(which==0)input.lighting.valid=0;else if(which==1)input.lighting.count=9;else memset(input.view_projection,0,64);
         Require(game.Render(input)<0 && !game.frame.rendered,"invalid deferred inputs never present partial image");KichR4GeometryReport r={};game.Stop(r);Require(!f->live && f->objects.empty(),"invalid input cleanup balanced");}
 }
 }
-int main(){try{(void)&Scenario;const int positions=ScenarioDeferred();for(int i=1;i<=positions;++i){ScenarioDeferred(i);ScenarioDeferred(i,7);}Invalid();Telemetry();MaterialExecution();AuthoredWallmarkRoute();WallmarkRoute();AllVisibleShadows();SharedFrameQueues();StreamBounds();
+int main(){try{(void)&Scenario;const int positions=ScenarioDeferred();for(int i=1;i<=positions;++i){ScenarioDeferred(i);ScenarioDeferred(i,7);}Invalid();Telemetry();MaterialExecution();AuthoredWallmarkRoute();WallmarkRoute();AllVisibleShadows();SharedFrameQueues();StreamBounds();StreamShadowAlpha();
     printf("B4.4 pass planner / lighting / reuse / F8-F9 / failures: %d checks, %d failure positions passed\n",checks,positions);return 0;
 }catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

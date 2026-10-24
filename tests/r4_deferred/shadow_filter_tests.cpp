@@ -13,7 +13,7 @@ using std::abs;
 float saturate(float a){return std::max(0.f,std::min(1.f,a));}
 struct float2 {float x,y;float2(float a=0,float b=0):x(a),y(b){} };
 struct float3 {float x,y,z;float3(float a=0,float b=0,float c=0):x(a),y(b),z(c){} };
-struct float4 {float x,y,z,w;float4(float a=0,float b=0,float c=0,float d=0):x(a),y(b),z(c),w(d){} };
+struct float4 {float x,y,z,w;float4(float a=0,float b=0,float c=0,float d=0):x(a),y(b),z(c),w(d){} float4(float2 a,float c,float d):x(a.x),y(a.y),z(c),w(d){} };
 float2 operator+(float2 a,float2 b){return float2(a.x+b.x,a.y+b.y);}
 float2 operator+(float2 a,float b){return a+float2(b,b);}
 float2 operator-(float2 a,float2 b){return float2(a.x-b.x,a.y-b.y);}
@@ -23,6 +23,10 @@ float3 operator-(float3 a,float3 b){return float3(a.x-b.x,a.y-b.y,a.z-b.z);}
 float3 operator+(float3 a,float3 b){return float3(a.x+b.x,a.y+b.y,a.z+b.z);}
 float3 operator*(float3 a,float b){return float3(a.x*b,a.y*b,a.z*b);}
 float3 operator/(float3 a,float b){return a*(1.f/b);}
+float3 operator-(float3 a){return a*-1.f;}
+float3& operator*=(float3& a,float b){a=a*b;return a;}
+float rsqrt(float a){return 1.f/std::sqrt(a);}
+float length(float3 a){return std::sqrt(a.x*a.x+a.y*a.y+a.z*a.z);}
 bool operator<(float2 a,float b){return a.x<b || a.y<b;}
 bool operator>(float2 a,float b){return a.x>b || a.y>b;}
 bool any(bool v){return v;}
@@ -34,7 +38,7 @@ float dot(float3 a,float3 b){return a.x*b.x+a.y*b.y+a.z*b.z;}
 float3 cross(float3 a,float3 b){return float3(a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x);}
 float3 xyz(float4 v){return float3(v.x,v.y,v.z);}
 float4 screen,camera;int shadow_surface=0;
-kich_r4_scene::Matrix inverse_vp;
+kich_r4_scene::Matrix inverse_vp,receiver_inverse;
 float4 mul(float4 p,const kich_r4_scene::Matrix& m);
 unsigned checks=0,comparisons=0;
 void Require(bool v,const char* message){++checks;if(!v)throw std::runtime_error(message);}
@@ -111,6 +115,7 @@ void PlaneCases(){using namespace kich_r4_lighting;
         const float4 dx=Transform(tangent_x,0,projection),dy=Transform(tangent_y,0,projection);
         for(float x:{-.01f,0.f,.012f}){
             float3 position(x,.017f,d+sx*x+sy*.017f);
+            position=ShadowNumericalOffset(position,tangent_x,tangent_y,perspective?-position/length(position):float3(0,0,-1));
             const float precision=perspective?.003f:.01f;
             if(perspective){const float length=std::sqrt(position.x*position.x+position.y*position.y+position.z*position.z);position=position*(1-precision/length);}
             else position.z-=precision;
@@ -173,8 +178,9 @@ void GrazingReceiver(){using namespace kich_r4_lighting;
     Require(PCF(blocker,float4(0,0,.5f,1),float4(),float4())==0 && comparisons==1,
         "invalid-plane fallback preserves a blocker without nine-texel extrapolation");
 }
+#include "receiver_raster_tests.h"
 int main(){try{
-    PlaneCases();Continuity();CubeGuard();GrazingReceiver();ReceiverReconstruction();
+    PlaneCases();Continuity();CubeGuard();GrazingReceiver();ReceiverReconstruction();ReceiverRasterization();
     float2 gradient;Require(!ShadowGradient(float3(0,0,1),float3(0,0,2),gradient),"singular UV Jacobian requests bounded fallback");
     Require(!ShadowGradient(float3(1,0,std::numeric_limits<float>::infinity()),float3(0,1,1),gradient),"nonfinite slope requests bounded fallback");
     Require(ShadowPlaneStable(4,.01f,0) && !ShadowPlaneStable(4,10000,10000),"noncoplanar jump does not become a receiver plane");

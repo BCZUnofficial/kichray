@@ -34,7 +34,7 @@ public:
     struct SSwingValue {float rot1,rot2,amp1,amp2,speed;}swing_current;
     struct SlotItem {float scale_calculated;Fmatrix mRotY;float c_sun,c_hemi;float scale;u32 vis_ID;};
     typedef Items<SlotItem*> SlotItemVec;
-    struct SlotPart {u32 id;SlotItemVec items;SlotPart():id(DetailSlot::ID_Empty){}};
+    struct SlotPart {u32 id;SlotItemVec items,r_items[3];SlotPart():id(DetailSlot::ID_Empty){}};
     enum SlotType {stReady=0,stPending};
     struct Slot {bool empty;SlotType type;int sx,sz;struct Vis {struct Sphere {Fvector P;}sphere;}vis;SlotPart G[dm_obj_in_slot];Slot():empty(true),type(stReady),sx(0),sz(0),vis(){}};
     typedef std::vector<Items<SlotItemVec*> > vis_list;

@@ -41,6 +41,14 @@ void MaterialCaptureOwnership(){auto mesh=MaterialMesh();kich_r4_capture::Batch 
     material.base.clear();material.source.clear();
     Require(batch.native_models[0].material.base=="native/base" && batch.native_models[1].material.base=="native/other_base" && batch.native_models[0].material.source=="SOC_MODEL_SOURCE_TEST","captured commands own source descriptor strings independently of caller lifetime");
     Require(batch.vertices.empty() && batch.indices.empty() && batch.commands.empty(),"descriptor routing keeps native immutable geometry without CPU expansion");
+    batch.Begin(640,480,43);material=CutoutMaterial();Capture(batch,mesh,material);
+    material.shadow_alpha_ref=200.f/255.f;Capture(batch,mesh,material);
+    material.shadow_alpha_func=7;Capture(batch,mesh,material);
+    Require(batch.native_models.size()==3,"independent shadow reference and comparison each survive material deduplication");
+    batch.Begin(640,480,44);const auto identity=kich_r4_scene::Identity();const kich_r4_scene::Matrix bones[]={identity,identity};kich_r4_capture::Style style;
+    for(unsigned i=0;i<3;++i){if(i==1){style.shadow_alpha_func=5;style.shadow_alpha_ref=220.f/255.f;}if(i==2)style.shadow_alpha_ref=200.f/255.f;
+        batch.NativeModel(mesh.get(),mesh,identity,identity,bones,2,3,0,1,style,KICH_R4_SKIN_HARDWARE,"unresolved_source");}
+    Require(batch.native_models.size()==3 && batch.native_models[1].style.shadow_alpha_func==5 && batch.native_models[2].style.shadow_alpha_ref==200.f/255.f,"captured shadow policy survives unresolved-model style deduplication");
 }
 void MaterialBindingsAndRouting(const char* directory){Harness h;Require(h.Start()==0,"material native model setup");auto mesh=MaterialMesh();const auto material=CutoutMaterial();SeedTextures(h,material);
     kich_r4_capture::Batch batch;batch.Begin(640,480,42);Capture(batch,mesh,material);
@@ -56,7 +64,7 @@ void MaterialBindingsAndRouting(const char* directory){Harness h;Require(h.Start
     Require(!geometry.surface.state.blend_enable && geometry.surface.state.source_blend==2 && geometry.surface.state.dest_blend==1 && geometry.surface.state.depth_write==1 && geometry.surface.state.draw.depth_mode==1 && geometry.surface.state.draw.cull_mode==KICH_R4_CULL_FRONT,"cutout geometry uses source cull and opaque depth/blend state");
     RenderSnapshot_Pass("SUN_SHADOW");Require(h.Draw(batch,KichR4ModelSession::Shadow)==0 && model_draws.size()==2,"cutout enters shadow pass");
     const auto shadow=model_draws.back();const auto shadow_constants=constants_drawn.back();
-    Require(shadow.surface.textures[0]==geometry.surface.textures[0] && shadow_constants.alpha[0]==constants.alpha[0] && shadow_constants.alpha[1]==constants.alpha[1],"geometry and shadow use identical source alpha texture UV stream and threshold");
+    Require(shadow.surface.textures[0]==geometry.surface.textures[0] && shadow_constants.alpha[0]==220.f/255.f && shadow_constants.alpha[1]==5,"model shadow preserves source texture/UV with independent SoC R2 GREATER 220 threshold");
     Require(shadow.surface.state.draw.vertex_buffer==geometry.surface.state.draw.vertex_buffer && shadow.surface.state.draw.start_index==geometry.surface.state.draw.start_index && !shadow.surface.state.blend_enable && shadow.surface.state.depth_write && shadow.surface.state.draw.cull_mode==KICH_R4_CULL_FRONT,"shadow preserves immutable geometry source and cull while writing unblended depth");
     for(unsigned i=1;i<8;++i)Require(shadow.surface.textures[i]==0,"shadow never binds optional material maps");
     Require(shadow_constants.material[0]==0,"shadow has no bump lightmap hemi or detail feature flags");

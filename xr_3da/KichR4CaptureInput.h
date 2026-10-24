@@ -10,8 +10,8 @@ namespace kich_r4_material {struct Descriptor;}
 namespace kich_r4_capture {
 struct Style {
     KichR4SurfaceState surface=KichR4DefaultSurface();
-    uint32_t blend,src,dst,clamp,cull,depth,write,alpha_func;float alpha_ref,min_z,max_z,emissive_gain,emissive_specular;bool scissor,fog_enabled;int32_t rect[4];
-    Style():blend(0),src(5),dst(6),clamp(0),cull(KICH_R4_CULL_BACK),depth(1),write(1),alpha_func(8),alpha_ref(0),min_z(0),max_z(1),emissive_gain(0),emissive_specular(0),scissor(false),fog_enabled(false){memset(rect,0,sizeof(rect));}
+    uint32_t blend,src,dst,clamp,cull,depth,write,alpha_func,shadow_alpha_func;float alpha_ref,shadow_alpha_ref,min_z,max_z,emissive_gain,emissive_specular;bool scissor,fog_enabled;int32_t rect[4];
+    Style():blend(0),src(5),dst(6),clamp(0),cull(KICH_R4_CULL_BACK),depth(1),write(1),alpha_func(8),shadow_alpha_func(0),alpha_ref(0),shadow_alpha_ref(0),min_z(0),max_z(1),emissive_gain(0),emissive_specular(0),scissor(false),fog_enabled(false){memset(rect,0,sizeof(rect));}
 };
 struct ModelInput {
     void* visual;const void* skeleton;uint32_t count,first,triangles,bone_count,skin_mode;

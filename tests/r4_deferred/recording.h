@@ -51,7 +51,7 @@ int32_t DDraw(KichR4Handle,const KichR4DeferredDrawDesc* d){const int32_t hr=f->
         ValidDraw(state,static_cast<uint32_t>(ib.bytes.size()),ib.stride),"native draw validates buffer kinds, strides and ranges");
     Require(!state.depth_mode || active_pass.depth,"depth test always has an explicit depth attachment");
     Require(cb.kind==KICH_R4_CONSTANT_BUFFER && cb.bytes.size()==sizeof(kich_r4_lighting::Constants),"exact HLSL cbuffer layout");
-    for(unsigned i=0;i<8;++i)if(d->textures[i]){const KichR4Handle texture=d->textures[i];
+    for(unsigned i=0;i<KICH_R4_DEFERRED_TEXTURE_SLOTS;++i)if(d->textures[i]){const KichR4Handle texture=d->textures[i];
         Require(f->Find(texture).kind==KICH_R4_TEXTURE_2D && texture!=active_pass.depth,"no depth read/write hazard");
         for(unsigned j=0;j<active_pass.color_count;++j)Require(texture!=active_pass.colors[j],"no color read/write hazard");}
     for(unsigned i=0;i<state.index_count;++i){uint32_t at;memcpy(&at,ib.bytes.data()+(state.start_index+i)*4,4);Require(at<vb.bytes.size()/vb.stride,"all indices inside uploaded vertex stream");}
