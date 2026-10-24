@@ -413,6 +413,11 @@ struct KichR4DetailSession {
             if(UploadShadow(s,l)<0)return s.failure;
             summary.allocated_capacity=shadow_capacity;summary.uploaded_bytes=uint64_t(selected_instances.size())*sizeof(KichR4DetailInstance);groups=&selected_groups;
         }else{if(uploaded_frame!=frame || source->instances.empty())return 0;summary.candidates=summary.selected=source->instances.size();summary.uploaded_bytes=uint64_t(uploaded_instances)*sizeof(KichR4DetailInstance);}
+        // R2 near sun receivers carry ~5.4 cm of depth bias (-0.00004 of the
+        // ~1100 m ortho range, plus scale); E1.9 keeps 1 cm for all geometry, so
+        // details alone take the R2 margin as a caster push along the sun ray.
+        static const float kDetailSunCasterPush=.06f;
+        const bool sun_caster=shadow && strncmp(phase,"sun_",4)==0;
         for(size_t i=0;i<groups->size();++i){const kich_r4_detail::Group& g=(*groups)[i];
             const size_t count=shadow?selected_instances.size():source->instances.size();
             if(g.mesh>=meshes.size() || g.variant>2 || g.first>count || g.count>count-g.first)return s.Record("G3a detail group range",KICH_R4_E_ARGUMENT);
@@ -438,7 +443,7 @@ struct KichR4DetailSession {
             /* VSDetail owns world rows: wave, wind, variant. Other shaders keep
              * their ordinary matrix meaning; the 816-byte frame ABI is intact. */
             memcpy(c.world.m,source->wave[g.variant],16);memcpy(c.world.m+4,source->wind[g.variant],16);
-            c.world.m[8]=static_cast<float>(g.variant);c.alpha[0]=200.f/255;c.alpha[1]=7;c.alpha[2]=c.alpha[3]=0;
+            c.world.m[8]=static_cast<float>(g.variant);c.world.m[9]=sun_caster?kDetailSunCasterPush:0.f;c.alpha[0]=200.f/255;c.alpha[1]=7;c.alpha[2]=c.alpha[3]=0;
             if(l.Expect(s,"G3a detail constants",l.bridge.api.update_buffer(s.device,cb,&c,sizeof(c)))<0)return s.failure;
             KichR4DetailDrawDesc d={};d.struct_size=sizeof(d);d.surface.struct_size=sizeof(d.surface);
             KichR4StreamDrawDesc& state=d.surface.state;state.struct_size=sizeof(state);

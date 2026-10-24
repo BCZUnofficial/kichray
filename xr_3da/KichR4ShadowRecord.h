@@ -45,20 +45,20 @@ struct Frame {
     bool valid;
     uint32_t frame,local_attempted,local_completed,local_resolution;
     uint64_t local_generation;
-    Pass sun[2],local_pass;
+    Pass sun[3],local_pass; // 128 m, 512 m, P0-S2 contact
     Work local[KindCount];
     Frame():valid(false),frame(0),local_attempted(0),local_completed(0),local_resolution(0),local_generation(0){}
     void Begin(uint32_t value){
         valid=kich_r4_record::Enabled();if(!valid)return;
         frame=value;local_attempted=local_completed=local_resolution=0;local_generation=0;
-        sun[0]=Pass();sun[1]=Pass();local_pass=Pass();for(unsigned k=0;k<KindCount;++k)local[k]=Work();
+        sun[0]=Pass();sun[1]=Pass();sun[2]=Pass();local_pass=Pass();for(unsigned k=0;k<KindCount;++k)local[k]=Work();
     }
     static void Configure(Pass& p,uint32_t frame,uint32_t face,uint64_t map,uint64_t generation,uint32_t resolution,float span,const float* matrix,uint64_t source){
         p=Pass();p.frame=frame;p.face=face;p.map=map;p.generation=generation;p.resolution=resolution;p.span=span;
         p.texel_size=span>0 && resolution?span/resolution:0;p.signatures=span>0;p.source=source;memcpy(p.matrix,matrix,sizeof(p.matrix));
     }
     Pass* Sun(unsigned cascade,uint64_t map,uint64_t generation,uint32_t resolution,float span,const float* matrix){
-        if(!valid || cascade>=2)return NULL;
+        if(!valid || cascade>=3)return NULL;
         Configure(sun[cascade],frame,cascade,map,generation,resolution,span,matrix,0);return &sun[cascade];
     }
     Pass* Local(uint32_t face,uint64_t map,uint64_t generation,uint32_t resolution,const float* matrix,uint64_t source){

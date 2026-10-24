@@ -50,6 +50,10 @@ struct KichR4LightingFrame {
     // R2 phase_luminance: tonemap amount (0 with r2_tonemap off), middle gray,
     // low luminance, adaptation speed and this frame's Device.fTimeDelta.
     float exposure[5];
+    // P0-S2 contact sun cascade: world centre and ortho span of the stable
+    // sphere around the first r2_sun_near metres of the view (KichRay R2
+    // kich_sun::radius/extent). Zero valid = the 128/512 m cascades only.
+    float sun_contact[4];uint32_t sun_contact_valid;
     std::vector<KichR4LocalLight> lights;
     std::vector<KichR4LightIdentity> sources;
     std::vector<KichR4LightProjector> projectors;
@@ -67,7 +71,7 @@ struct KichR4LightingFrame {
     // Small direct/test producers can still fill the original first eight
     // entries. Captured frames resize to every visible registry source.
     KichR4LightingFrame():valid(0),count(0),shadow_mask(0),sun_direction(),sun_color(),ambient(),hemi(),fog(),fog_near(0),fog_far(0),fog_valid(0),
-        env_ambient(),env_color(),gloss_factor(1),env_valid(0),sun_mode(KICH_R4_SUN_DEFAULT),sunmask(),sunmask_valid(0),lights(8),sources(8),projectors(8),visibility_vp(),visibility_valid(0),r1_lights_requested(0),r1_lights_applied(0),occlusion_enabled(0),occlusion_tested(0),
+        env_ambient(),env_color(),gloss_factor(1),env_valid(0),sun_mode(KICH_R4_SUN_DEFAULT),sunmask(),sunmask_valid(0),sun_contact(),sun_contact_valid(0),lights(8),sources(8),projectors(8),visibility_vp(),visibility_valid(0),r1_lights_requested(0),r1_lights_applied(0),occlusion_enabled(0),occlusion_tested(0),
         selection_frame(0),local_shadow_size(0),shadow_plan_faces(0),shadow_resolution_changes(0),shadow_resolution_reason(0){
         const float defaults[8]={.3f,3.3f,.7f,1.f,0.f,.75f,.5f,0.f};memcpy(bloom,defaults,sizeof(bloom));
         const float tonemap[5]={0.f,.25f,.001f,5.f,0.f};memcpy(exposure,tonemap,sizeof(exposure));}

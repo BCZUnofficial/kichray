@@ -25,6 +25,7 @@ float3 operator*(float3 a,float b){return float3(a.x*b,a.y*b,a.z*b);}
 float3 operator/(float3 a,float b){return a*(1.f/b);}
 float3 operator-(float3 a){return a*-1.f;}
 float3& operator*=(float3& a,float b){a=a*b;return a;}
+float3& operator+=(float3& a,float3 b){a=a+b;return a;}
 float rsqrt(float a){return 1.f/std::sqrt(a);}
 float length(float3 a){return std::sqrt(a.x*a.x+a.y*a.y+a.z*a.z);}
 bool operator<(float2 a,float b){return a.x<b || a.y<b;}
@@ -36,6 +37,7 @@ float2 floor(float2 v){return float2(std::floor(v.x),std::floor(v.y));}
 float dot(float2 a,float2 b){return a.x*b.x+a.y*b.y;}
 float dot(float3 a,float3 b){return a.x*b.x+a.y*b.y+a.z*b.z;}
 float3 cross(float3 a,float3 b){return float3(a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x);}
+float3 normalize(float3 a){return a*(1.f/std::sqrt(dot(a,a)));}
 float3 xyz(float4 v){return float3(v.x,v.y,v.z);}
 float4 screen,camera;int shadow_surface=0;
 kich_r4_scene::Matrix inverse_vp,receiver_inverse;
@@ -178,9 +180,42 @@ void GrazingReceiver(){using namespace kich_r4_lighting;
     Require(PCF(blocker,float4(0,0,.5f,1),float4(),float4())==0 && comparisons==1,
         "invalid-plane fallback preserves a blocker without nine-texel extrapolation");
 }
+// P0-S3: a pixel whose screen quad is not coplanar has zero derivatives. The
+// shading normal must restore the nine-tap plane-corrected filter without
+// self-shadowing, keep a 4 cm blocker, and leave grazing receivers alone.
+void NormalPlaneFallback(){using namespace kich_r4_lighting;
+    const float origin[3]={0,0,0},direction[3]={0,0,1};const float3 towards(0,0,-1);
+    for(unsigned size:{2048u,8192u})for(float degrees:{0.f,35.f,60.f,75.f})for(float tilt:{0.f,8.f}){
+        if(tilt>0 && size!=8192)continue; // bump tilt: 128 m cascade texel (6.25 cm)
+        const float sx=std::tan(degrees*3.14159265f/180),sy=sx*.27f,d=10;
+        const Matrix projection=SunShadow(origin,direction,512,size);screen.w=float(size);
+        const Texture2D surface={sx*512/1024.,-sy*512/1024.,(512+d-sx*256+sy*256)/1024.,false};
+        const float t=std::tan(tilt*3.14159265f/180);
+        const float3 normal=normalize(float3(sx+t,sy,-1));
+        for(float x:{-.01f,0.f,.012f}){
+            float3 p(x,.017f,d+sx*x+sy*.017f),dx,dy;
+            ShadowNormalPlane(normal,towards,p,dx,dy);
+            Require(dot(dx,dx)>0 && dot(dy,dy)>0,"zero derivatives take the normal plane");
+            p=ShadowNumericalOffset(p,dx,dy,towards);p.z-=.01f; // SunVisibility receiver offset
+            comparisons=0;const float lit=PCF(surface,Transform(p,1,projection),Transform(dx,0,projection),Transform(dy,0,projection));
+            Require(lit>(tilt>0?.99f:.9999f),"normal-plane fallback must not shadow its own receiver");
+            Require(comparisons==9,"normal-plane fallback filters nine texels, not one square");
+            Texture2D blocker=surface;blocker.c+=-.04*std::sqrt(1+sx*sx+sy*sy)/1024.;
+            Require(PCF(blocker,Transform(p,1,projection),Transform(dx,0,projection),Transform(dy,0,projection))<.0001f,
+                "a 4 cm blocker still shadows a fallback receiver");
+        }
+    }
+    // Grazing receiver (|N.L| = cos 80 deg < .2) keeps the single comparison.
+    const float sx=std::tan(80*3.14159265f/180);float3 p(0,0,10),dx,dy;
+    ShadowNormalPlane(normalize(float3(sx,0,-1)),towards,p,dx,dy);
+    Require(dot(dx,dx)==0 && dot(dy,dy)==0 && p.z==10,"grazing fallback keeps zero derivatives and position");
+    // A valid screen plane is never replaced.
+    dx=float3(.01f,0,0);dy=float3(0,.01f,0);ShadowNormalPlane(float3(0,0,-1),towards,p,dx,dy);
+    Require(dx.x==.01f && dy.y==.01f && p.z==10,"screen-derived plane wins over the shading normal");
+}
 #include "receiver_raster_tests.h"
 int main(){try{
-    PlaneCases();Continuity();CubeGuard();GrazingReceiver();ReceiverReconstruction();ReceiverRasterization();
+    NormalPlaneFallback();PlaneCases();Continuity();CubeGuard();GrazingReceiver();ReceiverReconstruction();ReceiverRasterization();
     float2 gradient;Require(!ShadowGradient(float3(0,0,1),float3(0,0,2),gradient),"singular UV Jacobian requests bounded fallback");
     Require(!ShadowGradient(float3(1,0,std::numeric_limits<float>::infinity()),float3(0,1,1),gradient),"nonfinite slope requests bounded fallback");
     Require(ShadowPlaneStable(4,.01f,0) && !ShadowPlaneStable(4,10000,10000),"noncoplanar jump does not become a receiver plane");

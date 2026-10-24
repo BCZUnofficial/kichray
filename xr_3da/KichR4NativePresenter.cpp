@@ -553,7 +553,7 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
                     static_cast<unsigned long long>(preflight.prepared_hits),static_cast<unsigned long long>(preflight.prepared_bytes),static_cast<unsigned long long>(preflight.metadata_hits),static_cast<unsigned long long>(preflight.retry_skips),static_cast<unsigned long long>(preflight.resident_hits),
                     static_cast<unsigned long long>(preflight.uploads),static_cast<unsigned long long>(preflight.upload_bytes),static_cast<unsigned long long>(preflight.upload_failures),static_cast<unsigned long long>(preflight.evictions));
                 if(world_current){const auto& shadows=c.deferred.shadow_record;
-                for(unsigned cascade=0;cascade<2;++cascade){const auto& pass=shadows.sun[cascade];
+                for(unsigned cascade=0;cascade<3;++cascade){const auto& pass=shadows.sun[cascade]; // 2 = P0-S2 contact
                     native.record.Emit("[R4 E1.7 sun] frame=%u cascade=%u valid=%u begun=%u completed=%u map=%llu map_generation=%llu resolution=%u span_m=%.3f texel_m=%.5f; world_to_shadow; blend_near_clip_edge=0.9..1.0; point_comparison_valid_plane_9tap_invalid_plane_1tap_PCF",
                         input.engine_frame,cascade,unsigned(shadows.valid && shadows.frame==input.engine_frame && scene_requested),unsigned(pass.begun),unsigned(pass.completed),static_cast<unsigned long long>(pass.map),static_cast<unsigned long long>(pass.generation),pass.resolution,pass.span,pass.texel_size);
                     native.record.Emit("[R4 E1.7 sun_matrix] frame=%u cascade=%u m=[%.9g %.9g %.9g %.9g; %.9g %.9g %.9g %.9g; %.9g %.9g %.9g %.9g; %.9g %.9g %.9g %.9g]",

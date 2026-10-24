@@ -44,6 +44,9 @@ float3 lerp(float3 a,float3 b,float t){return a+(b-a)*t;}
 float dot(float3 a,float3 b){return a.x*b.x+a.y*b.y+a.z*b.z;}
 float dot(float4 a,float4 b){return a.x*b.x+a.y*b.y+a.z*b.z+a.w*b.w;}
 float length(float3 a){return std::sqrt(dot(a,a));}
+float3 cross(float3 a,float3 b){return float3(a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x);}
+float3 normalize(float3 a){return a*(1.f/length(a));}
+float3& operator+=(float3& a,float3 b){a=a+b;return a;}
 float2 xy(float4 a){return float2(a.x,a.y);}
 float3 xyz(float4 a){return float3(a.x,a.y,a.z);}
 float3 splat3(float a){return float3(a,a,a);}
@@ -72,9 +75,10 @@ float visibility=1,surface_gloss=0;
 float3 surface_normal(0,1,0);
 float3 WorldPosition(float2,float){return float3(0,0,0);}
 float3 LoadReceiverPosition(float2,float){return -xyz(camera);}
-void ShadowDerivatives(float3,float3& dx,float3& dy){dx=float3(.01f,0,0);dy=float3(0,0,.01f);}
+bool screen_plane=true;float3 last_dx,last_dy;
+void ShadowDerivatives(float3,float3& dx,float3& dy){dx=screen_plane?float3(.01f,0,0):float3();dy=screen_plane?float3(0,0,.01f):float3();}
 // Same gate as production SunVisibility: only sun_color.w==1 uses shadow maps.
-float SunVisibility(float3,float3,float3){return sun_color.w<=0 || sun_color.w>1.5f?0:visibility;}
+float SunVisibility(float3,float3 dx,float3 dy){last_dx=dx;last_dy=dy;return sun_color.w<=0 || sun_color.w>1.5f?0:visibility;}
 float3 DecodeNormal(float2){return surface_normal;}
 float3 Normal(Varying,bool){return surface_normal;}
 float4 Base(Varying v){return v.c;}
@@ -135,6 +139,13 @@ int main(){try{
     image1.value.r=1;Check(PSSun(receiver),float3(),0,"sky cannot receive surface lighting");
     image1.value.r=.5f;screen.z=8;visibility=.25f;
     Check(PSSun(receiver),splat3(.25f),0,"shadow diagnostic must show current map visibility");
+    // P0-S3: a non-coplanar quad (zero derivatives) reaches the shadow maps with
+    // a plane from the shading normal, in lighting and in the diagnostic view.
+    screen_plane=false;surface_normal=float3(0,1,0);
+    PSSun(receiver);Near(dot(last_dx,last_dx)>0 && dot(last_dy,last_dy)>0?1.f:0.f,1,"diagnostic fallback uses the normal plane");
+    screen.z=0;PSSun(receiver);Near(dot(last_dx,last_dx)>0 && dot(last_dy,last_dy)>0?1.f:0.f,1,"lighting fallback uses the normal plane");
+    PSForwardSun(receiver,true);Near(dot(last_dx,last_dx)>0?1.f:0.f,1,"forward fallback uses the normal plane");
+    screen_plane=true;PSSun(receiver);Near(last_dx.x,.01f,"a valid screen plane is passed through unchanged");
     std::printf("P0-S1 production sun lighting: %u checks passed (baked/ROS mask independence, current shadows, cloud sunmask, static/disabled sun, forward hemi, sky)\n",checks);
     return 0;
 }catch(const std::exception& e){std::fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

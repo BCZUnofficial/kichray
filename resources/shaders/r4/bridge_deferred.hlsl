@@ -106,6 +106,11 @@ Varying VSDetail(DetailInput v){Varying o=(Varying)0;float4 local=float4(v.p,1);
     if(world[2].x>.5){float f=2.8284271*frac(dot(float4(p,1),world[0]))-1.4142136;
         float cyclic=f*f-1;float height=p.y-v.m1.w;
         p.xz+=world[1].xz*(height*cyclic)*v.misc.z;}
+    // Sun shadow casters only (world[2].y metres, else 0): push away from the
+    // sun along the ray. Depth-only, so tall grass keeps its shadow in place;
+    // fallen leaves within a few cm of the ground no longer shade it. This is
+    // R2's effective near bias (-0.00004 of a ~1100 m range), details only.
+    p+=sun_direction.xyz*world[2].y;
     o.p=mul(float4(p,1),mvp);o.w=p;o.uv=v.misc.xy;o.c=1;
     o.n=float4(normalize(p-float3(v.m0.w,v.m1.w-.75,v.m2.w)),v.light.y);o.baked_sun.w=v.light.x;return o;}
 void AlphaTest(float a){float r=alpha.x;int f=(int)alpha.y;
@@ -334,18 +339,35 @@ float3 ShadowNumericalOffset(float3 p,float3 dx,float3 dy,float3 towards){
     float allowance=min(.002,16*1.192092896e-7*coordinate/max(abs(facing),.02));
     return p+n*allowance;
 }
+// E1.9 128/512 m pair for an already offset receiver; unchanged selection and blend.
+float SunCascadeVisibility(float3 p,float3 dx,float3 dy){
+    float4 near_position=mul(float4(p,1),shadow[0]);
+    float3 q=near_position.xyz/near_position.w;
+    float edge=max(abs(q.x),abs(q.y)),result;
+    [branch] if(q.z<0 || q.z>1 || edge>=1)result=PCF(shadow1,mul(float4(p,1),shadow[1]),mul(float4(dx,0),shadow[1]),mul(float4(dy,0),shadow[1]));
+    else{result=PCF(shadow0,near_position,mul(float4(dx,0),shadow[0]),mul(float4(dy,0),shadow[0]));
+        [branch] if(edge>.9){float far_visibility=PCF(shadow1,mul(float4(p,1),shadow[1]),mul(float4(dx,0),shadow[1]),mul(float4(dy,0),shadow[1]));
+            result=lerp(result,far_visibility,saturate((edge-.9)*10));}}
+    return result;
+}
+// P0-S2: shadow[2] (t7) is a texel-snapped contact cascade over the stable
+// r2_sun_near sphere; shadow[2][3][3]==1 marks it valid (ortho matrices), zero
+// keeps the 128/512 m pair only. Same offsets, same 3x3 plane-corrected PCF.
 float SunVisibility(float3 p,float3 dx,float3 dy){
     if(sun_color.w<=0 || sun_color.w>1.5)return 0;
     // Precision allowance only: plane correction handles the filter footprint.
     p=ShadowNumericalOffset(p,dx,dy,-sun_direction.xyz)-sun_direction.xyz*.01;
-    float4 near_position=mul(float4(p,1),shadow[0]);
-    float3 q=near_position.xyz/near_position.w;
-    float edge=max(abs(q.x),abs(q.y));
-    [branch] if(q.z<0 || q.z>1 || edge>=1)return PCF(shadow1,mul(float4(p,1),shadow[1]),mul(float4(dx,0),shadow[1]),mul(float4(dy,0),shadow[1]));
-    float near_visibility=PCF(shadow0,near_position,mul(float4(dx,0),shadow[0]),mul(float4(dy,0),shadow[0]));
-    [branch] if(edge<=.9)return near_visibility;
-    float far_visibility=PCF(shadow1,mul(float4(p,1),shadow[1]),mul(float4(dx,0),shadow[1]),mul(float4(dy,0),shadow[1]));
-    return lerp(near_visibility,far_visibility,saturate((edge-.9)*10));
+    float result;
+    [branch] if(shadow[2][3][3]>.5){
+        float4 contact_position=mul(float4(p,1),shadow[2]);
+        float3 q=contact_position.xyz/contact_position.w;float edge=max(abs(q.x),abs(q.y));
+        [branch] if(q.z>=0 && q.z<=1 && edge<1){
+            float contact=PCF(shadow5,contact_position,mul(float4(dx,0),shadow[2]),mul(float4(dy,0),shadow[2]));
+            [branch] if(edge>.9)contact=lerp(contact,SunCascadeVisibility(p,dx,dy),saturate((edge-.9)*10));
+            result=contact;}
+        else result=SunCascadeVisibility(p,dx,dy);}
+    else result=SunCascadeVisibility(p,dx,dy);
+    return result;
 }
 // P0-S1 R2 shadow.h sunmask(): sunmask.dds alpha through m_sunmask, 1/500 m
 // tiles along the sun drifting with the wind; both R2 sun passes multiply the
@@ -394,11 +416,26 @@ float4 DirectLight(float3 p,float3 n,float3 direction,float3 color,float gloss,f
 // Forward surfaces only: R2 forward shaders use L_ambient+L_hemi_color, not
 // hmodel. Source hemi already encodes visibility; no extra world-up term.
 float3 ForwardIndirect(float h,float m){return ambient.rgb+hemi.rgb*MaterialResponse(saturate(h),0,m).x;}
+// P0-S3 fallback receiver plane. Where the 2x2 screen quad is not coplanar
+// (fence edges, thin boards, foliage) ShadowDerivatives returns zero and PCF
+// would make one unfiltered comparison: hard texel squares that flicker as the
+// quad pattern changes. The shading normal then defines the plane for the same
+// 3x3 plane-corrected filter; 1 cm more toward the sun absorbs the bump-normal
+// tilt. Grazing (|N.L|<=.2) keeps the single comparison: there an extrapolated
+// plane would leak light, and direct light is nearly zero anyway.
+void ShadowNormalPlane(float3 n,float3 towards,inout float3 p,inout float3 dx,inout float3 dy){
+    float facing=abs(dot(n,towards));
+    [branch] if(dot(dx,dx)+dot(dy,dy)==0 && facing>.2 && dot(n,n)>.5){
+        float3 axis=abs(n.y)<.99?float3(0,1,0):float3(1,0,0);
+        float3 t=normalize(cross(n,axis));
+        dx=t*.01;dy=cross(n,t)*.01;p+=towards*.01;}
+}
 float4 SunLighting(float3 p,float3 n,float gloss,float m,float3 dx,float3 dy,float static_sun){
     // R2/1.6 use baked/ROS sun occlusion only in static-sun mode, where the
     // dynamic sun pass is disabled. Here the current shadow maps own visibility;
     // a baked zero must not suppress sunlight and moving shadows on a receiver.
-    return DirectLight(p,n,-sun_direction.xyz,sun_color.rgb,gloss,m)*SunDirect(p,dx,dy,static_sun);
+    float3 shadow_p=p,shadow_dx=dx,shadow_dy=dy;ShadowNormalPlane(n,-sun_direction.xyz,shadow_p,shadow_dx,shadow_dy);
+    return DirectLight(p,n,-sun_direction.xyz,sun_color.rgb,gloss,m)*SunDirect(shadow_p,shadow_dx,shadow_dy,static_sun);
 }
 // Forward static sun has no G-buffer occlusion; .5*2 leaves it unoccluded.
 float3 SunLight(float3 p,float3 n,float h,float3 dx,float3 dy){return ForwardIndirect(h,material.w)+SunLighting(p,n,0,material.w,dx,dy,.5).rgb;}
@@ -449,9 +486,10 @@ float4 PSSun(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=image1.Load(
     if(depth>=1)return 0;float4 n=image0.Load(int3(at,0));
     // Albedo alpha (t4) is source sun occlusion: R2 static sun only, never dynamic.
     float static_sun=sun_color.w>1.5?shadow2.Load(int3(at,0)).a:0;
-    if((int)screen.z==8)return float4(SunDirect(p,dx,dy,static_sun).xxx,0);
+    float3 normal=DecodeNormal(n.xy);
+    if((int)screen.z==8){ShadowNormalPlane(normal,-sun_direction.xyz,p,dx,dy);return float4(SunDirect(p,dx,dy,static_sun).xxx,0);}
     // Indirect light is R2 hmodel in combine, applied once per receiver.
-    return SunLighting(p,DecodeNormal(n.xy),MaterialGloss(n.w),MaterialClass(n.w),dx,dy,static_sun);}
+    return SunLighting(p,normal,MaterialGloss(n.w),MaterialClass(n.w),dx,dy,static_sun);}
 float4 PSLocal(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=image1.Load(int3(at,0)).r;
     float3 relative=LoadReceiverPosition(v.p.xy,depth),p=relative+camera.xyz,dx,dy;ShadowDerivatives(relative,dx,dy);
     if(depth>=1)return 0;float4 n=image0.Load(int3(at,0));

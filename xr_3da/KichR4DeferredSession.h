@@ -43,7 +43,8 @@ struct KichR4DeferredSession {
     // Count each selected spot once in opaque local accumulation, never HUD/forward repeats.
     uint32_t frame_projector_spots=0,frame_projector_named=0,frame_projector_ready=0,frame_projector_fallback=0;
     kich_r4_shadow_record::Frame shadow_record;
-    uint64_t sun_map_generation[2]={0,0},local_pool_generation=0;
+    uint64_t sun_map_generation[3]={0,0,0},local_pool_generation=0;
+    KichR4Handle sun_contact_map=0; // P0-S2 contact cascade, bound at t7 when shadow[2] is valid
     // One bounded pool, shared by deferred, forward and HUD lighting. A point
     // source keeps all six faces; pressure reduces resolution, never drops it.
     std::vector<KichR4Handle> local_maps;
@@ -416,6 +417,7 @@ struct KichR4DeferredSession {
             c.fog_params[2]=style.fog_enabled?(style.blend && style.dst==2?2.f:1.f):0.f;
             if(Constants(s,l,c)<0)return s.failure;
             KichR4DeferredDrawDesc d=Description(pipelines[described && m.descriptor.semantic==kich_r4_material::EMISSIVE?StaticPlain:m.kind==2?StaticWater:StaticForward],l.vertex_buffers[mesh.vb],l.index_buffers[mesh.ib],cb,mesh.count,mesh.first,style);d.textures[0]=l.Texture(s,m.texture);d.textures[1]=scene_color;d.textures[2]=sun_map;d.textures[3]=sun_far_map;d.textures[6]=sun_mask?sun_mask:white;
+            if(base.shadow[2].m[15]>.5f)d.textures[7]=sun_contact_map;
             {const KichR4Handle lut=l.MaterialLut(s);if(!lut)return s.failure;kich_r4_material_lut::Bind(d,lut);}
             SnapshotResolvedTexture(l,0,m.texture.c_str(),d.textures[0]);
             const bool simple=simple_transparent.count(mesh.material)!=0;
@@ -816,17 +818,23 @@ struct KichR4DeferredSession {
             base.light_color[3]=1;}
         KichR4Handle sun_inputs[6]={};
         if(sun){
-            const unsigned cascades=native_mode?2:1;
+            // P0-S2: optional contact cascade (shadow[2], t7) inside the unchanged 128/512 m pair.
+            kich_r4_scene::Matrix contact={};
+            const bool contact_cascade=native_mode && kich_r4_lighting::SunContactShadow(input.lighting,contact);
+            const unsigned cascades=native_mode?(contact_cascade?3:2):1;
             base.shadow[0]=kich_r4_lighting::SunShadow(input.position,input.lighting.sun_direction,native_mode?128.f:512.f);
             base.shadow[1]=kich_r4_lighting::SunShadow(input.position,input.lighting.sun_direction,512.f);
-            for(unsigned cascade=0;cascade<cascades;++cascade){KichR4Handle& map=cascade?sun_far_map:sun_map;
+            if(contact_cascade)base.shadow[2]=contact;
+            const float spans[3]={native_mode?128.f:512.f,512.f,contact_cascade?input.lighting.sun_contact[3]:0.f};
+            KichR4Handle* targets[3]={&sun_map,&sun_far_map,&sun_contact_map};const unsigned slots[3]={0,1,5}; // t2, t3, t7
+            for(unsigned cascade=0;cascade<cascades;++cascade){KichR4Handle& map=*targets[cascade];
                 if(!map){if(Target(s,l,map,2048,2048,KICH_R4_DEPTH32F,true)<0)return s.failure;++sun_map_generation[cascade];}
-                kich_r4_shadow_record::Pass* record=shadow_record.Sun(cascade,map,sun_map_generation[cascade],2048,cascade || !native_mode?512.f:128.f,base.shadow[cascade].m);
+                kich_r4_shadow_record::Pass* record=shadow_record.Sun(cascade,map,sun_map_generation[cascade],2048,spans[cascade],base.shadow[cascade].m);
                 kich_r4_shadow_record::Scope record_scope(record);
                 char phase[24];snprintf(phase,sizeof(phase),"sun_%u",cascade);SnapshotPass("SUN_SHADOW",RENDER_SNAPSHOT_PASS_SUN_SHADOW,phase);
                 if(g_render_snapshot_active){RenderSnapshot_Light("sun","SCENE_ENVIRONMENT");RenderSnapshot_U64("LIGHT sun","shadow_map_count",cascades);}
-                sun_inputs[cascade]=map;
-                SnapshotShadow(phase,"sun",cascade,base.shadow[cascade],map,true,1024,2048,cascade || !native_mode?512.f:128.f);
+                sun_inputs[slots[cascade]]=map;
+                SnapshotShadow(phase,"sun",cascade,base.shadow[cascade],map,true,1024,2048,spans[cascade]);
                 if(Pass(s,l,2048,2048,0,0,0,map,KICH_R4_CLEAR_DEPTH)<0)return s.failure;
                 if(record)record->begun=true;
                 if(Static(s,l,base.shadow[cascade],true)<0)return s.failure;

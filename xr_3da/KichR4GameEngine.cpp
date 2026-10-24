@@ -7,9 +7,11 @@
 #include "Environment.h"
 #include "ResourceManager.h"
 #include "xrRender/xrRender_console.h"
+#include "xrRender_R2/kich_sun_stability.h"
 #include "CameraManager.h"
 #include "xr_object.h"
 #include "KichR4RecordControl.h"
+#include "KichR4LightingMath.h"
 
 /* Match FTreeVisual_setup::calculate and its R2 lighting correction. This
  * EXE-only copy is shared by geometry and shadow passes for the whole frame. */
@@ -64,6 +66,11 @@ void KichR4_CopyEngineEnvironment(KichR4LightingFrame& frame)
     if(!g_pGamePersistent)return;
     CEnvDescriptorMixer& env=g_pGamePersistent->Environment().CurrentEnv;
     KichR4CopyEnvironment(frame,env);
+    // Shading and every shadow cascade share one held direction, so the lit
+    // terminator and the shadow edge cannot disagree. cos(0.25 deg).
+    static float held_sun[3]={0,0,0};
+    kich_r4_lighting::HoldSunDirection(held_sun,frame.sun_direction,.99999048f);
+    if(fabsf(held_sun[0])+fabsf(held_sun[1])+fabsf(held_sun[2])>0)memcpy(frame.sun_direction,held_sun,sizeof(held_sun));
     KichR4CopyR2Hemisphere(frame,env,ps_r2_sun_lumscale_amb,ps_r2_sun_lumscale_hemi);
     /* phase_combine binds sky_r_textures_env[0/1], not the sky textures. */
     for(unsigned i=0;i<2;++i){frame.env_textures[i].clear();
@@ -83,6 +90,15 @@ void KichR4_CopyEngineEnvironment(KichR4LightingFrame& frame)
     const float exposure[5]={ps_r2_ls_flags.test(R2FLAG_TONEMAP)?ps_r2_tonemap_amount:0.f,ps_r2_tonemap_middlegray,
         ps_r2_tonemap_low_lum,ps_r2_tonemap_adaptation,Device.fTimeDelta};
     memcpy(frame.exposure,exposure,sizeof(exposure));
+    // Contact cascade: the r2_sun_near slice of the camera frustum enclosed in
+    // a rotation-invariant sphere, so turning the camera never rescales it.
+    frame.sun_contact_valid=0;
+    if(ps_r2_sun_near>0 && Device.mProject._11>0 && Device.mProject._22>0){
+        const float radius=kich_sun::radius(0.f,ps_r2_sun_near,Device.mProject._11,Device.mProject._22);
+        Fvector center;center.mad(Device.vCameraPosition,Device.vCameraDirection,ps_r2_sun_near*.5f);
+        frame.sun_contact[0]=center.x;frame.sun_contact[1]=center.y;frame.sun_contact[2]=center.z;
+        frame.sun_contact[3]=2*kich_sun::extent(radius,2048);
+        frame.sun_contact_valid=_valid(center) && _valid(frame.sun_contact[3])?1u:0u;}
 }
 
 static void KichR4_GameObservationFrame(KichR4GameFrame& input)

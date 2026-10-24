@@ -73,6 +73,25 @@ inline Matrix SunShadow(const float* camera,const float* direction,float span=51
     Matrix p=Identity();p.m[0]=p.m[5]=2.f/span;p.m[10]=1.f/1024.f;
     return Multiply(view,p);
 }
+// P0-S3 shadow-stable sun. Every cascade basis rotates about the world origin,
+// so a continuously moving sun slides each shadow texel by |p|*dtheta across
+// the world even with texel snapping (~4 contact texels/s at 200 m, SoC time
+// factor 10). Hold the direction until the sun has turned more than the step
+// (cos_step), then jump once. Returns true when the held direction changed.
+inline bool HoldSunDirection(float* held,const float* current,float cos_step){
+    if(!Finite(current[0]) || !Finite(current[1]) || !Finite(current[2]))return false;
+    const Vec3 now=Normalize(Vec3{current[0],current[1],current[2]});
+    if(Dot(now,now)<.5f)return false;
+    const Vec3 kept={held[0],held[1],held[2]};
+    if(Finite(kept.x) && Finite(kept.y) && Finite(kept.z) && fabsf(Dot(kept,kept)-1)<1e-3f && Dot(kept,now)>=cos_step)return false;
+    held[0]=now.x;held[1]=now.y;held[2]=now.z;return true;
+}
+// P0-S2 contact cascade: same texel-snapped, fixed-depth construction as the
+// 128/512 m cascades, centred on the frame's stable r2_sun_near sphere.
+inline bool SunContactShadow(const KichR4LightingFrame& lighting,Matrix& out){
+    if(!lighting.sun_contact_valid || !Finite(lighting.sun_contact[3]) || lighting.sun_contact[3]<=0)return false;
+    out=SunShadow(lighting.sun_contact,lighting.sun_direction,lighting.sun_contact[3]);return true;
+}
 inline float LocalShadowNear(float range){return range<.4f?range*.25f:.1f;}
 inline Matrix LocalShadow(const KichR4LocalLight& l,unsigned face,unsigned resolution=512){
     static const Vec3 axes[6]={{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
