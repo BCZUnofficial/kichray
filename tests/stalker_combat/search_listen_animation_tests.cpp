@@ -10,8 +10,11 @@
 typedef unsigned int u32;
 typedef unsigned short u16;
 typedef char string64[64];
-template <typename... T> void xr_sprintf(char (&out)[64], const char* format, T... values)
-{ std::snprintf(out, sizeof(out), format, values...); }
+// Linux CRT adapter for the existing MSVC sized formatter. Keep production
+// function names intact: inventing an xr_sprintf stub hid a Windows build error.
+#ifndef _MSC_VER
+#define sprintf_s std::snprintf
+#endif
 template <typename T, typename U> T smart_cast(U* p) { return dynamic_cast<T>(p); }
 bool _valid(float value) { return std::isfinite(value); }
 float clampr(float value, float low, float high) { return value < low ? low : value > high ? high : value; }

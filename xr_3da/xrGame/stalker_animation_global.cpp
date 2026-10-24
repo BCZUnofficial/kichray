@@ -7,6 +7,7 @@
 ////////////////////////////////////////////////////////////////////////////
 
 #include "stdafx.h"
+#include "pch_script.h" // Complete luabind types used by enemy_manager.h callbacks.
 #include "stalker_animation_manager.h"
 #include "ai/stalker/ai_stalker.h"
 #include "inventory.h"
@@ -112,20 +113,20 @@ bool CStalkerAnimationManager::start_search_listen()
     // Current SoC caution mapping; legacy names are supported only for the
     // slots actually present in xr_state.script. No guessed crouch/weapon clips.
     string64 name;
-    xr_sprintf(name, "prisluh_%u_1", slot);
+    sprintf_s(name, sizeof(name), "prisluh_%u_1", slot);
     m_search_listen_motions[1] = m_skeleton_animated->ID_Cycle_Safe(name);
     const bool modern = !!m_search_listen_motions[1];
     if (!modern)
     {
         if (slot > 4u) return false;
-        xr_sprintf(name, "prisluh_%u_idle_1", slot);
+        sprintf_s(name, sizeof(name), "prisluh_%u_idle_1", slot);
         m_search_listen_motions[1] = m_skeleton_animated->ID_Cycle_Safe(name);
         if (!m_search_listen_motions[1]) return false;
     }
-    xr_sprintf(name, modern ? "prisluh_%u_in" : "prisluh_%u_idle_0", slot);
+    sprintf_s(name, sizeof(name), modern ? "prisluh_%u_in" : "prisluh_%u_idle_0", slot);
     m_search_listen_motions[0] = m_skeleton_animated->ID_Cycle_Safe(name);
-    if (modern) xr_sprintf(name, "prisluh_%u_out", slot);
-    else xr_sprintf(name, "prisluh_%u_idle_%u", slot, slot == 2u ? 6u : 5u);
+    if (modern) sprintf_s(name, sizeof(name), "prisluh_%u_out", slot);
+    else sprintf_s(name, sizeof(name), "prisluh_%u_idle_%u", slot, slot == 2u ? 6u : 5u);
     m_search_listen_motions[2] = m_skeleton_animated->ID_Cycle_Safe(name);
 
     m_search_listen_slot = slot;
