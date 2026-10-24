@@ -1126,10 +1126,11 @@ void CStalkerActionSearchEnemy::start_listening(u32 now, u32 next_stage)
     m_search_listen_crouched = object().movement().target_body_state() == eBodyStateCrouch;
     object().movement().set_nearest_accessible_position();
     object().movement().set_movement_type(eMovementTypeStand);
-    // Authored prisluh motions are standing. Restore a cautious crouch afterwards.
+    // Full-body entry clips start from logical standing, including the authored
+    // crouch/ground gestures. Preserve the approach pose for family selection.
     object().movement().set_body_state(eBodyStateStand);
     aim_ready();
-    m_search_listen_animation = object().animation().start_search_listen();
+    m_search_listen_animation = object().animation().start_search_listen(m_search_listen_crouched);
     if (stalker_combat_diagnostics::enabled(object().ID()))
         stalker_combat_diagnostics::log(object().ID(), stalker_combat_diagnostics::action,
             "search_listen", "stage=%u animated=%u", m_search_stage, u32(m_search_listen_animation));
@@ -1158,7 +1159,7 @@ bool CStalkerActionSearchEnemy::update_listening(u32 now)
         object().combat_near_miss_revision() != m_search_listen_near_miss_revision;
     const u32 elapsed = now - m_search_listen_started;
     const bool waiting = m_search_listen_animation ? object().animation().search_listen_active() : elapsed < 1500u;
-    if (!interrupted && waiting && elapsed < 6500u) return true;
+    if (!interrupted && waiting && elapsed < 12500u) return true;
     stop_listening();
     m_search_stage = m_search_listen_next_stage;
     m_search_stage_time = now;

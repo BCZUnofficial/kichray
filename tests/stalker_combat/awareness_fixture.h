@@ -93,9 +93,9 @@ struct CAI_Stalker:CEntityAlive {
  struct Sight {Fvector last;void setup(const CSightAction& a){last=a.point;}} sights;
  struct Condition {float hp=1;float health() const{return hp;}} condition;
  struct Animation {
- std::vector<int> scripts;bool available=false,active=false;u32 starts=0,stops=0;
+ std::vector<int> scripts;bool available=false,active=false,crouched=false;u32 starts=0,stops=0;
  const std::vector<int>& script_animations()const{return scripts;}
- bool start_search_listen(){++starts;active=available;return active;}
+ bool start_search_listen(bool approach_crouched){++starts;crouched=approach_crouched;active=available;return active;}
  bool search_listen_active() const{return active;}
  void stop_search_listen(){++stops;active=false;}
  } animations;

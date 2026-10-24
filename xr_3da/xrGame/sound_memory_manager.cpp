@@ -176,6 +176,10 @@ void CSoundMemoryManager::feel_sound_new(CObject* object, int sound_type, CSound
 	VERIFY(_valid(sound_power));
 	if (sound_power >= m_sound_threshold)
 	{
+        if (m_stalker && (is_sound_type(sound_type, SOUND_TYPE_INJURING) ||
+            is_sound_type(sound_type, SOUND_TYPE_DYING)))
+            m_stalker->on_combat_ally_harm(smart_cast<const CEntityAlive*>(object), position);
+
 		if (is_sound_type(sound_type, SOUND_TYPE_WEAPON_SHOOTING))
 		{
             // Stalkers investigate the audible event; a shot is not a damage report.

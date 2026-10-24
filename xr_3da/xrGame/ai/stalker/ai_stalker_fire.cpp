@@ -289,7 +289,11 @@ void CAI_Stalker::Hit(SHit* pHDS)
 		}
 	}
 
+    const bool was_alive = g_Alive();
+    const float previous_health = conditions().health();
 	inherited::Hit(&HDS);
+    if (was_alive && g_Alive() && conditions().health() < previous_health)
+        notify_visible_ally_harm();
 }
 
 void CAI_Stalker::HitSignal(float amount, Fvector& vLocalDir, CObject* who, s16 element)
@@ -819,12 +823,47 @@ bool CAI_Stalker::combat_known_friendly_fire(const Fvector& toward_source)
     return friendly;
 }
 
+void CAI_Stalker::on_combat_ally_harm(const CEntityAlive* victim, const Fvector& observed_position)
+{
+    // The caller supplies a perceived event (direct sight or audible pain/death),
+    // never the attacker's identity/position. Keep it if sound memory is overwritten.
+    if (!g_Alive() || getDestroy() || Remote() || !victim || victim == this ||
+        !_valid(observed_position) || Position().distance_to_sqr(observed_position) > 225.f ||
+        is_relation_enemy(victim)) return;
+    if (tfGetRelationType(victim) != ALife::eRelationTypeFriend &&
+        !agent_manager().member().get_member(victim->ID())) return;
+    m_combat_ally_harm_time = Device.dwTimeGlobal;
+    m_combat_ally_harm_known = true;
+}
+
+void CAI_Stalker::notify_visible_ally_harm()
+{
+    // Event-time work only, after actual health loss; no per-frame world/health scan.
+    // A silent hit is still observable by an ally who personally sees the victim.
+    xr_vector<CObject*> nearby;
+    Level().ObjectSpace.GetNearest(nearby, Position(), 15.f, this);
+    for (xr_vector<CObject*>::const_iterator i = nearby.begin(); i != nearby.end(); ++i)
+    {
+        CAI_Stalker* observer = smart_cast<CAI_Stalker*>(*i);
+        if (!observer || !observer->g_Alive() || observer->getDestroy() || observer->Remote()) continue;
+        if (observer->memory().visual().visible_right_now(this))
+            observer->on_combat_ally_harm(this, Position());
+    }
+}
+
+bool CAI_Stalker::combat_recent_ally_harm() const
+{
+    // Event evidence only. GetLevelDeathTime is reset for old corpses on spawn,
+    // so reading visible corpse health/timestamps would manufacture fresh deaths.
+    return m_combat_ally_harm_known && Device.dwTimeGlobal - m_combat_ally_harm_time <= 5000u;
+}
+
 bool CAI_Stalker::bullet_near_miss_ready() const
 {
     if (!g_Alive() || getDestroy() || Remote() || GetScriptControl() || wounded() ||
         !m_combat_near_miss.ready(Device.dwTimeGlobal)) return false;
     const CEntityAlive* enemy = memory().enemy().selected();
-    return !enemy || !memory().visual().visible_right_now(enemy);
+    return !enemy || !memory().visual().visible_right_now(enemy) || combat_recent_ally_harm();
 }
 
 void CAI_Stalker::on_bullet_near_miss(const Fvector& local_point, const Fvector& flight_direction)
@@ -835,7 +874,7 @@ void CAI_Stalker::on_bullet_near_miss(const Fvector& local_point, const Fvector&
         !animation().script_animations().empty()) return;
     Fvector toward_source = flight_direction;
     toward_source.invert();
-    if (combat_known_friendly_fire(toward_source)) return;
+    if (!combat_recent_ally_harm() && combat_known_friendly_fire(toward_source)) return;
     if (m_combat_near_miss.observe(Device.dwTimeGlobal))
     {
         m_combat_near_miss_point = local_point;
@@ -857,10 +896,10 @@ void CAI_Stalker::on_combat_heard_shot(const Fvector& sound_position)
         critically_wounded() || IsTalking() || !animation().script_animations().empty() ||
         !_valid(sound_position)) return;
     const CEntityAlive* enemy = memory().enemy().selected();
-    if (enemy && memory().visual().visible_right_now(enemy)) return;
+    if (enemy && memory().visual().visible_right_now(enemy) && !combat_recent_ally_harm()) return;
     Fvector toward_source;
     toward_source.sub(sound_position, Position());
-    if (combat_known_friendly_fire(toward_source)) return;
+    if (!combat_recent_ally_harm() && combat_known_friendly_fire(toward_source)) return;
     const float distance_sqr = Position().distance_to_sqr(sound_position);
     if (distance_sqr < .04f || distance_sqr > 1600.f || !m_combat_alert.observe(Device.dwTimeGlobal)) return;
     m_combat_alert_point = sound_position;
@@ -882,7 +921,7 @@ bool CAI_Stalker::combat_alert_look(Fvector& point)
     const CDangerObject* danger = memory().danger().selected();
     if ((danger && danger->type() == CDangerObject::eDangerTypeGrenade) ||
         movement().target_movement_type() == eMovementTypeRun ||
-        (enemy && memory().visual().visible_right_now(enemy)))
+        (enemy && memory().visual().visible_right_now(enemy) && !combat_recent_ally_harm()))
     {
         m_combat_alert.active = false;
         return false;
@@ -921,7 +960,7 @@ void CAI_Stalker::process_combat_near_miss()
         m_combat_near_miss.restore_body = false;
     }
     const CEntityAlive* enemy = memory().enemy().selected();
-    if (enemy && memory().visual().visible_right_now(enemy))
+    if (enemy && memory().visual().visible_right_now(enemy) && !combat_recent_ally_harm())
     {
         m_combat_near_miss.pending = m_combat_near_miss.response_pending = false;
         m_combat_near_miss.duck_active = m_combat_alert.active = false;
@@ -951,7 +990,7 @@ void CAI_Stalker::update_combat_near_miss()
     }
     const CDangerObject* danger = memory().danger().selected();
     const CEntityAlive* enemy = memory().enemy().selected();
-    if (!enemy || memory().visual().visible_right_now(enemy) ||
+    if (!enemy || (memory().visual().visible_right_now(enemy) && !combat_recent_ally_harm()) ||
         (danger && danger->type() == CDangerObject::eDangerTypeGrenade) ||
         movement().target_movement_type() == eMovementTypeRun ||
         movement().target_mental_state() != eMentalStateDanger)

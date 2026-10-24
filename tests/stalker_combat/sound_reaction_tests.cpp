@@ -32,16 +32,17 @@ struct CCustomMonster:CEntityAlive {
     Memory& memory(){return memories;}
 };
 struct CAI_Stalker:CCustomMonster {
-    unsigned looks=0;Fvector heard;
+    unsigned looks=0, harm_events=0;Fvector heard, harm_position;const CEntityAlive* harm_victim=nullptr;
     struct Agent {
         struct Members{u32 mask(CAI_Stalker*)const{return 1;}}members;
         Members& member(){return members;}
     } agent;
     Agent& agent_manager(){return agent;}
+    void on_combat_ally_harm(const CEntityAlive* victim,const Fvector& p){++harm_events;harm_victim=victim;harm_position=p;}
     void on_combat_heard_shot(const Fvector& p){++looks;heard=p;}
 };
 enum ESoundTypes {SOUND_TYPE_WEAPON=1,SOUND_TYPE_ITEM=2,SOUND_TYPE_MONSTER=4,
-    SOUND_TYPE_ANOMALY=8,SOUND_TYPE_WORLD=16,SOUND_TYPE_WEAPON_SHOOTING=33};
+    SOUND_TYPE_ANOMALY=8,SOUND_TYPE_WORLD=16,SOUND_TYPE_WEAPON_SHOOTING=33,SOUND_TYPE_INJURING=0x10000,SOUND_TYPE_DYING=0x20000};
 struct CSoundObject {
     const CGameObject* m_object=nullptr;
     struct Params{Fvector m_position;u32 m_level_vertex_id=u32(-1);}m_object_params;
@@ -119,6 +120,15 @@ int main(){
     ai_fixture.graph.missing=false;ai_fixture.loaded=false;
     unmapped.feel_sound_new(&source,SOUND_TYPE_WEAPON_SHOOTING,nullptr,event,1.f);
     assert(off_mesh.looks==2&&unmapped.sounds.empty());ai_fixture.loaded=true;
+    // Real pain/death sound notifications respect hearing threshold, preserve the
+    // event position, and survive the existing visible-source memory filter.
+    CAI_Stalker witness;CSoundMemoryManager pain(witness,&witness);witness.memories.visuals.seen=true;
+    source.hidden=true;
+    pain.feel_sound_new(&source,SOUND_TYPE_INJURING,nullptr,event,.49f);assert(witness.harm_events==0);
+    pain.feel_sound_new(&source,SOUND_TYPE_INJURING,nullptr,event,1.f);
+    assert(witness.harm_events==1&&witness.harm_victim==&source&&witness.harm_position.x==event.x&&pain.sounds.empty());
+    pain.feel_sound_new(&source,SOUND_TYPE_DYING,nullptr,event,1.f);assert(witness.harm_events==2);
+    pain.feel_sound_new(&source,SOUND_TYPE_WEAPON_SHOOTING,nullptr,event,1.f);assert(witness.harm_events==2);
     // Generic monsters retain the previous hit-notification behavior.
     CCustomMonster monster;monster.id=4;CSoundMemoryManager old(monster,nullptr);source.hidden=false;
     old.feel_sound_new(&source,SOUND_TYPE_WEAPON_SHOOTING,nullptr,event,1.f);assert(monster.memories.hits.count==1);

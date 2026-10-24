@@ -158,6 +158,8 @@ void CAI_Stalker::reinit()
 	m_combat_peripheral_point.set(0.f, 0.f, 0.f);
 	m_combat_near_miss = stalker_combat_awareness::NearMiss();
 	m_combat_near_miss_point.set(0.f, 0.f, 0.f);
+	m_combat_ally_harm_time = 0;
+	m_combat_ally_harm_known = false;
 	m_combat_alert = stalker_combat_awareness::AlertLook();
 	m_combat_alert_point.set(0.f, 0.f, 0.f);
 	m_combat_target_offset.set(0.f, .9f, 0.f);
@@ -334,6 +336,9 @@ void CAI_Stalker::reload(LPCSTR section)
 
 void CAI_Stalker::Die(CObject* who)
 {
+    // Record an observed death before inherited cleanup removes squad membership.
+    // Also covers lethal/scripted deaths without a preceding audible pain event.
+    notify_visible_ally_harm();
 	notify_on_wounded_or_killed(who);
 
 	SelectAnimation(XFORM().k, movement().detail().direction(), movement().speed());

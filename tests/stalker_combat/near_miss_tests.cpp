@@ -6,6 +6,7 @@
 #include <vector>
 #include "stalker_combat_awareness_policy.h"
 using u32 = unsigned int;
+template <typename T> using xr_vector = std::vector<T>;
 namespace MemorySpace { using squad_mask_type = u32; }
 namespace ALife { enum ERelationType { eRelationTypeFriend, eRelationTypeNeutral, eRelationTypeEnemy }; }
 unsigned int contact_casts=0;
@@ -22,9 +23,11 @@ struct Fvector {
     void mad(const Fvector& a,const Fvector& b,float k){x=a.x+b.x*k;y=a.y+b.y*k;z=a.z+b.z*k;}
 };
 float _sqrt(float n){return std::sqrt(n);}
-struct CEntityAlive {
+struct CObject {virtual ~CObject() {}};
+struct CEntityAlive : CObject {
     virtual ~CEntityAlive() {}
-    u32 id=10; bool alive=true; ALife::ERelationType relation=ALife::eRelationTypeEnemy;
+    u32 id=10, death_time=0; bool alive=true; ALife::ERelationType relation=ALife::eRelationTypeEnemy;
+    u32 GetLevelDeathTime() const{return death_time;}
     u32 ID() const{return id;} bool g_Alive() const{return alive;}
     // Deliberately no Position()/Center(): sector decisions must compile using snapshots only.
 };
@@ -62,8 +65,9 @@ struct Memory {
     } sounds, hits;
     struct Visual : Records {
         bool seen=false, lingering=false;
+        std::vector<const CEntityAlive*> visible_entities;
         bool visible_now(const CEntityAlive*) const{return seen||lingering;}
-        bool visible_right_now(const CEntityAlive*) const{return seen;}
+        bool visible_right_now(const CEntityAlive* who) const{for(auto* p:visible_entities)if(p==who)return true;return seen;}
         u32 mask() const{return 1;}
     } visuals;
     Visual& visual(){return visuals;}
@@ -82,6 +86,7 @@ struct Movement {
 struct CAI_Stalker : CEntityAlive {
     stalker_combat_awareness::NearMiss m_combat_near_miss;
     Fvector m_combat_near_miss_point;
+    u32 m_combat_ally_harm_time=0; bool m_combat_ally_harm_known=false;
     stalker_combat_awareness::AlertLook m_combat_alert;
     Fvector m_combat_alert_point,position;
     const Fvector& Position() const{return position;}
@@ -93,10 +98,14 @@ struct CAI_Stalker : CEntityAlive {
             const u32* get_member(u32 id) const {for(const auto& value:ids)if(value==id)return &value;return nullptr;}
         } people;
         Members& member(){return people;}
-    } agent;
-    Agent& agent_manager(){return agent;}
+    };
+    mutable Agent agent;
+    Agent& agent_manager() const{return agent;}
     bool is_relation_enemy(const CEntityAlive* other) const{return other->relation==ALife::eRelationTypeEnemy;}
     ALife::ERelationType tfGetRelationType(const CEntityAlive* other) const{return other->relation;}
+    void on_combat_ally_harm(const CEntityAlive*, const Fvector&);
+    void notify_visible_ally_harm();
+    bool combat_recent_ally_harm() const;
     bool combat_known_friendly_fire(const Fvector&);
     bool alive=true, destroyed=false, remote=false, script=false, injured=false, critical=false, talking=false;
     struct Animation { std::vector<int> scripts; const std::vector<int>& script_animations() const { return scripts; } } animations;
@@ -116,6 +125,13 @@ namespace stalker_combat_diagnostics {
     bool enabled(u32) { return true; }
     void log(u32, Category, const char* event, const char*, ...) { events.push_back(event); }
 }
+struct World {
+    struct Space {
+        std::vector<CObject*> objects;unsigned queries=0;
+        void GetNearest(std::vector<CObject*>& out,const Fvector&,float,const CObject*) {++queries;out=objects;}
+    } ObjectSpace;
+} level_fixture;
+World& Level(){return level_fixture;}
 #include "near_miss.generated.h"
 
 void idle_and_combat()
@@ -354,8 +370,80 @@ void friendly_rear_sector_uses_known_positions()
     npc.memories.sounds.values.resize(127);
     assert(!npc.combat_known_friendly_fire(incoming) && contact_casts==casts);
 }
+void observed_ally_harm_overrides_suppression()
+{
+    Device.dwTimeGlobal=80000; CEntityAlive enemy,ally;ally.id=11;ally.relation=ALife::eRelationTypeFriend;
+    const Fvector point(0,1,0),flight(0,0,1),rear(0,1,-10);
+    for (bool visible_enemy : {false,true}) {
+        CAI_Stalker npc;npc.memories.enemies.target=&enemy;npc.memories.visuals.seen=visible_enemy;
+        npc.memories.visuals.values.push_back(report(enemy,Fvector(0,0,10)));
+        npc.memories.visuals.values.push_back(report(ally,Fvector(0,0,-10)));
+        npc.on_bullet_near_miss(point,flight);assert(npc.combat_near_miss_revision()==0);
+        npc.on_combat_ally_harm(&ally,rear);assert(npc.combat_recent_ally_harm());
+        npc.on_bullet_near_miss(point,flight);assert(npc.combat_near_miss_revision()==1);
+        npc.process_combat_near_miss();npc.update_combat_near_miss();
+        Fvector look;assert(npc.combat_alert_look(look)&&npc.moving.target_body==eBodyStateCrouch);
+        assert(npc.memories.enemies.target==&enemy&&npc.memories.dangers.entries.empty());
+        // Harm evidence outlives sound-record overwrite, but cannot outlive 5 seconds.
+        Device.dwTimeGlobal+=5001;npc.process_combat_near_miss();npc.update_combat_near_miss();
+        assert(!npc.combat_recent_ally_harm()&&!npc.m_combat_near_miss.duck_active);
+        Device.dwTimeGlobal=80000;
+    }
+    // Timestamp cache handles wraparound, zero, invalid/remote events and relation changes.
+    for(int reason=0;reason<9;++reason) {
+        CAI_Stalker npc;Fvector event=rear;const CEntityAlive* victim=&ally;
+        switch(reason) {
+        case 0: victim=nullptr;break;case 1:victim=&npc;break;
+        case 2: event.x=std::numeric_limits<float>::quiet_NaN();break;
+        case 3: event=Fvector(0,0,15.01f);break;
+        case 4: ally.relation=ALife::eRelationTypeEnemy;npc.agent.people.ids.push_back(ally.id);break;
+        case 5: ally.relation=ALife::eRelationTypeNeutral;break;
+        case 6:npc.alive=false;break;case 7:npc.destroyed=true;break;case 8:npc.remote=true;break;
+        }
+        npc.on_combat_ally_harm(victim,event);assert(!npc.m_combat_ally_harm_known);
+        ally.relation=ALife::eRelationTypeFriend;
+    }
+    CAI_Stalker member;ally.relation=ALife::eRelationTypeNeutral;member.agent.people.ids.push_back(ally.id);
+    Device.dwTimeGlobal=0;member.on_combat_ally_harm(&ally,Fvector(0,0,15));assert(member.combat_recent_ally_harm());
+    ally.relation=ALife::eRelationTypeFriend;
+    Device.dwTimeGlobal=0xffffff00u;member.on_combat_ally_harm(&ally,rear);
+    Device.dwTimeGlobal=20;assert(member.combat_recent_ally_harm());
+    Device.dwTimeGlobal=6000;assert(!member.combat_recent_ally_harm());
+    // Queued response also survives newly restored enemy visibility while harm is fresh.
+    CAI_Stalker late;late.memories.enemies.target=&enemy;late.on_combat_ally_harm(&ally,rear);
+    late.on_bullet_near_miss(point,flight);late.process_combat_near_miss();late.memories.visuals.seen=true;
+    late.update_combat_near_miss();assert(late.moving.target_body==eBodyStateCrouch);
+    // Audible shots have the same exception and do not manufacture an attacker.
+    CAI_Stalker hearing;hearing.memories.enemies.target=&enemy;hearing.memories.visuals.seen=true;
+    hearing.on_combat_ally_harm(&ally,rear);hearing.on_combat_heard_shot(rear);
+    Fvector look;assert(hearing.combat_alert_look(look)&&look.z==-10&&hearing.memories.enemies.target==&enemy);
+}
+void visible_hit_and_death_event_evidence()
+{
+    Device.dwTimeGlobal=90000;CAI_Stalker victim;victim.relation=ALife::eRelationTypeFriend;
+    CAI_Stalker sees,hidden,far,dead,remote;sees.position=Fvector(0,0,10);far.position=Fvector(0,0,16);
+    dead.alive=false;remote.remote=true;
+    for(auto* npc : {&sees,&far,&dead,&remote})npc->memories.visuals.visible_entities.push_back(&victim);
+    level_fixture.ObjectSpace.objects={&sees,&hidden,&far,&dead,&remote};
+    victim.notify_visible_ally_harm();
+    assert(sees.combat_recent_ally_harm());
+    assert(!hidden.m_combat_ally_harm_known&&!far.m_combat_ally_harm_known&&!dead.m_combat_ally_harm_known&&!remote.m_combat_ally_harm_known);
+    // Same event-time notifier handles a silent death before squad cleanup.
+    sees.m_combat_ally_harm_known=false;victim.alive=false;
+    victim.notify_visible_ally_harm();assert(sees.combat_recent_ally_harm());
+    assert(!hidden.m_combat_ally_harm_known);
+    Device.dwTimeGlobal+=5001;assert(!sees.combat_recent_ally_harm());
+    // Old corpses loaded online have a fresh level death timestamp. They must
+    // not be interpreted as a new casualty just because visible memory refreshes.
+    CEntityAlive corpse;corpse.relation=ALife::eRelationTypeFriend;corpse.alive=false;corpse.death_time=Device.dwTimeGlobal;
+    CAI_Stalker loaded;loaded.memories.visuals.values.push_back(report(corpse,Fvector(0,0,10)));
+    loaded.memories.visuals.visible_entities.push_back(&corpse);
+    assert(!loaded.combat_recent_ally_harm());
+    level_fixture.ObjectSpace.objects.clear();
+}
 int main()
 {
+    observed_ally_harm_overrides_suppression(); visible_hit_and_death_event_evidence();
     idle_and_combat(); priorities_and_lifecycle(); audible_attention();
     visible_enemy_cancels_flyby(); friendly_rear_sector_uses_known_positions();
     std::cout << "PASS: production near-miss notification, visible-enemy priority, known friendly sectors, anonymous danger, bounded duck and lifecycle\n";

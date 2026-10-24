@@ -103,31 +103,99 @@ bool CStalkerAnimationManager::search_listen_allowed() const
     return true;
 }
 
-bool CStalkerAnimationManager::start_search_listen()
+bool CStalkerAnimationManager::start_search_listen(bool crouched)
 {
     stop_search_listen();
     if (!search_listen_allowed()) return false;
     const u32 slot = search_listen_slot();
     if (slot == u32(-1)) return false;
 
-    // Current SoC caution mapping; legacy names are supported only for the
-    // slots actually present in xr_state.script. No guessed crouch/weapon clips.
-    string64 name;
-    sprintf_s(name, sizeof(name), "prisluh_%u_1", slot);
-    m_search_listen_motions[1] = m_skeleton_animated->ID_Cycle_Safe(name);
-    const bool modern = !!m_search_listen_motions[1];
-    if (!modern)
+    // The body-state remains standing while authored full-body transitions
+    // kneel/bend/listen. Crouched describes the search posture before entry.
+    const bool long_gun = slot == 2u || slot == 3u || slot == 8u || slot == 9u;
+    struct Family { u32 slot; bool legacy; bool transitions_required; };
+    struct Candidate { MotionID in, idle, out; };
+    Candidate candidates[24];
+    u32 count = 0;
+    for (u32 pass = 0; pass != 2 && !count; ++pass)
     {
-        if (slot > 4u) return false;
-        sprintf_s(name, sizeof(name), "prisluh_%u_idle_1", slot);
-        m_search_listen_motions[1] = m_skeleton_animated->ID_Cycle_Safe(name);
-        if (!m_search_listen_motions[1]) return false;
+        Family families[5];
+        u32 family_count = 0;
+        if (long_gun && crouched && pass == 0)
+        {
+            // Only the legacy family 3 is the observed kneeling rifle gesture.
+            // Modern slot 3 remains the weapon-specific shotgun animation.
+            families[family_count++] = Family{3u, true, true};
+        }
+        else
+        {
+            families[family_count++] = Family{slot, false, false};
+            if (long_gun)
+            {
+                families[family_count++] = Family{2u, true, true};
+                if (slot != 8u) families[family_count++] = Family{8u, false, true};
+                // A model may provide only the original weapon-slot family.
+                if (slot == 3u) families[family_count++] = Family{3u, true, true};
+            }
+            else if (slot <= 4u)
+                families[family_count++] = Family{slot, true, false};
+        }
+        for (u32 f = 0; f != family_count; ++f)
+        {
+            const Family& family = families[f];
+            // Canonical SoC names, plus the literal custom-model names supplied
+            // by the user. Resolve once at entry, never during the render loop.
+            const char* prefixes[] = {"prisluh", "prushluh", "pprushluh"};
+            for (u32 alias = 0; alias != 3; ++alias)
+            {
+                if (alias == 2 && (family.slot != 8u || family.legacy)) continue;
+                string64 name;
+                sprintf_s(name, sizeof(name), family.legacy ? "%s_%u_idle_0" : "%s_%u_in",
+                    prefixes[alias], family.slot);
+                const MotionID entry = m_skeleton_animated->ID_Cycle_Safe(name);
+                if (family.legacy)
+                    sprintf_s(name, sizeof(name), "%s_%u_idle_%u", prefixes[alias],
+                        family.slot, family.slot == 2u ? 6u : 5u);
+                else
+                    sprintf_s(name, sizeof(name), "%s_%u_out", prefixes[alias], family.slot);
+                const MotionID exit = m_skeleton_animated->ID_Cycle_Safe(name);
+                if (family.transitions_required && (!entry || !exit)) continue;
+                const u32 before = count;
+                // xr_state: entry 0, idle 1..4 (family 2 also 5), exit 5/6.
+                // state_mgr_animation_list: idle 0..2, entry/exit named in/out.
+                const u32 first = family.legacy ? 1u : 0u;
+                const u32 end = family.legacy ? (family.slot == 2u ? 6u : 5u) : 3u;
+                for (u32 variant = first; variant != end; ++variant)
+                {
+                    sprintf_s(name, sizeof(name), family.legacy ? "%s_%u_idle_%u" : "%s_%u_%u",
+                        prefixes[alias], family.slot, variant);
+                    const MotionID idle = m_skeleton_animated->ID_Cycle_Safe(name);
+                    if (!idle) continue;
+                    bool duplicate = false;
+                    for (u32 c = 0; c != count; ++c)
+                        if (candidates[c].idle == idle) { duplicate = true; break; }
+                    if (!duplicate && count < 24u)
+                        candidates[count++] = Candidate{entry, idle, exit};
+                }
+                if (count != before) break; // Do not mix spellings within a family.
+            }
+        }
     }
-    sprintf_s(name, sizeof(name), modern ? "prisluh_%u_in" : "prisluh_%u_idle_0", slot);
-    m_search_listen_motions[0] = m_skeleton_animated->ID_Cycle_Safe(name);
-    if (modern) sprintf_s(name, sizeof(name), "prisluh_%u_out", slot);
-    else sprintf_s(name, sizeof(name), "prisluh_%u_idle_%u", slot, slot == 2u ? 6u : 5u);
-    m_search_listen_motions[2] = m_skeleton_animated->ID_Cycle_Safe(name);
+    if (!count) return false;
+    // Every existing idle/rnd clip is eligible, except the previous selection
+    // when alternatives exist. Entry and exit always belong to its own family.
+    if (count > 1u)
+        for (u32 c = 0; c != count; ++c)
+            if (candidates[c].idle == m_search_listen_last_motion)
+            {
+                candidates[c] = candidates[--count];
+                break;
+            }
+    const Candidate& chosen = candidates[::Random.randI(count)];
+    m_search_listen_motions[0] = chosen.in;
+    m_search_listen_motions[1] = chosen.idle;
+    m_search_listen_motions[2] = chosen.out;
+    m_search_listen_last_motion = chosen.idle;
 
     m_search_listen_slot = slot;
     CInventoryItem* item = object().inventory().ActiveItem();
@@ -160,7 +228,7 @@ bool CStalkerAnimationManager::play_search_listen()
     if (!m_search_listen_active) return false;
     const u32 now = Device.dwTimeGlobal;
     CInventoryItem* item = object().inventory().ActiveItem();
-    if (!search_listen_allowed() || now - m_search_listen_started >= 6000u ||
+    if (!search_listen_allowed() || now - m_search_listen_started >= 12000u ||
         search_listen_slot() != m_search_listen_slot ||
         (item ? item->object().ID() : u16(-1)) != m_search_listen_item ||
         object().memory().hit().recent_hit_revision() != m_search_listen_hit_revision ||
@@ -211,7 +279,7 @@ bool CStalkerAnimationManager::play_search_listen()
         }
         const float milliseconds = 1000.f * blend->timeTotal / blend->speed;
         // Play one clip/cycle, bounding malformed or unusually long custom clips.
-        m_search_listen_phase_duration = u32(clampr(milliseconds, 200.f, 2000.f));
+        m_search_listen_phase_duration = u32(clampr(milliseconds, 200.f, 4000.f));
         m_search_listen_phase_started = now;
         m_search_listen_phase_played = true;
     }

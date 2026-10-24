@@ -14,7 +14,7 @@ void search_lifecycle()
     assert(npc.moving.desired.distance_to(Fvector(0,0,4))<.001f);
     npc.pos=npc.moving.desired;Device.dwTimeGlobal+=1500;action.execute();
     assert(npc.moving.type==eMovementTypeStand && npc.moving.body==eBodyStateStand);
-    assert(npc.animations.starts==1); // Stand-only prisluh/fallback starts on arrival.
+    assert(npc.animations.starts==1 && npc.animations.crouched); // Original approach pose reaches the animator.
     Device.dwTimeGlobal+=1500;action.execute();assert(npc.moving.body==eBodyStateCrouch);
     assert(!group.m_scout.assigned);action.finalize();
     assert(stalker_known_enemy_distance(npc,&enemy)==4.f);
@@ -232,6 +232,7 @@ void search_listening_and_horizontal_sight()
         npc.animations.available=true;
         CStalkerActionSearchEnemy action(&npc);action.initialize();action.execute();
         assert(npc.animations.active && npc.animations.starts==1 && npc.moving.type==eMovementTypeStand);
+        assert(!npc.animations.crouched); // Standing search selects a standing-compatible family.
         assert(npc.sights.last.y==eye_height && npc.sights.last.z>npc.pos.z+1.f);
         const u32 legs=npc.moving.changes;
         npc.eye_matrix.c.y=eye_height+.5f; // Real crouch-to-stand raises the eyes during the phase.
@@ -240,6 +241,8 @@ void search_listening_and_horizontal_sight()
         assert(npc.animations.starts==1 && npc.moving.changes==legs); // No timed sector advance during listen.
         ++npc.memories.info.m_level_time;action.execute();
         assert(npc.animations.starts==1); // Same-position relay cannot replay the motion.
+        Device.dwTimeGlobal+=4000;action.execute();
+        assert(npc.animations.active && npc.moving.changes==legs); // Longer authored entry/idle/exit owns the pause.
         npc.animations.active=false;action.execute();action.execute();
         assert(npc.moving.changes==legs+1 && npc.moving.type==eMovementTypeWalk);
         Device.dwTimeGlobal+=3000;npc.pos.x=-1;action.execute();
@@ -268,7 +271,7 @@ void listening_interruptions()
         case 6:npc.alive=false;break;
         case 7:npc.animations.scripts.push_back(7);break;
         case 8:npc.condition.hp=.5f;break;
-        case 9:Device.dwTimeGlobal+=6500;break;
+        case 9:Device.dwTimeGlobal+=12500;break;
         case 10:npc.script=true;break;
         }
         action.execute();assert(!npc.animations.active);

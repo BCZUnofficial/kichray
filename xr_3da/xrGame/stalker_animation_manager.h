@@ -46,6 +46,7 @@ class CStalkerAnimationManager
     // Native search gesture; never placed in the Lua animation queue.
     CStalkerAnimationPair m_search_listen;
     MotionID m_search_listen_motions[3];
+    MotionID m_search_listen_last_motion;
     bool m_search_listen_active;
     bool m_search_listen_phase_played;
     u32 m_search_listen_phase;
@@ -169,7 +170,7 @@ class CStalkerAnimationManager
   public:
     // Caller owns the stationary standing posture and can interrupt at any time.
     // A false start leaves the regular weapon/posture animation untouched.
-    bool start_search_listen();
+    bool start_search_listen(bool crouched = false);
     bool search_listen_active() const;
     void stop_search_listen();
 

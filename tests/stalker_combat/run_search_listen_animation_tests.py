@@ -27,7 +27,7 @@ def main():
     methods = '\n\n'.join(extract(source, signature) for signature in (
         'u32 CStalkerAnimationManager::search_listen_slot()',
         'bool CStalkerAnimationManager::search_listen_allowed()',
-        'bool CStalkerAnimationManager::start_search_listen()',
+        'bool CStalkerAnimationManager::start_search_listen(',
         'bool CStalkerAnimationManager::search_listen_active()',
         'void CStalkerAnimationManager::stop_search_listen()',
         'bool CStalkerAnimationManager::play_search_listen()',

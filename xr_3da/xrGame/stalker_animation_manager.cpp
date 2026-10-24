@@ -48,6 +48,7 @@ void CStalkerAnimationManager::reinit()
     m_search_listen_phase_duration = m_search_listen_slot = m_search_listen_hit_revision = 0;
     m_search_listen_item = u16(-1);
     m_search_listen_health = 0.f;
+    m_search_listen_last_motion.invalidate();
     for (u32 i = 0; i != 3; ++i) m_search_listen_motions[i].invalidate();
 
 	m_legs.step_dependence(true);
@@ -68,6 +69,7 @@ void CStalkerAnimationManager::reload(CAI_Stalker* _object)
 	m_object = _object;
 	m_visual = object().Visual();
     stop_search_listen();
+    m_search_listen_last_motion.invalidate();
 
 	m_crouch_state_config = object().SpecificCharacter().crouch_type();
 	VERIFY((m_crouch_state_config == 0) || (m_crouch_state_config == 1) || (m_crouch_state_config == -1));

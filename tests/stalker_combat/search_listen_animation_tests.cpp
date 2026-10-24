@@ -21,12 +21,14 @@ float clampr(float value, float low, float high) { return value < low ? low : va
 enum { eMovementTypeStand, eMovementTypeWalk, eMovementTypeRun };
 enum { eBodyStateStand, eBodyStateCrouch };
 struct { u32 dwTimeGlobal = 1000; } Device;
+struct { u32 seed = 12345; u32 randI(u32 count) { seed = seed * 1664525u + 1013904223u; return (seed >> 16) % count; } } Random;
 struct MotionID {
     unsigned value = 0;
     MotionID() {}
     explicit MotionID(unsigned id) : value(id) {}
     explicit operator bool() const { return value != 0; }
     void invalidate() { value = 0; }
+    bool operator==(const MotionID& other) const { return value == other.value; }
 };
 struct CBlend { float timeTotal = 1.f, speed = 1.f; };
 struct CKinematicsAnimated {
@@ -93,6 +95,7 @@ class CStalkerAnimationManager {
 public:
     CStalkerAnimationPair m_search_listen, m_global, m_torso, m_legs, m_head;
     MotionID m_search_listen_motions[3];
+    MotionID m_search_listen_last_motion;
     bool m_search_listen_active = false, m_search_listen_phase_played = false;
     u32 m_search_listen_phase = 0, m_search_listen_started = 0, m_search_listen_phase_started = 0;
     u32 m_search_listen_phase_duration = 0, m_search_listen_slot = 0, m_search_listen_hit_revision = 0;
@@ -118,7 +121,7 @@ public:
     u32 m_script_bone_part_mask = 7;
     u32 search_listen_slot() const;
     bool search_listen_allowed() const;
-    bool start_search_listen();
+    bool start_search_listen(bool crouched = false);
     bool search_listen_active() const;
     void stop_search_listen();
     bool play_search_listen();
@@ -195,13 +198,109 @@ void test_interruptions_and_ownership()
         if (reason == 0) assert(m.scripts.size() == 1 && m.scripts[0] == 42 && m.script_passes == 1);
     }
     CStalkerAnimationManager m; modern(m, 0); assert(m.start_search_listen());
-    m.physically_standing = false; Device.dwTimeGlobal += 6000; m.update_impl();
+    m.physically_standing = false; Device.dwTimeGlobal += 12000; m.update_impl();
     assert(!m.search_listen_active());
     Device.dwTimeGlobal = 1000; assert(m.start_search_listen()); m.stop_search_listen();
     assert(!m.search_listen_active());
 }
+void legacy_family(CStalkerAnimationManager& manager, const std::string& prefix, u32 family)
+{
+    const std::string base = prefix + "_" + std::to_string(family) + "_idle_";
+    const u32 exit = family == 2u ? 6u : 5u;
+    for (u32 index = 0; index <= exit; ++index)
+        manager.skeleton.add(base + std::to_string(index), .6f);
+}
+
+void test_variant_pool_and_transition_pairing()
+{
+    CStalkerAnimationManager m; CWeapon weapon; m.npc.items.active = &weapon;
+    legacy_family(m, "prisluh", 2);
+    std::map<u32, bool> used;
+    u32 previous = 0;
+    for (u32 attempt = 0; attempt != 100; ++attempt)
+    {
+        assert(m.start_search_listen());
+        const u32 selected = m.m_search_listen_motions[1].value;
+        assert(selected != previous); previous = selected; used[selected] = true;
+        assert(m.m_search_listen_motions[0].value == m.skeleton.motions["prisluh_2_idle_0"].value);
+        assert(m.m_search_listen_motions[2].value == m.skeleton.motions["prisluh_2_idle_6"].value);
+        assert(selected != m.m_search_listen_motions[0].value && selected != m.m_search_listen_motions[2].value);
+    }
+    assert(used.size() == 5); // _5 is an idle for family2, not its exit.
+    CStalkerAnimationManager modern_pool;
+    modern_pool.skeleton.add("prisluh_0_0"); modern_pool.skeleton.add("prisluh_0_2");
+    // The conventional _1 idle may be absent; available rnd clips still work.
+    assert(modern_pool.start_search_listen());
+    const u32 first = modern_pool.m_search_listen_motions[1].value;
+    assert(modern_pool.start_search_listen()); assert(first != modern_pool.m_search_listen_motions[1].value);
+    const u32 queries = modern_pool.skeleton.queries;
+    modern_pool.update_impl(); modern_pool.update_impl();
+    assert(modern_pool.skeleton.queries == queries); // No clip probing per frame.
+}
+
+void test_posture_families_and_weapon_safety()
+{
+    for (u32 slot : {2u, 3u, 8u, 9u})
+    {
+        CStalkerAnimationManager m; CWeapon weapon; weapon.slot = slot; m.npc.items.active = &weapon;
+        modern(m, slot); legacy_family(m, "prisluh", 3);
+        assert(m.start_search_listen(true));
+        const u32 selected = m.m_search_listen_motions[1].value;
+        bool kneeling = false;
+        for (u32 index = 1; index != 5; ++index)
+            kneeling |= selected == m.skeleton.motions["prisluh_3_idle_" + std::to_string(index)].value;
+        assert(kneeling);
+        assert(m.m_search_listen_motions[2].value == m.skeleton.motions["prisluh_3_idle_5"].value);
+    }
+    CStalkerAnimationManager cross; CWeapon rifle; cross.npc.items.active = &rifle;
+    modern(cross, 8); assert(cross.start_search_listen(false));
+    assert(cross.m_search_listen_motions[0].value == cross.skeleton.motions["prisluh_8_in"].value);
+    CStalkerAnimationManager unsafe; unsafe.npc.items.active = &rifle;
+    unsafe.skeleton.add("prisluh_3_idle_1");
+    assert(!unsafe.start_search_listen(true)); // No abrupt switch to a kneeling clip without transitions.
+    for (u32 slot : {1u, 4u, 10u})
+    {
+        CStalkerAnimationManager strict; CWeapon item; item.slot = slot; strict.npc.items.active = &item;
+        legacy_family(strict, "prisluh", 3); modern(strict, 8); modern(strict, 0);
+        assert(!strict.start_search_listen(true)); // No wrong grip or empty-handed substitution.
+    }
+}
+
+void test_literal_model_aliases()
+{
+    for (u32 family : {0u, 1u, 2u, 3u, 4u})
+    {
+        CStalkerAnimationManager m; CWeapon weapon; weapon.slot = family == 3u ? 2u : family;
+        if (family) m.npc.items.active = &weapon;
+        legacy_family(m, "prushluh", family);
+        assert(m.start_search_listen(family == 3u));
+        const u32 exit = family == 2u ? 6u : 5u;
+        assert(m.m_search_listen_motions[2].value == m.skeleton.motions[
+            "prushluh_" + std::to_string(family) + "_idle_" + std::to_string(exit)].value);
+    }
+    CStalkerAnimationManager rifle; CWeapon weapon; rifle.npc.items.active = &weapon;
+    rifle.skeleton.add("pprushluh_8_in"); rifle.skeleton.add("pprushluh_8_0");
+    rifle.skeleton.add("pprushluh_8_2"); rifle.skeleton.add("pprushluh_8_out");
+    assert(rifle.start_search_listen());
+    const u32 first = rifle.m_search_listen_motions[1].value;
+    assert(rifle.start_search_listen()); assert(first != rifle.m_search_listen_motions[1].value);
+}
+
+void test_long_authored_transition()
+{
+    Device.dwTimeGlobal = 1000;
+    CStalkerAnimationManager m; modern(m, 0);
+    m.skeleton.durations[m.skeleton.motions["prisluh_0_in"].value] = 3.2f;
+    assert(m.start_search_listen()); m.update_impl();
+    assert(m.m_search_listen_phase_duration == 3200);
+    Device.dwTimeGlobal = 4000; m.update_impl(); assert(m.m_search_listen_phase == 0);
+    Device.dwTimeGlobal = 4200; m.update_impl(); assert(m.m_search_listen_phase == 1);
+}
+
 int main()
 {
     test_slots_and_safe_fallbacks(); test_completion_and_posture(); test_interruptions_and_ownership();
-    std::cout << "PASS: production search-listen slot selection, real-duration phases, posture wait, safe missing-clip fallback and interruption ownership\n";
+    test_variant_pool_and_transition_pairing(); test_posture_families_and_weapon_safety();
+    test_literal_model_aliases(); test_long_authored_transition();
+    std::cout << "PASS: production search-listen variants, no-repeat selection, coherent pose/weapon families, model aliases, phase timing and interruption ownership\n";
 }
