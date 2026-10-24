@@ -1,6 +1,8 @@
 #ifndef KICH_R4_PIPELINE_DX11_H
 #define KICH_R4_PIPELINE_DX11_H
 #include <d3d11.h>
+#include <map>
+#include <array>
 #include "R4GeometryRules.h"
 #include "R4StreamRules.h"
 namespace kich_r4 {
@@ -13,6 +15,11 @@ class PipelineDX11 {
     ID3D11SamplerState* sampler_[2];
     ID3D11SamplerState* shadow_sampler_;
     ID3D11BlendState* blends_[100];
+    std::map<std::array<uint32_t,9>,ID3D11BlendState*> surface_blends_;
+    std::map<std::array<uint32_t,10>,ID3D11DepthStencilState*> surface_depths_;
+    std::map<std::array<uint32_t,10>,ID3D11SamplerState*> surface_samplers_;
+    HRESULT Sampler(ID3D11DeviceContext*,KichR4SamplerState,ID3D11SamplerState**);
+    HRESULT Surface(ID3D11DeviceContext*,const KichR4StreamDrawDesc&,ID3D11BlendState**,ID3D11DepthStencilState**);
     HRESULT Blend(ID3D11DeviceContext*,const KichR4StreamDrawDesc&,ID3D11BlendState**);
     PipelineDX11(const PipelineDX11&);
     PipelineDX11& operator=(const PipelineDX11&);

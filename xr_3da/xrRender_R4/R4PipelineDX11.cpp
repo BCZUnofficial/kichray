@@ -15,6 +15,9 @@ PipelineDX11::PipelineDX11():layout_(NULL),vs_(NULL),ps_(NULL),shadow_sampler_(N
 {for(unsigned i=0;i<6;++i)raster_[i]=NULL;for(unsigned i=0;i<3;++i)depth_[i]=NULL;
  for(unsigned i=0;i<2;++i){sampler_[i]=NULL;}for(unsigned i=0;i<100;++i){blends_[i]=NULL;}}
 PipelineDX11::~PipelineDX11(){
+    for(auto& i:surface_blends_)ReleasePipeline(i.second);
+    for(auto& i:surface_depths_)ReleasePipeline(i.second);
+    for(auto& i:surface_samplers_)ReleasePipeline(i.second);
     for(unsigned i=0;i<3;++i){ReleasePipeline(depth_[i]);}
     for(unsigned i=0;i<6;++i){ReleasePipeline(raster_[i]);}
     ReleasePipeline(layout_);ReleasePipeline(vs_);ReleasePipeline(ps_);
@@ -91,11 +94,45 @@ HRESULT PipelineDX11::Blend(ID3D11DeviceContext* ctx,const KichR4StreamDrawDesc&
         const HRESULT hr=hw->CreateBlendState(&b,&blends_[at]);hw->Release();if(FAILED(hr))return hr;
     }*out=blends_[at];return S_OK;
 }
+HRESULT PipelineDX11::Sampler(ID3D11DeviceContext* ctx,KichR4SamplerState s,ID3D11SamplerState** out){
+    const std::array<uint32_t,10> key={{s.u,s.v,s.w,s.min_filter,s.mag_filter,s.mip_filter,s.anisotropy,s.border,s.lod_bias_bits,s.max_mip}};
+    ID3D11SamplerState*& sampler=surface_samplers_[key];
+    if(!sampler){D3D11_SAMPLER_DESC d={};d.AddressU=static_cast<D3D11_TEXTURE_ADDRESS_MODE>(s.u);d.AddressV=static_cast<D3D11_TEXTURE_ADDRESS_MODE>(s.v);d.AddressW=static_cast<D3D11_TEXTURE_ADDRESS_MODE>(s.w);
+        d.Filter=s.min_filter==3 || s.mag_filter==3?D3D11_FILTER_ANISOTROPIC:static_cast<D3D11_FILTER>((s.min_filter==2?16:0)|(s.mag_filter==2?4:0)|(s.mip_filter==2?1:0));
+        d.MaxAnisotropy=s.anisotropy;d.ComparisonFunc=D3D11_COMPARISON_ALWAYS;memcpy(&d.MipLODBias,&s.lod_bias_bits,4);d.MinLOD=static_cast<float>(s.max_mip);d.MaxLOD=s.mip_filter?D3D11_FLOAT32_MAX:d.MinLOD;
+        d.BorderColor[0]=float((s.border>>16)&255)/255;d.BorderColor[1]=float((s.border>>8)&255)/255;d.BorderColor[2]=float(s.border&255)/255;d.BorderColor[3]=float(s.border>>24)/255;
+        ID3D11Device* hw=NULL;ctx->GetDevice(&hw);if(!hw)return E_FAIL;const HRESULT hr=hw->CreateSamplerState(&d,&sampler);hw->Release();if(FAILED(hr))return hr;
+    }*out=sampler;return S_OK;
+}
+HRESULT PipelineDX11::Surface(ID3D11DeviceContext* ctx,const KichR4StreamDrawDesc& d,ID3D11BlendState** blend,ID3D11DepthStencilState** depth){
+    const KichR4SurfaceState& s=d.surface;
+    const std::array<uint32_t,9> bk={{d.blend_enable,d.source_blend,d.dest_blend,s.blend_op,s.color_mask,s.separate_alpha,s.source_alpha,s.dest_alpha,s.alpha_op}};
+    const std::array<uint32_t,10> zk={{d.draw.depth_mode,d.depth_write,s.depth_func,s.stencil,s.stencil_func,s.stencil_read,s.stencil_write,s.stencil_fail,s.stencil_zfail,s.stencil_pass}};
+    ID3D11BlendState*& b=surface_blends_[bk];ID3D11DepthStencilState*& z=surface_depths_[zk];
+    ID3D11Device* hw=NULL;ctx->GetDevice(&hw);if(!hw)return E_FAIL;
+    struct DeviceGuard{ID3D11Device* value;~DeviceGuard(){value->Release();}} guard={hw};
+    const D3D11_BLEND factors[]={D3D11_BLEND_ZERO,D3D11_BLEND_ONE,D3D11_BLEND_SRC_COLOR,D3D11_BLEND_INV_SRC_COLOR,D3D11_BLEND_SRC_ALPHA,D3D11_BLEND_INV_SRC_ALPHA,D3D11_BLEND_DEST_ALPHA,D3D11_BLEND_INV_DEST_ALPHA,D3D11_BLEND_DEST_COLOR,D3D11_BLEND_INV_DEST_COLOR};
+    const auto alpha_factor=[&](unsigned v){v=v==3?5:v==4?6:v==9?7:v==10?8:v;return factors[v-1];};
+    if(!b){D3D11_BLEND_DESC desc={};auto& r=desc.RenderTarget[0];r.BlendEnable=d.blend_enable!=0;
+        r.SrcBlend=factors[d.source_blend-1];r.DestBlend=factors[d.dest_blend-1];r.BlendOp=static_cast<D3D11_BLEND_OP>(s.blend_op);
+        r.SrcBlendAlpha=alpha_factor(s.separate_alpha?s.source_alpha:d.source_blend);r.DestBlendAlpha=alpha_factor(s.separate_alpha?s.dest_alpha:d.dest_blend);
+        r.BlendOpAlpha=static_cast<D3D11_BLEND_OP>(s.separate_alpha?s.alpha_op:s.blend_op);r.RenderTargetWriteMask=static_cast<UINT8>(s.color_mask);
+        const HRESULT hr=hw->CreateBlendState(&desc,&b);if(FAILED(hr))return hr;}
+    if(!z){D3D11_DEPTH_STENCIL_DESC desc={};desc.DepthEnable=d.draw.depth_mode!=0;desc.DepthWriteMask=d.depth_write?D3D11_DEPTH_WRITE_MASK_ALL:D3D11_DEPTH_WRITE_MASK_ZERO;
+        desc.DepthFunc=static_cast<D3D11_COMPARISON_FUNC>(s.depth_func);desc.StencilEnable=s.stencil!=0;
+        desc.StencilReadMask=static_cast<UINT8>(s.stencil_read);desc.StencilWriteMask=static_cast<UINT8>(s.stencil_write);
+        desc.FrontFace.StencilFunc=static_cast<D3D11_COMPARISON_FUNC>(s.stencil_func);
+        desc.FrontFace.StencilFailOp=static_cast<D3D11_STENCIL_OP>(s.stencil_fail);desc.FrontFace.StencilDepthFailOp=static_cast<D3D11_STENCIL_OP>(s.stencil_zfail);
+        desc.FrontFace.StencilPassOp=static_cast<D3D11_STENCIL_OP>(s.stencil_pass);desc.BackFace=desc.FrontFace;
+        const HRESULT hr=hw->CreateDepthStencilState(&desc,&z);if(FAILED(hr))return hr;}
+    *blend=b;*depth=z;return S_OK;
+}
 HRESULT PipelineDX11::Draw(ID3D11DeviceContext* ctx,const KichR4DrawIndexedDesc& d,
     ID3D11Buffer* vb,ID3D11Buffer* ib,ID3D11Buffer* cb,uint32_t index_stride,ID3D11ShaderResourceView* texture,const KichR4StreamDrawDesc* extra,ID3D11ShaderResourceView* const* inputs,ID3D11Buffer* instances,uint32_t count,uint32_t first,ID3D11Buffer* pose)
 {
     ID3D11BlendState* blend=NULL;
-    if(extra){const HRESULT hr=Blend(ctx,*extra,&blend);if(FAILED(hr))return hr;}
+    ID3D11DepthStencilState* depth=depth_[extra && d.depth_mode && !extra->depth_write?2:d.depth_mode];
+    if(extra){const HRESULT hr=extra->surface.valid?Surface(ctx,*extra,&blend,&depth):Blend(ctx,*extra,&blend);if(FAILED(hr))return hr;}
     const UINT offset=0;ctx->IASetInputLayout(layout_);
     ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     ctx->IASetVertexBuffers(0,1,&vb,&stride,&offset);
@@ -106,10 +143,15 @@ HRESULT PipelineDX11::Draw(ID3D11DeviceContext* ctx,const KichR4DrawIndexedDesc&
     ctx->GSSetShader(NULL,NULL,0);ctx->HSSetShader(NULL,NULL,0);ctx->DSSetShader(NULL,NULL,0);
     ctx->VSSetConstantBuffers(0,1,&cb);ctx->PSSetConstantBuffers(0,1,&cb);
     ctx->VSSetConstantBuffers(1,1,&pose); // NULL explicitly clears the model palette for ordinary pipelines.
-    if(advanced){ctx->PSSetShaderResources(0,8,inputs);ID3D11SamplerState* samplers[]={sampler_[extra?extra->clamp_texture:0],shadow_sampler_};ctx->PSSetSamplers(0,2,samplers);}
-    else {ctx->PSSetShaderResources(0,1,&texture);ctx->PSSetSamplers(0,1,&sampler_[extra?extra->clamp_texture:0]);}
+    ID3D11SamplerState* samplers[9]={};samplers[1]=shadow_sampler_;
+    for(unsigned i=0;i<(advanced?8u:1u);++i){const unsigned slot=i?i+1:0;samplers[slot]=sampler_[extra?extra->clamp_texture:0];
+        if(extra && extra->surface.valid && extra->surface.samplers[i].u){KichR4SamplerState s=extra->surface.samplers[i];
+            if(extra->clamp_texture)s.u=s.v=s.w=3;
+            const HRESULT hr=Sampler(ctx,s,&samplers[slot]);if(FAILED(hr))return hr;}}
+    if(advanced)ctx->PSSetShaderResources(0,8,inputs);else ctx->PSSetShaderResources(0,1,&texture);
+    ctx->PSSetSamplers(0,advanced?9:1,samplers);
     ctx->RSSetState(raster_[d.cull_mode+(extra && extra->scissor_enable?3:0)]);
-    ctx->OMSetDepthStencilState(depth_[extra && d.depth_mode && !extra->depth_write?2:d.depth_mode],0);
+    ctx->OMSetDepthStencilState(depth,extra && extra->surface.valid?extra->surface.stencil_ref:0);
     if(extra){D3D11_VIEWPORT view={};UINT n=1;ctx->RSGetViewports(&n,&view);view.MinDepth=extra->min_depth;view.MaxDepth=extra->max_depth;
         ctx->RSSetViewports(1,&view);if(extra->scissor_enable){const D3D11_RECT rect={extra->scissor[0],extra->scissor[1],extra->scissor[2],extra->scissor[3]};ctx->RSSetScissorRects(1,&rect);}}
     ctx->OMSetBlendState(blend,NULL,0xffffffffu);

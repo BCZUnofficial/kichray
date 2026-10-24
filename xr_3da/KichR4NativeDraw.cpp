@@ -19,10 +19,12 @@
 
 namespace {
 bool selected=false,menu_pp=false,menu_overlay=false,distortion_enabled=true;
+uint32_t texture_budget_mb=384;
 bool celestial_source=false;
 bool lens_effect=false,object_light_valid=false;float object_hemi=1,object_sun=1;
 std::chrono::steady_clock::time_point queue_begin;
 uint32_t states[256]={};
+uint32_t sampler_states[8][14]={};
 kich_r4_capture::Style style;
 CTexture* textures[16]={};
 uint32_t effect=0;
@@ -85,9 +87,12 @@ void RenderSnapshot_MaterialElement(ShaderElement* element,uint32_t pass){Render
 bool KichR4_NativeActive(){return selected;}
 bool KichR4_NativeInlineGeometry(void* visual){const kich_r4_capture::State* s=KichR4_CaptureState();if(!s)return false;const auto i=s->models.find(visual);return i!=s->models.end() && i->second.mesh.get()!=NULL;}
 bool KichR4_NativeSelect(const char* params){if(selected)return true;char token[512];int read=0;while((read=KichR4_NextToken(params,token,sizeof(token)))!=0)if(read>0){
-    if(!strcmp(token,"-kich_r4_game"))selected=true;else if(!strcmp(token,"-nodistort"))distortion_enabled=false;}return selected;}
+    if(!strcmp(token,"-kich_r4_game"))selected=true;else if(!strcmp(token,"-nodistort"))distortion_enabled=false;
+    else if(!strncmp(token,"-kich_r4_texture_mb=",20)){char* end=NULL;const unsigned long value=strtoul(token+20,&end,10);if(end!=token+20 && !*end && value>=32 && value<=768)texture_budget_mb=static_cast<uint32_t>(value);}}return selected;}
+uint32_t KichR4_NativeTextureBudgetMB(){return texture_budget_mb;}
 bool KichR4_NativeDistortionEnabled(){return distortion_enabled;}
 void KichR4_NativeSetState(uint32_t key,uint32_t value){if(key<256)states[key]=value;}
+void KichR4_NativeSetSampler(uint32_t stage,uint32_t key,uint32_t value){if(stage<8 && key<14)sampler_states[stage][key]=value;}
 uint32_t KichR4_NativeGetState(uint32_t key){return key<256?states[key]:0;}
 void KichR4_NativeMenuPP(bool enabled){if(menu_pp && !enabled)menu_overlay=true;menu_pp=enabled;}
 void KichR4_NativeCelestialSource(bool enabled){celestial_source=enabled;}
@@ -96,8 +101,10 @@ void KichR4_NativeObjectLight(bool valid,float hemi,float sun){object_light_vali
 void KichR4_NativeViewport(float a,float b){style.min_z=a;style.max_z=b;}
 void KichR4_NativeScissor(const int* p){style.scissor=p!=NULL;if(p)memcpy(style.rect,p,sizeof(style.rect));}
 bool KichR4_NativeStyle(kich_r4_capture::Style& out){out=style;out.blend=states[D3DRS_ALPHABLENDENABLE]!=0;out.src=states[D3DRS_SRCBLEND];out.dst=states[D3DRS_DESTBLEND];
+    out.surface=KichR4ReadSurface([&](uint32_t key,uint32_t){return states[key];});
+    for(unsigned i=0;i<8;++i)out.surface.samplers[i]=KichR4ReadSampler([&](uint32_t key,uint32_t){return sampler_states[i][key];});
     out.depth=states[D3DRS_ZENABLE]!=0;out.write=states[D3DRS_ZWRITEENABLE]!=0;out.alpha_func=states[D3DRS_ALPHATESTENABLE]?states[D3DRS_ALPHAFUNC]:8;
-    out.alpha_ref=float(states[D3DRS_ALPHAREF]&255)/255.f;out.clamp=states[255]==D3DTADDRESS_CLAMP;
+    out.alpha_ref=float(states[D3DRS_ALPHAREF]&255)/255.f;out.clamp=0;
     out.cull=states[D3DRS_CULLMODE]==D3DCULL_CW?KICH_R4_CULL_FRONT:states[D3DRS_CULLMODE]==D3DCULL_CCW?KICH_R4_CULL_BACK:KICH_R4_CULL_NONE;return true;}
 void KichR4_NativeElement(ShaderElement* e){KichR4_NativeElementPass(e,0);}
 void KichR4_NativeElementSource(uint32_t element){source_element=element;}
@@ -121,6 +128,10 @@ void KichR4_NativeModelMaterial(kich_r4_capture::ModelInput& input){
 double KichR4_NativeQueueTime(){return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-queue_begin).count();}
 void KichR4_NativeBegin(uint32_t width,uint32_t height,uint32_t frame){celestial_source=lens_effect=object_light_valid=false;object_hemi=object_sun=1;menu_pp=menu_overlay=false;queue_begin=std::chrono::steady_clock::now();memset(states,0,sizeof(states));style=kich_r4_capture::Style();states[D3DRS_ZENABLE]=states[D3DRS_ZWRITEENABLE]=1;
     KichR4_DetailFrame().ClearFrame(frame);active_material=NULL;
+    states[23]=4;states[171]=states[209]=1;states[207]=2;states[208]=1;
+    memset(sampler_states,0,sizeof(sampler_states));for(unsigned i=0;i<8;++i){sampler_states[i][1]=sampler_states[i][2]=sampler_states[i][3]=sampler_states[i][10]=1;
+        sampler_states[i][5]=sampler_states[i][6]=sampler_states[i][7]=2;}
+    states[56]=8;states[58]=states[59]=255;states[53]=states[54]=states[55]=1;
     states[D3DRS_CULLMODE]=D3DCULL_CCW;states[D3DRS_SRCBLEND]=D3DBLEND_SRCALPHA;states[D3DRS_DESTBLEND]=D3DBLEND_INVSRCALPHA;states[D3DRS_ALPHAFUNC]=D3DCMP_GREATER;
     states[D3DRS_COLORWRITEENABLE]=15;states[255]=D3DTADDRESS_WRAP;effect=0;source_element=UINT32_MAX;source_pass=0;active_shader.clear();model_texture.clear();model_secondary.clear();memset(textures,0,sizeof(textures));
     KichR4_CaptureBeginFrame(width,height,frame);kich_r4_capture::State* s=KichR4_CaptureState();if(s){s->native_models=true;s->frame.renderer_seen=true;s->frame.ui_seen=true;}

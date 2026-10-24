@@ -60,7 +60,7 @@ struct KichR4StreamSession {
             float constants[4]={c.style.alpha_ref,static_cast<float>(c.style.alpha_func),0,0};
             if(level.Expect(s,"B4.3b alpha test",level.bridge.api.update_buffer(s.device,cb,constants,sizeof(constants)))<0)return s.failure;
             KichR4StreamDrawDesc d={};d.struct_size=sizeof(d);d.draw={sizeof(d.draw),pipeline,vb,ib,cb,c.count,c.first,c.style.cull,c.style.depth};
-            d.texture=texture;d.blend_enable=c.style.blend;d.source_blend=c.style.src;d.dest_blend=c.style.dst;d.clamp_texture=c.style.clamp;
+            d.texture=texture;d.blend_enable=c.style.blend;d.source_blend=c.style.src;d.dest_blend=c.style.dst;d.clamp_texture=c.style.clamp;d.surface=c.style.surface;
             d.scissor_enable=c.style.scissor?1:0;d.depth_write=c.style.write;memcpy(d.scissor,c.style.rect,sizeof(d.scissor));d.min_depth=c.style.min_z;d.max_depth=c.style.max_z;
             if(level.Expect(s,layer==0?"B4.3b draw model":layer==1?"B4.3b draw hands/weapon":"B4.3b draw HUD",api.draw(s.device,&d))<0)return s.failure;
             ++layer_draws[layer];

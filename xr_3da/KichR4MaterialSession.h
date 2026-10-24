@@ -36,13 +36,15 @@ inline void Bind(KichR4FrameSession& s,KichR4LevelSession& level,const Descripto
     bool shadow,bool vertex_baked=false,uint32_t extra_flags=0,const char* main_category="MATERIAL_EXECUTION") {
     c.material[0]=0;c.material[1]=m.detail_scale[0];c.material[2]=m.detail_scale[1];c.material[3]=0;
     c.alpha[0]=m.alpha_ref;c.alpha[1]=static_cast<float>(m.alpha_func);
-    uint32_t flags=extra_flags;std::string fallback=m.unsupported_reason;
+    uint32_t flags=extra_flags;std::string fallback=m.unsupported_reason;bool auxiliary_dummy=false;
     if(!shadow){
         const uint32_t basis=ATTR_NORMAL|ATTR_TANGENT|ATTR_BINORMAL;
         if(!m.bump.empty()){
             if((attributes&basis)!=basis)fallback+=";bump_missing_valid_source_basis";
             else if(m.bump_aux.empty())fallback+=";bump_missing_auxiliary_metadata";
             else {draw.textures[1]=level.Texture(s,m.bump);draw.textures[2]=level.Texture(s,m.bump_aux);
+                if(draw.textures[2]==level.checker && level.texture_registry.entries[kich_r4_texture::Key(m.bump_aux)].reason==kich_r4_texture::SourceUnavailable){
+                    draw.textures[2]=level.Texture(s,"ed\\ed_dummy_bump#");auxiliary_dummy=draw.textures[2] && draw.textures[2]!=level.checker;fallback+=auxiliary_dummy?";auxiliary_uses_soc_dummy":";auxiliary_dummy_unavailable";}
                 if(draw.textures[1] && draw.textures[2] && draw.textures[1]!=level.checker && draw.textures[2]!=level.checker)flags|=SHADER_BUMP;
                 else {draw.textures[1]=draw.textures[2]=0;fallback+=";bump_dds_unavailable";}}
         }
@@ -79,6 +81,7 @@ inline void Bind(KichR4FrameSession& s,KichR4LevelSession& level,const Descripto
         kich_r4_telemetry::Text(category,id,"pass",shadow?"SHADOW; OPTIONAL_MAPS_INTENTIONALLY_UNUSED":"MAIN_MATERIAL; GBUFFER_OR_FORWARD");
         if(!shadow){const std::string* names[]={&m.bump,&m.bump_aux,&m.lightmap,&m.hemi,&m.detail};
             for(unsigned i=0;i<5;++i)RenderSnapshot_Texture(i+1,draw.textures[i+1]?names[i]->c_str():"UNBOUND");}
+        if(auxiliary_dummy && draw.textures[2])RenderSnapshot_Texture(2,"ed\\ed_dummy_bump#");
     }
 }
 }

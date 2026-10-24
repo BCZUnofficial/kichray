@@ -92,12 +92,24 @@ void MaterialExecution(){Fixture fixture;f=&fixture;ResetDeferredRecorder();cons
     Require(output.find("SHADOW; OPTIONAL_MAPS_INTENTIONALLY_UNUSED")!=std::string::npos,"shadow optional maps explicitly distinguished from missing geometry maps");
     KichR4GeometryReport report={};game.Stop(report);Require(f->objects.empty(),"material fixture releases maps and targets");
 }
+void WallmarkRoute(){Fixture fixture;f=&fixture;ResetDeferredRecorder();const KichR4LevelFiles fs={Open,Close};kich_r4_game::Session game(DeferredAPIs(),fs,"l01_escape",NULL);
+    auto input=DeferredInput();auto batch=Batch();Require(game.Render(input,&batch)==1,"wallmark route setup");game.deferred.native_mode=true;
+    batch.commands.erase(batch.commands.begin()+1,batch.commands.end());batch.commands[0].effect=6;batch.commands[0].style.blend=1;batch.commands[0].style.src=5;batch.commands[0].style.dst=6;
+    const KichR4FrameColor clear={sizeof(clear),{0,0,0,1}};Require(game.frame.BeginClear(clear)==0,"wallmark isolated frame");
+    Require(targets.at(game.deferred.depth).format==KICH_R4_DEPTH24_STENCIL8,"main scene depth owns a receiver stencil");
+    Require(game.deferred.Pass(game.frame,game.level,input.width,input.height,1,game.deferred.albedo,0,game.deferred.depth,0)==0,"wallmark binds albedo only");
+    const size_t start=draw_descriptions.size();Require(game.deferred.Models(game.frame,game.level,game.stream,&batch,KichR4DeferredSession::Wallmarks,game.deferred.base)==0 && draw_descriptions.size()==start+1,"wallmark draws once in dedicated pass");
+    const auto& state=draw_descriptions.back().state;Require(state.surface.color_mask==7 && !state.depth_write && state.draw.depth_mode && state.surface.stencil && state.surface.stencil_func==3 && !state.surface.stencil_write,"wallmark preserves alpha normals and depth, reads receiver marker");
+    for(auto pass:{KichR4DeferredSession::GeometryModels,KichR4DeferredSession::ShadowModels,KichR4DeferredSession::ForwardBase,KichR4DeferredSession::ForwardAdd,KichR4DeferredSession::HUD})
+        Require(game.deferred.Models(game.frame,game.level,game.stream,&batch,pass,game.deferred.base)==0,"other pass rejects wallmark");
+    Require(draw_descriptions.size()==start+1,"no repeated lighting or shadow contribution from decal");Require(game.frame.Present()==0,"wallmark frame present");KichR4GeometryReport report={};game.Stop(report);Require(f->objects.empty(),"wallmark resources cleaned");
+}
 void Invalid(){
     for(unsigned which=0;which<3;++which){Fixture fixture;f=&fixture;ResetDeferredRecorder();const KichR4LevelFiles fs={Open,Close};kich_r4_game::Session game(DeferredAPIs(),fs,"l01_escape",NULL);
         auto input=DeferredInput();if(which==0)input.lighting.valid=0;else if(which==1)input.lighting.count=9;else memset(input.view_projection,0,64);
         Require(game.Render(input)<0 && !game.frame.rendered,"invalid deferred inputs never present partial image");KichR4GeometryReport r={};game.Stop(r);Require(!f->live && f->objects.empty(),"invalid input cleanup balanced");}
 }
 }
-int main(){try{(void)&Scenario;const int positions=ScenarioDeferred();for(int i=1;i<=positions;++i){ScenarioDeferred(i);ScenarioDeferred(i,7);}Invalid();Telemetry();MaterialExecution();
+int main(){try{(void)&Scenario;const int positions=ScenarioDeferred();for(int i=1;i<=positions;++i){ScenarioDeferred(i);ScenarioDeferred(i,7);}Invalid();Telemetry();MaterialExecution();WallmarkRoute();
     printf("B4.4 pass planner / lighting / reuse / F8-F9 / failures: %d checks, %d failure positions passed\n",checks,positions);return 0;
 }catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

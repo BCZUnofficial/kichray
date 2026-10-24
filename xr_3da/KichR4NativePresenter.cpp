@@ -25,10 +25,11 @@ std::mutex runtime_mutex;
 std::map<void*,Runtime> runtime;
 std::map<std::string,Runtime> retired;
 uint64_t texture_serial=0;
-struct Uploaded {KichR4Handle handle;uint64_t revision,last_engine_frame,last_present_attempt;Uploaded():handle(0),revision(0),last_engine_frame(0),last_present_attempt(0){}};
+struct Uploaded {KichR4Handle handle;uint64_t revision,last_engine_frame,last_present_attempt,retry;Uploaded():handle(0),revision(0),last_engine_frame(0),last_present_attempt(0),retry(0){}};
 struct Context {
     KichR4FrameSession frame;KichR4LevelSession level;KichR4StreamSession stream;KichR4DeferredSession deferred;
     std::map<std::string,Uploaded> uploads;
+    uint64_t runtime_creates=0,runtime_updates=0,runtime_failures=0;
     bool loaded;std::string name;
     kich_r4_metrics::Window metrics;uint32_t last_created=0,last_released=0;unsigned gpu_quarantine=4;
     uint64_t created_window=0,meshes_window=0;double submit_peak_ms=0;
@@ -133,26 +134,31 @@ KichR4Handle OverrideTexture(void* context,const std::string& key,bool& handled)
     std::lock_guard<std::mutex> lock(runtime_mutex);Runtime* source=NULL;
     for(std::map<void*,Runtime>::iterator i=runtime.begin();i!=runtime.end();++i)if(i->second.key==key){source=&i->second;break;}
     if(!source){const auto found=retired.find(key);if(found!=retired.end())source=&found->second;}
-    if(!source)return c.level.checker;
+    Uploaded& uploaded=c.uploads[key];
+    if(!source)return uploaded.handle?uploaded.handle:c.level.checker;
+    if(uploaded.retry>native.present_frame)return uploaded.handle?uploaded.handle:c.level.checker;
     uint32_t w=source->width,h=source->height;uint64_t revision=source->revision;
-    const unsigned char* pixels=source->texture?KichR4_CPUTexturePixels(source->texture,w,h,revision):source->pixels.data();if(!pixels || !w || !h)return c.level.checker;
-    Uploaded& uploaded=c.uploads[key];if(uploaded.handle && uploaded.revision==revision){++native.runtime_reuses;
+    const unsigned char* pixels=source->texture?KichR4_CPUTexturePixels(source->texture,w,h,revision):source->pixels.data();if(!pixels || !w || !h)return uploaded.handle?uploaded.handle:c.level.checker;
+    if(uploaded.handle && (uploaded.revision==revision || uploaded.last_present_attempt==native.present_frame)){++native.runtime_reuses;
         if(RenderSnapshot_Detailed()){RenderSnapshot_Record("DYNAMIC_TEXTURE",key.c_str(),"action","REUSED_GPU_TEXTURE");RenderSnapshot_RecordU64("DYNAMIC_TEXTURE",key.c_str(),"handle",uploaded.handle);RenderSnapshot_RecordU64("DYNAMIC_TEXTURE",key.c_str(),"revision",revision);RenderSnapshot_RecordU64("DYNAMIC_TEXTURE",key.c_str(),"last_upload_engine_frame",uploaded.last_engine_frame);RenderSnapshot_RecordU64("DYNAMIC_TEXTURE",key.c_str(),"last_upload_present_attempt",uploaded.last_present_attempt);}return uploaded.handle;}
-    if(uint64_t(w)*h*4>32u*1024u*1024u)return c.level.checker;
-    std::vector<unsigned char> dds(128+size_t(w)*h*4,0);KichR4LevelSession::Put32(dds,0,0x20534444);KichR4LevelSession::Put32(dds,4,124);KichR4LevelSession::Put32(dds,8,0x100f);
-    KichR4LevelSession::Put32(dds,12,h);KichR4LevelSession::Put32(dds,16,w);KichR4LevelSession::Put32(dds,20,w*4);KichR4LevelSession::Put32(dds,76,32);KichR4LevelSession::Put32(dds,80,0x41);
-    KichR4LevelSession::Put32(dds,88,32);KichR4LevelSession::Put32(dds,92,0xff0000);KichR4LevelSession::Put32(dds,96,0xff00);KichR4LevelSession::Put32(dds,100,0xff);KichR4LevelSession::Put32(dds,104,0xff000000);KichR4LevelSession::Put32(dds,108,0x1000);memcpy(dds.data()+128,pixels,size_t(w)*h*4);
-    KichR4Handle next=0;const KichR4DdsDesc desc={sizeof(desc),16384,0};const int32_t hr=c.level.api.create_texture_dds(c.frame.device,&desc,dds.data(),static_cast<uint32_t>(dds.size()),&next);
-    if(hr<0){c.frame.Record("native video/user texture upload",hr);return c.level.checker;}
+    if(!w || !h || w>16384 || h>16384 || uint64_t(w)*h*4>UINT32_MAX)return uploaded.handle?uploaded.handle:c.level.checker;
+    KichR4Handle next=0;const int32_t hr=native.api.tools.upload_bgra8(c.frame.device,uploaded.handle,w,h,pixels,w*4,w*h*4,&next);
+    if(hr<0){++c.runtime_failures;uploaded.retry=native.present_frame+30;
+        const uint32_t code=static_cast<uint32_t>(hr);
+        if(kich_r4_texture::FatalDevice(hr))c.frame.Record("E1 runtime device failure",hr);
+        Write("[R4 E1] runtime upload failed; retaining last-good: %s HRESULT=0x%08X",key.c_str(),code);return uploaded.handle?uploaded.handle:c.level.checker;}
+    uploaded.retry=0;
+    if(next==uploaded.handle)++c.runtime_updates;else ++c.runtime_creates;
     ++native.runtime_uploads;native.runtime_upload_bytes+=uint64_t(w)*h*4;uploaded.last_engine_frame=native.current_engine_frame;uploaded.last_present_attempt=native.present_frame;
-    if(RenderSnapshot_Detailed()){RenderSnapshot_Record("DYNAMIC_TEXTURE",key.c_str(),"action","CPU_RGBA_UPLOAD_TO_IMMUTABLE_DDS_TEXTURE");RenderSnapshot_RecordU64("DYNAMIC_TEXTURE",key.c_str(),"handle",next);RenderSnapshot_RecordU64("DYNAMIC_TEXTURE",key.c_str(),"revision",revision);RenderSnapshot_RecordU64("DYNAMIC_TEXTURE",key.c_str(),"width",w);RenderSnapshot_RecordU64("DYNAMIC_TEXTURE",key.c_str(),"height",h);RenderSnapshot_RecordU64("DYNAMIC_TEXTURE",key.c_str(),"upload_bytes",uint64_t(w)*h*4);RenderSnapshot_RecordU64("DYNAMIC_TEXTURE",key.c_str(),"last_upload_engine_frame",uploaded.last_engine_frame);RenderSnapshot_RecordU64("DYNAMIC_TEXTURE",key.c_str(),"last_upload_present_attempt",uploaded.last_present_attempt);}
-    if(uploaded.handle){c.level.bridge.resources.release_resource(c.frame.device,uploaded.handle);++native.runtime_releases;}uploaded.handle=next;uploaded.revision=revision;return next;
+    if(RenderSnapshot_Detailed()){RenderSnapshot_Record("DYNAMIC_TEXTURE",key.c_str(),"action",next==uploaded.handle?"DYNAMIC_WRITE_DISCARD_UPDATE":"DYNAMIC_TEXTURE_CREATE_AND_UPLOAD");RenderSnapshot_RecordU64("DYNAMIC_TEXTURE",key.c_str(),"handle",next);RenderSnapshot_RecordU64("DYNAMIC_TEXTURE",key.c_str(),"revision",revision);RenderSnapshot_RecordU64("DYNAMIC_TEXTURE",key.c_str(),"width",w);RenderSnapshot_RecordU64("DYNAMIC_TEXTURE",key.c_str(),"height",h);RenderSnapshot_RecordU64("DYNAMIC_TEXTURE",key.c_str(),"upload_bytes",uint64_t(w)*h*4);RenderSnapshot_RecordU64("DYNAMIC_TEXTURE",key.c_str(),"last_upload_engine_frame",uploaded.last_engine_frame);RenderSnapshot_RecordU64("DYNAMIC_TEXTURE",key.c_str(),"last_upload_present_attempt",uploaded.last_present_attempt);}
+    if(uploaded.handle && uploaded.handle!=next){c.level.bridge.resources.release_resource(c.frame.device,uploaded.handle);++native.runtime_releases;}uploaded.handle=next;uploaded.revision=revision;return next;
 }
 void ConfigureContext(Context& c){c.frame.api=native.api.frame;c.level.bridge.resources=native.api.resources;c.level.bridge.api=native.api.geometry;
     c.level.api=native.api.level;c.level.files=native.files;c.level.log=native.log;c.stream.api=native.api.stream;c.deferred.api=native.api.deferred;c.deferred.native_mode=true;c.deferred.tools=native.api.tools;
     c.deferred.native_models.api=native.api.models;c.deferred.details.api=native.api.details;c.deferred.details.source=&KichR4_DetailFrame();
     c.level.keep_going=[](void*)->bool{KichR4_NativePumpLoading();return true;};
     c.level.texture_override=OverrideTexture;c.level.texture_context=&c;
+    c.level.texture_registry.budget=uint64_t(KichR4_NativeTextureBudgetMB())*1024*1024;
 }
 bool CreatePlaceholders(Context& c){return c.level.Placeholder(c.frame,false,&c.level.white)==0 && c.level.Placeholder(c.frame,true,&c.level.checker)==0;}
 bool CreateContext(){native.context.reset(new Context());Context& c=*native.context;ConfigureContext(c);
@@ -175,7 +181,7 @@ bool ResetContext(){CancelTimings("DEVICE_RESET");Context& previous=*native.cont
 void KichR4_NativeTextureChanged(void* texture){std::lock_guard<std::mutex> lock(runtime_mutex);Runtime& r=runtime[texture];if(r.texture)return;r.texture=texture;char key[64];snprintf(key,sizeof(key),"r4_runtime__%llu",static_cast<unsigned long long>(++texture_serial));r.key=key;}
 void KichR4_NativeForgetTexture(void* texture){std::lock_guard<std::mutex> lock(runtime_mutex);const auto found=runtime.find(texture);if(found==runtime.end())return;
     try{Runtime saved=std::move(found->second);const unsigned char* pixels=KichR4_CPUTexturePixels(texture,saved.width,saved.height,saved.revision);
-        if(pixels && uint64_t(saved.width)*saved.height*4<=32u*1024u*1024u){saved.pixels.assign(pixels,pixels+size_t(saved.width)*saved.height*4);saved.texture=NULL;retired[saved.key]=std::move(saved);}}
+        if(pixels && saved.width<=16384 && saved.height<=16384 && uint64_t(saved.width)*saved.height*4<=UINT32_MAX){saved.pixels.assign(pixels,pixels+size_t(saved.width)*saved.height*4);saved.texture=NULL;retired[saved.key]=std::move(saved);}}
     catch(...){ }runtime.erase(found);
 }
 const char* KichR4_NativeTextureName(void* texture){static thread_local std::string value;{std::lock_guard<std::mutex> lock(runtime_mutex);std::map<void*,Runtime>::const_iterator i=runtime.find(texture);if(i!=runtime.end()){value=i->second.key;return value.c_str();}}
@@ -205,7 +211,7 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
         RenderSnapshot_Text("MODEL_RENDERER","frame_status","NOT_SUBMITTED");
         context->deferred.details.SnapshotSummary(input.engine_frame,false);}
     try{if(context->name!=native.desired){if(!ResetContext())return false;context=native.context.get();}
-        Context& c=*context;BeginTelemetry(input,c.name.empty() || !input.allowed);TelemetryGuard telemetry_guard(c.frame.device);
+        Context& c=*context;c.level.texture_registry.Begin();BeginTelemetry(input,c.name.empty() || !input.allowed);TelemetryGuard telemetry_guard(c.frame.device);
         LARGE_INTEGER start,end,submitted,frequency;QueryPerformanceCounter(&start);const uint32_t shadows_before=c.deferred.shadow_passes;QueryPerformanceFrequency(&frequency);
         if(!c.loaded && !c.name.empty() && input.allowed){if(c.level.Start(c.frame,c.name.c_str())!=0)return false;c.loaded=true;
             for(size_t i=0;i<c.level.scene.materials.size();++i){kich_r4_level::Material& m=c.level.scene.materials[i];char layers[4][128]={};if(KichR4_NativeTerrain(m.shader.c_str(),layers)){m.kind=1;for(unsigned j=0;j<4;++j)m.layers[j]=layers[j];}
@@ -241,6 +247,7 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
         if(hr==0 && c.loaded && input.allowed)hr=c.deferred.Draw(c.frame,c.level,c.stream,input,batch,native.debug);
         else if(hr==0){if(native.telemetry.set_capture && tracing)native.api.tools.profile_mark(c.frame.device,0);hr=c.deferred.DrawMenu(c.frame,c.level,c.stream,input,*batch);
             if(native.telemetry.set_capture && tracing)for(uint32_t marker=1;marker<8;++marker)native.api.tools.profile_mark(c.frame.device,marker);}
+        if(hr==0 && c.frame.failure<0)hr=c.frame.failure;
         const bool screenshot=hr==0 && KichR4_NativeNeedScreenshot();
         if(screenshot){std::vector<unsigned char> pixels;uint32_t w=0,h=0;if(KichR4_NativeReadPixels(pixels,w,h))KichR4_NativeWriteScreenshot(pixels.data(),w,h);}
         QueryPerformanceCounter(&submitted);
@@ -262,6 +269,15 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
             RenderSnapshot_U64("FRAME_PASSPORT","native_successful_presents",native.successful_presents);RenderSnapshot_Text("FRAME_PASSPORT","native_present_result",hr==0?"PRESENTED":"FAILED_OR_OCCLUDED");
             RenderSnapshot_U64("MEMORY","runtime_texture_uploads_total",native.runtime_uploads);RenderSnapshot_U64("MEMORY","runtime_texture_reuses_total",native.runtime_reuses);RenderSnapshot_U64("MEMORY","runtime_texture_releases_total",native.runtime_releases);RenderSnapshot_U64("MEMORY","runtime_texture_uploaded_bytes_total",native.runtime_upload_bytes);
             RenderSnapshot_U64("MEMORY","runtime_uploaded_texture_handles",c.uploads.size());
+            RenderSnapshot_U64("MEMORY","runtime_creates_scene",c.runtime_creates);RenderSnapshot_U64("MEMORY","runtime_updates_scene",c.runtime_updates);RenderSnapshot_U64("MEMORY","runtime_failures_scene",c.runtime_failures);
+            RenderSnapshot_U64("MEMORY","dds_resident_payload_bytes",c.level.texture_registry.bytes);
+            RenderSnapshot_U64("MEMORY","dds_budget_bytes",c.level.texture_registry.budget);
+            RenderSnapshot_U64("MEMORY","dds_evictions_total",c.level.texture_registry.evictions);
+            for(const auto& item:c.level.texture_registry.entries){const auto& e=item.second;
+                RenderSnapshot_RecordU64("DDS_RESIDENCY",item.first.c_str(),"handle",e.handle);RenderSnapshot_RecordU64("DDS_RESIDENCY",item.first.c_str(),"payload_bytes",e.bytes);
+                RenderSnapshot_RecordU64("DDS_RESIDENCY",item.first.c_str(),"width",e.width);RenderSnapshot_RecordU64("DDS_RESIDENCY",item.first.c_str(),"height",e.height);RenderSnapshot_RecordU64("DDS_RESIDENCY",item.first.c_str(),"mips",e.mips);
+                RenderSnapshot_RecordU64("DDS_RESIDENCY",item.first.c_str(),"retry_epoch",e.retry);RenderSnapshot_RecordU64("DDS_RESIDENCY",item.first.c_str(),"failure_kind",e.reason);
+                RenderSnapshot_RecordU64("DDS_RESIDENCY",item.first.c_str(),"hresult",static_cast<uint32_t>(e.failure));}
             RenderSnapshot_Value("TIMING","cpu_prepare_ms",input.prepare_ms);RenderSnapshot_Value("TIMING","cpu_native_submit_ms",double(submitted.QuadPart-start.QuadPart)*1000.0/double(frequency.QuadPart));
             RenderSnapshot_Value("TIMING","cpu_present_ms",double(end.QuadPart-submitted.QuadPart)*1000.0/double(frequency.QuadPart));RenderSnapshot_Value("TIMING","cpu_backend_telemetry_record_ms",double(native.telemetry_cpu_ticks)*1000.0/double(frequency.QuadPart));
             RenderSnapshot_Text("TIMING","cpu_native_submit_scope","INCLUDES_SCENE_INIT_UPLOADS_AND_TELEMETRY; EXCLUDES_PRESENT");

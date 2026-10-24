@@ -15,7 +15,9 @@ struct KichR4ModelSession {
     typedef kich_r4_capture::NativeModelCommand Command;
     typedef kich_r4_capture::Mesh Source;
     enum Pass {Geometry,Shadow,Forward,ForwardAdd,HUD,Distortion,HUDAdd,PassCount};
+    struct BasisPartition {KichR4Handle ib;uint32_t good,bad;BasisPartition():ib(0),good(0),bad(0){}};
     struct Mesh {std::weak_ptr<const Source> source;KichR4Handle vb,ib;uint64_t vertex_bytes,index_bytes;
+        std::map<uint64_t,BasisPartition> basis;
         Mesh():vb(0),ib(0),vertex_bytes(0),index_bytes(0){} };
     KichR4ModelAPI api;
     struct PoseSlot {KichR4Handle handle;uint32_t capacity;bool used;PoseSlot(uint32_t c):handle(0),capacity(c),used(false){}};
@@ -88,6 +90,8 @@ struct KichR4ModelSession {
         return true;
     }
     int32_t ReleaseMesh(KichR4FrameSession& s,KichR4LevelSession& l,Mesh& m){
+        for(auto& p:m.basis)if(p.second.ib){if(l.Expect(s,"E1 retire basis partition",l.bridge.resources.release_resource(s.device,p.second.ib))<0)return s.failure;p.second.ib=0;}
+        m.basis.clear();
         if(m.vb){if(l.Expect(s,"G3b retire model vertices",l.bridge.resources.release_resource(s.device,m.vb))<0)return s.failure;m.vb=0;vertex_bytes-=m.vertex_bytes;m.vertex_bytes=0;}
         if(m.ib){if(l.Expect(s,"G3b retire model indices",l.bridge.resources.release_resource(s.device,m.ib))<0)return s.failure;m.ib=0;index_bytes-=m.index_bytes;m.index_bytes=0;}return 0;
     }
@@ -144,6 +148,23 @@ struct KichR4ModelSession {
                 if(!gpu.vb){if(l.Expect(s,"G3b immutable model vertices",l.bridge.resources.create_buffer(s.device,&vb,c.mesh->vertices.data(),vb.byte_size,&gpu.vb))<0)return s.failure;gpu.vertex_bytes=vb_bytes;vertex_bytes+=vb_bytes;}
                 if(!gpu.ib){if(l.Expect(s,"G3b immutable model indices",l.bridge.resources.create_buffer(s.device,&ib,c.mesh->indices.data(),ib.byte_size,&gpu.ib))<0)return s.failure;gpu.index_bytes=ib_bytes;index_bytes+=ib_bytes;}
                 ++mesh_uploads;}
+            const uint32_t basis=kich_r4_material::ATTR_NORMAL|kich_r4_material::ATTR_TANGENT|kich_r4_material::ATTR_BINORMAL;
+            if(c.has_material && kich_r4_material::Geometry(c.material) && !c.material.bump.empty() && (c.available_attributes&basis)!=basis){
+                const uint64_t key=(uint64_t(c.first)<<32)|c.count;
+                if(gpu.basis.find(key)==gpu.basis.end()){
+                    BasisPartition part;std::vector<uint16_t> good,bad;
+                    for(uint32_t at=c.first;at<c.first+c.count;at+=3){bool valid=true;
+                        for(unsigned j=0;j<3;++j)valid=valid && (c.mesh->vertices[c.mesh->indices[at+j]].attributes&basis)==basis;
+                        auto& target=valid?good:bad;target.insert(target.end(),c.mesh->indices.begin()+at,c.mesh->indices.begin()+at+3);}
+                    part.good=static_cast<uint32_t>(good.size());part.bad=static_cast<uint32_t>(bad.size());
+                    if(part.good && part.bad){good.insert(good.end(),bad.begin(),bad.end());const uint32_t bytes=static_cast<uint32_t>(good.size()*2);
+                        if(vertex_bytes+index_bytes+bytes>256u*1024u*1024u)return s.Record("E1 model partition memory",KICH_R4_E_MEMORY);
+                        const KichR4BufferDesc desc={sizeof(desc),KICH_R4_INDEX_BUFFER,bytes,2};
+                        if(l.Expect(s,"E1 immutable basis partition",l.bridge.resources.create_buffer(s.device,&desc,good.data(),bytes,&part.ib))<0)return s.failure;
+                        gpu.index_bytes+=bytes;index_bytes+=bytes;}
+                    gpu.basis.emplace(key,part);
+                }
+            }
             KichR4Handle pose=rigid_pose;
             const uint32_t capacity=KichR4ModelPaletteCapacity(static_cast<uint32_t>(c.bones.size()));
             command_classes.push_back(c.mesh->skinned?CapacityClass(capacity):0);
@@ -305,14 +326,19 @@ struct KichR4ModelSession {
             KichR4ModelDrawDesc d={};d.struct_size=sizeof(d);d.surface.struct_size=sizeof(d.surface);KichR4StreamDrawDesc& state=d.surface.state;state.struct_size=sizeof(state);
             state.draw={sizeof(state.draw),pipelines[command_classes[index]][pass],mesh.vb,mesh.ib,cb,c.count,c.first,style.cull,style.depth};
             if((pass==Forward || pass==HUD) && c.effect==1)state.draw.pipeline=plain_pipeline[command_classes[index]];
-            state.blend_enable=style.blend;state.source_blend=style.src;state.dest_blend=style.dst;state.clamp_texture=style.clamp;
+            state.blend_enable=style.blend;state.source_blend=style.src;state.dest_blend=style.dst;state.clamp_texture=style.clamp;state.surface=style.surface;
             state.depth_write=style.write;state.scissor_enable=style.scissor?1:0;memcpy(state.scissor,style.rect,sizeof(state.scissor));state.min_depth=style.min_z;state.max_depth=style.max_z;
             const std::string& texture=c.has_material && !c.material.base.empty()?c.material.base:c.texture;d.surface.textures[0]=texture.empty()?white:l.Texture(s,texture);
             if(g_render_snapshot_active){if(texture.empty())RenderSnapshot_Texture(0,"$white");
                 else if(d.surface.textures[0]==l.checker){char resolved[256];snprintf(resolved,sizeof(resolved),"CHECKER_FALLBACK:%s",texture.c_str());RenderSnapshot_Texture(0,resolved);}}
             if(maps)for(unsigned j=0;j<6;++j)d.surface.textures[j+2]=maps[j];
             if(pass==Distortion)d.surface.textures[1]=scene_color;
-            if(c.has_material && (pass==Geometry || pass==Shadow))kich_r4_material::Bind(s,l,c.material,c.available_attributes,constants,d.surface,pass==Shadow,false,c.object_light_valid && pass==Geometry?kich_r4_material::SHADER_SUN:0,"MODEL_MATERIAL_EXECUTION");
+            const auto partition=mesh.basis.find((uint64_t(c.first)<<32)|c.count);
+            const BasisPartition* split=pass==Geometry && partition!=mesh.basis.end() && partition->second.ib?&partition->second:NULL;
+            uint32_t attributes=c.available_attributes;
+            if(split){attributes|=kich_r4_material::ATTR_NORMAL|kich_r4_material::ATTR_TANGENT|kich_r4_material::ATTR_BINORMAL;
+                state.draw.index_buffer=split->ib;state.draw.start_index=0;state.draw.index_count=split->good;}
+            if(c.has_material && (pass==Geometry || pass==Shadow))kich_r4_material::Bind(s,l,c.material,attributes,constants,d.surface,pass==Shadow,false,c.object_light_valid && pass==Geometry?kich_r4_material::SHADER_SUN:0,"MODEL_MATERIAL_EXECUTION");
             if(g_render_snapshot_active && c.has_material && pass==Geometry)SnapshotMaterialBasis(c,uint32_t(constants.material[0]));
             // Reuse unused model constants; static/tree layout and DLL ABI stay unchanged.
             constants.color_bias[3]=c.object_light_valid?1.f:0.f;constants.color_scale[3]=c.object_hemi;constants.sun_scale_bias[2]=c.object_sun;
@@ -324,10 +350,20 @@ struct KichR4ModelSession {
             if(g_render_snapshot_active && maps)for(unsigned j=0;j<6;++j){char name[48];snprintf(name,sizeof(name),"SELECTED_SHADOW_FACE_%u",j);RenderSnapshot_Texture(j+2,maps[j]?name:"UNBOUND");}
             if(l.Expect(s,"G3c model material constants",l.bridge.api.update_buffer(s.device,cb,&constants,sizeof(constants)))<0)return s.failure;
             d.pose_buffer=command_poses[index];if(l.Expect(s,"G3b native model DrawIndexed",api.draw(s.device,&d))<0)return s.failure;
+            if(split){const bool mapped=(uint32_t(constants.material[0])&kich_r4_material::SHADER_BUMP)!=0;state.draw.start_index=split->good;state.draw.index_count=split->bad;
+                constants.material[0]=float(uint32_t(constants.material[0])&~kich_r4_material::SHADER_BUMP);d.surface.textures[1]=d.surface.textures[2]=0;
+                if(g_render_snapshot_active){RenderSnapshot_Texture(1,"UNBOUND");RenderSnapshot_Texture(2,"UNBOUND");}
+                if(l.Expect(s,"E1 geometric subset constants",l.bridge.api.update_buffer(s.device,cb,&constants,sizeof(constants)))<0 ||
+                    l.Expect(s,"E1 geometric subset draw",api.draw(s.device,&d))<0)return s.failure;
+                ++draw_calls[pass];++phase_draws;
+                if(g_render_snapshot_active){char id[96];snprintf(id,sizeof(id),"frame_%u_command_%u",frame,static_cast<unsigned>(index));
+                    kich_r4_telemetry::U64("MODEL_BASIS_PARTITION",id,"mapped_indices",mapped?split->good:0);
+                    kich_r4_telemetry::U64("MODEL_BASIS_PARTITION",id,"valid_basis_indices",split->good);
+                    kich_r4_telemetry::U64("MODEL_BASIS_PARTITION",id,"geometric_basis_indices",split->bad);}}
             ++draw_calls[pass];++phase_draws;
-            if(g_render_snapshot_active && index<command_uses.size()){++command_uses[index];if(c.mesh->skinned)++pose_uses;
+            if(g_render_snapshot_active && index<command_uses.size()){const uint32_t uses_in_pass=split?2:1;command_uses[index]+=uses_in_pass;if(c.mesh->skinned)pose_uses+=uses_in_pass;
                 char id[96];snprintf(id,sizeof(id),"frame_%u_command_%u",frame,static_cast<unsigned>(index));kich_r4_telemetry::U64("MODEL_COMMAND",id,"successful_pass_uses",command_uses[index]);
-                if(c.mesh->skinned && c.identity_measured && c.skeleton_id && c.pose_hash_valid)try{char pose_id[128];PoseID(c,pose_id,sizeof(pose_id));const uint64_t uses=++pose_use_counts[pose_id];kich_r4_telemetry::U64("MODEL_POSE",pose_id,"successful_draw_uses",uses);}
+                if(c.mesh->skinned && c.identity_measured && c.skeleton_id && c.pose_hash_valid)try{char pose_id[128];PoseID(c,pose_id,sizeof(pose_id));const uint64_t uses=(pose_use_counts[pose_id]+=uses_in_pass);kich_r4_telemetry::U64("MODEL_POSE",pose_id,"successful_draw_uses",uses);}
                     catch(...){model_telemetry_complete=false;RenderSnapshot_Text("TELEMETRY_LOSS","pose_use_counts","ALLOCATION_FAILED");}}
         }
         return 0;

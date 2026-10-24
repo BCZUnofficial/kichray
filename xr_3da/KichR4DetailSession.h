@@ -194,7 +194,7 @@ struct KichR4DetailSession {
             KichR4StreamDrawDesc& state=d.surface.state;state.struct_size=sizeof(state);
             state.draw={sizeof(state.draw),pipelines[shadow?1:0],mesh.vb,mesh.ib,cb,mesh.indices,0,KICH_R4_CULL_NONE,KICH_R4_DEPTH_ON};
             state.source_blend=2;state.dest_blend=1;state.depth_write=1;state.max_depth=1;
-            d.surface.textures[0]=mesh.texture;d.instance_buffer=shadow?shadow_instance_buffer:instance_buffer;d.first_instance=g.first;d.instance_count=g.count;
+            d.surface.textures[0]=l.Texture(s,source->meshes[g.mesh].texture);d.instance_buffer=shadow?shadow_instance_buffer:instance_buffer;d.first_instance=g.first;d.instance_count=g.count;
             if(l.Expect(s,shadow?"G3a detail shadow DrawIndexedInstanced":"G3a detail G-buffer DrawIndexedInstanced",api.draw(s.device,&d))<0)return s.failure;
             ++summary.calls;summary.variants[g.variant]+=g.count;
             if(shadow){++shadow_draw_calls;shadow_submitted_instances+=g.count;}else{++draw_calls;submitted_instances+=g.count;}

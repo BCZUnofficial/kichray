@@ -27,7 +27,7 @@ void Capture(kich_r4_capture::Batch& batch,const std::shared_ptr<kich_r4_capture
 }
 void SeedTextures(Harness& h,const kich_r4_material::Descriptor& material){h.level.white=h.white;h.level.checker=f->Add(KICH_R4_TEXTURE_2D);
     const std::string* names[]={&material.base,&material.bump,&material.bump_aux,&material.lightmap,&material.hemi,&material.detail};
-    for(unsigned i=0;i<6;++i)h.level.textures[*names[i]]=f->Add(KICH_R4_TEXTURE_2D);
+    for(unsigned i=0;i<6;++i){const auto handle=f->Add(KICH_R4_TEXTURE_2D);h.level.textures[*names[i]]=handle;h.level.texture_registry.entries[kich_r4_texture::Key(*names[i])].handle=handle;}
     h.level.textures["legacy/stage0"]=f->Add(KICH_R4_TEXTURE_2D);
 }
 void BeginMaterialSnapshot(const char* directory){RenderSnapshotInfo info={};strcpy(info.renderer,"R4");strcpy(info.api,"D3D11");strncpy(info.directory,directory,sizeof(info.directory)-1);
@@ -68,7 +68,7 @@ void MaterialBindingsAndRouting(const char* directory){Harness h;Require(h.Start
 }
 void MaterialFallbacks(const char* directory){for(unsigned mode=0;mode<3;++mode){Harness h;Require(h.Start()==0,"material fallback setup");auto mesh=MaterialMesh();const auto material=CutoutMaterial();SeedTextures(h,material);
     if(mode==0)for(auto& v:mesh->vertices)v.attributes&=~(kich_r4_material::ATTR_TANGENT|kich_r4_material::ATTR_BINORMAL);
-    if(mode==1)h.level.textures[material.bump_aux]=h.level.checker;
+    if(mode==1){h.level.textures[material.bump_aux]=h.level.checker;h.level.texture_registry.entries[kich_r4_texture::Key(material.bump_aux)].handle=h.level.checker;}
     if(mode==2)for(auto& v:mesh->vertices)v.attributes&=~kich_r4_material::ATTR_UV1;
     kich_r4_capture::Batch batch;batch.Begin(640,480,43+mode);Capture(batch,mesh,material);Require(h.models.Prepare(h.frame,h.level,batch)==0,"fallback prepares native source model");
     BeginMaterialSnapshot(directory);RenderSnapshot_Pass("GBUFFER");Require(h.Draw(batch,KichR4ModelSession::Geometry)==0 && model_draws.size()==1,"missing optional material evidence retains geometry submission");
@@ -117,6 +117,17 @@ void BasisFallbackTelemetry(const char* directory){
     Require(record.find("basis_mesh_vertices=4")!=std::string::npos && record.find("basis_mesh_derived_vertices=1")!=std::string::npos && record.find("basis_resource=source_actor")!=std::string::npos,"whole-source derivation counts and source name are explicit");
     Require(record.find("basis_scope=LAST_BOUND_COMMAND;")!=std::string::npos && record.find("bump_missing_valid_source_basis")!=std::string::npos,"shared material record describes last command without pretending to cover all meshes");
 }
+void MixedBasis(){Harness h;Require(h.Start()==0,"mixed basis setup");auto mesh=MaterialMesh();const auto material=CutoutMaterial();SeedTextures(h,material);
+    for(unsigned i=0;i<3;++i)mesh->vertices.push_back(mesh->vertices[i]);
+    mesh->vertices[4].attributes&=~kich_r4_material::ATTR_TANGENT;mesh->indices={0,1,2,3,4,5};
+    kich_r4_capture::Batch batch;batch.Begin(640,480,90);const auto identity=kich_r4_scene::Identity();const kich_r4_scene::Matrix bones[]={identity,identity};kich_r4_capture::Style style;
+    batch.NativeModel(mesh.get(),mesh,identity,identity,bones,2,6,0,2,style,KICH_R4_SKIN_HARDWARE,"mixed_actor",NULL,NULL,NULL,0,0,0,mesh.get(),&material);
+    Require(h.models.Prepare(h.frame,h.level,batch)==0 && h.Draw(batch,KichR4ModelSession::Geometry)==0,"mixed model prepares and draws");
+    Require(model_draws.size()==2 && model_draws[0].surface.state.draw.index_count==3 && model_draws[1].surface.state.draw.index_count==3,"two index groups, no per-triangle draw explosion");
+    Require((uint32_t(constants_drawn[0].material[0])&1) && !(uint32_t(constants_drawn[1].material[0])&1),"good triangle retains real normal maps while bad triangle uses geometric normal");
+    const auto& gpu=h.models.meshes.at(mesh.get());Require(gpu.index_bytes==24 && gpu.vertex_bytes==mesh->vertices.size()*sizeof(kich_r4_capture::SourceVertex),"partition indices accounted without CPU-expanded vertices");
+    const size_t before=model_draws.size();Require(h.Draw(batch,KichR4ModelSession::Shadow)==0 && model_draws.size()==before+1 && model_draws.back().surface.state.draw.index_buffer==gpu.ib && model_draws.back().surface.state.draw.index_count==6,"shadow uses original range exactly once");
+}
 void DrawBasisAndExposure(){Harness h;Require(h.Start()==0,"object exposure setup");auto mesh=MaterialMesh();const auto material=CutoutMaterial();SeedTextures(h,material);
     mesh->vertices.push_back({});mesh->available_attributes=0; // unrelated unused vertex cannot poison this range
     kich_r4_capture::Batch batch;batch.Begin(640,480,50);Capture(batch,mesh,material);
@@ -127,6 +138,6 @@ void DrawBasisAndExposure(){Harness h;Require(h.Start()==0,"object exposure setu
     Require((uint32_t(c.material[0])&33)==33,"valid bump and object sun mask coexist");
 }
 }
-int main(int argc,char** argv){try{Require(argc==2,"snapshot output directory");MaterialCaptureOwnership();MaterialBindingsAndRouting(argv[1]);MaterialFallbacks(argv[1]);BasisFallbackTelemetry(argv[1]);RepairedModelBindsBump(argv[1]);DrawBasisAndExposure();
+int main(int argc,char** argv){try{Require(argc==2,"snapshot output directory");MaterialCaptureOwnership();MaterialBindingsAndRouting(argv[1]);MaterialFallbacks(argv[1]);BasisFallbackTelemetry(argv[1]);RepairedModelBindsBump(argv[1]);DrawBasisAndExposure();MixedBasis();
     printf("G3c native model material integration: %d checks passed\n",checks);return 0;
 }catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

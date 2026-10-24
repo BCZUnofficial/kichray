@@ -78,7 +78,7 @@ public:
         try{pixels.resize(static_cast<size_t>(width)*height*4);}catch(...){return E_OUTOFMEMORY;}
         out->Pitch=static_cast<INT>(width*4);out->pBits=pixels.data()+(rect?(rect->top*width+rect->left)*4:0);return S_OK;}
     HRESULT STDMETHODCALLTYPE UnlockRect(UINT level){if(level)return D3DERR_INVALIDCALL;++revision;KichR4_NativeTextureChanged(this);return S_OK;}
-    HRESULT STDMETHODCALLTYPE AddDirtyRect(const RECT*){++revision;return S_OK;}
+    HRESULT STDMETHODCALLTYPE AddDirtyRect(const RECT*){++revision;KichR4_NativeTextureChanged(this);return S_OK;}
     const unsigned char* Pixels(uint32_t& w,uint32_t& h,uint64_t& r)const {w=width;h=height;r=revision;return pixels.empty()?NULL:pixels.data();}
 };
 class StateBlock:public IDirect3DStateBlock9 {
@@ -94,7 +94,7 @@ public:
     HRESULT STDMETHODCALLTYPE Capture(){return S_OK;}
     HRESULT STDMETHODCALLTYPE Apply(){for(size_t i=0;i<states.size();++i){const KichR4CPUState& s=states[i];
         if(!s.type)KichR4_NativeSetState(s.a,s.b);
-        else if(s.type==2 && s.a==0 && s.b==D3DSAMP_ADDRESSU)KichR4_NativeSetState(255,s.c);}
+        else if(s.type==2)KichR4_NativeSetSampler(s.a,s.b,s.c);}
         return S_OK;}
 };
 }

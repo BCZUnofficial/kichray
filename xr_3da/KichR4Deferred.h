@@ -9,9 +9,9 @@
  * All targets have identical dimensions; no MSAA, slices or mip selections.
  * Read/write aliasing is rejected. Reissue begin_pass after begin/resize/present.
  */
-#define KICH_R4_DEFERRED_ABI UINT32_C(0x00010000)
+#define KICH_R4_DEFERRED_ABI UINT32_C(0x00020000)
 #define KICH_R4_EXPORT_DEFERRED "KichR4_GetDeferredAPI"
-enum KichR4PassClear {KICH_R4_CLEAR_COLOR=1,KICH_R4_CLEAR_DEPTH=2};
+enum KichR4PassClear {KICH_R4_CLEAR_COLOR=1,KICH_R4_CLEAR_DEPTH=2,KICH_R4_CLEAR_STENCIL=4};
 #pragma pack(push,4)
 typedef struct KichR4PassDesc {
     uint32_t struct_size,flags,color_count;
@@ -32,7 +32,7 @@ typedef struct KichR4DeferredAPI {
 } KichR4DeferredAPI;
 #pragma pack(pop)
 typedef char KichR4PassDesc_size[(sizeof(KichR4PassDesc)==84)?1:-1];
-typedef char KichR4DeferredDrawDesc_size[(sizeof(KichR4DeferredDrawDesc)==180)?1:-1];
+typedef char KichR4DeferredDrawDesc_size[(sizeof(KichR4DeferredDrawDesc)==564)?1:-1];
 #if defined(_M_IX86) || defined(__i386__)
 typedef char KichR4DeferredAPI_x86_size[(sizeof(KichR4DeferredAPI)==28)?1:-1];
 #endif

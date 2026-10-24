@@ -9,6 +9,7 @@ namespace kich_r4_material {struct Descriptor;}
  * while parsing/allocations and their exception handling live in NoPCH code. */
 namespace kich_r4_capture {
 struct Style {
+    KichR4SurfaceState surface=KichR4DefaultSurface();
     uint32_t blend,src,dst,clamp,cull,depth,write,alpha_func;float alpha_ref,min_z,max_z;bool scissor;int32_t rect[4];
     Style():blend(0),src(5),dst(6),clamp(0),cull(KICH_R4_CULL_BACK),depth(1),write(1),alpha_func(8),alpha_ref(0),min_z(0),max_z(1),scissor(false){memset(rect,0,sizeof(rect));}
 };

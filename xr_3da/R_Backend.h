@@ -360,7 +360,7 @@ class ENGINE_API CBackend
 	}
 	IC void dbg_SetSS(u32 sampler, D3DSAMPLERSTATETYPE type, u32 value)
 	{
-		if(KichR4_NativeActive())return;
+		if(KichR4_NativeActive()){KichR4_NativeSetSampler(sampler,type,value);return;}
 		CHK_DX(HW.pDevice->SetSamplerState(sampler, type, value));
 	}
 #ifdef DEBUG

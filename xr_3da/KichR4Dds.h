@@ -10,13 +10,14 @@ struct Mip {const unsigned char* data;uint32_t row_pitch,bytes;};
 struct Image {uint32_t width,height,format,count,bytes,faces;Mip mips[90];};
 inline uint64_t UploadBytes(const Image& image){
     if(image.format>=BC1)return image.bytes;
-    const uint32_t pixel=image.format==R8?1u:image.format==RGB24?3u:image.format>=RGB565 && image.format<=ARGB4444?2u:4u;
-    return uint64_t(image.bytes)/pixel*4;
+    uint64_t bytes=0;uint32_t w=image.width,h=image.height;
+    for(uint32_t i=0;i<image.count;++i){bytes+=uint64_t(w)*h*4*image.faces;w=w>1?w/2:1;h=h>1?h/2:1;}
+    return bytes;
 }
 inline uint32_t U32(const unsigned char* p){return uint32_t(p[0])|(uint32_t(p[1])<<8)|(uint32_t(p[2])<<16)|(uint32_t(p[3])<<24);}
 inline uint32_t FourCC(char a,char b,char c,char d){return uint32_t(a)|(uint32_t(b)<<8)|(uint32_t(c)<<16)|(uint32_t(d)<<24);}
 inline bool Parse(const void* data,uint32_t bytes,uint32_t max_dimension,Image& result){
-    if(!data || bytes<128 || bytes>64u*1024u*1024u || !max_dimension || max_dimension>16384)return false;
+    if(!data || bytes<128 || !max_dimension || max_dimension>16384)return false;
     const unsigned char* p=static_cast<const unsigned char*>(data);
     if(U32(p)!=FourCC('D','D','S',' ') || U32(p+4)!=124 || U32(p+76)!=32)return false;
     uint32_t w=U32(p+16),h=U32(p+12),count=U32(p+28),offset=128,format=0,faces=1;
@@ -58,12 +59,17 @@ inline bool Parse(const void* data,uint32_t bytes,uint32_t max_dimension,Image& 
     const bool block=format>=BC1;
     const uint32_t pixel=format==R8?1u:format==RGB24?3u:format>=RGB565 && format<=ARGB4444?2u:4u;
     if(block && ((w%4 && w>4) || (h%4 && h>4)))return false;
-    if(!block && (U32(p+8)&8u) && U32(p+20)!=w*pixel)return false;
+    const uint32_t top_pitch=!block && (U32(p+8)&8u)?U32(p+20):w*pixel;
+    if(!block && top_pitch<w*pixel)return false;
+    // DDS specifies the top pitch only. Recognize legacy DWORD-aligned rows;
+    // arbitrary top padding does not imply invented padding in lower mips.
+    const bool aligned=!block && top_pitch!=w*pixel && top_pitch==((w*pixel+3u)&~3u);
     const uint32_t original_w=w,original_h=h;
     for(uint32_t face=0;face<faces;++face){w=original_w;h=original_h;uint32_t saved=0;
         for(uint32_t i=0;i<count;++i){
             const uint32_t unit=block?((format==BC1 || format==BC4)?8u:16u):pixel;
-            const uint32_t row=(block?(w+3)/4:w)*unit,rows=block?(h+3)/4:h;
+            const uint32_t tight=(block?(w+3)/4:w)*unit;
+            const uint32_t row=block?tight:!i?top_pitch:aligned?((tight+3u)&~3u):tight,rows=block?(h+3)/4:h;
             const uint64_t size=uint64_t(row)*rows;
             if(offset>bytes || size>bytes-offset)return false;
             if(w<=max_dimension && h<=max_dimension){

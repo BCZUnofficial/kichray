@@ -92,7 +92,7 @@ int Scenario(int failure,int32_t result=error,int missing=0,int cancel=0){Fixtur
     Require(!frame.device && !f->live && f->objects.empty() && !f->driver.chain && !f->driver.view,"partial geometry/textures/device always released");
     Require(!f->leases && f->opens==f->closes,"all borrowed engine readers closed, including on parse failure");
     Require(f->created==f->released,"all resource kinds balanced");
-    if(failure && f->failed_name!="source DDS")Require(frame.failure==(result<0?result:KICH_R4_E_STATE),"first native failure retained");
+    if(failure && (f->failed_name!="source DDS" || kich_r4_texture::FatalDevice(result)))Require(frame.failure==(result<0?result:KICH_R4_E_STATE),"first native failure retained, including device removal during texture upload");
     else if(missing>=2)Require(frame.failure<0 && (!level.detail.empty())==(missing==3),"missing/corrupt level produces diagnostic");
     else if(cancel)Require(level.cancelled && !frame.failure && !frame.rendered,"cancel load without false frame success");
     else{Require(!frame.failure && frame.rendered==2 && level.frames==2 && f->draws==8,"both textured and untextured level frames");

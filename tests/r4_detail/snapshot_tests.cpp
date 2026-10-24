@@ -58,7 +58,7 @@ int main(int argc,char** argv){try{Require(argc==2,"output directory");
     Require(Number(Section(flood,"VISIBILITY_TOTALS"),"source_note_events")==80000 && Number(flood_group,"candidates")==40000 && Number(flood_group,"culled")==40000,"source counters remain exact through visibility flood");
     Require(Number(flood_group,"submitted_draw_calls")==1 && flood_group.find("selected=NOT_INSTRUMENTED")!=std::string::npos,"submission callback is distinct from unspecified selection observations");
     Require(Number(flood_loss,"draw_records_retained")==1 && Number(flood_loss,"draw_records_dropped")==0 && flood.find("status=COMPLETE")!=std::string::npos,"deliberate resource sampling never marks trace overflow");
-    Require(Number(Section(flood,"VISIBILITY_SUMMARY"),"resource_samples")==4 && flood.size()<20000,"visibility resource sampling is independently bounded");
+    Require(Number(Section(flood,"VISIBILITY_SUMMARY"),"resource_samples")==4 && flood.size()<second.size()+16000,"visibility sampling stays bounded independently of mandatory summary schema growth");
     Require(Number(Section(flood,"DETAIL_RENDERER"),"visible_instances")==1234 && Number(Section(flood,"MEMORY"),"cpu_capture_bytes")==4567,"late critical summaries survive visibility flood");
     Require(flood_group.find("light_id=sun")!=std::string::npos && flood_group.find("phase=cascade_0")!=std::string::npos,"object context preserves active light and phase");
     RenderSnapshot_Request();RenderSnapshot_Begin(info);RenderSnapshot_Pass("GBUFFER");

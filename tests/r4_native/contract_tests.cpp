@@ -51,7 +51,7 @@ extern "C" int32_t KICH_R4_CALL KichR4_GetDeferredAPI(uint32_t,KichR4DeferredAPI
 }
 extern "C" int32_t KICH_R4_CALL KichR4_GetNativeToolsAPI(uint32_t,KichR4NativeToolsAPI* out,uint32_t){
     HEADER(KichR4NativeToolsAPI,KICH_R4_NATIVE_TOOLS_ABI);
-    BIND(read_pixels);BIND(profile_mark);BIND(get_profile);a.reset_resources=Reset;BIND(set_snapshot_sink);FINISH();
+    BIND(read_pixels);BIND(profile_mark);BIND(get_profile);a.reset_resources=Reset;BIND(set_snapshot_sink);BIND(upload_bgra8);FINISH();
 }
 extern "C" int32_t KICH_R4_CALL KichR4_GetDetailAPI(uint32_t,KichR4DetailAPI* out,uint32_t){
     HEADER(KichR4DetailAPI,KICH_R4_DETAIL_ABI);BIND(create_pipeline);BIND(create_instances);BIND(upload_instances);BIND(draw);FINISH();

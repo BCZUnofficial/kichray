@@ -5,6 +5,7 @@
 #include "KichR4Dds.h"
 #include "KichR4LevelCamera.h"
 #include "KichR4FrameMetrics.h"
+#include "KichR4TexturePolicy.h"
 #include <map>
 #include <stdio.h>
 #include <stdarg.h>
@@ -13,6 +14,7 @@ struct KichR4LevelSession {
     kich_r4_level::Scene scene;kich_r4_level::Camera camera;
     std::vector<KichR4Handle> vertex_buffers,index_buffers,materials;
     std::map<std::string,KichR4Handle> textures;
+    kich_r4_texture::Registry texture_registry;
     KichR4Handle white,checker;
     uint32_t textures_loaded,texture_fallbacks,budget_skips,frames,visible,culled,camera_steps,revision,cull,depth;
     uint64_t texture_bytes,submitted_triangles,submitted_draws;
@@ -43,7 +45,11 @@ struct KichR4LevelSession {
     KichR4Handle Texture(KichR4FrameSession& s,const std::string& name){
         if(name.empty())return white;
         if(texture_override){bool handled=false;const KichR4Handle h=texture_override(texture_context,name,handled);if(handled)return h;}
-        const std::map<std::string,KichR4Handle>::const_iterator cached=textures.find(name);if(cached!=textures.end())return cached->second;
+        const std::string key=kich_r4_texture::Key(name);
+        kich_r4_texture::Entry& entry=texture_registry.entries[key];
+        entry.touched=texture_registry.epoch;
+        if(entry.handle)return entry.handle;
+        if(entry.retry>texture_registry.epoch)return checker;
         KichR4Handle result=checker;kich_r4_level::File file(files);std::string path=name;
         if(path.size()<4 || kich_r4_level::Lower(path.substr(path.size()-4))!=".dds")path+=".dds";
         int32_t opened;auto measured=kich_r4_metrics::Clock::now();
@@ -54,19 +60,32 @@ struct KichR4LevelSession {
         }else opened=file.Open("$game_textures$",path.c_str());
         texture_io_ms+=kich_r4_metrics::Elapsed(measured);measured=kich_r4_metrics::Clock::now();
         kich_r4_dds::Image image={};int32_t hr=opened;
-        const bool parsed=opened==0 && kich_r4_dds::Parse(file.view.data,file.view.bytes,2048,image);
+        const bool parsed=opened==0 && kich_r4_dds::Parse(file.view.data,file.view.bytes,16384,image);
+        entry.reason=opened!=0?kich_r4_texture::SourceUnavailable:!parsed?kich_r4_texture::InvalidLayout:kich_r4_texture::UploadFailed;
         texture_parse_ms+=kich_r4_metrics::Elapsed(measured);
         if(parsed){
-            const uint64_t payload=kich_r4_dds::UploadBytes(image);
-            if(payload<=384u*1024u*1024u-texture_bytes){const KichR4DdsDesc d={sizeof(d),2048,0};
+            uint32_t dimension=16384;uint64_t payload=kich_r4_dds::UploadBytes(image);
+            auto release=[&](uint64_t h){const int32_t released=bridge.resources.release_resource(s.device,h);if(kich_r4_texture::FatalDevice(released))s.Record("E1 texture eviction device failure",released);return released;};
+            bool room=texture_registry.MakeRoom(payload,release);
+            // Under pressure use only existing mip levels. A no-mip texture
+            // remains valid and retries later; it is never declared malformed.
+            while(!room && image.count>1){dimension=(image.width>image.height?image.width:image.height)/2;
+                kich_r4_dds::Image smaller={};if(!kich_r4_dds::Parse(file.view.data,file.view.bytes,dimension,smaller))break;
+                image=smaller;payload=kich_r4_dds::UploadBytes(image);room=texture_registry.MakeRoom(payload,release);}
+            if(room){const KichR4DdsDesc d={sizeof(d),dimension,0};
                 measured=kich_r4_metrics::Clock::now();
                 KichR4Handle loaded=0;hr=api.create_texture_dds(s.device,&d,file.view.data,file.view.bytes,&loaded);
                 texture_create_ms+=kich_r4_metrics::Elapsed(measured);
-                if(hr==0 && loaded){result=loaded;++textures_loaded;texture_bytes+=payload;}
+                if(hr==0 && loaded){result=loaded;++textures_loaded;entry.handle=loaded;entry.bytes=payload;texture_registry.bytes+=payload;entry.reason=kich_r4_texture::Ready;entry.width=image.width;entry.height=image.height;entry.mips=image.count;}
                 else if(loaded)bridge.resources.release_resource(s.device,loaded);
-            }else{++budget_skips;hr=KICH_R4_E_MEMORY;}
+            }else{++budget_skips;hr=KICH_R4_E_MEMORY;entry.reason=kich_r4_texture::BudgetPressure;}
         }else if(opened==0)hr=KICH_R4_E_UNSUPPORTED;
         if(result==checker){++texture_fallbacks;if(texture_fallbacks<=24)Write("[R4 bridge B4.2] texture fallback: %s; HRESULT=0x%08X",path.c_str(),static_cast<uint32_t>(hr));}
+        texture_bytes=texture_registry.bytes;
+        if(kich_r4_texture::FatalDevice(hr))s.Record("E1 texture device failure",hr);
+        entry.failure=result==checker?hr:0;
+        entry.retry=result==checker?texture_registry.epoch+(opened!=0 || !parsed?300:2):0;
+        // This map is diagnostic only; the registry owns resident handles.
         textures[name]=result;return result;
     }
     int32_t Start(KichR4FrameSession& s,const char* name){try{
@@ -121,6 +140,7 @@ struct KichR4LevelSession {
         return DrawWithMatrix(s,w,h,camera.ViewProjection(w,h));
     }
     int32_t DrawWithMatrix(KichR4FrameSession& s,uint32_t w,uint32_t h,const kich_r4_scene::Matrix& vp){try{
+        texture_registry.Begin();
         if(!w || !h)return s.Record("B4.2 zero viewport",KICH_R4_E_ARGUMENT);
         visible=culled=0;kich_r4_scene::Matrix previous={};float previous_cutoff=-1;
         for(size_t i=0;i<scene.draws.size();++i){const kich_r4_level::Draw& mesh=scene.draws[i];if(!kich_r4_level::Visible(mesh,vp)){++culled;continue;}
@@ -130,7 +150,7 @@ struct KichR4LevelSession {
                 if(Expect(s,"B4.2 update constants",bridge.api.update_buffer(s.device,bridge.cb,&constants,sizeof(constants)))<0)return s.failure;
                 previous=mesh.world;previous_cutoff=cutoff;}
             KichR4TexturedDrawDesc d={};d.struct_size=sizeof(d);d.draw={sizeof(d.draw),bridge.pipeline,vertex_buffers[mesh.vb],index_buffers[mesh.ib],bridge.cb,mesh.count,mesh.first,cull,depth};
-            d.texture=textured?materials[mesh.material]:white;
+            d.texture=textured?Texture(s,scene.materials[mesh.material].texture):white;
             if(Expect(s,"B4.2 DrawIndexed textured",api.draw_textured(s.device,&d))<0)return s.failure;
             ++visible;++submitted_draws;submitted_triangles+=mesh.count/3;
         }++frames;return KICH_R4_OK;

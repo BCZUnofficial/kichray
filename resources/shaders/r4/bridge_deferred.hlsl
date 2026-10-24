@@ -10,6 +10,9 @@ Texture2D shadow0:register(t2); Texture2D shadow1:register(t3);
 Texture2D shadow2:register(t4); Texture2D shadow3:register(t5);
 Texture2D shadow4:register(t6); Texture2D shadow5:register(t7);
 SamplerState surface:register(s0); SamplerComparisonState shadow_surface:register(s1);
+SamplerState surface1:register(s2); SamplerState surface2:register(s3);
+SamplerState surface3:register(s4); SamplerState surface4:register(s5);
+SamplerState surface5:register(s6); SamplerState surface6:register(s7); SamplerState surface7:register(s8);
 // Material flags: bump=1, baked lightmap=2, hemi map=4, detail=8,
 // vertex baked RGB=16, source sun=32, tree light scale/bias=64.
 struct StaticInput {float3 p:POSITION;float2 uv:TEXCOORD0;float4 n:NORMAL;
@@ -80,10 +83,10 @@ Varying VSDetail(DetailInput v){Varying o=(Varying)0;float4 local=float4(v.p,1);
     o.p=mul(float4(p,1),mvp);o.w=p;o.uv=v.misc.xy;o.c=1;
     o.n=float4(normalize(p-float3(v.m0.w,v.m1.w-.75,v.m2.w)),v.light.y);o.baked_sun.w=v.light.x;return o;}
 float4 Base(Varying v){float4 c=image0.Sample(surface,v.uv)*v.c;
-    if(((uint)material.x&8)!=0)c.rgb*=shadow3.Sample(surface,v.uv*material.yz).rgb*2;
-    if(alpha.w>9.5 && alpha.w<10.5){float4 mask=shadow0.Sample(surface,v.uv);mask/=max(dot(mask,1),.0001);
-        float2 tc=v.uv*50;float3 detail=shadow1.Sample(surface,tc).rgb*mask.r+shadow2.Sample(surface,tc).rgb*mask.g+
-            shadow3.Sample(surface,tc).rgb*mask.b+shadow4.Sample(surface,tc).rgb*mask.a;c.rgb*=detail*2;}
+    if(((uint)material.x&8)!=0)c.rgb*=shadow3.Sample(surface5,v.uv*material.yz).rgb*2;
+    if(alpha.w>9.5 && alpha.w<10.5){float4 mask=shadow0.Sample(surface2,v.uv);mask/=max(dot(mask,1),.0001);
+        float2 tc=v.uv*50;float3 detail=shadow1.Sample(surface3,tc).rgb*mask.r+shadow2.Sample(surface4,tc).rgb*mask.g+
+            shadow3.Sample(surface5,tc).rgb*mask.b+shadow4.Sample(surface6,tc).rgb*mask.a;c.rgb*=detail*2;}
     float a=c.a,r=alpha.x;int f=(int)alpha.y;
     bool keep=f==8 || (f==2 && a<r) || (f==3 && a==r) || (f==4 && a<=r) ||
         (f==5 && a>r) || (f==6 && a!=r) || (f==7 && a>=r);
@@ -96,7 +99,7 @@ float3 Normal(Varying v,bool front){float3 n=v.n.xyz;
         t=normalize(t);float3 b=normalize(cross(n,t))*(handed<0?-1:1);
         // SoC R2 sload: bump stores gloss,x-normal in alpha,y in B,z in G;
         // bump# stores signed reconstruction error in RGB, height in alpha.
-        float4 Nu=image1.Sample(surface,v.uv),NuE=shadow0.Sample(surface,v.uv);
+        float4 Nu=image1.Sample(surface1,v.uv),NuE=shadow0.Sample(surface2,v.uv);
         float3 mapped=Nu.wzy+NuE.xyz-1;mapped.z*=.5;
         float3 result=t*mapped.x+b*mapped.y+n*mapped.z;
         if(dot(result,result)>1e-8)n=normalize(result);
@@ -109,8 +112,8 @@ GeometryOutput PSGeometry(Varying v,bool front:SV_IsFrontFace){GeometryOutput o;
     if((flags&16)!=0)baked=v.baked_sun.rgb;
     // Compatibility irradiance: keep R1/XRLC lmap0 RGB as a separate raw
     // additive baked term. This is not R2 material-LUT/specular parity.
-    if((flags&2)!=0){float4 lm=shadow1.Sample(surface,v.uv1);baked+=lm.rgb;s=lm.a;}
-    if((flags&4)!=0){float4 lm=shadow2.Sample(surface,v.uv1);h=dot(lm.rgb,float3(1.0/3,1.0/3,1.0/3));s=lm.a;}
+    if((flags&2)!=0){float4 lm=shadow1.Sample(surface3,v.uv1);baked+=lm.rgb;s=lm.a;}
+    if((flags&4)!=0){float4 lm=shadow2.Sample(surface4,v.uv1);h=dot(lm.rgb,float3(1.0/3,1.0/3,1.0/3));s=lm.a;}
     o.albedo=float4(Base(v).rgb,saturate(s));o.normal=float4(Normal(v,front),saturate(h));o.baked=float4(baked,0);
     // Diagnostics keep separate components before accumulation, with no new MRT.
     if((int)screen.z==6)o.albedo.rgb=baked;
@@ -178,19 +181,19 @@ float4 PSCombine(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=shadow1.
 
 // Native environment entries use the engine's two weather cubemaps.
 TextureCube sky0:register(t0);TextureCube sky1:register(t1);
-float4 PSSky(Varying v):SV_Target {float3 d=v.n.xyz;return float4(lerp(sky0.Sample(surface,d).rgb,sky1.Sample(surface,d).rgb,v.c.a)*v.c.rgb*2,1);}
-float4 PSClouds(Varying v):SV_Target {return float4((image0.Sample(surface,v.uv).rgb+image1.Sample(surface,v.n.xy).rgb)*v.c.rgb,v.c.a);}
+float4 PSSky(Varying v):SV_Target {float3 d=v.n.xyz;return float4(lerp(sky0.Sample(surface,d).rgb,sky1.Sample(surface1,d).rgb,v.c.a)*v.c.rgb*2,1);}
+float4 PSClouds(Varying v):SV_Target {return float4((image0.Sample(surface,v.uv).rgb+image1.Sample(surface1,v.n.xy).rgb)*v.c.rgb,v.c.a);}
 float4 PSWater(Varying v,bool front:SV_IsFrontFace):SV_Target {
     float t=light_position.w;float2 flow=v.uv+float2(t*.015,t*.01);
     float4 water=image0.Sample(surface,flow);float2 wave=(water.rg-.5)*.012;
-    float2 screen_uv=v.p.xy/screen.xy;float3 behind=image1.Sample(surface,saturate(screen_uv+wave)).rgb;
+    float2 screen_uv=v.p.xy/screen.xy;float3 behind=image1.Sample(surface1,saturate(screen_uv+wave)).rgb;
     float3 n=Normal(v,front);float fresnel=pow(1-saturate(dot(n,normalize(camera.xyz-v.w))),5);
     float3 lit=water.rgb*SunLight(v.w,n,saturate(v.n.w),1);return float4(lerp(lerp(behind,lit,.35),hemi.rgb,fresnel*.5),.8);
 }
 float4 PSDistortion(Varying v):SV_Target {float4 mask=Base(v);bool menu=alpha.w>29.5 && alpha.w<30.5;
     // Match R2 distort.ps: the menu mask is alpha-blended over neutral 0.5.
     float2 offset=(mask.rg-.5)*(menu?.05:.015)*mask.a;
-    return float4(image1.Sample(surface,saturate(v.p.xy/max(screen.xy,1)+offset)).rgb,menu?1:mask.a);
+    return float4(image1.Sample(surface1,saturate(v.p.xy/max(screen.xy,1)+offset)).rgb,menu?1:mask.a);
 }
 // G3b mapDistort equivalent. The source texture is a displacement field, not
 // a flame image: vertex RGB modulates strength only (X-Ray 1.6 particle_distort).
@@ -200,7 +203,7 @@ float4 PSParticleDistortionMask(Varying v):SV_Target {
 }
 float4 PSDistortionComposite(Varying v):SV_Target {
     // RGBA16F preserves neutral .5 exactly; the source engine used 127/255 in RGBA8.
-    float2 displacement=(image1.Sample(surface,v.uv).rg-.5)*.05;
+    float2 displacement=(image1.Sample(surface1,v.uv).rg-.5)*.05;
     return float4(image0.Sample(surface,saturate(v.uv+displacement)).rgb,1);
 }
 

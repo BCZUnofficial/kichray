@@ -50,7 +50,7 @@ static inline const char* KichR4_ValidateRendererAPI(const KichR4RendererAPI* a)
     if(!a->level.create_texture_dds || !a->level.create_pipeline || !a->level.draw_textured)return "level callbacks";
     if(!a->stream.create_pipeline || !a->stream.draw)return "stream callbacks";
     if(!a->deferred.create_pipeline || !a->deferred.begin_pass || !a->deferred.draw)return "deferred callbacks";
-    if(!a->tools.read_pixels || !a->tools.profile_mark || !a->tools.get_profile || !a->tools.reset_resources || !a->tools.set_snapshot_sink)return "tools callbacks";
+    if(!a->tools.read_pixels || !a->tools.profile_mark || !a->tools.get_profile || !a->tools.reset_resources || !a->tools.set_snapshot_sink || !a->tools.upload_bgra8)return "tools callbacks";
     if(!a->details.create_pipeline || !a->details.create_instances || !a->details.upload_instances || !a->details.draw)return "detail callbacks";
     if(!a->models.create_pipeline || !a->models.create_pose || !a->models.upload_pose || !a->models.draw)return "model callbacks";
     return NULL;

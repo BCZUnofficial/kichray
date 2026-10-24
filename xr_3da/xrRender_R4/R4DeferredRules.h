@@ -8,9 +8,9 @@ inline bool PassFinite(float v){return v==v && v>=-FLT_MAX && v<=FLT_MAX;}
 inline bool ValidPass(const KichR4PassDesc& p){
     if(p.struct_size!=sizeof(p) || p.flags || p.color_count>4 ||
         (!p.color_count && !p.depth) || !p.width || !p.height ||
-        p.width>16384 || p.height>16384 || p.clear_flags>3 ||
+        p.width>16384 || p.height>16384 || p.clear_flags>7 ||
         ((p.clear_flags&KICH_R4_CLEAR_COLOR) && !p.color_count) ||
-        ((p.clear_flags&KICH_R4_CLEAR_DEPTH) && !p.depth) ||
+        ((p.clear_flags&(KICH_R4_CLEAR_DEPTH|KICH_R4_CLEAR_STENCIL)) && !p.depth) ||
         !PassFinite(p.depth_value) || p.depth_value<0 || p.depth_value>1)return false;
     for(unsigned i=0;i<4;++i){
         if(!PassFinite(p.color[i]) || (i>=p.color_count && p.colors[i]))return false;

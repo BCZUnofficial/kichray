@@ -6,7 +6,7 @@ _Static_assert(sizeof(KichR4ModelPose)==16400,"maximum CPU pose staging ABI");
 _Static_assert(offsetof(KichR4ModelPose,bones)==16,"GPU palette header precedes matrices");
 _Static_assert(sizeof(KichR4ModelPipelineDesc)==24,"model capacity pipeline descriptor ABI");
 _Static_assert(sizeof(KichR4ModelAPI)==16+4*sizeof(void*),"model function table ABI");
-_Static_assert(KICH_R4_MODEL_ABI==0x00020000,"capacity-specific model handshake version");
+_Static_assert(KICH_R4_MODEL_ABI==0x00030000,"surface-state model handshake version");
 int main(void) {
     KichR4RendererAPI a={0};
     return sizeof(KichR4BuildInfo)!=288 || offsetof(KichR4RendererAPI,build)!=16 ||

@@ -237,6 +237,7 @@ inline void SnapshotCommand(Command& cmd,const std::vector<Vertex>& vertices,con
             h=SnapshotStringHash(h,cmd.texture);h=SnapshotStringHash(h,cmd.secondary);
             const uint32_t state[]={cmd.effect,cmd.style.blend,cmd.style.src,cmd.style.dst,cmd.style.clamp,cmd.style.cull,cmd.style.depth,cmd.style.write,cmd.style.alpha_func};
             h=SnapshotHash(h,state,sizeof(state));h=SnapshotHash(h,&cmd.style.alpha_ref,sizeof(cmd.style.alpha_ref));
+            h=SnapshotHash(h,&cmd.style.surface,sizeof(cmd.style.surface));
             snprintf(p->material_id,sizeof(p->material_id),"CAPTURE_DESCRIPTOR_FNV64:%016llx",static_cast<unsigned long long>(h));}
         /* Select at most four distinct referenced vertices, preserving indexed draw order. */
         if(have_uv && !p->uv_count){uint32_t sampled[4]={};
@@ -337,6 +338,7 @@ struct Batch {
         key.append(reinterpret_cast<const char*>(&world),sizeof(world));key.append(reinterpret_cast<const char*>(&vp),sizeof(vp));
         const uint32_t words[]={first,tris,count,skin_mode,cmd.layer,effect,shader_element,shader_pass,style.blend,style.src,style.dst,style.clamp,style.cull,style.depth,style.write,style.alpha_func};
         key.append(reinterpret_cast<const char*>(words),sizeof(words));key.append(reinterpret_cast<const char*>(&style.alpha_ref),sizeof(style.alpha_ref));
+        key.append(reinterpret_cast<const char*>(&style.surface),sizeof(style.surface));
         const float exposure[]={light_valid?1.f:0.f,object_hemi,object_sun};key.append(reinterpret_cast<const char*>(exposure),sizeof(exposure));
         const float depth_range[]={style.min_z,style.max_z};key.append(reinterpret_cast<const char*>(depth_range),sizeof(depth_range));
         key.append(reinterpret_cast<const char*>(&style.scissor),sizeof(style.scissor));if(style.scissor)key.append(reinterpret_cast<const char*>(style.rect),sizeof(style.rect));

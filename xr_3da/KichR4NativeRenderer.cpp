@@ -76,13 +76,14 @@ xr_vector<R4Glow*> glows;
 class R4Glow:public IRender_Glow {
 public:
     bool active;Fvector position,direction;float radius;Fcolor color;ref_shader shader;
+    kich_r4_optics::GlowVisibility visibility;
     R4Glow():active(false),radius(.2f){position.set(0,0,0);direction.set(0,0,0);color.set(1,1,1,1);glows.push_back(this);}
     ~R4Glow(){glows.erase(std::remove(glows.begin(),glows.end(),this),glows.end());}
-    void set_active(bool v){active=v;}bool get_active(){return active;}
+    void set_active(bool v){active=v;if(!v)visibility.Reset();}bool get_active(){return active;}
     void set_position(const Fvector& v){position=v;}void set_direction(const Fvector& v){direction=v;}
     void set_radius(float v){radius=v;}void set_texture(LPCSTR v){shader.create("effects\\flare",v);}
     void set_color(const Fcolor& c){color=c;}void set_color(float r,float g,float b){color.set(r,g,b,1);}
-    void Draw(){if(!active || !shader || !RImplementation.ViewBase.testSphere_dirty(position,radius))return;
+    void Draw(){if(!active || !shader || !RImplementation.ViewBase.testSphere_dirty(position,radius)){visibility.Reset();return;}
         Fvector observer;observer.sub(Device.vCameraPosition,position);
         const float facing=kich_r4_optics::GlowFacing(&direction.x,&observer.x);
         char id[48]={};if(g_render_snapshot_active){sprintf_s(id,sizeof(id),"glow_%p",static_cast<void*>(this));
@@ -90,14 +91,17 @@ public:
             kich_r4_telemetry::Vector("GLOW",id,"direction",&direction.x,3);
             kich_r4_telemetry::Float("GLOW",id,"facing_scale",facing);
             kich_r4_telemetry::Text("GLOW",id,"facing_result",facing>0?"ACCEPTED; STATIC_RAY_TEST_FOLLOWS":"REJECTED_BACKFACE_OR_COINCIDENT");}
-        if(facing<=0)return;
-        if(g_pGameLevel){Fvector ray;ray.sub(position,Device.vCameraPosition);const float distance=ray.magnitude();if(distance>EPS_L){ray.div(distance);if(g_pGameLevel->ObjectSpace.RayTest(Device.vCameraPosition,ray,distance,collide::rqtStatic,NULL,NULL)){
-            kich_r4_telemetry::Text("GLOW",id,"visibility_result","REJECTED_STATIC_RAY");return;}}}
+        bool visible=facing>0;
+        if(visible && g_pGameLevel){Fvector ray;ray.sub(position,Device.vCameraPosition);const float distance=ray.magnitude();if(distance>EPS_L){ray.div(distance);
+            const float range=kich_r4_optics::GlowRayLength(distance,radius);visible=range<=EPS_L || !g_pGameLevel->ObjectSpace.RayTest(Device.vCameraPosition,ray,range,collide::rqtStatic,NULL,NULL);}}
+        const float intensity=facing*visibility.Step(visible,Device.dwTimeGlobal,&Device.vCameraPosition.x);
+        if(g_render_snapshot_active){kich_r4_telemetry::Float("GLOW",id,"visibility_alpha",visibility.value);kich_r4_telemetry::Text("GLOW",id,"occlusion_target",visible?"VISIBLE":"OCCLUDED_OR_BACKFACE");}
+        if(intensity<=0)return;
         kich_r4_telemetry::Text("GLOW",id,"visibility_result","QUEUED_FOR_CAPTURE; NOT_GPU_VISIBILITY");
         Fvector right,up;right.mul(Device.vCameraRight,radius);up.mul(Device.vCameraTop,radius);
         u32 offset;FVF::LIT* v=(FVF::LIT*)RCache.Vertex.Lock(4,sizeof(FVF::LIT),offset);Fvector p;
         const float coords[4][2]={{-1,-1},{-1,1},{1,-1},{1,1}};
-        const u32 c=color_rgba(iFloor(clampr(color.r*facing,0.f,1.f)*255),iFloor(clampr(color.g*facing,0.f,1.f)*255),iFloor(clampr(color.b*facing,0.f,1.f)*255),255);
+        const u32 c=color_rgba(iFloor(clampr(color.r*intensity,0.f,1.f)*255),iFloor(clampr(color.g*intensity,0.f,1.f)*255),iFloor(clampr(color.b*intensity,0.f,1.f)*255),255);
         for(u32 i=0;i<4;++i){p=position;p.mad(right,coords[i][0]);p.mad(up,coords[i][1]);v[i].set(p,c,(coords[i][0]+1)*.5f,(1-coords[i][1])*.5f);}
         RCache.Vertex.Unlock(4,sizeof(FVF::LIT));ref_geom geometry;geometry.create(FVF::F_LIT,RCache.Vertex.Buffer(),RCache.QuadIB);
         RenderSnapshotProvenance previous={};if(g_render_snapshot_active){RenderSnapshot_GetProvenance(&previous);

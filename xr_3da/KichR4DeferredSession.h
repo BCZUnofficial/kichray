@@ -179,7 +179,7 @@ struct KichR4DeferredSession {
         KichR4Handle* old[]={&albedo,&normal,&depth,&light,&scene_color,&final_color,&distortion_map};
         for(unsigned i=0;i<7;++i)if(*old[i]){if(l.Expect(s,"B4.4 old screen target",l.bridge.resources.release_resource(s.device,*old[i]))<0)return s.failure;*old[i]=0;}
         if(Target(s,l,albedo,w,h,KICH_R4_RGBA8,false)<0 || Target(s,l,normal,w,h,KICH_R4_RGBA16F,false)<0 ||
-            Target(s,l,depth,w,h,KICH_R4_DEPTH32F,true)<0 || Target(s,l,light,w,h,KICH_R4_RGBA16F,false)<0)return s.failure;
+            Target(s,l,depth,w,h,KICH_R4_DEPTH24_STENCIL8,true)<0 || Target(s,l,light,w,h,KICH_R4_RGBA16F,false)<0)return s.failure;
         if(native_mode && (Target(s,l,scene_color,w,h,KICH_R4_RGBA8,false)<0 || Target(s,l,final_color,w,h,KICH_R4_RGBA8,false)<0 || Target(s,l,distortion_map,w,h,KICH_R4_RGBA16F,false)<0))return s.failure;
         width=w;height=h;return 0;
     }
@@ -194,7 +194,7 @@ struct KichR4DeferredSession {
         d.state.draw={sizeof(d.state.draw),pipeline,vb,ib,constants,count,first,style.cull,style.depth};
         d.state.blend_enable=style.blend;d.state.source_blend=style.src;d.state.dest_blend=style.dst;d.state.clamp_texture=style.clamp;
         d.state.depth_write=style.write;d.state.scissor_enable=style.scissor?1:0;memcpy(d.state.scissor,style.rect,sizeof(d.state.scissor));
-        d.state.min_depth=style.min_z;d.state.max_depth=style.max_z;return d;
+        d.state.min_depth=style.min_z;d.state.max_depth=style.max_z;d.state.surface=style.surface;return d;
     }
     static bool Opaque(const kich_r4_capture::Command& c){return c.layer==0 && !c.style.blend && c.style.depth && c.style.write && !c.effect;}
     int32_t Static(KichR4FrameSession& s,KichR4LevelSession& l,const kich_r4_scene::Matrix& vp,bool shadow){
@@ -219,7 +219,7 @@ struct KichR4DeferredSession {
             kich_r4_capture::Style style;style.cull=l.cull;style.depth=style.write=1;
             if(described)kich_r4_material::Apply(material,style);
             KichR4DeferredDrawDesc d=Description(pipelines[shadow?StaticShadow:StaticGeometry],l.vertex_buffers[mesh.vb],l.index_buffers[mesh.ib],cb,mesh.count,mesh.first,style);
-            d.textures[0]=l.materials[mesh.material];
+            d.textures[0]=l.Texture(s,m.texture);
             if(described){kich_r4_material::Bind(s,l,material,mesh.available_attributes,c,d,shadow,true,mesh.tree?(!shadow?112u:0u)|(material.tree_wave?128u:0u):0u);
                 if(mesh.tree && !shadow){
                     for(unsigned a=0;a<4;++a){c.color_scale[a]=mesh.tree_scale[a]*base.tree_wind[3];c.color_bias[a]=mesh.tree_bias[a]*base.tree_wind[3];}
@@ -250,7 +250,7 @@ struct KichR4DeferredSession {
             kich_r4_lighting::Constants c=base;c.world=mesh.world;c.mvp=vp;c.normal_matrix=kich_r4_lighting::NormalMatrix(mesh.world);c.alpha[0]=m.alpha_ref;c.alpha[1]=static_cast<float>(m.alpha_func);
             if(Constants(s,l,c)<0)return s.failure;
             kich_r4_capture::Style style;style.blend=m.blend;style.src=m.source;style.dst=m.destination;style.write=0;style.cull=KICH_R4_CULL_NONE;if(described){kich_r4_material::Apply(m.descriptor,style);c.alpha[0]=m.descriptor.alpha_ref;c.alpha[1]=float(m.descriptor.alpha_func);if(Constants(s,l,c)<0)return s.failure;}
-            KichR4DeferredDrawDesc d=Description(pipelines[m.kind==2?StaticWater:StaticForward],l.vertex_buffers[mesh.vb],l.index_buffers[mesh.ib],cb,mesh.count,mesh.first,style);d.textures[0]=l.materials[mesh.material];d.textures[1]=scene_color;d.textures[2]=sun_map;
+            KichR4DeferredDrawDesc d=Description(pipelines[m.kind==2?StaticWater:StaticForward],l.vertex_buffers[mesh.vb],l.index_buffers[mesh.ib],cb,mesh.count,mesh.first,style);d.textures[0]=l.Texture(s,m.texture);d.textures[1]=scene_color;d.textures[2]=sun_map;
             SnapshotResolvedTexture(l,0,m.texture.c_str(),d.textures[0]);
             const bool simple=simple_transparent.count(mesh.material)!=0;
             int32_t hr=KICH_R4_OK;
@@ -268,7 +268,7 @@ struct KichR4DeferredSession {
             if(l.Expect(s,"B5 static transparent surface",hr)<0)return s.failure;
         }return 0;
     }
-    enum ModelPass {GeometryModels,ShadowModels,ForwardBase,ForwardAdd,HUD,Environment,MenuPP,MenuOverlay,DistortionModels,Celestial,CloudLayer};
+    enum ModelPass {GeometryModels,ShadowModels,ForwardBase,ForwardAdd,HUD,Environment,MenuPP,MenuOverlay,DistortionModels,Celestial,CloudLayer,Wallmarks};
     int32_t Models(KichR4FrameSession& s,KichR4LevelSession& l,KichR4StreamSession& stream,const kich_r4_capture::Batch* batch,
         ModelPass pass,const kich_r4_lighting::Constants& frame,const KichR4Handle* maps=NULL){
         if(!batch)return 0;
@@ -296,6 +296,7 @@ struct KichR4DeferredSession {
                 if(batch->native_models[index].layer==layer && native_models.Draw(s,l,cb,frame,*batch,model_pass,snapshot_pass_mask,snapshot_phase,maps,0,index)<0)return s.failure;
                 continue;}
             const kich_r4_capture::Command& c=batch->commands[order[sorted]];if(c.layer!=layer)continue;
+            if(native_mode && ((pass==Wallmarks)!=(c.effect==6)))continue;
             if((pass==Celestial)!=(native_mode && c.effect==kich_r4_optics::CelestialSource))continue;
             if(pass==GeometryModels && !Opaque(c))continue;
             if(pass==ShadowModels && !Opaque(c))continue;
@@ -317,6 +318,7 @@ struct KichR4DeferredSession {
             if(native_mode && pass==MenuPP)constants.alpha[3]=30;
             if(Constants(s,l,constants)<0)return s.failure;
             kich_r4_capture::Style style=c.style;
+            if(pass==Wallmarks){style.depth=1;style.write=0;style.surface.color_mask=7;KichR4ReceiverState(style.surface,false);}
             if(pass==Celestial){kich_r4_optics::SkyStyle(style);if(frame.screen[2]==12)style.blend=0;}
             if(native_mode && pass==MenuPP)style.blend=0;
             unsigned pipeline=pass==GeometryModels?ModelGeometry:pass==ShadowModels?ModelShadow:pass==ForwardBase?ForwardSun:pass==ForwardAdd?ForwardLocal:Plain;
@@ -452,6 +454,7 @@ struct KichR4DeferredSession {
     }
     double model_prepare_ms=0;
     int32_t Draw(KichR4FrameSession& s,KichR4LevelSession& l,KichR4StreamSession& stream,const KichR4GameFrame& input,const kich_r4_capture::Batch* captured,uint32_t debug){
+        if(!native_mode)l.texture_registry.Begin(); // Native presenter owns its submission epoch.
         ordinary_profile=debug==0; // diagnostic GPU timings must not enter the normal profile ring
         SnapshotCPU(captured);native_models.ResetFrame();details.ResetFrame(input.engine_frame);
         if(g_render_snapshot_active){RenderSnapshot_U64("LIGHT_REGISTRY","selected_frame_inputs",input.lighting.count);RenderSnapshot_Text("ENVIRONMENT","source","COPIED_CURRENT_ENV_LIGHTING_FRAME");
@@ -515,7 +518,9 @@ struct KichR4DeferredSession {
         Mark(s,1);
         const kich_r4_scene::Matrix vp=base.mvp;
         SnapshotPass("GBUFFER",RENDER_SNAPSHOT_PASS_GBUFFER,"camera_geometry");
-        if(Pass(s,l,width,height,3,albedo,normal,depth,3,NULL,light)<0 || Static(s,l,vp,false)<0 || Models(s,l,stream,captured,GeometryModels,base)<0 || details.Draw(s,l,cb,base,false,input.engine_frame,"camera_geometry",RENDER_SNAPSHOT_PASS_GBUFFER)<0)return s.failure;
+        if(Pass(s,l,width,height,3,albedo,normal,depth,7,NULL,light)<0 || Static(s,l,vp,false)<0 || Models(s,l,stream,captured,GeometryModels,base)<0 || details.Draw(s,l,cb,base,false,input.engine_frame,"camera_geometry",RENDER_SNAPSHOT_PASS_GBUFFER)<0)return s.failure;
+        if(native_mode){SnapshotPass("GBUFFER",RENDER_SNAPSHOT_PASS_GBUFFER,"wallmarks_albedo_rgb");
+            if(Pass(s,l,width,height,1,albedo,0,depth,0)<0 || Models(s,l,stream,captured,Wallmarks,base)<0)return s.failure;}
         Mark(s,2);
         SnapshotPass("LIGHT_ACCUMULATION",RENDER_SNAPSHOT_PASS_LIGHT_ACCUMULATION,"sun_lighting");if(g_render_snapshot_active)RenderSnapshot_Light("sun","SCENE_ENVIRONMENT");
         sun_inputs[1]=albedo;

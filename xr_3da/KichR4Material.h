@@ -1,6 +1,7 @@
 #ifndef KICH_R4_MATERIAL_H
 #define KICH_R4_MATERIAL_H
 #include <stdint.h>
+#include "KichR4SurfaceState.h"
 #include <string>
 #include <vector>
 #include <map>
@@ -15,6 +16,7 @@ enum Attribute { ATTR_NORMAL=1, ATTR_TANGENT=2, ATTR_BINORMAL=4, ATTR_UV1=8,
     ATTR_HEMI=16, ATTR_SUN=32, ATTR_COLOR=64, ATTR_TREE=128 };
 enum Pass { PASS_GEOMETRY=1, PASS_SHADOW=2, PASS_FORWARD=4, PASS_DISTORTION=8 };
 struct Descriptor {
+    KichR4SurfaceState surface=KichR4DefaultSurface();
     Semantic semantic;
     Special special;
     Family source_family;
@@ -36,6 +38,7 @@ struct Source {
     Source():family(FAMILY_UNKNOWN),blend(false),strict_sorting(false),not_tree(false),alpha_reference(0){}
 };
 struct PassState {
+    KichR4SurfaceState surface=KichR4DefaultSurface();
     bool blend,alpha_test,depth_test,depth_write,distortion,emissive,wallmark;
     uint32_t src,dst,alpha_func,alpha_reference,cull;
     PassState():blend(false),alpha_test(false),depth_test(true),depth_write(true),distortion(false),emissive(false),wallmark(false),
@@ -57,10 +60,13 @@ inline uint64_t Key(const Descriptor& d){
     for(unsigned v=0;v<sizeof(integers)/sizeof(integers[0]);++v)for(unsigned b=0;b<8;++b){key^=(integers[v]>>(b*8))&255;key*=UINT64_C(1099511628211);}
     const float floats[]={d.detail_scale[0],d.detail_scale[1],d.material,d.alpha_ref};
     const unsigned char* bytes=reinterpret_cast<const unsigned char*>(floats);
-    for(unsigned b=0;b<sizeof(floats);++b){key^=bytes[b];key*=UINT64_C(1099511628211);}return key;
+    for(unsigned b=0;b<sizeof(floats);++b){key^=bytes[b];key*=UINT64_C(1099511628211);}
+    bytes=reinterpret_cast<const unsigned char*>(&d.surface);
+    for(unsigned b=0;b<sizeof(d.surface);++b){key^=bytes[b];key*=UINT64_C(1099511628211);}return key;
 }
 inline Descriptor Build(const Source& source,const PassState& state) {
     Descriptor d=source.descriptor;
+    d.surface=state.surface;
     d.source_family=source.family;d.source_flags=(source.blend?1u:0u)|(source.strict_sorting?2u:0u)|(source.not_tree?4u:0u);
     d.source_alpha_reference=source.alpha_reference;
     d.alpha_ref=float(state.alpha_reference&255)/255.f;d.alpha_func=state.alpha_test?state.alpha_func:8;
@@ -113,7 +119,7 @@ template<class Style> inline void Apply(const Descriptor& d,Style& s) {
     if(d.semantic==UNKNOWN)return;
     s.blend=d.semantic==BLENDED || d.semantic==ADDITIVE || d.semantic==DISTORTION;
     s.src=d.src_blend;s.dst=d.dst_blend;s.alpha_func=d.alpha_func;s.alpha_ref=d.alpha_ref;
-    s.depth=d.depth_test;s.write=d.depth_write;s.cull=d.cull;
+    s.depth=d.depth_test;s.write=d.depth_write;s.cull=d.cull;s.surface=d.surface;
 }
 class Cache {
     std::map<const void*,std::vector<Descriptor> > entries;

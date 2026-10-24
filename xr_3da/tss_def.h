@@ -44,6 +44,7 @@ class ENGINE_API SimulatorStates
 	BOOL equal(SimulatorStates& S);
 	void clear();
 	u32 get_RS(u32 key,u32 fallback) const;
+	u32 get_SAMP(u32 stage,u32 key,u32 fallback) const;
 	IDirect3DStateBlock9* record();
 };
 #endif

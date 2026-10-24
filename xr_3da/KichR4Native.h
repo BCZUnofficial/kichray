@@ -25,6 +25,8 @@ bool KichR4_NativeSelect(const char* parameters);
 IRender_interface* KichR4_CreateNativeRenderer();
 IKichRenderDevice& KichR4_NativeDevice();
 KICH_NATIVE_API void KichR4_NativeSetState(uint32_t state,uint32_t value);
+KICH_NATIVE_API void KichR4_NativeSetSampler(uint32_t stage,uint32_t state,uint32_t value);
+KICH_NATIVE_API uint32_t KichR4_NativeTextureBudgetMB();
 KICH_NATIVE_API uint32_t KichR4_NativeGetState(uint32_t state);
 KICH_NATIVE_API void KichR4_NativeViewport(float near_depth,float far_depth);
 KICH_NATIVE_API void KichR4_NativeScissor(const int* rect);

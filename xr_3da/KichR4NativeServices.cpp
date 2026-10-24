@@ -63,6 +63,8 @@ bool KichR4_NativeMaterialState(const char* name,const char* textures,kich_r4_ca
     ShaderElement* element=NULL;for(uint32_t i=0;i<2 && !element;++i)if(shader->E[i] && !shader->E[i]->passes.empty() && !shader->E[i]->flags.bDistort)element=shader->E[i]._get();
     if(!element || !element->passes[0]->state)return false;
     const SimulatorStates& state=element->passes[0]->state->state_code;style.blend=state.get_RS(D3DRS_ALPHABLENDENABLE,0)!=0;style.src=state.get_RS(D3DRS_SRCBLEND,5);style.dst=state.get_RS(D3DRS_DESTBLEND,6);
+    style.surface=KichR4ReadSurface([&](uint32_t key,uint32_t fallback){return state.get_RS(key,fallback);});
+    for(unsigned i=0;i<8;++i)style.surface.samplers[i]=KichR4ReadSampler([&](uint32_t key,uint32_t fallback){return state.get_SAMP(i,key,fallback);});
     style.depth=state.get_RS(D3DRS_ZENABLE,1)!=0;const uint32_t cull=state.get_RS(D3DRS_CULLMODE,D3DCULL_CCW);style.cull=cull==D3DCULL_CW?KICH_R4_CULL_FRONT:cull==D3DCULL_CCW?KICH_R4_CULL_BACK:KICH_R4_CULL_NONE;
     style.alpha_func=state.get_RS(D3DRS_ALPHATESTENABLE,0)?state.get_RS(D3DRS_ALPHAFUNC,7):8;style.alpha_ref=(state.get_RS(D3DRS_ALPHAREF,0)&255)/255.f;style.write=state.get_RS(D3DRS_ZWRITEENABLE,1)!=0;return true;
 }
@@ -75,6 +77,8 @@ kich_r4_material::PassState NativePassState(const ShaderElement& element,const S
     out.distortion=element.flags.bDistort!=0;out.emissive=element.flags.bEmissive!=0;out.wallmark=element.flags.bWmark!=0;
     if(!pass || !pass->state)return out;
     const SimulatorStates& state=pass->state->state_code;
+    out.surface=KichR4ReadSurface([&](uint32_t key,uint32_t fallback){return state.get_RS(key,fallback);});
+    for(unsigned i=0;i<8;++i)out.surface.samplers[i]=KichR4ReadSampler([&](uint32_t key,uint32_t fallback){return state.get_SAMP(i,key,fallback);});
     out.blend=state.get_RS(D3DRS_ALPHABLENDENABLE,0)!=0;out.src=state.get_RS(D3DRS_SRCBLEND,D3DBLEND_ONE);out.dst=state.get_RS(D3DRS_DESTBLEND,D3DBLEND_ZERO);
     out.alpha_test=state.get_RS(D3DRS_ALPHATESTENABLE,0)!=0;out.alpha_func=state.get_RS(D3DRS_ALPHAFUNC,D3DCMP_ALWAYS);out.alpha_reference=state.get_RS(D3DRS_ALPHAREF,0);
     out.depth_test=state.get_RS(D3DRS_ZENABLE,1)!=0;out.depth_write=state.get_RS(D3DRS_ZWRITEENABLE,1)!=0;
@@ -137,6 +141,12 @@ void KichR4_NativeRegisterMaterial(const void* pointer,uint32_t index,const char
             pass_source.descriptor.unsupported_reason="water_preserved_special_forward;full_R2_water_not_implemented";
         }
         Descriptor material=Build(pass_source,NativePassState(*element,pass));
+        // Material texture registers differ from the source R2 shader. Match
+        // compiled texture bindings by identity, not by a guessed stage index.
+        if(pass && pass->state && pass->T){const std::string* names[]={&material.base,&material.bump,&material.bump_aux,&material.lightmap,&material.hemi,&material.detail};
+            for(unsigned slot=0;slot<6;++slot){material.surface.samplers[slot]={};
+                for(auto it=pass->T->begin();it!=pass->T->end();++it)if(it->second && *names[slot]==it->second->cName.c_str()){
+                    material.surface.samplers[slot]=KichR4ReadSampler([&](uint32_t key,uint32_t fallback){return pass->state->state_code.get_SAMP(it->first,key,fallback);});break;}}}
         if(Bumped(material)){if(!material.unsupported_reason.empty())material.unsupported_reason+=';';material.unsupported_reason+="bump_height_parallax_not_implemented";}
         passes.push_back(material);
     }

@@ -5,6 +5,24 @@
 namespace kich_r4_optics {
 enum { CelestialSource = 9 };
 enum { DebugViewCount = 13 };
+struct GlowVisibility {
+    float value,camera[3];uint32_t time;bool known;
+    GlowVisibility():value(0),time(0),known(false){camera[0]=camera[1]=camera[2]=0;}
+    void Reset(){value=0;known=false;}
+    float Step(bool visible,uint32_t now,const float* eye){
+        float distance2=0;for(unsigned i=0;i<3;++i){const float d=eye[i]-camera[i];distance2+=d*d;}
+        uint32_t elapsed=known?now-time:16;
+        if(!known || elapsed>500 || distance2>16){value=0;elapsed=16;}
+        if(elapsed>100)elapsed=100;
+        const float step=float(elapsed)/(visible?150.f:100.f);
+        value=visible?(value+step<1?value+step:1):(value>step?value-step:0);
+        time=now;known=true;for(unsigned i=0;i<3;++i)camera[i]=eye[i];return value;
+    }
+};
+inline float GlowRayLength(float distance,float radius){
+    const float pad=radius>0?(radius*.25f<.05f?radius*.25f:.05f):0;
+    return distance>pad?distance-pad:0;
+}
 inline const char* DebugView(unsigned view){
     const char* names[]={"NORMAL","ALBEDO","MAPPED_NORMAL","DISTANCE","TOTAL_LIGHT","HEMI",
         "BAKED_RGB_RAW","BAKED_SUN_MASK_RAW","SUN_PCF_VISIBILITY","SOURCE_NORMAL",
