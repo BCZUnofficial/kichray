@@ -69,7 +69,10 @@ HRESULT PipelineDX11::Create(ID3D11Device* hw,const KichR4PipelineDesc& d,
         sampler.AddressU=sampler.AddressV=sampler.AddressW=i?D3D11_TEXTURE_ADDRESS_CLAMP:D3D11_TEXTURE_ADDRESS_WRAP;
         sampler.MaxAnisotropy=1;sampler.ComparisonFunc=D3D11_COMPARISON_NEVER;sampler.MaxLOD=D3D11_FLOAT32_MAX;
         hr=hw->CreateSamplerState(&sampler,&sampler_[i]);if(FAILED(hr))return hr;}
-    if(with_advanced){D3D11_SAMPLER_DESC s={};s.Filter=D3D11_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
+    // HLSL applies a continuous tent to exact texel-centre comparisons and
+    // reconstructs the receiver depth per tap. Hidden bilinear comparisons
+    // would use that depth at four different locations and reintroduce acne.
+    if(with_advanced){D3D11_SAMPLER_DESC s={};s.Filter=D3D11_FILTER_COMPARISON_MIN_MAG_MIP_POINT;
         s.AddressU=s.AddressV=s.AddressW=D3D11_TEXTURE_ADDRESS_BORDER;
         s.BorderColor[0]=s.BorderColor[1]=s.BorderColor[2]=s.BorderColor[3]=1;
         s.MaxAnisotropy=1;s.ComparisonFunc=D3D11_COMPARISON_LESS_EQUAL;s.MaxLOD=D3D11_FLOAT32_MAX;

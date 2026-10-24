@@ -14,6 +14,7 @@
 #include "KichR4OpticalRules.h"
 #include "KichR4LodPolicy.h"
 #include "KichR4PostprocessNoise.h"
+#include "KichR4ShadowPoolPolicy.h"
 #include <set>
 /* EXE-side pass planner. Native resources remain owned by the R4 device;
  * destroying that device releases partial construction and all cached maps. */
@@ -31,7 +32,7 @@ struct KichR4DeferredSession {
     std::vector<KichR4Handle> local_maps;
     std::vector<uint32_t> local_offsets;
     uint32_t local_shadow_size=512;
-    static const uint64_t LocalShadowBudget=64ull*1024*1024;
+    static const uint64_t LocalShadowBudget=kich_r4_shadow_pool::BudgetBytes;
     KichR4Handle LocalMap(unsigned index,unsigned face)const {
         return index<local_offsets.size() && local_offsets[index]!=UINT32_MAX?
             local_maps[local_offsets[index]+face]:0;
@@ -39,9 +40,12 @@ struct KichR4DeferredSession {
     int32_t PrepareLocalMaps(KichR4FrameSession& s,KichR4LevelSession& l,const KichR4LightingFrame& lighting,const std::vector<uint8_t>& selected){
         local_offsets.assign(lighting.count,UINT32_MAX);uint32_t faces=0;
         for(unsigned i=0;i<lighting.count;++i)if(selected[i]){local_offsets[i]=faces;faces+=lighting.lights[i].type==2?1:6;}
-        uint32_t size=local_shadow_size;
-        while(size>16 && uint64_t(faces)*size*size*4>LocalShadowBudget)size/=2;
-        if(uint64_t(faces)*size*size*4>LocalShadowBudget)return s.Record("E1 local shadow pool budget",KICH_R4_E_ARGUMENT);
+        // Gameplay freezes resolution with the source list before collecting
+        // casters. Legacy direct producers have no plan and use a bounded fit.
+        const uint32_t size=lighting.local_shadow_size?lighting.local_shadow_size:kich_r4_shadow_pool::BestFit(faces);
+        if(!kich_r4_shadow_pool::Fits(faces,size) ||
+            (lighting.local_shadow_size && lighting.shadow_plan_faces!=faces))
+            return s.Record("E1.5 local shadow plan/budget",KICH_R4_E_ARGUMENT);
         if(size!=local_shadow_size){
             for(size_t i=0;i<local_maps.size();++i)if(l.Expect(s,"E1 shadow pool resize",l.bridge.resources.release_resource(s.device,local_maps[i]))<0)return s.failure;
             local_maps.clear();local_shadow_size=size;
@@ -50,7 +54,7 @@ struct KichR4DeferredSession {
         if(g_render_snapshot_active){RenderSnapshot_U64("SHADOW_POOL","requested_faces",faces);RenderSnapshot_U64("SHADOW_POOL","allocated_faces",local_maps.size());
             RenderSnapshot_U64("SHADOW_POOL","resolution",size);RenderSnapshot_U64("SHADOW_POOL","budget_bytes",LocalShadowBudget);
             RenderSnapshot_U64("SHADOW_POOL","allocated_bytes",uint64_t(local_maps.size())*size*size*4);
-            RenderSnapshot_Text("SHADOW_POOL","policy","ALL_REQUESTED_VISIBLE_LIGHTS; ADAPTIVE_POWER_OF_TWO; REUSE_ACROSS_PASSES_AND_FRAMES");}
+            RenderSnapshot_Text("SHADOW_POOL","policy",lighting.local_shadow_size?"FROZEN_FRAME_RESOLUTION; IMMEDIATE_PRESSURE; 2000MS_RECOVERY_WITH_25_PERCENT_HEADROOM":"DIRECT_FRAME_BOUNDED_FIT");}
         return 0;
     }
     kich_r4_lighting::Constants base;
@@ -162,9 +166,9 @@ struct KichR4DeferredSession {
         Text("SHADOW",id,"source_light_id",parent);U64("SHADOW",id,"face_or_cascade",face);Text("SHADOW",id,"unit",sun?"STABILIZED_NEAR_FAR_SUN_MAP": "ONE_LIGHT_FACE; NOT_ONE_LAMP");
         Text("SHADOW",id,"format","DEPTH32F/D32_FLOAT");U64("SHADOW",id,"width",sun?2048:resolution);U64("SHADOW",id,"height",sun?2048:resolution);U64("SHADOW",id,"target_handle",target);
         Float("SHADOW",id,"near",sun?0.f:kich_r4_lighting::LocalShadowNear(range));Float("SHADOW",id,"far",sun?1024.f:range);Vector("SHADOW",id,"view_projection_row_major",matrix.m,16);
-        Float("SHADOW",id,"orthographic_span",sun?span:0);Text("SHADOW",id,"projection",sun?"TEXEL_SNAPPED_CAMERA_CENTERED":"PERSPECTIVE_SPOT_CONE_OR_POINT_90_DEG");
-        Float("SHADOW",id,"comparison_depth_bias",0);Float("SHADOW",id,"receiver_bias_meters",sun?.01f:.003f);Text("SHADOW",id,"comparison_bias_source","WORLD_SPACE_RECEIVER_TOWARD_LIGHT; NO_FIXED_NONLINEAR_DEPTH_SUBTRACTION");
-        Text("SHADOW",id,"rasterizer_bias","DEFAULT_ZERO; NO_PER_LIGHT_OVERRIDE");Text("SHADOW",id,"filter","3x3 SampleCmpLevelZero; LESS_EQUAL; LINEAR_COMPARISON");
+        Float("SHADOW",id,"orthographic_span",sun?span:0);Text("SHADOW",id,"projection",sun?"TEXEL_SNAPPED_CAMERA_CENTERED":"PERSPECTIVE_SPOT_CONE_OR_POINT_90_DEG_PLUS_2_TEXEL_GUARD");
+        Float("SHADOW",id,"comparison_depth_bias",0);Float("SHADOW",id,"receiver_bias_meters",sun?.01f:.003f);Text("SHADOW",id,"comparison_bias_source","WORLD_SPACE_RECEIVER_TOWARD_LIGHT; EXACT_TEXEL_RECEIVER_PLANE; NO_FIXED_NONLINEAR_DEPTH_SUBTRACTION");
+        Text("SHADOW",id,"rasterizer_bias","DEFAULT_ZERO; NO_PER_LIGHT_OVERRIDE");Text("SHADOW",id,"filter","3x3 SampleCmpLevelZero; LESS_EQUAL; POINT_COMPARISON_TEXEL_CENTRE_QUADRATIC_TENT");
         Text("SHADOW",id,"candidate_source","LEVEL_STATIC+DETAILS+MODEL_CAMERA_SHADOW_UNION; PASS_FRUSTUM_CULL");Text("SHADOW",id,"stencil_volumes","NOT_SUPPORTED");
         Text("SHADOW",id,"execution","PLANNED");
     }
@@ -623,7 +627,7 @@ struct KichR4DeferredSession {
         const kich_r4_scene::Vec3 direction=kich_r4_scene::Normalize(kich_r4_scene::Vec3{l.direction[0],l.direction[1],l.direction[2]});
         c.light_direction[0]=direction.x;c.light_direction[1]=direction.y;c.light_direction[2]=direction.z;c.light_direction[3]=cosf(l.cone*.5f);
         memcpy(c.light_color,l.color,12);c.light_color[3]=static_cast<float>(l.type);c.screen[3]=static_cast<float>(local_shadow_size);
-        for(unsigned i=0;i<(l.type==2?1u:6u);++i)c.shadow[i]=kich_r4_lighting::LocalShadow(l,i);
+        for(unsigned i=0;i<(l.type==2?1u:6u);++i)c.shadow[i]=kich_r4_lighting::LocalShadow(l,i,local_shadow_size);
         return c;
     }
     double model_prepare_ms=0;

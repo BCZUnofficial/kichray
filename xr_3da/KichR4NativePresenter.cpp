@@ -316,13 +316,14 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
         }
         if(hr<0){Write("[R4 native B5] frame failed: step=%s HRESULT=0x%08X shader=%s",c.frame.step?c.frame.step:"present",static_cast<uint32_t>(hr),c.level.bridge.shader_error);return false;}
         const bool eligible=hr==0 && c.loaded && input.allowed && !tracing && !native.debug && !screenshot;
-        c.metrics.Add(double(end.QuadPart)*1000.0/double(frequency.QuadPart),eligible);
+        c.metrics.Add(end.QuadPart,frequency.QuadPart,eligible);
         if(!eligible)c.gpu_quarantine=4;else if(c.gpu_quarantine)--c.gpu_quarantine;
         KichR4GPUProfile profile={};if(c.loaded)native.api.tools.get_profile(c.frame.device,&profile,sizeof(profile));
         KichR4ResourceStats resources={};const bool stats_ok=native.api.resources.get_stats(c.frame.device,&resources,sizeof(resources))==0;
         if(eligible){c.created_window+=stats_ok?resources.created-c.last_created:0;c.meshes_window+=c.deferred.native_models.mesh_uploads;
             c.submit_peak_ms=(std::max)(c.submit_peak_ms,double(submitted.QuadPart-start.QuadPart)*1000.0/double(frequency.QuadPart));}
         if(eligible && c.metrics.ReportDue()){
+            KichR4_ReportLightingTransitions(input.engine_frame,native.log);
             Write("[R4 E1.4 status] frame=%u fps_current=%.2f fps_recent=%.2f present_interval_ms=%.3f recent_samples=%u recent_ms=%.0f shadow_submission=%s sun_cascades=%u sun_map_size=%u spot_shadow_lights=%u point_shadow_lights=%u local_shadow_faces=%u local_map_size=%u; CPU_submission_counts_not_visible_pixels; report_period_ms=2000",
                 input.engine_frame,c.metrics.Current(),c.metrics.Recent(),c.metrics.interval,c.metrics.report_count,c.metrics.report_ms,
                 c.deferred.frame_sun_cascades || c.deferred.frame_local_shadow_faces?"ON":"NONE",

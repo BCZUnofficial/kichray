@@ -56,11 +56,19 @@ inline Matrix SunShadow(const float* camera,const float* direction,float span=51
     return Multiply(view,p);
 }
 inline float LocalShadowNear(float range){return range<.4f?range*.25f:.1f;}
-inline Matrix LocalShadow(const KichR4LocalLight& l,unsigned face){
+inline Matrix LocalShadow(const KichR4LocalLight& l,unsigned face,unsigned resolution=512){
     static const Vec3 axes[6]={{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
     const Vec3 eye={l.position[0],l.position[1],l.position[2]};
     const Vec3 dir=l.type==2?Vec3{l.direction[0],l.direction[1],l.direction[2]}:axes[face%6];
-    return Multiply(StableView(eye,dir),Projection(l.type==2?l.cone:1.57079632679f,LocalShadowNear(l.range),l.range));
+    Matrix projection=Projection(l.type==2?l.cone:1.57079632679f,LocalShadowNear(l.range),l.range);
+    if(l.type!=2){
+        // Two rendered texels around each 90-degree face keep the complete
+        // three-tap footprint inside real geometry at cube-face transitions.
+        // Camera/caster collection and sampling must use the same resolution.
+        const unsigned size=resolution<16?16:resolution;
+        projection.m[0]=projection.m[5]=float(size-4)/float(size);
+    }
+    return Multiply(StableView(eye,dir),projection);
 }
 struct Constants {
     Matrix world,mvp,normal_matrix,inverse_vp,shadow[6];

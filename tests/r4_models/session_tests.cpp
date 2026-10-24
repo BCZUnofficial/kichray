@@ -204,6 +204,37 @@ void SunReceiverFilter(){Harness h;Require(h.Start()==0,"sun receiver model setu
     batch.native_models[0].bounds_known=false;
     Require(h.models.Draw(h.frame,h.level,h.cb,h.base,batch,KichR4ModelSession::Shadow,1,"sun_0")==0 && model_draws.size()==3,"unknown model bounds stay conservative in focused sun pass");
 }
+void PreparedWork(){Harness h;Require(h.Start()==0,"prepared model work setup");auto mesh=Source(false);kich_r4_capture::Batch batch;
+    auto opaque=Command(mesh),forward=opaque,hud=opaque,distort=opaque;
+    opaque.world.m[0]=2;opaque.world.m[1]=1;opaque.world.m[5]=3;opaque.world.m[10]=4;
+    forward.style.blend=1;forward.effect=6;hud.layer=1;distort.effect=5;
+    for(unsigned i=0;i<16;++i){batch.native_models.push_back(opaque);batch.native_models.push_back(forward);batch.native_models.push_back(hud);batch.native_models.push_back(distort);}
+    Require(h.models.Prepare(h.frame,h.level,batch)==0,"mixed workload prepares");
+    const auto* storage=h.models.pass_commands[KichR4ModelSession::Shadow].data();
+    Require(h.models.pass_commands[KichR4ModelSession::Shadow].size()==16 && h.models.command_normals.size()==64,"shadow candidate list excludes HUD/transparency/distortion once during preparation");
+    for(unsigned face=0;face<48;++face){const auto before=model_draws.size();
+        Require(h.Draw(batch,KichR4ModelSession::Shadow)==0 && model_draws.size()==before+16,"all eligible casters retained for every independent face");
+        Require(h.models.pass_commands[KichR4ModelSession::Shadow].data()==storage,"shadow traversal retains frame candidate storage");
+        const auto& n=constants_drawn.back().normal_matrix;
+        Require(fabs(n.m[0]-.5f)<1.e-6f && fabs(n.m[4]+1.f/6.f)<1.e-6f && fabs(n.m[5]-1.f/3.f)<1.e-6f && n.m[10]==.25f,"cached inverse-transpose preserves shear and nonuniform scale in submitted constants");
+    }
+    Require(h.models.candidates[KichR4ModelSession::Shadow]==48*16,"candidate telemetry retains routed scope");
+    batch.Begin(640,480,1);opaque.world.m[0]=-4;opaque.world.m[1]=0;opaque.style.blend=1;batch.native_models.push_back(opaque);
+    Require(h.models.Prepare(h.frame,h.level,batch)==0 && h.models.pass_commands[KichR4ModelSession::Shadow].empty(),"next frame replaces previous routes");
+    Require(h.Draw(batch,KichR4ModelSession::Forward)==0 && constants_drawn.back().normal_matrix.m[0]==-.25f,"next frame rebuilds transformed normals, including mirrors");
+    batch.Begin(640,480,2);Require(h.models.Prepare(h.frame,h.level,batch)==0 && h.models.command_normals.empty(),"empty frame releases associations while retaining capacity");
+}
+void PreparedTransparency(){Harness h;Require(h.Start()==0,"prepared transparent order setup");auto mesh=Source(false);kich_r4_capture::Batch batch;
+    for(unsigned i=0;i<3;++i){auto c=Command(mesh);c.style.blend=1;c.effect=6;c.bounds_known=false;c.world.m[12]=float(i);batch.native_models.push_back(c);}
+    Require(h.models.Prepare(h.frame,h.level,batch)==0,"transparent list prepares");
+    const unsigned expected[][3]={{2,1,0},{0,2,1},{0,1,2}};const float cameras[]={0,1,2};
+    for(unsigned view=0;view<3;++view){h.base.camera[0]=cameras[view];
+        for(unsigned light=0;light<3;++light){const size_t before=constants_drawn.size();Require(h.Draw(batch,KichR4ModelSession::ForwardAdd)==0,"ordered local-light submission");
+            for(unsigned i=0;i<3;++i)Require(constants_drawn[before+i].world.m[12]==expected[view][i],"camera-dependent order and original equal-depth ties preserved across repeated lights");}
+    }
+    batch.Begin(640,480,1);auto c=Command(mesh);c.layer=1;batch.native_models.push_back(c);
+    Require(h.models.Prepare(h.frame,h.level,batch)==0 && h.models.pass_commands[KichR4ModelSession::ForwardAdd].empty(),"next frame cannot replay cached transparency");
+}
 void PaletteClassesAndIsolation(){Harness h;Require(h.Start()==0,"palette variants start");kich_r4_capture::Batch batch;batch.engine_frame=93;
     auto mesh=Source();auto a=Command(mesh);a.identity_measured=true;a.skeleton_id=100;a.source_frame=93;a.pose_hash_valid=true;a.pose_hash=77;a.bounds_known=false;
     auto part=a;part.visual_id=2;part.world.m[12]=3;auto npc=a;npc.skeleton_id=101;
@@ -244,6 +275,6 @@ void PalettePoolBudget(){Harness h;Require(h.Start()==0,"capacity pool budget se
     Require(h.models.AllocatedPoseBytes()<=KICH_R4_MODEL_POSE_BUDGET_BYTES && h.models.pose_uploads==1024,"more than legacy 1023 commands fit small palette classes within exact budget");
 }
 }
-int main(int argc,char** argv){try{(void)&Scenario;Require(argc==2,"snapshot output directory");Rules();SharedRangeValidation();AffectedLocalLights();SunReceiverFilter();const int positions=FailureScenario(0);for(int i=1;i<=positions;++i)FailureScenario(i);ReuseAndRouting();PointerReuse();AdmissionAndMaterial();RetirementFailure();OrderedSingleSubmission();ResolvedTextureTelemetry(argv[1]);IdentityAndPoseTelemetry(argv[1]);PaletteClassesAndIsolation();PalettePoolBudget();
+int main(int argc,char** argv){try{(void)&Scenario;Require(argc==2,"snapshot output directory");Rules();SharedRangeValidation();AffectedLocalLights();SunReceiverFilter();PreparedWork();PreparedTransparency();const int positions=FailureScenario(0);for(int i=1;i<=positions;++i)FailureScenario(i);ReuseAndRouting();PointerReuse();AdmissionAndMaterial();RetirementFailure();OrderedSingleSubmission();ResolvedTextureTelemetry(argv[1]);IdentityAndPoseTelemetry(argv[1]);PaletteClassesAndIsolation();PalettePoolBudget();
     printf("G3c GPU model session: %d checks; %d injected failure positions passed\n",checks,positions);return 0;
 }catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

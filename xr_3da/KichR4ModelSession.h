@@ -26,6 +26,11 @@ struct KichR4ModelSession {
     kich_r4_visibility::SunCasterVolume sun_casters;
     void SetSunCasterVolume(const kich_r4_visibility::SunCasterVolume& volume){sun_casters=volume;}
     std::vector<PoseSlot> poses;std::vector<KichR4Handle> command_poses;std::vector<uint32_t> command_classes;size_t pose_cursor[KICH_R4_MODEL_CAPACITY_CLASSES];
+    // Immutable within one captured frame. Keep vector capacity across frames;
+    // shadow faces only repeat visibility tests, not routing or matrix inversion.
+    std::vector<size_t> pass_commands[PassCount];
+    std::vector<kich_r4_scene::Matrix> command_normals;
+    float sort_camera[PassCount][3];bool pass_sorted[PassCount];
     const kich_r4_capture::Batch* prepared;bool rigid_ready;
     uint32_t frame,commands,pose_uploads,mesh_uploads,draw_calls[PassCount];
     uint64_t vertex_bytes,index_bytes,pose_upload_bytes,pose_logical_bytes,candidates[PassCount],culled[PassCount],selected[PassCount];
@@ -37,6 +42,7 @@ struct KichR4ModelSession {
     KichR4ModelSession():rigid_pose(0),white(0),prepared(NULL),rigid_ready(false),frame(UINT32_MAX),commands(0),pose_uploads(0),mesh_uploads(0),vertex_bytes(0),index_bytes(0),pose_upload_bytes(0),pose_logical_bytes(0),peak_pose_bytes(0),group_id(0),group_peak_pose_bytes(0){
         memset(&api,0,sizeof(api));memset(vs,0,sizeof(vs));memset(plain_pipeline,0,sizeof(plain_pipeline));memset(pipelines,0,sizeof(pipelines));ResetFrame();}
     void ResetFrame(){model_telemetry_complete=true;command_uses.clear();pose_use_counts.clear();unique_skeletons=unique_parts=unique_poses=unknown_skeleton_commands=repeated_pose_uploads=max_pose_upload_multiplicity=pose_uses=0;phase_active=false;phase_section[0]=0;phase_candidates=phase_culled=phase_selected=phase_draws=0;prepared=NULL;frame=UINT32_MAX;commands=pose_uploads=mesh_uploads=0;pose_upload_bytes=pose_logical_bytes=0;
+        command_normals.clear();for(unsigned i=0;i<PassCount;++i){pass_commands[i].clear();pass_sorted[i]=false;}
         pose_command_logical_bytes=pose_api_bytes=pose_reuses=0;command_poses.clear();command_classes.clear();memset(pose_cursor,0,sizeof(pose_cursor));for(size_t i=0;i<poses.size();++i)poses[i].used=false;
         memset(draw_calls,0,sizeof(draw_calls));memset(candidates,0,sizeof(candidates));memset(culled,0,sizeof(culled));memset(selected,0,sizeof(selected));}
     static uint32_t CapacityClass(uint32_t capacity){uint32_t index=0;for(uint32_t c=16;c<capacity;c*=2)++index;return index;}
@@ -136,7 +142,7 @@ struct KichR4ModelSession {
         for(std::map<const Source*,Mesh>::iterator i=meshes.begin();i!=meshes.end();){if(i->second.source.expired()){
                 if(ReleaseMesh(s,l,i->second)<0)return s.failure;
                 i=meshes.erase(i);}else ++i;}
-        command_poses.reserve(batch.native_models.size());command_classes.reserve(batch.native_models.size());
+        command_poses.reserve(batch.native_models.size());command_classes.reserve(batch.native_models.size());command_normals.reserve(batch.native_models.size());
         if(g_render_snapshot_active)try{command_uses.resize(batch.native_models.size(),0);}catch(...){model_telemetry_complete=false;RenderSnapshot_Text("TELEMETRY_LOSS","model_pass_uses","ALLOCATION_FAILED");}
         std::set<uint64_t> skeleton_ids,part_ids;std::map<std::string,uint64_t> pose_counts,pose_bytes,pose_reuse_counts;
         for(size_t i=0;i<batch.native_models.size();++i){const Command& c=batch.native_models[i];
@@ -182,7 +188,8 @@ struct KichR4ModelSession {
                         if(reuse)++pose_reuse_counts[id];else{const uint64_t multiplicity=++pose_counts[id];pose_bytes[id]+=KichR4ModelPaletteBytes(capacity);max_pose_upload_multiplicity=std::max(max_pose_upload_multiplicity,multiplicity);if(multiplicity>1)++repeated_pose_uploads;}}}else ++unknown_skeleton_commands;}
                     catch(...){model_telemetry_complete=false;RenderSnapshot_Text("TELEMETRY_LOSS","model_identity_counts","ALLOCATION_FAILED");}}
             if(g_render_snapshot_active && model_telemetry_complete && c.identity_measured && c.visual_id)try{part_ids.insert(c.visual_id);}catch(...){model_telemetry_complete=false;RenderSnapshot_Text("TELEMETRY_LOSS","model_part_counts","ALLOCATION_FAILED");}
-            command_poses.push_back(pose);
+            command_poses.push_back(pose);command_normals.push_back(kich_r4_lighting::NormalMatrix(c.world));
+            for(unsigned pass=0;pass<PassCount;++pass)if(Routes(c,static_cast<Pass>(pass)))pass_commands[pass].push_back(i);
             if(g_render_snapshot_active){SnapshotCommandDetails(c,i,frame);
                 if(RenderSnapshot_Detailed()){char id[96];snprintf(id,sizeof(id),"frame_%u_command_%u",frame,static_cast<unsigned>(i));
                     kich_r4_telemetry::U64("MODEL_COMMAND",id,"palette_capacity_bones",c.mesh->skinned?capacity:16);
@@ -313,24 +320,30 @@ struct KichR4ModelSession {
         phase_active=false;}
     int32_t Draw(KichR4FrameSession& s,KichR4LevelSession& l,KichR4Handle cb,const kich_r4_lighting::Constants& base,
                  const kich_r4_capture::Batch& batch,Pass pass,uint32_t pass_mask,const char* phase,const KichR4Handle* maps=NULL,KichR4Handle scene_color=0,uint32_t only_index=UINT32_MAX){
-        if(pass>=PassCount || prepared!=&batch || frame!=batch.engine_frame || command_poses.size()!=batch.native_models.size() || command_classes.size()!=batch.native_models.size())return s.Record("G3b unprepared model frame",KICH_R4_E_STATE);
+        if(pass>=PassCount || prepared!=&batch || frame!=batch.engine_frame || command_poses.size()!=batch.native_models.size() || command_classes.size()!=batch.native_models.size() || command_normals.size()!=batch.native_models.size())return s.Record("G3b unprepared model frame",KICH_R4_E_STATE);
         if(only_index!=UINT32_MAX && only_index>=batch.native_models.size())return s.Record("G3b model command index",KICH_R4_E_ARGUMENT);
         struct PhaseScope {KichR4ModelSession& session;bool automatic;
             PhaseScope(KichR4ModelSession& owner,const char* name):session(owner),automatic(!owner.phase_active){if(automatic)session.BeginPhase(name);}
             ~PhaseScope(){if(automatic)session.EndPhase();}
         } scope(*this,phase);
-        std::vector<size_t> order;
-        if(only_index==UINT32_MAX){order.resize(batch.native_models.size());for(size_t i=0;i<order.size();++i)order[i]=i;
-            if(pass==Forward || pass==ForwardAdd || pass==Distortion)std::stable_sort(order.begin(),order.end(),[&](size_t a,size_t b){return Distance(batch.native_models[a],base)>Distance(batch.native_models[b],base);});}
+        std::vector<size_t>& order=pass_commands[pass];
+        if(only_index==UINT32_MAX && (pass==Forward || pass==ForwardAdd || pass==Distortion) &&
+            (!pass_sorted[pass] || memcmp(sort_camera[pass],base.camera,sizeof(sort_camera[pass])))){
+            // Reset equal-distance ties to original capture order even if a
+            // caller changed the camera after an earlier ordered submission.
+            if(pass_sorted[pass])std::sort(order.begin(),order.end());
+            std::stable_sort(order.begin(),order.end(),[&](size_t a,size_t b){return Distance(batch.native_models[a],base)>Distance(batch.native_models[b],base);});
+            memcpy(sort_camera[pass],base.camera,sizeof(sort_camera[pass]));pass_sorted[pass]=true;
+        }
         const bool sun_pass=pass==Shadow && phase && !strncmp(phase,"sun_",4);
         const char* reason=sun_pass?"SHADOW_FRUSTUM_AND_SUN_RECEIVERS":pass==Shadow?"SHADOW_FRUSTUM":pass==HUD?"HUD_EXPLICIT":pass==HUDAdd?"HUD_WORLD_LIGHT_RANGE":pass==ForwardAdd?"CAMERA_FRUSTUM_AND_LIGHT_RANGE":"CAMERA_FRUSTUM";
         const size_t count=only_index==UINT32_MAX?order.size():1;
-        for(size_t n=0;n<count;++n){const size_t index=only_index==UINT32_MAX?order[n]:only_index;const Command& c=batch.native_models[index];if(!Routes(c,pass))continue;
+        for(size_t n=0;n<count;++n){const size_t index=only_index==UINT32_MAX?order[n]:only_index;const Command& c=batch.native_models[index];if(only_index!=UINT32_MAX && !Routes(c,pass))continue;
             ++candidates[pass];++phase_candidates;if(g_render_snapshot_active){Snapshot(c,pass_mask);Note(c,"CANDIDATE_CLASSIFIED",reason);}
             if(!Visible(c,base,pass) || (sun_pass && c.bounds_known && c.bounds.valid && !sun_casters.Visible(c.bounds.min,c.bounds.max))){++culled[pass];++phase_culled;if(g_render_snapshot_active)Note(c,"CULLED",reason);continue;}
             ++selected[pass];++phase_selected;if(g_render_snapshot_active)Note(c,"SELECTED",reason);
             const Mesh& mesh=meshes.at(c.mesh.get());kich_r4_lighting::Constants constants=base;
-            constants.world=c.world;constants.mvp=kich_r4_scene::Multiply(c.world,(pass==HUD || pass==HUDAdd)?c.vp:base.mvp);constants.normal_matrix=kich_r4_lighting::NormalMatrix(c.world);
+            constants.world=c.world;constants.mvp=kich_r4_scene::Multiply(c.world,(pass==HUD || pass==HUDAdd)?c.vp:base.mvp);constants.normal_matrix=command_normals[index];
             constants.alpha[0]=c.style.alpha_ref;constants.alpha[1]=static_cast<float>(c.style.alpha_func);constants.alpha[2]=c.style.blend?1.f:0.f;
             if(pass==Distortion)constants.alpha[3]=0;
             if(c.has_material){constants.material[3]=kich_r4_material::MaterialClass(c.material.material);

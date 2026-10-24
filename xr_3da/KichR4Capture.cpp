@@ -2,9 +2,20 @@
 #include "KichR4Capture.h"
 #include "KichR4CaptureData.h"
 #include "RenderSnapshot.h"
+#include "KichR4ShadowPoolPolicy.h"
+#include "KichR4LightTransitions.h"
+#include <memory>
+#include <cstdio>
 namespace {
 kich_r4_capture::State* capture=NULL;
 KichR4LightVisibility light_visibility=NULL;
+struct FrozenLighting {
+    KichR4LightingFrame value;
+    kich_r4_shadow_pool::ResolutionPolicy resolution;
+    std::unique_ptr<kich_r4_light_transitions::Tracker> transitions;
+    float camera[3];uint32_t frame;bool ready;
+    FrozenLighting():camera(),frame(0),ready(false){}
+} frozen_lighting;
 template<class F>void GuardCapture(F action){if(!capture)return;try{action(*capture);}
     catch(const std::exception& e){try{capture->frame.Fail(e.what());}catch(...) {}}
     catch(...){try{capture->frame.Fail("CPU capture exception");}catch(...) {}}}
@@ -23,9 +34,76 @@ void KichR4_CaptureLightForget(const void* id){if(!capture)return;capture->light
 void KichR4_CaptureLightShadow(const void* id,bool shadow){if(!capture)return;if(shadow)capture->unshadowed_lights.erase(id);else capture->unshadowed_lights.insert(id);}
 void KichR4_SetLightVisibility(KichR4LightVisibility query){light_visibility=query;}
 void KichR4_CaptureLighting(const float* camera,KichR4LightingFrame& frame,bool r1_lights_enabled,const float* camera_vp){
+    frame.selection_frame=frame.local_shadow_size=frame.shadow_plan_faces=0;
+    frame.shadow_resolution_changes=frame.shadow_resolution_reason=0;
     frame.count=0;frame.shadow_mask=0;frame.occlusion_enabled=frame.occlusion_tested=0;frame.occlusion_rejected.clear();
     frame.r1_lights_requested=frame.r1_lights_applied=r1_lights_enabled?1u:0u;if(!capture || !camera)return;
     try{capture->SelectLights(camera,frame,r1_lights_enabled,camera_vp,light_visibility);}catch(...){frame.count=0;frame.shadow_mask=0;}
+}
+void KichR4_ResetFrozenLighting(){frozen_lighting.ready=false;frozen_lighting.resolution.Reset();
+    if(frozen_lighting.transitions)frozen_lighting.transitions->Reset();}
+bool KichR4_CopyFrozenLighting(uint32_t engine_frame,const float* camera,const float* camera_vp,KichR4LightingFrame& out){
+    if(!capture || !frozen_lighting.ready || frozen_lighting.frame!=engine_frame || !camera || !camera_vp ||
+        memcmp(camera,frozen_lighting.camera,sizeof(frozen_lighting.camera)) ||
+        memcmp(camera_vp,frozen_lighting.value.visibility_vp,sizeof(frozen_lighting.value.visibility_vp)))return false;
+    bool copied=false;GuardCapture([&](kich_r4_capture::State&){out=frozen_lighting.value;copied=true;});
+    if(!copied){frozen_lighting.ready=false;out.valid=out.count=out.shadow_mask=0;out.local_shadow_size=out.shadow_plan_faces=0;}
+    return copied;
+}
+void KichR4_FreezeLighting(uint32_t engine_frame,uint32_t now_ms,const float* camera,KichR4LightingFrame& frame,bool r1_lights_enabled,const float* camera_vp){
+    if(KichR4_CopyFrozenLighting(engine_frame,camera,camera_vp,frame))return;
+    frozen_lighting.ready=false;
+    frame.selection_frame=frame.local_shadow_size=frame.shadow_plan_faces=0;
+    frame.shadow_resolution_changes=frame.shadow_resolution_reason=0;
+    frame.count=frame.shadow_mask=0;
+    if(!capture || !camera || !camera_vp || !capture->frame.error.empty())return;
+    GuardCapture([&](kich_r4_capture::State& c){
+        // Native publication must not silently turn an allocation failure into
+        // an empty lighting frame. Legacy/AI snapshots retain their own policy.
+        c.SelectLights(camera,frame,r1_lights_enabled,camera_vp,light_visibility);
+        uint32_t faces=0;
+        for(uint32_t i=0;i<frame.count;++i)if(frame.CastsShadow(i))faces+=frame.lights[i].type==2?1:6;
+        kich_r4_shadow_pool::ResolutionPolicy next=frozen_lighting.resolution;
+        const uint32_t before=next.Size();frame.local_shadow_size=next.Select(faces,now_ms);
+        frame.shadow_plan_faces=faces;frame.selection_frame=engine_frame;
+        frame.shadow_resolution_changes=next.Downgrades()+next.Recoveries();
+        frame.shadow_resolution_reason=frame.local_shadow_size<before?1u:frame.local_shadow_size>before?2u:0u;
+        if(!frozen_lighting.transitions)frozen_lighting.transitions.reset(new kich_r4_light_transitions::Tracker());
+        // Publish only after every potentially allocating copy succeeded.
+        // Later mutations enter the next frame, including weather changes.
+        frozen_lighting.value=frame;
+        frozen_lighting.transitions->Observe(frozen_lighting.value);
+        frozen_lighting.resolution=next;memcpy(frozen_lighting.camera,camera,sizeof(frozen_lighting.camera));
+        frozen_lighting.frame=engine_frame;frozen_lighting.ready=true;
+    });
+    if(!frozen_lighting.ready){frame.valid=frame.count=frame.shadow_mask=0;frame.local_shadow_size=frame.shadow_plan_faces=0;}
+}
+void KichR4_ReportLightingTransitions(uint32_t engine_frame,void (*log)(const char*)){
+    if(!log || !capture || !frozen_lighting.ready || frozen_lighting.frame!=engine_frame || !frozen_lighting.transitions)return;
+    kich_r4_light_transitions::Tracker& tracker=*frozen_lighting.transitions;
+    if(!tracker.window.snapshots)return;
+    GuardCapture([&](kich_r4_capture::State&){
+        const kich_r4_light_transitions::Counters& counts=tracker.window;
+        const KichR4LightingFrame& frame=frozen_lighting.value;
+        const char* reason=frame.shadow_resolution_reason==1?"PRESSURE":frame.shadow_resolution_reason==2?"RECOVERY":"UNCHANGED";
+        char text[1536];
+        snprintf(text,sizeof(text),"[R4 E1.5 lights] frame=%u observed_snapshots=%llu selected=%u hom_rejected=%u observed_set_complete=%u added_to_observed=%llu left_observed=%llu selected_to_hom=%llu hom_to_selected=%llu transitions=%llu event_examples=%u events_omitted=%llu skipped_snapshots=%llu truncated_inputs=%llu invalid_inputs=%llu conflicting_inputs=%llu pool_size=%u pool_faces=%u pool_resizes_total=%u pool_resize_reason_current=%s; absence=NOT_SELECTED_NOT_CAUSAL; no_creation_destruction_inference",
+            engine_frame,static_cast<unsigned long long>(counts.snapshots),tracker.last.selected,tracker.last.hom_rejected,unsigned(tracker.last.complete),
+            static_cast<unsigned long long>(counts.added),static_cast<unsigned long long>(counts.removed),
+            static_cast<unsigned long long>(counts.selected_to_hom),static_cast<unsigned long long>(counts.hom_to_selected),
+            static_cast<unsigned long long>(counts.transitions),tracker.event_count,static_cast<unsigned long long>(counts.dropped_events),
+            static_cast<unsigned long long>(counts.skipped_snapshots),static_cast<unsigned long long>(counts.overflow_inputs),
+            static_cast<unsigned long long>(counts.invalid_inputs),static_cast<unsigned long long>(counts.conflicting_inputs),
+            frame.local_shadow_size,frame.shadow_plan_faces,frame.shadow_resolution_changes,reason);
+        log(text);
+        for(unsigned i=0;i<tracker.event_count;++i){const kich_r4_light_transitions::Event& event=tracker.events[i];
+            snprintf(text,sizeof(text),"[R4 E1.5 light_transition] frame=%u source_serial=%llu process_handle=%llu from=%s to=%s; observed_selection_transition_only",
+                event.frame,static_cast<unsigned long long>(event.source.serial),static_cast<unsigned long long>(event.source.process_handle),
+                kich_r4_light_transitions::Name(event.from),kich_r4_light_transitions::Name(event.to));
+            log(text);
+        }
+        tracker.Reported();
+    });
 }
 void KichR4_CaptureLightingDiagnostics(const float* camera,const KichR4LightingFrame& frame){
     if(!g_render_snapshot_active || !capture)return;
@@ -33,7 +111,7 @@ void KichR4_CaptureLightingDiagnostics(const float* camera,const KichR4LightingF
 }
 const kich_r4_capture::Batch* KichR4_CapturedFrame(){return capture?&capture->frame:NULL;}
 void KichR4_CaptureEnable(bool enabled,void (*log)(const char*)){if(enabled){if(!capture)try{capture=new kich_r4_capture::State();}catch(...) {}if(capture)capture->log=log;}
-    else {delete capture;capture=NULL;}}
+    else {KichR4_ResetFrozenLighting();delete capture;capture=NULL;}}
 bool KichR4_CaptureActive(){return capture && capture->frame.width && capture->frame.error.empty();}
 void KichR4_CaptureBeginFrame(uint32_t w,uint32_t h,uint32_t frame){GuardCapture([&](kich_r4_capture::State& c){c.Begin(w,h,frame);});}
 void KichR4_CaptureHUD(bool begin){GuardCapture([&](kich_r4_capture::State& c){c.frame.ui_seen=true;

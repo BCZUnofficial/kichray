@@ -14,6 +14,8 @@ def main():
         for cc,standard,source,name in [
             (os.environ.get("CC","gcc"),"-std=c11","abi_c_test.c","abi"),
             (os.environ.get("CXX","g++"),"-std=c++11","controller_tests.cpp","controller"),
+            (os.environ.get("CXX","g++"),"-std=c++11","shadow_pool_tests.cpp","shadow_pool"),
+            (os.environ.get("CXX","g++"),"-std=c++11","light_transition_tests.cpp","light_transitions"),
         ]:
             output=Path(folder)/name
             subprocess.run([cc,standard,"-Wall","-Wextra","-Werror",str(HERE/source),"-o",str(output)],check=True)

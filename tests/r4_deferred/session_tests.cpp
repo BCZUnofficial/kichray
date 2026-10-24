@@ -156,11 +156,25 @@ void AllVisibleShadows(){
     input.lighting.count=80;input.lighting.lights.resize(80);input.lighting.sources.resize(80);input.lighting.shadows.assign(80,1);
     for(unsigned i=0;i<80;++i)input.lighting.lights[i].type=1;
     std::vector<uint8_t> selected(80,1);
+    kich_r4_shadow_pool::ResolutionPolicy policy;
+    input.lighting.shadow_plan_faces=480;input.lighting.local_shadow_size=policy.Select(480,0);
     Require(game.deferred.PrepareLocalMaps(game.frame,game.level,input.lighting,selected)==0,"heavy point-light demand retains every face");
     Require(game.deferred.local_maps.size()==480 && game.deferred.local_shadow_size<512,"pressure reduces resolution instead of disabling lights");
     Require(uint64_t(game.deferred.local_maps.size())*game.deferred.local_shadow_size*game.deferred.local_shadow_size*4<=KichR4DeferredSession::LocalShadowBudget,"shadow pool respects byte budget");
     const uint32_t stable=f->created;input.lighting.count=1;selected.resize(1);
+    input.lighting.shadow_plan_faces=6;input.lighting.local_shadow_size=policy.Select(6,16);
     Require(game.deferred.PrepareLocalMaps(game.frame,game.level,input.lighting,selected)==0 && f->created==stable,"visibility fluctuation retains reusable bounded pool");
+    for(uint32_t now=516;now<2016;now+=500){input.lighting.local_shadow_size=policy.Select(6,now);
+        Require(game.deferred.PrepareLocalMaps(game.frame,game.level,input.lighting,selected)==0 && f->created==stable,"recovery delay does not recreate depth resources");}
+    const auto old_maps=game.deferred.local_maps;const uint32_t released=f->released;
+    input.lighting.local_shadow_size=policy.Select(6,2016);
+    Require(game.deferred.PrepareLocalMaps(game.frame,game.level,input.lighting,selected)==0 && game.deferred.local_shadow_size==512,"sustained headroom restores preferred resolution");
+    Require(game.deferred.local_maps.size()==6 && f->created==stable+6 && f->released==released+old_maps.size(),"recovery releases old capacity before allocating six larger faces");
+    for(auto handle:old_maps)Require(!f->objects.count(handle),"old low-resolution depth image is no longer retained");
+    for(auto handle:game.deferred.local_maps){const auto& texture=targets.at(handle);Require(texture.width==512 && texture.height==512,"every retained face uses frozen frame resolution");}
+    Require(uint64_t(game.deferred.local_maps.size())*512*512*4<=KichR4DeferredSession::LocalShadowBudget,"recovered pool capacity remains within byte budget");
+    input.lighting.shadow_plan_faces=7;const uint32_t before_invalid=f->created;
+    Require(game.deferred.PrepareLocalMaps(game.frame,game.level,input.lighting,selected)<0 && f->created==before_invalid,"mismatched frozen plan rejects before GPU allocation");
     KichR4GeometryReport r={};game.Stop(r);Require(!f->live && f->objects.empty(),"expanded shadow pool released on shutdown");
 }
 void SharedFrameQueues(){Fixture fixture;f=&fixture;ResetDeferredRecorder();const KichR4LevelFiles fs={Open,Close};kich_r4_game::Session game(DeferredAPIs(),fs,"l01_escape",NULL);

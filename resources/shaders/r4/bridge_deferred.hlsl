@@ -195,25 +195,64 @@ float4 PSCelestial(Varying v,uint primitive_id:SV_PrimitiveID):SV_Target {
 }
 float3 WorldPosition(float2 pixel,float depth){float4 p=float4(pixel.x*2/screen.x-1,1-pixel.y*2/screen.y,depth,1);
     p=mul(p,inverse_vp);return p.xyz/p.w;}
-float PCF(Texture2D map,float4 projected){if(projected.w<=0)return 0;
+// Derivatives are captured before depth rejection, alpha discard, attenuation
+// and cube-face selection. Taking ddx/ddy inside those branches is undefined.
+bool ShadowPlaneStable(float distance_squared,float step_squared){
+    return isfinite(distance_squared) && isfinite(step_squared) && step_squared<=max(.0625,distance_squared*.0025);
+}
+void ShadowDerivatives(float3 p,out float3 dx,out float3 dy){
+    dx=ddx(p);dy=ddy(p);
+    // A foreground/background discontinuity does not describe one receiver
+    // plane. Reject it instead of extrapolating a large false depth gradient.
+    float3 from_camera=p-camera.xyz;
+    if(!all(isfinite(dx)) || !all(isfinite(dy)) || !ShadowPlaneStable(dot(from_camera,from_camera),max(dot(dx,dx),dot(dy,dy)))){dx=0;dy=0;}
+}
+float2 ShadowGradient(float3 dx,float3 dy){
+    float determinant=dx.x*dy.y-dx.y*dy.x;
+    float scale=max(dx.x*dx.x+dx.y*dx.y,dy.x*dy.x+dy.y*dy.y);
+    if(abs(determinant)<=max(scale*1e-5,1e-20))return float2(0,0);
+    float2 gradient=float2(dx.z*dy.y-dy.z*dx.y,dx.x*dy.z-dy.x*dx.z)/determinant;
+    return all(isfinite(gradient))?gradient:float2(0,0);
+}
+float ShadowTent(float offset){
+    float a=abs(offset),edge=max(1.5-a,0);
+    return a<.5?.75-a*a:.5*edge*edge;
+}
+float3 ShadowDerivative(float4 projected,float4 derivative){
+    float3 d=(derivative.xyz-(projected.xyz/projected.w)*derivative.w)/projected.w;
+    return float3(d.x*.5,-d.y*.5,d.z);
+}
+float PCF(Texture2D map,float4 projected,float4 dx,float4 dy){if(projected.w<=0)return 0;
     float3 q=projected.xyz/projected.w;float2 uv=float2(q.x*.5+.5,.5-q.y*.5);
     if(any(uv<0) || any(uv>1) || q.z<0 || q.z>1)return 0;
-    float result=0;
-    [unroll]for(int y=-1;y<=1;++y)[unroll]for(int x=-1;x<=1;++x)
-        result+=map.SampleCmpLevelZero(shadow_surface,uv+float2(x,y)/screen.w,q.z);
-    return result/9;
+    float2 gradient=ShadowGradient(ShadowDerivative(projected,dx),ShadowDerivative(projected,dy));
+    float2 center=floor(uv*screen.w)+.5;float result=0,weight=0;
+    // Nine POINT comparisons at actual texel centres. Each comparison uses
+    // the receiver depth at that centre, not the depth of the original pixel.
+    // Continuous quadratic tent weights avoid texel snapping in the result.
+    // Unlike hardware bilinear comparison, this needs no additional slope
+    // bias to cover four hidden neighbours; close blockers remain intact.
+    [unroll]for(int y=-1;y<=1;++y)[unroll]for(int x=-1;x<=1;++x){
+        float2 sample_uv=(center+float2(x,y))/screen.w;
+        if(any(sample_uv<0) || any(sample_uv>1))continue;
+        float2 offset=sample_uv-uv;
+        float w=ShadowTent(offset.x*screen.w)*ShadowTent(offset.y*screen.w);
+        float compare_depth=saturate(q.z+dot(gradient,offset));
+        result+=w*map.SampleCmpLevelZero(shadow_surface,sample_uv,compare_depth);weight+=w;
+    }
+    return weight>0?result/weight:0;
 }
-float SunVisibility(float3 p){
+float SunVisibility(float3 p,float3 dx,float3 dy){
     if(sun_color.w<=0)return 0;
-    // 1 cm in world space, independent of the orthographic depth range.
+    // Precision allowance only: plane correction handles the filter footprint.
     p-=sun_direction.xyz*.01;
     float4 near_position=mul(float4(p,1),shadow[0]);
     float3 q=near_position.xyz/near_position.w;
     float edge=max(abs(q.x),abs(q.y));
-    [branch] if(q.z<0 || q.z>1 || edge>=1)return PCF(shadow1,mul(float4(p,1),shadow[1]));
-    float near_visibility=PCF(shadow0,near_position);
+    [branch] if(q.z<0 || q.z>1 || edge>=1)return PCF(shadow1,mul(float4(p,1),shadow[1]),mul(float4(dx,0),shadow[1]),mul(float4(dy,0),shadow[1]));
+    float near_visibility=PCF(shadow0,near_position,mul(float4(dx,0),shadow[0]),mul(float4(dy,0),shadow[0]));
     [branch] if(edge<=.9)return near_visibility;
-    float far_visibility=PCF(shadow1,mul(float4(p,1),shadow[1]));
+    float far_visibility=PCF(shadow1,mul(float4(p,1),shadow[1]),mul(float4(dx,0),shadow[1]),mul(float4(dy,0),shadow[1]));
     return lerp(near_visibility,far_visibility,saturate((edge-.9)*10));
 }
 // Analytical evaluation of SoC r2_rendertarget.cpp's four-slice material LUT.
@@ -241,46 +280,49 @@ float4 DirectLight(float3 p,float3 n,float3 direction,float3 color,float gloss,f
     float2 response=MaterialResponse(dot(n,direction),dot(n,half_vector),m);
     return float4(color*response.x,SpecularIntensity(color)*response.y*gloss);
 }
-float4 SunLighting(float3 p,float3 n,float h,float sun_mask,float gloss,float m){
+float4 SunLighting(float3 p,float3 n,float h,float sun_mask,float gloss,float m,float3 dx,float3 dy){
     // Source hemi already encodes visibility; R2 hmodel does not multiply it
     // by a second world-up term. Weather hemi RGB remains the env approximation.
     float3 indirect=ambient.rgb+hemi.rgb*MaterialResponse(saturate(h),0,m).x;
-    float4 direct=DirectLight(p,n,-sun_direction.xyz,sun_color.rgb,gloss,m)*SunVisibility(p)*sun_mask;
+    float4 direct=DirectLight(p,n,-sun_direction.xyz,sun_color.rgb,gloss,m)*SunVisibility(p,dx,dy)*sun_mask;
     return float4(indirect,0)+direct;
 }
-float3 SunLight(float3 p,float3 n,float h,float sun_mask){return SunLighting(p,n,h,sun_mask,0,material.w).rgb;}
+float3 SunLight(float3 p,float3 n,float h,float sun_mask,float3 dx,float3 dy){return SunLighting(p,n,h,sun_mask,0,material.w,dx,dy).rgb;}
 uint CubeFace(float3 d){float3 a=abs(d);if(a.x>=a.y && a.x>=a.z)return d.x>=0?0:1;
     if(a.y>=a.z)return d.y>=0?2:3;return d.z>=0?4:5;}
-float LocalVisibility(float3 p){if(alpha.w<.5)return 1;uint face=light_color.w>1.5?0:CubeFace(p-light_position.xyz);
+float LocalVisibility(float3 p,float3 dx,float3 dy){if(alpha.w<.5)return 1;uint face=light_color.w>1.5?0:CubeFace(p-light_position.xyz);
     // A fixed projected-depth subtraction scales to meters near the far plane.
     // Move the receiver by only 3 mm instead, preserving nearby blockers.
     float3 towards=light_position.xyz-p;
     p+=towards*(.003/max(length(towards),.003));
     float4 projected=mul(float4(p,1),shadow[face]);
-    if(face==0)return PCF(shadow0,projected);if(face==1)return PCF(shadow1,projected);
-    if(face==2)return PCF(shadow2,projected);if(face==3)return PCF(shadow3,projected);
-    if(face==4)return PCF(shadow4,projected);return PCF(shadow5,projected);}
+    float4 sx=mul(float4(dx,0),shadow[face]),sy=mul(float4(dy,0),shadow[face]);
+    if(face==0)return PCF(shadow0,projected,sx,sy);if(face==1)return PCF(shadow1,projected,sx,sy);
+    if(face==2)return PCF(shadow2,projected,sx,sy);if(face==3)return PCF(shadow3,projected,sx,sy);
+    if(face==4)return PCF(shadow4,projected,sx,sy);return PCF(shadow5,projected,sx,sy);}
 float LocalAttenuation(float distance_squared,float range){float radius=max(range*.95,.0001);
     return saturate(1-distance_squared/(radius*radius));}
-float4 LocalLight(float3 p,float3 n,float gloss,float m){float3 delta=light_position.xyz-p;float distance=length(delta);
+float4 LocalLight(float3 p,float3 n,float gloss,float m,float3 dx,float3 dy){float3 delta=light_position.xyz-p;float distance=length(delta);
     float3 direction=delta/max(distance,.0001);float attenuation=LocalAttenuation(dot(delta,delta),light_position.w);
     if(light_color.w>1.5){float angle=dot(-direction,light_direction.xyz);
         attenuation*=saturate((angle-light_direction.w)/max(.001,(1-light_direction.w)*.2));}
     if(attenuation<=0)return 0;
-    return DirectLight(p,n,direction,light_color.rgb,gloss,m)*(attenuation*LocalVisibility(p));}
+    return DirectLight(p,n,direction,light_color.rgb,gloss,m)*(attenuation*LocalVisibility(p,dx,dy));}
 float4 PSSun(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=image1.Load(int3(at,0)).r;
-    if(depth>=1)return 0;float4 n=image0.Load(int3(at,0));float3 p=WorldPosition(v.p.xy,depth);
-    if((int)screen.z==8)return float4(SunVisibility(p).xxx,0);
-    // SoC R2 combine uses raw static occlusion *2; .5 encodes unmasked runtime sun.
-    return SunLighting(p,DecodeNormal(n.xy),n.z,shadow2.Load(int3(at,0)).a*2,MaterialGloss(n.w),MaterialClass(n.w));}
-float4 PSLocal(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=image1.Load(int3(at,0)).r;
+    float3 p=WorldPosition(v.p.xy,depth),dx,dy;ShadowDerivatives(p,dx,dy);
     if(depth>=1)return 0;float4 n=image0.Load(int3(at,0));
-    return LocalLight(WorldPosition(v.p.xy,depth),DecodeNormal(n.xy),MaterialGloss(n.w),MaterialClass(n.w));}
-float4 PSForwardSun(Varying v,bool front:SV_IsFrontFace):SV_Target {float4 c=Base(v);
-    float4 light=SunLighting(v.w,Normal(v,front),saturate(v.n.w),1,Gloss(v),material.w);
+    if((int)screen.z==8)return float4(SunVisibility(p,dx,dy).xxx,0);
+    // SoC R2 combine uses raw static occlusion *2; .5 encodes unmasked runtime sun.
+    return SunLighting(p,DecodeNormal(n.xy),n.z,shadow2.Load(int3(at,0)).a*2,MaterialGloss(n.w),MaterialClass(n.w),dx,dy);}
+float4 PSLocal(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=image1.Load(int3(at,0)).r;
+    float3 p=WorldPosition(v.p.xy,depth),dx,dy;ShadowDerivatives(p,dx,dy);
+    if(depth>=1)return 0;float4 n=image0.Load(int3(at,0));
+    return LocalLight(p,DecodeNormal(n.xy),MaterialGloss(n.w),MaterialClass(n.w),dx,dy);}
+float4 PSForwardSun(Varying v,bool front:SV_IsFrontFace):SV_Target {float3 dx,dy;ShadowDerivatives(v.w,dx,dy);float4 c=Base(v);
+    float4 light=SunLighting(v.w,Normal(v,front),saturate(v.n.w),1,Gloss(v),material.w,dx,dy);
     return float4(c.rgb*light.rgb+light.aaa,c.a);}
-float4 PSForwardLocal(Varying v,bool front:SV_IsFrontFace):SV_Target {float4 c=Base(v);
-    float4 light=LocalLight(v.w,Normal(v,front),Gloss(v),material.w);
+float4 PSForwardLocal(Varying v,bool front:SV_IsFrontFace):SV_Target {float3 dx,dy;ShadowDerivatives(v.w,dx,dy);float4 c=Base(v);
+    float4 light=LocalLight(v.w,Normal(v,front),Gloss(v),material.w,dx,dy);
     return float4((c.rgb*light.rgb+light.aaa)*(alpha.z>0?c.a:1),0);}
 // combine: image0 albedo, image1 light; shadow0 normal; shadow1 depth.
 float4 PSCombine(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=shadow1.Load(int3(at,0)).r;
@@ -297,11 +339,12 @@ TextureCube sky0:register(t0);TextureCube sky1:register(t1);
 float4 PSSky(Varying v):SV_Target {float3 d=v.n.xyz;return float4(lerp(sky0.Sample(surface,d).rgb,sky1.Sample(surface1,d).rgb,v.c.a)*v.c.rgb*2,1);}
 float4 PSClouds(Varying v):SV_Target {return float4((image0.Sample(surface,v.uv).rgb+image1.Sample(surface1,v.n.xy).rgb)*v.c.rgb,v.c.a);}
 float4 PSWater(Varying v,bool front:SV_IsFrontFace):SV_Target {
+    float3 dx,dy;ShadowDerivatives(v.w,dx,dy);
     float t=light_position.w;float2 flow=v.uv+float2(t*.015,t*.01);
     float4 water=image0.Sample(surface,flow);float2 wave=(water.rg-.5)*.012;
     float2 screen_uv=v.p.xy/screen.xy;float3 behind=image1.Sample(surface1,saturate(screen_uv+wave)).rgb;
     float3 n=Normal(v,front);float fresnel=pow(1-saturate(dot(n,normalize(camera.xyz-v.w))),5);
-    float3 lit=water.rgb*SunLight(v.w,n,saturate(v.n.w),1);return float4(lerp(lerp(behind,lit,.35),hemi.rgb,fresnel*.5),.8);
+    float3 lit=water.rgb*SunLight(v.w,n,saturate(v.n.w),1,dx,dy);return float4(lerp(lerp(behind,lit,.35),hemi.rgb,fresnel*.5),.8);
 }
 float4 PSDistortion(Varying v):SV_Target {float4 mask=Base(v);bool menu=alpha.w>29.5 && alpha.w<30.5;
     // Match R2 distort.ps: the menu mask is alpha-blended over neutral 0.5.

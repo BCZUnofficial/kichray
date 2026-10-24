@@ -48,4 +48,5 @@ with tempfile.TemporaryDirectory(prefix='kich-b44-') as folder:
         binary=Path(folder)/'light_hook'
         subprocess.run([os.environ.get('CXX','g++'),'-std=c++11','-Wall','-Wextra','-Werror',*guards,'-I'+str(root/'tests/r4_deferred'),str(unit),'-o',str(binary)],check=True)
         subprocess.run([str(binary)],check=True)
+subprocess.run(['python3','-B',str(root/'tests/r4_deferred/run_shadow_tests.py')],check=True)
 subprocess.run(['python3','-B',str(root/'tests/r4_deferred/embed_shaders.py'),'--check'],check=True)

@@ -569,6 +569,9 @@
     <ClInclude Include="KichR4DeferredSession.h" />
     <ClInclude Include="KichR4DeferredShaders.h" />
     <ClInclude Include="KichR4Lighting.h" />
+    <ClInclude Include="KichR4LightTransitions.h" />
+    <ClInclude Include="KichR4RosExposure.h" />
+    <ClInclude Include="KichR4ShadowPoolPolicy.h" />
     <ClInclude Include="KichR4LightingMath.h" />
     <ClInclude Include="KichR4Material.h" />
     <ClInclude Include="KichR4MaterialServices.h" />

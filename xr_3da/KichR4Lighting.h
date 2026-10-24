@@ -32,10 +32,15 @@ struct KichR4LightingFrame {
     uint32_t r1_lights_requested,r1_lights_applied;
     uint32_t occlusion_enabled,occlusion_tested;
     std::vector<KichR4LightIdentity> occlusion_rejected;
+    // EXE-side immutable native frame plan, shared by collection and submission.
+    // Zero size denotes an unplanned legacy/test producer, not a zero-sized map.
+    uint32_t selection_frame,local_shadow_size,shadow_plan_faces;
+    uint32_t shadow_resolution_changes,shadow_resolution_reason;
     // Small direct/test producers can still fill the original first eight
     // entries. Captured frames resize to every visible registry source.
     KichR4LightingFrame():valid(0),count(0),shadow_mask(0),sun_direction(),sun_color(),ambient(),hemi(),fog(),
-        lights(8),sources(8),visibility_vp(),visibility_valid(0),r1_lights_requested(0),r1_lights_applied(0),occlusion_enabled(0),occlusion_tested(0){}
+        lights(8),sources(8),visibility_vp(),visibility_valid(0),r1_lights_requested(0),r1_lights_applied(0),occlusion_enabled(0),occlusion_tested(0),
+        selection_frame(0),local_shadow_size(0),shadow_plan_faces(0),shadow_resolution_changes(0),shadow_resolution_reason(0){}
     bool CastsShadow(unsigned index)const {
         if(index>=count)return false;
         if(index<shadows.size())return shadows[index]!=0;
@@ -63,4 +68,8 @@ KICH_R4_LIGHT_EXPORT void KichR4_CaptureLightForget(const void*);
 void KichR4_CaptureLighting(const float*,KichR4LightingFrame&,bool r1_lights_enabled=false,const float* camera_vp=NULL);
 void KichR4_CaptureLightingDiagnostics(const float*,const KichR4LightingFrame&);
 void KichR4_SetLightVisibility(KichR4LightVisibility);
+void KichR4_FreezeLighting(uint32_t engine_frame,uint32_t now_ms,const float* camera,KichR4LightingFrame&,bool r1_lights_enabled,const float* camera_vp);
+bool KichR4_CopyFrozenLighting(uint32_t engine_frame,const float* camera,const float* camera_vp,KichR4LightingFrame&);
+void KichR4_ResetFrozenLighting();
+void KichR4_ReportLightingTransitions(uint32_t engine_frame,void (*log)(const char*));
 #endif

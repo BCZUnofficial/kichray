@@ -48,7 +48,8 @@ void KichR4_GamePrepareEngineFrame()
         memcpy(input.lighting.ambient,&env.ambient.x,12);memcpy(input.lighting.hemi,&env.hemi_color.x,12);
         memcpy(input.lighting.fog,&env.fog_color.x,12);
     }
-    KichR4_CaptureLighting(input.position,input.lighting,ps_r2_ls_flags.test(R2FLAG_R1LIGHTS)!=0,input.view_projection);
+    if(!KichR4_CopyFrozenLighting(input.engine_frame,input.position,input.view_projection,input.lighting))
+        KichR4_CaptureLighting(input.position,input.lighting,ps_r2_ls_flags.test(R2FLAG_R1LIGHTS)!=0,input.view_projection);
     KichR4_GamePrepare(input);
 #endif
 }
@@ -66,6 +67,9 @@ void KichR4_NativePresentEngineFrame(bool loading)
     if(g_pGamePersistent){const CEnvDescriptorMixer& env=g_pGamePersistent->Environment().CurrentEnv;
         CopyMemory(input.lighting.sun_direction,&env.sun_dir.x,12);CopyMemory(input.lighting.sun_color,&env.sun_color.x,12);CopyMemory(input.lighting.ambient,&env.ambient.x,12);
         CopyMemory(input.lighting.hemi,&env.hemi_color.x,12);CopyMemory(input.lighting.fog,&env.fog_color.x,12);}
-    KichR4_CaptureLighting(input.position,input.lighting,ps_r2_ls_flags.test(R2FLAG_R1LIGHTS)!=0,input.view_projection);
+    if(!loading && input.allowed){
+        if(!KichR4_CopyFrozenLighting(input.engine_frame,input.position,input.view_projection,input.lighting))
+            KichR4_FreezeLighting(input.engine_frame,Device.dwTimeGlobal,input.position,input.lighting,ps_r2_ls_flags.test(R2FLAG_R1LIGHTS)!=0,input.view_projection);
+    }else KichR4_CaptureLighting(input.position,input.lighting,ps_r2_ls_flags.test(R2FLAG_R1LIGHTS)!=0,input.view_projection);
     R_ASSERT2(KichR4_NativePresent(input),"R4 native frame failed; see log. Native mode has no DX9 frame to fall back to.");
 }

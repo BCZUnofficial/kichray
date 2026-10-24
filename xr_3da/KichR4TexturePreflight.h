@@ -7,19 +7,38 @@
 #include "KichR4Visibility.h"
 #include "KichR4LevelVisibility.h"
 #include "KichR4PostprocessNoise.h"
+#include "KichR4ShadowPoolPolicy.h"
+#include <unordered_map>
 namespace kich_r4_texture {
-inline void MaterialDemand(KichR4LevelSession& level,const kich_r4_material::Descriptor& m,uint32_t role){
-    level.NeedTexture(m.base,role);
-    level.NeedTexture(m.lightmap,role<=HUD?role:uint32_t(LIGHTING));
-    level.NeedTexture(m.hemi,role<=HUD?role:uint32_t(LIGHTING));
-    level.NeedTexture(m.bump,NORMAL);level.NeedTexture(m.bump_aux,NORMAL);
+// Exact source strings preserve the registry's existing canonicalization and
+// first-source rules. A stronger later role must still reach the registry.
+// This cache lives only during preflight: never retain a handle or retry state.
+struct FrameDemand {
+    KichR4LevelSession& level;std::unordered_map<std::string,uint32_t> requested;
+    explicit FrameDemand(KichR4LevelSession& owner):level(owner){}
+    void NeedTexture(const std::string& name,uint32_t role){
+        if(name.empty() || name.compare(0,12,"r4_runtime__")==0)return;
+        const auto found=requested.find(name);
+        if(found!=requested.end()){
+            if(found->second<=role)return;
+            found->second=role;
+        }else requested.emplace(name,role);
+        level.NeedTexture(name,role);
+    }
+};
+inline void MaterialDemand(FrameDemand& demand,const kich_r4_material::Descriptor& m,uint32_t role){
+    KichR4LevelSession& level=demand.level;
+    demand.NeedTexture(m.base,role);
+    demand.NeedTexture(m.lightmap,role<=HUD?role:uint32_t(LIGHTING));
+    demand.NeedTexture(m.hemi,role<=HUD?role:uint32_t(LIGHTING));
+    demand.NeedTexture(m.bump,NORMAL);demand.NeedTexture(m.bump_aux,NORMAL);
     // The established SoC bump auxiliary fallback is itself a dependency.
     if(!m.bump.empty() && !m.bump_aux.empty()){
         const auto auxiliary=level.texture_registry.entries.find(Key(m.bump_aux));
         if(auxiliary!=level.texture_registry.entries.end() && auxiliary->second.reason==SourceUnavailable)
-            level.NeedTexture("ed\\ed_dummy_bump#",NORMAL);
+            demand.NeedTexture("ed\\ed_dummy_bump#",NORMAL);
     }
-    level.NeedTexture(m.detail,DETAIL);
+    demand.NeedTexture(m.detail,DETAIL);
 }
 inline bool AnyView(const kich_r4_capture::NativeModelCommand& model,const std::vector<kich_r4_scene::Matrix>& views,
                     const std::vector<unsigned char>& sun,const kich_r4_visibility::SunCasterVolume& volume){
@@ -32,6 +51,7 @@ inline bool AnyView(const kich_r4_capture::NativeModelCommand& model,const std::
 inline int32_t Preflight(KichR4FrameSession& frame,KichR4LevelSession& level,
                         const kich_r4_capture::Batch& batch,const KichR4GameFrame& input,
                         KichR4DetailSession& details,bool scene,kich_r4_level::StaticFramePlan* shared_plan=NULL){
+    FrameDemand demand(level);
     kich_r4_level::StaticFramePlan fallback;
     if(!shared_plan){if(scene)fallback.Begin(level.scene,level.revision,input.tree_wind[0],input.tree_wind[2]);shared_plan=&fallback;}
     kich_r4_scene::Matrix camera;memcpy(camera.m,input.view_projection,sizeof(camera.m));
@@ -49,50 +69,58 @@ inline int32_t Preflight(KichR4FrameSession& frame,KichR4LevelSession& level,
             add_shadow(kich_r4_lighting::SunShadow(input.position,input.lighting.sun_direction,128.f),UINT32_MAX,true);
             add_shadow(kich_r4_lighting::SunShadow(input.position,input.lighting.sun_direction,512.f),UINT32_MAX,true);}
         std::vector<uint8_t> selected;kich_r4_visibility::SelectShadowLights(input.lighting,true,selected);
+        uint32_t faces=0;for(size_t i=0;i<selected.size() && i<input.lighting.lights.size();++i)if(selected[i])faces+=input.lighting.lights[i].type==2?1:6;
+        const uint32_t shadow_size=input.lighting.local_shadow_size?input.lighting.local_shadow_size:kich_r4_shadow_pool::BestFit(faces);
+        if(!shadow_size)return frame.Record("E1.5 preflight shadow pool budget",KICH_R4_E_ARGUMENT);
         for(size_t i=0;i<selected.size() && i<input.lighting.lights.size();++i)if(selected[i]){
             const KichR4LocalLight& light=input.lighting.lights[i];
             const uint32_t seed=level.files.sector?level.files.sector(light.position):UINT32_MAX;
-            for(unsigned face=0;face<(light.type==2?1u:6u);++face)add_shadow(kich_r4_lighting::LocalShadow(light,face),seed,false);}
+            for(unsigned face=0;face<(light.type==2?1u:6u);++face)add_shadow(kich_r4_lighting::LocalShadow(light,face,shadow_size),seed,false);}
         const uint32_t camera_sector=level.files.sector?level.files.sector(input.position):UINT32_MAX;
         const kich_r4_level::StaticVisibility& camera_static=shared_plan->Select(camera,camera_sector);
+        // Expand each static material once per role. Unknown camera materials
+        // can still name a distinct shadow-alpha source, so retain both bits.
+        std::vector<unsigned char> material_demands(level.scene.materials.size(),0);
         for(size_t i=0;i<level.scene.draws.size();++i){const kich_r4_level::Draw& mesh=level.scene.draws[i];
             const kich_r4_level::Material& material=level.scene.materials[mesh.material];
             const kich_r4_material::Descriptor& m=material.descriptor;
+            unsigned char& requested=material_demands[mesh.material];
             if(camera_static.draws[i]){
-                level.NeedTexture(material.texture,BASE);
-                if(kich_r4_material::Geometry(m))MaterialDemand(level,m,BASE);
-                if(material.kind==1){level.NeedTexture(material.texture+"_mask",LIGHTING);for(unsigned j=0;j<4;++j)level.NeedTexture(material.layers[j],DETAIL);}
-            }else if((m.semantic!=kich_r4_material::UNKNOWN?m.alpha_func!=8:material.cutout) && shadow_static[i]){
-                level.NeedTexture(material.texture,SHADOW_ALPHA);level.NeedTexture(m.base,SHADOW_ALPHA);}
+                if(requested&2)continue;
+                requested|=2;demand.NeedTexture(material.texture,BASE);
+                if(kich_r4_material::Geometry(m))MaterialDemand(demand,m,BASE);
+                if(material.kind==1){demand.NeedTexture(material.texture+"_mask",LIGHTING);for(unsigned j=0;j<4;++j)demand.NeedTexture(material.layers[j],DETAIL);}
+            }else if(!(requested&1) && (m.semantic!=kich_r4_material::UNKNOWN?m.alpha_func!=8:material.cutout) && shadow_static[i]){
+                requested|=1;demand.NeedTexture(material.texture,SHADOW_ALPHA);demand.NeedTexture(m.base,SHADOW_ALPHA);}
         }
     }
     for(size_t i=0;i<batch.commands.size();++i){const kich_r4_capture::Command& c=batch.commands[i];
         if(!c.count || (!scene && c.layer!=2))continue;
         const uint32_t role=c.layer==2?UI:c.layer==1?HUD:c.effect?EFFECT:BASE;
-        level.NeedTexture(c.texture,role);
-        if(c.effect==2 || c.effect==3)level.NeedTexture(c.secondary,role);
+        demand.NeedTexture(c.texture,role);
+        if(c.effect==2 || c.effect==3)demand.NeedTexture(c.secondary,role);
     }
     if(scene)for(size_t i=0;i<batch.native_models.size();++i){const kich_r4_capture::NativeModelCommand& c=batch.native_models[i];if(!c.count)continue;
         const bool visible=c.layer || !c.bounds_known || kich_r4_visibility::Visible(c.bounds.min,c.bounds.max,camera);
         if(visible){const uint32_t role=c.layer?HUD:c.effect?EFFECT:BASE;
-            level.NeedTexture(c.texture,role);
-            if(c.has_material){level.NeedTexture(c.material.base,role);if(kich_r4_material::Geometry(c.material))MaterialDemand(level,c.material,role);}
+            demand.NeedTexture(c.texture,role);
+            if(c.has_material){demand.NeedTexture(c.material.base,role);if(kich_r4_material::Geometry(c.material))MaterialDemand(demand,c.material,role);}
         }else if((c.has_material?c.material.alpha_func:c.style.alpha_func)!=8 && AnyView(c,shadows,shadow_sun,shared_plan->sun_casters)){
-            level.NeedTexture(c.has_material && !c.material.base.empty()?c.material.base:c.texture,SHADOW_ALPHA);}
+            demand.NeedTexture(c.has_material && !c.material.base.empty()?c.material.base:c.texture,SHADOW_ALPHA);}
     }
     const kich_r4_detail::Frame* source=details.source;
     if(scene && source && source->source_frame_known && source->engine_frame==input.engine_frame){
         for(size_t i=0;i<source->groups.size();++i){const kich_r4_detail::Group& g=source->groups[i];
-            if(g.count && g.mesh<source->meshes.size())level.NeedTexture(source->meshes[g.mesh].texture,BASE);}
+            if(g.count && g.mesh<source->meshes.size())demand.NeedTexture(source->meshes[g.mesh].texture,BASE);}
         std::vector<unsigned char> needed(source->meshes.size(),0);
         for(size_t view=0;view<shadows.size();++view){const KichR4DetailSession::ShadowSelection& selection=details.SelectShadow(shadows[view],shadow_sun[view]!=0);
             for(size_t i=0;i<selection.groups.size();++i)if(selection.groups[i].mesh<needed.size())needed[selection.groups[i].mesh]=1;}
-        for(size_t i=0;i<needed.size();++i)if(needed[i])level.NeedTexture(source->meshes[i].texture,SHADOW_ALPHA);
+        for(size_t i=0;i<needed.size();++i)if(needed[i])demand.NeedTexture(source->meshes[i].texture,SHADOW_ALPHA);
     }
     // The fullscreen effect shares the frame's residency plan. Never upload or
     // evict world textures late in Process, and never request noise for menus.
     if(scene && kich_r4_noise::Amount(input.postprocess[7])>0 && input.postprocess[9]>0 && std::isfinite(input.postprocess[9]))
-        level.NeedTexture(kich_r4_noise::Texture(),EFFECT);
+        demand.NeedTexture(kich_r4_noise::Texture(),EFFECT);
     return level.CommitTexturePlan(frame);
 }
 }
