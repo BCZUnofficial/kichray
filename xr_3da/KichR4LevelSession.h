@@ -42,13 +42,17 @@ struct KichR4LevelSession {
         for(unsigned y=0;y<8;++y)for(unsigned x=0;x<8;++x){const unsigned at=128+(y*8+x)*4;const bool dark=((x/2+y/2)%2)!=0;
             d[at]=grid?(dark?32:255):210;d[at+1]=grid?32:210;d[at+2]=grid?(dark?32:255):210;d[at+3]=255;}
         const KichR4DdsDesc desc={sizeof(desc),2048,0};return Expect(s,"B4.2 fallback texture",api.create_texture_dds(s.device,&desc,d.data(),static_cast<uint32_t>(d.size()),out));}
-    KichR4Handle Texture(KichR4FrameSession& s,const std::string& name){
+    KichR4Handle Texture(KichR4FrameSession& s,const std::string& name,bool retry_budget=false){
         if(name.empty())return white;
         if(texture_override){bool handled=false;const KichR4Handle h=texture_override(texture_context,name,handled);if(handled)return h;}
         const std::string key=kich_r4_texture::Key(name);
         kich_r4_texture::Entry& entry=texture_registry.entries[key];
         entry.touched=texture_registry.epoch;
         if(entry.handle)return entry.handle;
+        // UI admission precedes world submission and may now evict yesterday's
+        // world textures. Do not keep a previous late-frame budget failure on
+        // cooldown when this ordered admission explicitly requests a retry.
+        if(retry_budget && entry.reason==kich_r4_texture::BudgetPressure)entry.retry=0;
         if(entry.retry>texture_registry.epoch)return checker;
         KichR4Handle result=checker;kich_r4_level::File file(files);std::string path=name;
         if(path.size()<4 || kich_r4_level::Lower(path.substr(path.size()-4))!=".dds")path+=".dds";

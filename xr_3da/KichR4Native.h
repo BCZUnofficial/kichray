@@ -49,6 +49,17 @@ void KichR4_NativeBegin(uint32_t width,uint32_t height,uint32_t frame);
 void KichR4_NativeMenuPP(bool enabled);
 KICH_NATIVE_API void KichR4_NativeCelestialSource(bool enabled);
 KICH_NATIVE_API void KichR4_NativeLensEffect(bool enabled);
+// 0=none, 1=static, 2=skeletal. Returns the previous scope for nesting/unwind.
+KICH_NATIVE_API uint32_t KichR4_NativeWallmark(uint32_t scope);
+class KichR4NativeWallmarkScope {
+    uint32_t previous;
+public:
+    explicit KichR4NativeWallmarkScope(bool skeletal):previous(KichR4_NativeWallmark(skeletal?2u:1u)){}
+    ~KichR4NativeWallmarkScope(){KichR4_NativeWallmark(previous);}
+private:
+    KichR4NativeWallmarkScope(const KichR4NativeWallmarkScope&);
+    KichR4NativeWallmarkScope& operator=(const KichR4NativeWallmarkScope&);
+};
 KICH_NATIVE_API void KichR4_NativeObjectLight(bool valid,float hemi,float sun);
 bool KichR4_NativePresent(const KichR4GameFrame& input);
 void KichR4_NativeDestroy();

@@ -229,8 +229,12 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
             LARGE_INTEGER loaded;QueryPerformanceCounter(&loaded);
             Write("[R4 G3e load] native_level_and_materials_ms=%.3f DDS_io_ms=%.3f DDS_parse_ms=%.3f DDS_create_upload_api_ms=%.3f DDS_loaded=%u; excludes engine prefetch; create includes provider parse and upload submission",
                 double(loaded.QuadPart-start.QuadPart)*1000.0/double(frequency.QuadPart),c.level.texture_io_ms,c.level.texture_parse_ms,c.level.texture_create_ms,c.level.textures_loaded);
+            // Preloading is not a submitted frame. Let visible UI claim its
+            // residency before world/shadow draws pin their material textures.
+            c.level.texture_registry.Begin();
         }
         const kich_r4_capture::Batch* batch=KichR4_CapturedFrame();if(!batch || !batch->Ready()){Write("[R4 native B5] rejected CPU frame: %s",batch?batch->error.c_str():"queue unavailable");return false;}
+        if(c.stream.PrepareUI(c.frame,c.level,*batch)<0)return false;
         if(input.debug_down && !native.debug_key){native.debug=(native.debug+1)%kich_r4_optics::DebugViewCount;
             Write("[R4 G3e] F9 view=%u %s; diagnostic views bypass postprocess",native.debug,kich_r4_optics::DebugView(native.debug));}native.debug_key=input.debug_down;
         if(!c.frame.rendered){const float* p=input.postprocess;Write("[R4 native B5] output: gamma=%.3f brightness=%.3f contrast=%.3f balance=[%.3f %.3f %.3f] PP_base=[%.3f %.3f %.3f] PP_add=[%.3f %.3f %.3f]",
@@ -273,6 +277,20 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
             RenderSnapshot_U64("MEMORY","dds_resident_payload_bytes",c.level.texture_registry.bytes);
             RenderSnapshot_U64("MEMORY","dds_budget_bytes",c.level.texture_registry.budget);
             RenderSnapshot_U64("MEMORY","dds_evictions_total",c.level.texture_registry.evictions);
+            RenderSnapshot_U64("MEMORY","ui_texture_sources",c.stream.ui_texture_sources);
+            RenderSnapshot_U64("MEMORY","ui_texture_ready",c.stream.ui_texture_ready);
+            RenderSnapshot_U64("MEMORY","ui_texture_fallbacks",c.stream.ui_texture_fallbacks);
+            std::set<std::string> ui_textures;
+            for(const auto& command:batch->commands)if(command.layer==2 && !command.texture.empty())ui_textures.insert(kich_r4_texture::Key(command.texture));
+            for(const auto& name:ui_textures){const auto found=c.level.texture_registry.entries.find(name);
+                if(found==c.level.texture_registry.entries.end()){RenderSnapshot_Record("UI_TEXTURE",name.c_str(),"source","OVERRIDE_OR_NON_DDS");continue;}
+                const auto& entry=found->second;
+                RenderSnapshot_Record("UI_TEXTURE",name.c_str(),"status",entry.handle?"RESIDENT":"FALLBACK");
+                RenderSnapshot_RecordU64("UI_TEXTURE",name.c_str(),"handle",entry.handle);
+                RenderSnapshot_RecordU64("UI_TEXTURE",name.c_str(),"payload_bytes",entry.bytes);
+                RenderSnapshot_RecordU64("UI_TEXTURE",name.c_str(),"failure_kind",entry.reason);
+                RenderSnapshot_RecordU64("UI_TEXTURE",name.c_str(),"hresult",static_cast<uint32_t>(entry.failure));
+                RenderSnapshot_RecordU64("UI_TEXTURE",name.c_str(),"pinned_this_frame",entry.touched==c.level.texture_registry.epoch);}
             for(const auto& item:c.level.texture_registry.entries){const auto& e=item.second;
                 RenderSnapshot_RecordU64("DDS_RESIDENCY",item.first.c_str(),"handle",e.handle);RenderSnapshot_RecordU64("DDS_RESIDENCY",item.first.c_str(),"payload_bytes",e.bytes);
                 RenderSnapshot_RecordU64("DDS_RESIDENCY",item.first.c_str(),"width",e.width);RenderSnapshot_RecordU64("DDS_RESIDENCY",item.first.c_str(),"height",e.height);RenderSnapshot_RecordU64("DDS_RESIDENCY",item.first.c_str(),"mips",e.mips);

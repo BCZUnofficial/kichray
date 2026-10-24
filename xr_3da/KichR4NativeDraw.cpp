@@ -10,6 +10,7 @@
 #include "KichR4LevelOption.h"
 #include "KichR4DetailData.h"
 #include "KichR4MaterialRules.h"
+#include "KichR4WallmarkRules.h"
 #include "KichR4OpticalRules.h"
 #include "KichR4MaterialServices.h"
 #include "RenderSnapshot.h"
@@ -27,7 +28,7 @@ uint32_t states[256]={};
 uint32_t sampler_states[8][14]={};
 kich_r4_capture::Style style;
 CTexture* textures[16]={};
-uint32_t effect=0;
+uint32_t effect=0,wallmark_scope=0,wallmark_color=0;
 uint32_t source_element=UINT32_MAX,source_pass=0;
 std::string active_shader,model_texture,model_secondary;
 const kich_r4_material::Descriptor* active_material=NULL;
@@ -97,6 +98,7 @@ uint32_t KichR4_NativeGetState(uint32_t key){return key<256?states[key]:0;}
 void KichR4_NativeMenuPP(bool enabled){if(menu_pp && !enabled)menu_overlay=true;menu_pp=enabled;}
 void KichR4_NativeCelestialSource(bool enabled){celestial_source=enabled;}
 void KichR4_NativeLensEffect(bool enabled){lens_effect=enabled;}
+uint32_t KichR4_NativeWallmark(uint32_t scope){const uint32_t previous=wallmark_scope;wallmark_scope=scope;return previous;}
 void KichR4_NativeObjectLight(bool valid,float hemi,float sun){object_light_valid=valid;object_hemi=hemi;object_sun=sun;}
 void KichR4_NativeViewport(float a,float b){style.min_z=a;style.max_z=b;}
 void KichR4_NativeScissor(const int* p){style.scissor=p!=NULL;if(p)memcpy(style.rect,p,sizeof(style.rect));}
@@ -109,12 +111,17 @@ bool KichR4_NativeStyle(kich_r4_capture::Style& out){out=style;out.blend=states[
 void KichR4_NativeElement(ShaderElement* e){KichR4_NativeElementPass(e,0);}
 void KichR4_NativeElementSource(uint32_t element){source_element=element;}
 void KichR4_NativeElementPass(ShaderElement* e,uint32_t pass){
-    active_shader.clear();active_material=NULL;effect=0;source_element=UINT32_MAX;source_pass=pass;
+    active_shader.clear();active_material=NULL;effect=wallmark_color=0;source_element=UINT32_MAX;source_pass=pass;
     if(!e || pass>=e->passes.size())return;
     active_material=KichR4_NativeFindMaterial(e,pass);
     const SPass* selected_pass=e->passes[pass]._get();
     if(selected_pass && selected_pass->ps)active_shader=selected_pass->ps->cName.c_str();
     effect=kich_r4_material::Effect(active_shader.c_str(),e->flags.bDistort!=0,e->flags.bWmark!=0);
+    if(wallmark_scope || effect==6){
+        const uint32_t color0=selected_pass && selected_pass->state?selected_pass->state->state_code.get_TSS(0,1,4):4;
+        const uint32_t color1=selected_pass && selected_pass->state?selected_pass->state->state_code.get_TSS(1,1,1):1;
+        wallmark_color=kich_r4_wallmark::Color(active_shader.c_str(),color0,color1);
+    }
 }
 void KichR4_NativeTexture(uint32_t stage,CTexture* t){if(stage<16){textures[stage]=t;if(t)t->bind(stage);}}
 void KichR4_NativeModelMaterial(kich_r4_capture::ModelInput& input){
@@ -126,7 +133,7 @@ void KichR4_NativeModelMaterial(kich_r4_capture::ModelInput& input){
     }catch(...){KichR4_CaptureFail("G3c model material snapshot failed");}
 }
 double KichR4_NativeQueueTime(){return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-queue_begin).count();}
-void KichR4_NativeBegin(uint32_t width,uint32_t height,uint32_t frame){celestial_source=lens_effect=object_light_valid=false;object_hemi=object_sun=1;menu_pp=menu_overlay=false;queue_begin=std::chrono::steady_clock::now();memset(states,0,sizeof(states));style=kich_r4_capture::Style();states[D3DRS_ZENABLE]=states[D3DRS_ZWRITEENABLE]=1;
+void KichR4_NativeBegin(uint32_t width,uint32_t height,uint32_t frame){wallmark_scope=wallmark_color=0;celestial_source=lens_effect=object_light_valid=false;object_hemi=object_sun=1;menu_pp=menu_overlay=false;queue_begin=std::chrono::steady_clock::now();memset(states,0,sizeof(states));style=kich_r4_capture::Style();states[D3DRS_ZENABLE]=states[D3DRS_ZWRITEENABLE]=1;
     KichR4_DetailFrame().ClearFrame(frame);active_material=NULL;
     states[23]=4;states[171]=states[209]=1;states[207]=2;states[208]=1;
     memset(sampler_states,0,sizeof(sampler_states));for(unsigned i=0;i<8;++i){sampler_states[i][1]=sampler_states[i][2]=sampler_states[i][3]=sampler_states[i][10]=1;
@@ -245,7 +252,10 @@ void KichR4_NativeDraw(void* declaration,void* vb,void* ib,uint32_t stride,uint3
         Command cmd={ibase,static_cast<uint32_t>(batch.indices.size())-ibase,layer,texture,draw};cmd.effect=screen && menu_pp?7:screen && menu_overlay?8:effect;cmd.secondary=secondary;
         if(lens_effect && !screen){cmd.effect=1;kich_r4_optics::SkyStyle(cmd.style);}
         if(celestial_source && !screen){cmd.effect=kich_r4_optics::CelestialSource;kich_r4_optics::SkyStyle(cmd.style);}
-        cmd.semantic=CapturedSemantic(screen,effect);cmd.captured_vertices=static_cast<uint32_t>(batch.vertices.size())-vbase;
+        cmd.semantic=CapturedSemantic(screen,effect);
+        if(cmd.effect==6)cmd.wallmark_color=wallmark_color;
+        kich_r4_wallmark::Capture(wallmark_scope,screen,wallmark_color,cmd);
+        cmd.captured_vertices=static_cast<uint32_t>(batch.vertices.size())-vbase;
         cmd.shader=active_shader;cmd.shader_element=source_element;cmd.shader_pass=source_pass;
         if(g_render_snapshot_active){cmd.resource=texture;cmd.skin="CPU_CAPTURE_STREAM";}
         cmd.console=g_render_snapshot_console;

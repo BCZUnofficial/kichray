@@ -171,7 +171,7 @@ inline const char* CaptureSemanticName(unsigned value){const char* names[]={"UNK
 struct Command {uint32_t first,count,layer;std::string texture;Style style;uint32_t effect,shader_element,shader_pass;std::string secondary,resource,shader,skin;
     /* Allocated only for a requested diagnostic frame; never crosses the DLL ABI. */
     std::shared_ptr<RenderSnapshotProvenance> provenance;
-    uint32_t semantic,captured_vertices;bool console;
+    uint32_t semantic,captured_vertices;bool console;uint32_t wallmark_color=0;
     Command(uint32_t f,uint32_t n,uint32_t l,const std::string& t,const Style& s):first(f),count(n),layer(l),texture(t),style(s),effect(0),shader_element(UINT32_MAX),shader_pass(0),semantic(CAPTURE_UNKNOWN),captured_vertices(0),console(false){}
 };
 /* Immutable shared geometry is owned separately from each animated instance.

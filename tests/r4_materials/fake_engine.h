@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include "KichR4MaterialRules.h"
+#include "KichR4WallmarkRules.h"
 #include "KichR4MaterialServices.h"
 typedef uint32_t u32;
 typedef int BOOL;
@@ -18,8 +19,13 @@ template<class T>struct Ref {
     operator bool()const{return value!=NULL;}
 };
 struct PixelShader {std::string cName;explicit PixelShader(const char* p):cName(p){}};
+struct SourceStages {
+    uint32_t color[2]={4,1};
+    uint32_t get_TSS(uint32_t stage,uint32_t key,uint32_t fallback)const{return stage<2 && key==1?color[stage]:fallback;}
+};
+struct SourceState {SourceStages state_code;};
 struct SPass {
-    Ref<PixelShader> ps;std::string texture;bool clamp;
+    Ref<PixelShader> ps;Ref<SourceState> state;std::string texture;bool clamp;
     SPass(PixelShader* p,const char* t,bool c=false):ps(p),texture(t),clamp(c){}
 };
 struct ShaderElement {
@@ -43,7 +49,7 @@ struct Fmatrix {
 };
 inline float _sqrt(float value){return std::sqrt(value);}
 extern std::string active_shader,bound_texture;
-extern uint32_t effect,source_element,source_pass;
+extern uint32_t effect,source_element,source_pass,wallmark_color,wallmark_scope;
 extern bool distortion_enabled,bound_clamp;
 extern kich_r4_material::Cache native_materials;
 extern const kich_r4_material::Descriptor* active_material;

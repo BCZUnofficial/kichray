@@ -49,14 +49,15 @@ int main(int argc,char** argv){try{
     State();RenderSnapshot_Request();RenderSnapshot_Begin(info);RenderSnapshotDraw draw=Draw();RenderSnapshot_Pass("SUN_SHADOW");
     for(unsigned i=0;i<9000;++i)RenderSnapshot_Draw(&draw);
     for(unsigned i=0;i<400;++i){std::string id="material"+std::to_string(i);RenderSnapshot_Record("MATERIAL",id.c_str(),"source","world");}
-    const char* categories[]={"UI","DECALS","NORMAL_MAPPING","DISTORTION","SHADER","R2_UI_BINDING","R2_DECAL_BINDING"};
-    for(unsigned i=0;i<7;++i)RenderSnapshot_Record(categories[i],"late","evidence","KEPT_AFTER_WORLD_FLOOD");
+    for(unsigned i=0;i<400;++i){std::string id="other"+std::to_string(i);RenderSnapshot_Record("UNCLASSIFIED",id.c_str(),"source","world");}
+    const char* categories[]={"UI","DECALS","NORMAL_MAPPING","DISTORTION","SHADER","R2_UI_BINDING","R2_DECAL_BINDING","DDS_RESIDENCY","UI_TEXTURE","DYNAMIC_TEXTURE"};
+    for(unsigned i=0;i<sizeof(categories)/sizeof(categories[0]);++i)RenderSnapshot_Record(categories[i],"late","evidence","KEPT_AFTER_WORLD_FLOOD");
     RenderSnapshot_Pass("HUD_UI");RenderSnapshot_Context("UI","button","ui_material");RenderSnapshot_UIWidget("root/button","ACTUAL_WIDGET");RenderSnapshot_MaterialRoute("mat_ui");RenderSnapshot_GeometrySource("geo_ui");RenderSnapshot_Draw(&draw);
     RenderSnapshot_End("COMPLETE");report=Read(RenderSnapshot_LastPath());const std::string completeness=Section(report,"COMPLETENESS");
     Require(Has(completeness,"frame_capture","COMPLETE") && Has(completeness,"chronological_trace","INCOMPLETE") && Has(completeness,"summary_integrity","COMPLETE"),"trace loss does not erase full frame boundary or counters");
     Require(Has(completeness,"representative_dictionaries","INCOMPLETE"),"bounded material dictionary loss is explicit");
     const std::string material=Section(report,"DICTIONARY MATERIAL");Require(Number(material,"records")==128 && Number(material,"updates_dropped")==272,"material dictionary stays bounded with exact loss");
-    for(unsigned i=0;i<7;++i)Require(Has(Section(report,std::string("RECORD ")+categories[i]),"evidence","KEPT_AFTER_WORLD_FLOOD"),"late evidence has its own independent reservation");
+    for(unsigned i=0;i<sizeof(categories)/sizeof(categories[0]);++i)Require(Has(Section(report,std::string("RECORD ")+categories[i]),"evidence","KEPT_AFTER_WORLD_FLOOD"),"late evidence has its own independent reservation");
     Require(Has(Section(report,"RECORD UI_ROUTE"),"representative_ui_widget","root/button") && Has(Section(report,"RECORD UI_ROUTE"),"material_route_id","mat_ui"),"protected actual draw representation links widget and material beyond early floods");
 
     State();RenderSnapshot_Request();std::vector<std::thread> producers;

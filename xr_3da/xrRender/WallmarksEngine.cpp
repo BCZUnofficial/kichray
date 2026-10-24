@@ -5,6 +5,9 @@
 #include "stdafx.h"
 #include "WallmarksEngine.h"
 #include "WallmarkSnapshot.h"
+#ifdef ENGINE_BUILD
+#include "../KichR4Native.h"
+#endif
 
 #include "..\xr_object.h"
 #include "..\x_ray.h"
@@ -377,6 +380,9 @@ ICF void FlushStream(ref_geom hGeom, ref_shader shader, u32& w_offset, FVF::LIT*
 	{
 		RenderSnapshotProvenance previous={};if(RenderSnapshot_Detailed())RenderSnapshot_GetProvenance(&previous);
 		kich_wallmark_snapshot::Batch(bSuppressCull!=FALSE,w_count,w_offset);
+#ifdef ENGINE_BUILD
+		KichR4NativeWallmarkScope native_wallmark(bSuppressCull!=FALSE);
+#endif
 		RCache.set_Shader(shader);
 		RCache.set_Geometry(hGeom);
 		if (bSuppressCull)

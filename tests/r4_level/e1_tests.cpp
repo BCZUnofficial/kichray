@@ -1,6 +1,7 @@
 #include "recording.h"
 #include "../../xr_3da/KichR4OpticalRules.h"
 #include "../../xr_3da/KichR4SurfaceState.h"
+#include "../../xr_3da/KichR4StreamSession.h"
 namespace {
 int32_t ReleaseTexture(KichR4Handle,KichR4Handle handle){Require(f->objects.erase(handle)==1,"eviction releases live handle once");++f->released;return 0;}
 void Recovery(){Fixture fixture;f=&fixture;KichR4LevelSession l;KichR4FrameSession s={};Configure(l,s);l.bridge.resources.release_resource=ReleaseTexture;
@@ -18,6 +19,37 @@ void Recovery(){Fixture fixture;f=&fixture;KichR4LevelSession l;KichR4FrameSessi
     Require(l.Texture(s,"mipped")!=l.checker && l.texture_registry.entries["mipped"].width==4 && l.texture_registry.bytes==84,"pressure selects only existing lower mips with exact accounting");
     f->files["$game_textures$/single.dds"]=fixture::Dds();Require(l.Texture(s,"single")==l.checker && l.texture_registry.entries["single"].reason==kich_r4_texture::BudgetPressure,"oversized no-mip image is recoverable pressure, not invalid DDS");
     KichR4GeometryReport report={};Require(l.bridge.Stop(s,&report)==0 && f->objects.empty() && f->opens==f->closes,"recovery balances reader and GPU ownership");
+}
+void UIAdmission(){Fixture fixture;f=&fixture;KichR4LevelSession l;KichR4FrameSession s={};Configure(l,s);l.bridge.resources.release_resource=ReleaseTexture;
+    Require(s.Start(reinterpret_cast<void*>(1),640,480)==0 && l.Placeholder(s,false,&l.white)==0 && l.Placeholder(s,true,&l.checker)==0,"UI admission setup");
+    for(const char* name:{"a_icon","z_console","world0","world1","world2","world3","world4","device_fail"})f->files[std::string("$game_textures$/")+name+".dds"]=fixture::Dds();
+    l.texture_registry.budget=3*256;
+    const auto console=l.Texture(s,"z_console"),world=l.Texture(s,"world0");l.Texture(s,"world1");
+    Require(l.Texture(s,"a_icon")==l.checker && l.texture_registry.entries["a_icon"].reason==kich_r4_texture::BudgetPressure,"reproduce full pinned world denying late UI atlas");
+    kich_r4_capture::Batch b;kich_r4_capture::Style style;
+    b.commands.push_back({0,3,2,"a_icon",style});b.commands.push_back({3,3,2,"z_console",style});b.commands.back().console=true;
+    b.commands.push_back({6,3,2,"a_icon",style});b.commands.push_back({9,3,0,"world0",style});
+    l.texture_registry.Begin();KichR4StreamSession stream;
+    Require(stream.PrepareUI(s,l,b)==0 && stream.ui_texture_sources==2 && stream.ui_texture_ready==2 && !stream.ui_texture_fallbacks,"UI priority retries budget failure immediately and deduplicates sources");
+    const auto icon=l.Texture(s,"a_icon");
+    Require(f->objects.count(console) && l.Texture(s,"z_console")==console && !f->objects.count(world),"two-phase admission preserves later console atlas while evicting old world entry");
+    for(unsigned frame=2;frame<5;++frame){
+        l.texture_registry.Begin();const auto calls=f->texture_calls;
+        Require(stream.PrepareUI(s,l,b)==0 && f->texture_calls==calls,"resident UI preflight performs no new DDS upload");
+        const std::string name=std::string("world")+char('0'+frame);
+        Require(l.Texture(s,name)!=l.checker && l.Texture(s,"a_icon")==icon && l.Texture(s,"z_console")==console,"world churn preserves both UI atlases and shared-source handles");
+        Require(l.texture_registry.bytes<=l.texture_registry.budget,"UI priority honors total residency budget");
+    }
+    l.texture_override=[](void* context,const std::string& key,bool& handled)->KichR4Handle{handled=key=="r4_runtime__1";return handled?static_cast<KichR4LevelSession*>(context)->white:0;};l.texture_context=&l;
+    b.commands.push_back({12,3,2,"r4_runtime__1",style});l.texture_registry.Begin();
+    Require(stream.PrepareUI(s,l,b)==0 && stream.ui_texture_ready==3 && !l.texture_registry.entries.count("r4_runtime__1"),"runtime UI remains routed through override and outside DDS residency");
+    b.commands.push_back({15,3,2,"missing_ui",style});l.texture_registry.Begin();
+    Require(stream.PrepareUI(s,l,b)==0 && stream.ui_texture_fallbacks==1 && l.texture_registry.entries["missing_ui"].reason==kich_r4_texture::SourceUnavailable,"genuinely missing UI keeps explicit checker and failure diagnosis");
+    const auto retry=l.texture_registry.entries["missing_ui"].retry;l.texture_registry.Begin();
+    Require(stream.PrepareUI(s,l,b)==0 && l.texture_registry.entries["missing_ui"].retry==retry,"UI priority does not bypass missing-source retry cooldown");
+    l.texture_registry.budget+=256;b.commands.push_back({18,3,2,"device_fail",style});l.texture_registry.Begin();f->fail=f->calls+1;
+    Require(stream.PrepareUI(s,l,b)==error && s.failure==error,"fatal device loss during early UI upload reaches frame failure");
+    KichR4GeometryReport report={};Require(l.bridge.Stop(s,&report)==0 && f->objects.empty() && f->opens==f->closes,"UI admission balances readers and GPU ownership");
 }
 void Layouts(){using namespace kich_r4_texture;
     Require(Layout(3,2,16,28) && !Layout(3,2,16,27) && !Layout(3,2,11,100) && !Layout(16385,1,65540,65540),"runtime pitched rows and overflow boundaries");
@@ -42,4 +74,4 @@ void StatesAndGlow(){auto s=KichR4DefaultSurface();Require(KichR4ValidSurface(s)
     glow.Reset();Require(!glow.known && !glow.value,"source disable clears ghost");Require(kich_r4_optics::GlowRayLength(10,100)>9.94f && kich_r4_optics::GlowRayLength(.01f,1)==0,"endpoint tolerance never exceeds five centimetres");
 }
 }
-int main(){try{(void)&Scenario;Recovery();Layouts();StatesAndGlow();printf("E1 recovery/layout/state/glow: %d checks passed\n",checks);return 0;}catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}
+int main(){try{(void)&Scenario;Recovery();UIAdmission();Layouts();StatesAndGlow();printf("E1 recovery/UI admission/layout/state/glow: %d checks passed\n",checks);return 0;}catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

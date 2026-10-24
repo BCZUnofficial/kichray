@@ -82,15 +82,17 @@ Varying VSDetail(DetailInput v){Varying o=(Varying)0;float4 local=float4(v.p,1);
         p.xz+=world[1].xz*(height*cyclic)*v.misc.z;}
     o.p=mul(float4(p,1),mvp);o.w=p;o.uv=v.misc.xy;o.c=1;
     o.n=float4(normalize(p-float3(v.m0.w,v.m1.w-.75,v.m2.w)),v.light.y);o.baked_sun.w=v.light.x;return o;}
+void AlphaTest(float a){float r=alpha.x;int f=(int)alpha.y;
+    bool keep=f==8 || (f==2 && a<r) || (f==3 && a==r) || (f==4 && a<=r) ||
+        (f==5 && a>r) || (f==6 && a!=r) || (f==7 && a>=r);
+    if(!keep)discard;
+}
 float4 Base(Varying v){float4 c=image0.Sample(surface,v.uv)*v.c;
     if(((uint)material.x&8)!=0)c.rgb*=shadow3.Sample(surface5,v.uv*material.yz).rgb*2;
     if(alpha.w>9.5 && alpha.w<10.5){float4 mask=shadow0.Sample(surface2,v.uv);mask/=max(dot(mask,1),.0001);
         float2 tc=v.uv*50;float3 detail=shadow1.Sample(surface3,tc).rgb*mask.r+shadow2.Sample(surface4,tc).rgb*mask.g+
             shadow3.Sample(surface5,tc).rgb*mask.b+shadow4.Sample(surface6,tc).rgb*mask.a;c.rgb*=detail*2;}
-    float a=c.a,r=alpha.x;int f=(int)alpha.y;
-    bool keep=f==8 || (f==2 && a<r) || (f==3 && a==r) || (f==4 && a<=r) ||
-        (f==5 && a>r) || (f==6 && a!=r) || (f==7 && a>=r);
-    if(!keep)discard;return c;}
+    AlphaTest(c.a);return c;}
 float3 Normal(Varying v,bool front){float3 n=v.n.xyz;
     if(dot(n,n)<.05)n=cross(ddy(v.w),ddx(v.w));
     n=dot(n,n)>.000001?normalize(n):float3(0,1,0);
@@ -123,6 +125,24 @@ GeometryOutput PSGeometry(Varying v,bool front:SV_IsFrontFace){GeometryOutput o;
     return o;}
 void PSShadow(Varying v){Base(v);}
 float4 PSPlain(Varying v):SV_Target {return Base(v);}
+// Dynamic wallmarks use vertex alpha as AGE, not opacity, in MUL_2X+fade.
+// SoC BLENDDIFFUSEALPHA / X-Ray 1.6 stub_default_ma: a fresh neutral-gray
+// texel remains 0.5 so DESTCOLOR+SRCCOLOR leaves receiver albedo unchanged.
+float WallmarkChannel(float texel,float vertex,float age,int mode){
+    if(mode==4)return lerp(texel,vertex,age);
+    if(mode==3)return texel;
+    if(mode==2)return saturate(texel*vertex*4);
+    if(mode==1)return saturate(texel*vertex*2);
+    return texel*vertex;
+}
+float WallmarkAlpha(float texel,float age,int mode){return mode>=1 && mode<=3?texel:texel*age;}
+float4 PSWallmark(Varying v):SV_Target {
+    float4 texel=image0.Sample(surface,v.uv);int mode=(int)alpha.w;
+    float4 c=float4(WallmarkChannel(texel.r,v.c.r,v.c.a,mode),
+        WallmarkChannel(texel.g,v.c.g,v.c.a,mode),WallmarkChannel(texel.b,v.c.b,v.c.a,mode),
+        WallmarkAlpha(texel.a,v.c.a,mode));
+    AlphaTest(c.a);return c;
+}
 // Source-only sky mask: integer pixel loads cannot generate a diagonal from
 // far-plane depth interpolation. The same depth predicate is used by combine.
 float4 PSCelestial(Varying v,uint primitive_id:SV_PrimitiveID):SV_Target {

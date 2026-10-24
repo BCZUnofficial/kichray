@@ -115,3 +115,11 @@ u32 SimulatorStates::get_SAMP(u32 stage,u32 key,u32 fallback) const
     for(u32 i=0;i<States.size();++i)if(States[i].type==2 && States[i].v1==stage && States[i].v2==key)return States[i].v3;
     return fallback;
 }
+
+// Inspect legacy fixed-function material semantics without changing state.
+u32 SimulatorStates::get_TSS(u32 stage,u32 key,u32 fallback) const
+{
+	for (size_t i=0;i<States.size();++i)
+		if (States[i].type==1 && States[i].v1==stage && States[i].v2==key)return States[i].v3;
+	return fallback;
+}

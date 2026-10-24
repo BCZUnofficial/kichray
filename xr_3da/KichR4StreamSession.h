@@ -2,14 +2,31 @@
 #define KICH_R4_STREAM_SESSION_H
 #include "KichR4CaptureData.h"
 #include "KichR4LevelSession.h"
+#include <set>
 struct KichR4StreamSession {
     KichR4StreamAPI api;
     KichR4Handle vs,ps,pipeline,cb,vb,ib,white;
     uint32_t vertex_capacity,index_capacity,frames;
     uint64_t layer_draws[3];
+    uint32_t ui_texture_sources,ui_texture_ready,ui_texture_fallbacks;
     std::vector<kich_r4_capture::Vertex> vertices;
     std::vector<uint32_t> indices;
-    KichR4StreamSession():vs(0),ps(0),pipeline(0),cb(0),vb(0),ib(0),white(0),vertex_capacity(0),index_capacity(0),frames(0){memset(&api,0,sizeof(api));memset(layer_draws,0,sizeof(layer_draws));}
+    KichR4StreamSession():vs(0),ps(0),pipeline(0),cb(0),vb(0),ib(0),white(0),vertex_capacity(0),index_capacity(0),frames(0),ui_texture_sources(0),ui_texture_ready(0),ui_texture_fallbacks(0){memset(&api,0,sizeof(api));memset(layer_draws,0,sizeof(layer_draws));}
+    int32_t PrepareUI(KichR4FrameSession& s,KichR4LevelSession& level,const kich_r4_capture::Batch& batch){
+        ui_texture_sources=ui_texture_ready=ui_texture_fallbacks=0;
+        std::set<std::string> sources;
+        for(const auto& c:batch.commands)if(c.layer==2 && !c.texture.empty())sources.insert(c.texture);
+        // Protect every resident atlas before resolving a missing one: loading
+        // the first command must not evict an atlas used later by the same UI.
+        // Runtime/video names stay with texture_override, outside this registry.
+        for(const auto& name:sources){const auto found=level.texture_registry.entries.find(kich_r4_texture::Key(name));
+            if(found!=level.texture_registry.entries.end() && found->second.handle)found->second.touched=level.texture_registry.epoch;}
+        ui_texture_sources=static_cast<uint32_t>(sources.size());
+        for(const auto& name:sources){const KichR4Handle texture=level.Texture(s,name,true);
+            if(texture && texture!=level.checker)++ui_texture_ready;else ++ui_texture_fallbacks;
+            if(s.failure<0)return s.failure;}
+        return 0;
+    }
     static bool ValidAPI(const KichR4StreamAPI& a){return a.struct_size==sizeof(a) && a.abi_version==KICH_R4_STREAM_ABI &&
         a.pointer_size==sizeof(void*) && !a.flags && a.create_pipeline && a.draw;}
     int32_t Compile(KichR4FrameSession& s,KichR4LevelSession& level,uint32_t kind,const char* source,KichR4Handle& out){

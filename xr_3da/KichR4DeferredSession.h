@@ -15,9 +15,9 @@
 /* EXE-side pass planner. Native resources remain owned by the R4 device;
  * destroying that device releases partial construction and all cached maps. */
 struct KichR4DeferredSession {
-    enum Pipeline {StaticGeometry,ModelGeometry,StaticShadow,ModelShadow,Sun,Local,ForwardSun,ForwardLocal,Plain,Combine,Sky,Clouds,Water,Distortion,StaticForward,StaticWater,Copy,Postprocess,StaticPlain,DistortionMask,DistortionComposite,CelestialPipeline,PipelineCount};
+    enum Pipeline {StaticGeometry,ModelGeometry,StaticShadow,ModelShadow,Sun,Local,ForwardSun,ForwardLocal,Plain,Combine,Sky,Clouds,Water,Distortion,StaticForward,StaticWater,Copy,Postprocess,StaticPlain,DistortionMask,DistortionComposite,CelestialPipeline,WallmarkPipeline,PipelineCount};
     KichR4DeferredAPI api;
-    KichR4Handle pipelines[PipelineCount],shaders[20],cb,screen_vb,screen_ib,white;
+    KichR4Handle pipelines[PipelineCount],shaders[21],cb,screen_vb,screen_ib,white;
     KichR4Handle albedo,normal,depth,light,sun_map,local_maps[8][6],scene_color,final_color,distortion_map;
     uint32_t width,height,frames,shadow_passes,local_passes;
     kich_r4_lighting::Constants base;
@@ -138,12 +138,12 @@ struct KichR4DeferredSession {
         a.pointer_size==sizeof(void*) && !a.flags && a.create_pipeline && a.begin_pass && a.draw;}
     int32_t Start(KichR4FrameSession& s,KichR4LevelSession& level){
         if(!ValidAPI(api))return s.Record("B4.4 deferred ABI",KICH_R4_E_ARGUMENT);
-        const char* entries[]={"VSStatic","VSModel","VSModelShadow","VSScreen","PSGeometry","PSShadow","PSSun","PSLocal","PSForwardSun","PSForwardLocal","PSPlain","PSCombine","PSSky","PSClouds","PSWater","PSDistortion","PSPostprocess","PSParticleDistortionMask","PSDistortionComposite","PSCelestial"};
+        const char* entries[]={"VSStatic","VSModel","VSModelShadow","VSScreen","PSGeometry","PSShadow","PSSun","PSLocal","PSForwardSun","PSForwardLocal","PSPlain","PSCombine","PSSky","PSClouds","PSWater","PSDistortion","PSPostprocess","PSParticleDistortionMask","PSDistortionComposite","PSCelestial","PSWallmark"};
         const char* source=KichR4DeferredShaderSource();
-        for(unsigned i=0;i<20;++i){level.Continue();KichR4ShaderDesc d={};d.struct_size=sizeof(d);d.kind=i<4?KICH_R4_VERTEX_SHADER:KICH_R4_PIXEL_SHADER;
+        for(unsigned i=0;i<21;++i){level.Continue();KichR4ShaderDesc d={};d.struct_size=sizeof(d);d.kind=i<4?KICH_R4_VERTEX_SHADER:KICH_R4_PIXEL_SHADER;
             memcpy(d.entry,entries[i],strlen(entries[i])+1);memcpy(d.name,"kich_b44_deferred",18);
             if(level.Expect(s,entries[i],level.bridge.resources.compile_shader(s.device,&d,source,static_cast<uint32_t>(strlen(source)),&shaders[i],level.bridge.shader_error,sizeof(level.bridge.shader_error)))<0)return s.failure;}
-        const unsigned vs[]={0,1,0,2,3,3,1,1,1,3,1,1,1,1,0,0,3,3,0,1,3,1},ps[]={4,4,5,5,6,7,8,9,10,11,12,13,14,15,8,14,10,16,10,17,18,19};
+        const unsigned vs[]={0,1,0,2,3,3,1,1,1,3,1,1,1,1,0,0,3,3,0,1,3,1,1},ps[]={4,4,5,5,6,7,8,9,10,11,12,13,14,15,8,14,10,16,10,17,18,19,20};
         for(unsigned i=0;i<PipelineCount;++i){KichR4PipelineDesc d={};d.struct_size=sizeof(d);d.vertex_shader=shaders[vs[i]];d.pixel_shader=shaders[ps[i]];
             const bool model=vs[i]==1 || vs[i]==2,screen=vs[i]==3;
             d.vertex_stride=model?sizeof(kich_r4_capture::Vertex):screen?20:sizeof(kich_r4_level::Vertex);
@@ -316,6 +316,7 @@ struct KichR4DeferredSession {
             kich_r4_lighting::Constants constants=frame;constants.alpha[0]=c.style.alpha_ref;constants.alpha[1]=static_cast<float>(c.style.alpha_func);constants.alpha[2]=c.style.blend?1.f:0.f;
             if(native_mode && (c.effect==2 || c.effect==3 || c.effect==1 || c.effect==5 || c.effect==7 || pass==Celestial))constants.alpha[3]=0;
             if(native_mode && pass==MenuPP)constants.alpha[3]=30;
+            if(pass==Wallmarks)constants.alpha[3]=static_cast<float>(c.wallmark_color);
             if(Constants(s,l,constants)<0)return s.failure;
             kich_r4_capture::Style style=c.style;
             if(pass==Wallmarks){style.depth=1;style.write=0;style.surface.color_mask=7;KichR4ReceiverState(style.surface,false);}
@@ -324,6 +325,7 @@ struct KichR4DeferredSession {
             unsigned pipeline=pass==GeometryModels?ModelGeometry:pass==ShadowModels?ModelShadow:pass==ForwardBase?ForwardSun:pass==ForwardAdd?ForwardLocal:Plain;
             if(native_mode && pass!=ShadowModels && pass!=GeometryModels){if(c.effect==2)pipeline=Sky;else if(c.effect==3)pipeline=Clouds;else if(c.effect==4)pipeline=Water;else if(c.effect==5 || c.effect==7)pipeline=Distortion;else if(c.effect==1)pipeline=Plain;}
             if(pass==Celestial)pipeline=CelestialPipeline;
+            if(pass==Wallmarks)pipeline=WallmarkPipeline;
             if(pass==DistortionModels){pipeline=DistortionMask;style.depth=1;style.write=0;style.blend=1;style.src=5;style.dst=6;}
             if(pass==ShadowModels){style.depth=style.write=1;style.blend=style.clamp=0;style.scissor=false;style.min_z=0;style.max_z=1;}
             if(pass==ForwardAdd){style.blend=1;style.src=style.dst=2;style.write=0;}

@@ -2,7 +2,7 @@
 #include <cassert>
 #include <iostream>
 std::string active_shader,bound_texture;
-uint32_t effect=0,source_element=UINT32_MAX,source_pass=0;
+uint32_t effect=0,source_element=UINT32_MAX,source_pass=0,wallmark_color=0,wallmark_scope=0;
 bool distortion_enabled=true,bound_clamp=false;
 kich_r4_material::Cache native_materials;
 const kich_r4_material::Descriptor* active_material=NULL;
@@ -44,6 +44,13 @@ int main(){
     assert(kich_r4_material::Effect("particle_distort",false,false)==5);
     assert(kich_r4_material::Effect("water",true,false)==5);
     assert(kich_r4_material::Effect("particle",false,true)==6);
+
+    // Legacy wallmark has no bWmark or PS name: preserve its exact source TSS.
+    PixelShader null_ps("null");SourceState decal_state;decal_state.state_code.color[0]=2;decal_state.state_code.color[1]=12;
+    SPass decal_pass(&null_ps,"wm/metal");decal_pass.state=&decal_state;ShaderElement decal;decal.passes.push_back(&decal_pass);
+    wallmark_scope=1;KichR4_NativeElementPass(&decal,0);assert(effect==0 && wallmark_color==kich_r4_wallmark::FadeToVertex);
+    wallmark_scope=0;KichR4_NativeElementPass(&decal,0);assert(wallmark_color==kich_r4_wallmark::Modulate);
+    KichR4_NativeElementPass(NULL,0);assert(wallmark_color==kich_r4_wallmark::Modulate);
 
     // A normal LQ-only material remains usable, while empty materials emit nothing.
     Shader low,empty;low.E[1]=&fire;IRender_Visual lod;lod.shader=&low;
