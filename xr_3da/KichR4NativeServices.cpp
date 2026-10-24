@@ -144,7 +144,12 @@ void KichR4_NativeRegisterMaterial(const void* pointer,uint32_t index,const char
             pass_source.descriptor.source+=";SoC_compiled_water_shader";
             pass_source.descriptor.unsupported_reason="water_preserved_special_forward;full_R2_water_not_implemented";
         }
-        Descriptor material=Build(pass_source,NativePassState(*element,pass));
+        PassState pass_state=NativePassState(*element,pass);
+        // R1 scripts do not set bWmark. Only the exact normal wmark VS
+        // transfers this contract; wmark_point/spot and dynamic bullet marks
+        // already have separate lighting/projection paths.
+        pass_state.authored_wallmark=AuthoredWallmarkSource(index,pass && pass->vs?pass->vs->cName.c_str():NULL);
+        Descriptor material=Build(pass_source,pass_state);
         // Material texture registers differ from the source R2 shader. Match
         // compiled texture bindings by identity, not by a guessed stage index.
         if(pass && pass->state && pass->T){const std::string* names[]={&material.base,&material.bump,&material.bump_aux,&material.lightmap,&material.hemi,&material.detail};

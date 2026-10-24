@@ -55,6 +55,24 @@ int main(){
     Descriptor bump=Build(source,pass);assert(Bumped(bump));assert((bump.required_attributes&15)==15);
     assert(bump.bump_aux=="walls\\stone_bump#" && bump.detail_scale[0]==4.f);
     const uint64_t key=Key(bump);assert(key==Key(bump));Descriptor changed=bump;changed.alpha_ref=.5f;assert(key!=Key(changed));
+    // Exact compiled VS identity, never texture-name or bWmark guessing.
+    assert(AuthoredWallmarkSource(0,"wmark") && AuthoredWallmarkSource(1,"wmark"));
+    assert(!AuthoredWallmarkSource(2,"wmark") && !AuthoredWallmarkSource(0,"wmark_spot"));
+    assert(!AuthoredWallmarkSource(0,"wmark_point") && !AuthoredWallmarkSource(0,"stub_default") && !AuthoredWallmarkSource(0,NULL));
+    Source decal_source;decal_source.family=FAMILY_UNKNOWN;decal_source.descriptor.base="arbitrary_texture";
+    PassState decal;decal.authored_wallmark=true;decal.unlit=true;
+    for(unsigned mode=0;mode<3;++mode){
+        decal.blend=mode!=0;decal.depth_write=mode==0;decal.alpha_test=mode!=0;decal.alpha_func=5;
+        decal.src=mode==2?1:mode==1?5:2;decal.dst=mode==2?3:mode==1?6:1;
+        const Descriptor mark=Build(decal_source,decal);Apply(mark,geometry);
+        assert(AuthoredWallmark(mark) && !Geometry(mark) && !Shadow(mark) && mark.emissive_gain==0);
+        assert(geometry.blend==(mode!=0) && geometry.write==(mode==0) && geometry.depth);
+        assert(geometry.src==(mode==2?9:decal.src) && geometry.dst==decal.dst && mark.alpha_func==(mode?5u:8u));
+        Descriptor ordinary=mark;ordinary.special=SPECIAL_NONE;assert(Key(mark)!=Key(ordinary));
+    }
+    decal.authored_wallmark=false;decal.wallmark=true;assert(!AuthoredWallmark(Build(decal_source,decal)));
+    decal.wallmark=false;assert(Build(decal_source,decal).semantic==EMISSIVE); // ordinary simple.ps stays unlit.
+    decal.authored_wallmark=true;decal.distortion=true;assert(Build(decal_source,decal).semantic==DISTORTION);
     Cache cache;int element=0;
     cache.Register(&element,std::vector<Descriptor>(1,bump));
     for(unsigned i=0;i<10000;++i){const Descriptor* hit=cache.Find(&element,0);assert(hit && Key(*hit)==key);}

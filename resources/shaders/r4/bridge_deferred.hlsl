@@ -14,19 +14,34 @@ SamplerState surface1:register(s2); SamplerState surface2:register(s3);
 SamplerState surface3:register(s4); SamplerState surface4:register(s5);
 SamplerState surface5:register(s6); SamplerState surface6:register(s7); SamplerState surface7:register(s8);
 // Material flags: bump=1, baked lightmap=2, hemi map=4, detail=8,
-// vertex baked RGB=16, source sun=32, tree light scale/bias=64, emissive=256.
+// vertex baked RGB=16, source sun=32, tree light scale/bias=64, emissive=256, authored wallmark=512.
 struct StaticInput {float3 p:POSITION;float2 uv:TEXCOORD0;float4 n:NORMAL;
     float3 t:TEXCOORD1;float3 b:TEXCOORD2;float3 uv_sun:TEXCOORD3;float4 light:COLOR0;float2 tree:TEXCOORD4;};
 struct ModelInput {float4 p:POSITION;float2 uv:TEXCOORD0;float4 c:COLOR0;float4 n:NORMAL;float3 w:TEXCOORD1;};
 struct ScreenInput {float3 p:POSITION;float2 uv:TEXCOORD0;};
 struct Varying {float4 p:SV_Position;float2 uv:TEXCOORD0;float4 c:COLOR0;float4 n:TEXCOORD1;float3 w:TEXCOORD2;
     float3 t:TEXCOORD3;float3 b:TEXCOORD4;float2 uv1:TEXCOORD5;float4 baked_sun:TEXCOORD6;};
+// SoC/1.6 shared/wmark.h: normal offset plus view-dependent separation.
+// Use its intended clamped distance weight (the donor computes w but lerps d).
+float AuthoredWallmarkShift(float distance){return lerp(.003,.011,saturate(distance/100));}
+float3 AuthoredWallmarkPosition(float3 position,float3 normal){
+    float3 away=position-camera.xyz;float distance=length(away);
+    away*=rsqrt(max(dot(away,away),1e-12));
+    float4 near_point=mul(float4(0,0,0,1),inverse_vp),far_point=mul(float4(0,0,.5,1),inverse_vp);
+    float3 forward=far_point.xyz/far_point.w-near_point.xyz/near_point.w;
+    forward*=rsqrt(max(dot(forward,forward),1e-12));
+    float3 view=forward+away;view*=rsqrt(max(dot(view,view),1e-12));
+    normal*=rsqrt(max(dot(normal,normal),1e-12));
+    return position+normal*.007-view*AuthoredWallmarkShift(distance);
+}
 Varying VSStatic(StaticInput v){Varying o=(Varying)0;o.uv=v.uv;o.c=1;
     float3 position=mul(float4(v.p,1),world).xyz;
     if(((uint)material.x&128)!=0){float f=2.8284271*frac(dot(float4(position,1),tree_wave))-1.4142136;
         position.xz+=tree_wind.xz*((position.y-world[3].y)*(f*f-1)*v.tree.y);}
-    o.p=mul(float4(position,1),mvp);
     o.n=float4(mul(float4(v.n.xyz,0),normal_matrix).xyz,v.n.w);o.w=position;
+    float3 projected=position;
+    [branch] if(((uint)material.x&512)!=0)projected=AuthoredWallmarkPosition(position,o.n.xyz);
+    o.p=mul(float4(projected,1),mvp);
     o.t=mul(float4(v.t,0),world).xyz;o.b=mul(float4(v.b,0),world).xyz;o.uv1=v.uv_sun.xy;
     o.baked_sun=float4(v.light.rgb,v.uv_sun.z);
     if(((uint)material.x&64)!=0){o.baked_sun.rgb=v.n.www*color_scale.rgb+color_bias.rgb;
@@ -305,14 +320,18 @@ float4 PSDistortionComposite(Varying v):SV_Target {
     return float4(image0.Sample(surface,saturate(v.uv+displacement)).rgb,1);
 }
 
+float3 PostprocessNoise(float3 color,float3 noise,float amount){return lerp(color,color*noise*2,amount);}
 float4 PSPostprocess(Varying v):SV_Target {
     float2 split=light_position.yz*.5;float2 uv=v.uv;
     float3 c=(image0.Sample(surface,saturate(uv+split)).rgb+image0.Sample(surface,saturate(uv-split)).rgb)*.5;
     if(light_position.x>0){float2 step=light_position.x*3/screen.xy;c=(c*4+image0.Sample(surface,saturate(uv+float2(step.x,0))).rgb+
         image0.Sample(surface,saturate(uv-float2(step.x,0))).rgb+image0.Sample(surface,saturate(uv+float2(0,step.y))).rgb+image0.Sample(surface,saturate(uv-float2(0,step.y))).rgb)/8;}
-    float3 gray=dot(c,hemi.rgb).xxx;c=lerp(c,gray,saturate(alpha.w));c=c*sun_color.rgb*2+ambient.rgb;
-    float noise=frac(sin(dot(floor(v.p.xy/max(.01,light_direction.x))+light_direction.y,float2(12.9898,78.233)))*43758.5453)-.5;
-    c+=noise*light_position.w;
+    float3 gray=dot(c,hemi.rgb).xxx;c=lerp(c,gray,saturate(alpha.w));
+    // R2/1.6 texture noise modulates the scene before base/add color; black
+    // stays black. Noise repeats while the independent scene sampler clamps.
+    [branch] if(light_position.w>0){float3 noise=image1.Sample(surface1,light_direction.xy+v.uv*light_direction.zw).rgb;
+        c=PostprocessNoise(c,noise,light_position.w);}
+    c=c*sun_color.rgb*2+ambient.rgb;
     float gamma=max(.01,alpha.x),brightness=alpha.y*.5,contrast=alpha.z*.5;
     c=((contrast+.5)*pow(saturate(c),1/gamma)+(brightness-.5)*.5-contrast*.5+.25)*fog.rgb;
     return float4(saturate(c),1);

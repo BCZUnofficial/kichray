@@ -16,10 +16,12 @@ int ScenarioDeferred(int failure=0,int32_t error_code=error){Fixture fixture;f=&
     const auto batch=Batch();const int32_t result=game.Render(input,&batch);const int positions=f->calls;
     if(!failure){Require(result==1 && game.deferred.frames==1 && game.frame.rendered==1,"complete deferred frame presented once");
         Require(game.deferred.shadow_passes==8 && game.deferred.local_passes==2,"sun + point six faces + spot shadows and two light passes");
+        Require(game.deferred.frame_sun_cascades==1 && game.deferred.frame_spot_shadow_lights==1 && game.deferred.frame_point_shadow_lights==1 && game.deferred.frame_local_shadow_faces==7,"status counts successful sun cascades and local sources separately from cube faces");
         Require(passes.size()==12 && passes[8].color_count==3 && passes[8].depth==game.deferred.depth,"shadow -> MRT -> irradiance -> combine -> forward/UI phases");
         Require(draw_entries.back()=="PSPlain" && game.stream.layer_draws[0]==2 && game.stream.layer_draws[1]==1 && game.stream.layer_draws[2]==1,"HUD last and main counters exclude repeated shadow/light draws");
         const uint32_t created=f->created;const KichR4Handle vb=game.stream.vb,gbuffer=game.deferred.albedo;
         Require(game.Render(input,&batch)==1 && created==f->created && vb==game.stream.vb,"warm frame reuses native targets/shadows/upload buffers");
+        Require(game.deferred.frame_sun_cascades==1 && game.deferred.frame_local_shadow_faces==7,"per-frame status does not accumulate historical shadows");
         input.debug_down=true;Require(game.Render(input,&batch)==1 && game.debug==1,"F9 selects albedo");
         const size_t draw_count=draw_entries.size();Require(game.Render(input,&batch)==1 && game.debug==1,"held F9 does not cycle repeatedly");
         Require(draw_count<draw_entries.size(),"debug frame still submitted");
@@ -30,6 +32,7 @@ int ScenarioDeferred(int failure=0,int32_t error_code=error){Fixture fixture;f=&
         Require(game.Render(input,&batch)==1 && game.deferred.albedo!=gbuffer && !f->objects.count(gbuffer),"resize replaces all screen targets and releases old resources");
         const uint32_t shadow_passes=game.deferred.shadow_passes;memset(input.lighting.sun_color,0,12);input.lighting.count=0;
         Require(game.Render(input,&batch)==1 && game.deferred.shadow_passes==shadow_passes,"night without lights skips shadow work");
+        Require(!game.deferred.frame_sun_cascades && !game.deferred.frame_spot_shadow_lights && !game.deferred.frame_point_shadow_lights && !game.deferred.frame_local_shadow_faces,"night resets status even while old shadow resources remain allocated");
     }else if(f->failed_name!="source DDS")Require(result<0,"every failed or unexpected-positive native operation propagates to legacy fallback");
     KichR4GeometryReport report={};if(game.Stop(report)<0 && game.frame.device)Require(game.Stop(report)==0,"cleanup retried");
     Require(!game.frame.device && !f->live && f->objects.empty() && !f->leases && f->created==f->released,"partial construction always cleaned without leaked GPU handles/readers");
@@ -92,6 +95,34 @@ void MaterialExecution(){Fixture fixture;f=&fixture;ResetDeferredRecorder();cons
     Require(output.find("SHADOW; OPTIONAL_MAPS_INTENTIONALLY_UNUSED")!=std::string::npos,"shadow optional maps explicitly distinguished from missing geometry maps");
     KichR4GeometryReport report={};game.Stop(report);Require(f->objects.empty(),"material fixture releases maps and targets");
 }
+void AuthoredWallmarkRoute(){Fixture fixture;f=&fixture;ResetDeferredRecorder();const KichR4LevelFiles fs={Open,Close};kich_r4_game::Session game(DeferredAPIs(),fs,"l01_escape",NULL);
+    auto input=DeferredInput();Require(game.Render(input)==1,"authored wallmark route setup");game.deferred.native_mode=true;
+    using namespace kich_r4_material;
+    Source source;source.family=FAMILY_UNKNOWN;source.descriptor.base="base";
+    const KichR4FrameColor clear={sizeof(clear),{0,0,0,1}};Require(game.frame.BeginClear(clear)==0,"authored wallmark frame");
+    for(unsigned mode=0;mode<3;++mode){PassState state;state.authored_wallmark=true;state.unlit=true;
+        state.blend=mode!=0;state.src=mode==2?1:mode==1?5:2;state.dst=mode==2?3:mode==1?6:1;
+        state.depth_write=mode==0;state.alpha_test=mode!=0;state.alpha_func=5;
+        for(auto& m:game.level.scene.materials)m.descriptor=Build(source,state);
+        const size_t begin=draw_descriptions.size();
+        Require(game.deferred.Pass(game.frame,game.level,input.width,input.height,3,game.deferred.albedo,game.deferred.normal,game.deferred.depth,0,NULL,game.deferred.light)==0,"geometry target fixture");
+        Require(game.deferred.Static(game.frame,game.level,game.deferred.base.mvp,false)==0 && game.deferred.Static(game.frame,game.level,game.deferred.base.mvp,true)==0 && game.deferred.StaticTransparent(game.frame,game.level,game.deferred.base.mvp)==0,"overlay excluded from geometry, shadows and ordinary transparency");
+        Require(draw_descriptions.size()==begin,"authored overlay is not duplicated or a shadow caster");
+        Require(game.deferred.Pass(game.frame,game.level,input.width,input.height,1,game.deferred.albedo,0,game.deferred.depth,0)==0 && game.deferred.StaticWallmarks(game.frame,game.level,game.deferred.base.mvp)==0,"authored overlay albedo queue executes");
+        Require(draw_descriptions.size()>begin,"visible authored overlay submitted");
+        for(size_t i=begin;i<draw_descriptions.size();++i){const auto& draw=draw_descriptions[i];const auto& constants=draw_constants[i];
+            Require(draw_entries[i]=="PSWallmark" && draw.state.draw.pipeline==game.deferred.pipelines[KichR4DeferredSession::StaticWallmarkPipeline],"static layout reuses texture-only wallmark shader");
+            Require(draw.state.blend_enable==(mode!=0) && draw.state.source_blend==(mode==2?9:state.src) && draw.state.dest_blend==state.dst,"set/blend/multiply retain R2 blend factors");
+            Require(draw.state.draw.depth_mode && !draw.state.depth_write && draw.state.surface.color_mask==7 && draw.state.surface.stencil && !draw.state.surface.stencil_write,"receiver depth, normal, albedo alpha and stencil preserved");
+            Require(constants.material[0]==512 && constants.alpha[3]==3 && constants.alpha[1]==(mode?5:8),"bounded offset is only on authored static VS; source alpha compare retained");
+        }
+    }
+    // Reusing the same pipeline resources does not transfer the shift to ordinary geometry.
+    PassState opaque;source.family=FAMILY_OPAQUE;for(auto& m:game.level.scene.materials)m.descriptor=Build(source,opaque);
+    const size_t begin=draw_descriptions.size();Require(game.deferred.Pass(game.frame,game.level,input.width,input.height,3,game.deferred.albedo,game.deferred.normal,game.deferred.depth,0,NULL,game.deferred.light)==0 && game.deferred.Static(game.frame,game.level,game.deferred.base.mvp,false)==0,"ordinary geometry remains drawable");
+    Require(draw_descriptions.size()>begin,"ordinary geometry not suppressed");for(size_t i=begin;i<draw_descriptions.size();++i)Require(!(uint32_t(draw_constants[i].material[0])&512),"ordinary geometry has no projection shift");
+    Require(game.frame.Present()==0,"authored wallmark frame completed");KichR4GeometryReport report={};game.Stop(report);Require(f->objects.empty(),"authored overlay retains no GPU resources");
+}
 void WallmarkRoute(){Fixture fixture;f=&fixture;ResetDeferredRecorder();const KichR4LevelFiles fs={Open,Close};kich_r4_game::Session game(DeferredAPIs(),fs,"l01_escape",NULL);
     auto input=DeferredInput();auto batch=Batch();Require(game.Render(input,&batch)==1,"wallmark route setup");game.deferred.native_mode=true;
     batch.commands.erase(batch.commands.begin()+1,batch.commands.end());batch.commands[0].effect=6;batch.commands[0].style.blend=1;batch.commands[0].style.src=5;batch.commands[0].style.dst=6;
@@ -112,6 +143,7 @@ void AllVisibleShadows(){
         source.position[1]=2;source.direction[2]=1;source.cone=1;source.color[0]=1;}
     Require(game.Render(input)==1,"more than eight native lights form a complete frame");
     Require(game.deferred.shadow_passes==47 && game.deferred.local_passes==10,"two sun maps, three spot maps and all seven six-face point shadows execute");
+    Require(game.deferred.frame_sun_cascades==2 && game.deferred.frame_spot_shadow_lights==3 && game.deferred.frame_point_shadow_lights==7 && game.deferred.frame_local_shadow_faces==45,"native status reflects all requested light shadows, not pool capacity");
     Require(game.deferred.sun_map && game.deferred.sun_far_map && game.deferred.sun_map!=game.deferred.sun_far_map,"near and far sun have distinct resources");
     Require(game.deferred.base.shadow[0].m[0]!=game.deferred.base.shadow[1].m[0],"sun cascades have different coverage");
     std::set<KichR4Handle> maps;
@@ -159,6 +191,6 @@ void Invalid(){
         Require(game.Render(input)<0 && !game.frame.rendered,"invalid deferred inputs never present partial image");KichR4GeometryReport r={};game.Stop(r);Require(!f->live && f->objects.empty(),"invalid input cleanup balanced");}
 }
 }
-int main(){try{(void)&Scenario;const int positions=ScenarioDeferred();for(int i=1;i<=positions;++i){ScenarioDeferred(i);ScenarioDeferred(i,7);}Invalid();Telemetry();MaterialExecution();WallmarkRoute();AllVisibleShadows();SharedFrameQueues();StreamBounds();
+int main(){try{(void)&Scenario;const int positions=ScenarioDeferred();for(int i=1;i<=positions;++i){ScenarioDeferred(i);ScenarioDeferred(i,7);}Invalid();Telemetry();MaterialExecution();AuthoredWallmarkRoute();WallmarkRoute();AllVisibleShadows();SharedFrameQueues();StreamBounds();
     printf("B4.4 pass planner / lighting / reuse / F8-F9 / failures: %d checks, %d failure positions passed\n",checks,positions);return 0;
 }catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

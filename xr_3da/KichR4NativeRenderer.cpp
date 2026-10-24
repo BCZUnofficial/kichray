@@ -11,6 +11,7 @@
 #include "KichR4MaterialServices.h"
 #include "KichR4LodPolicy.h"
 #include "KichR4RosBudget.h"
+#include "KichR4PostprocessNoise.h"
 #include "RenderSnapshot.h"
 #include "KichR4TelemetryText.h"
 #include "RenderSnapshotMaterial.h"
@@ -386,6 +387,7 @@ void CRender::model_Delete(IRender_DetailModel*& v){if(v)static_cast<CDetail*>(v
 void CRender::Screenshot(ScreenshotMode m,LPCSTR n){KichR4_NativeScreenshot(m,n);}
 void CRender::rmNear(){KichR4_NativeViewport(0,.02f);}void CRender::rmFar(){KichR4_NativeViewport(.99999f,1);}void CRender::rmNormal(){KichR4_NativeViewport(0,1);}
 
-void KichR4_NativePostprocess(float* p){CR4Target* t=static_cast<CR4Target*>(RImplementation.getTarget());Fcolor balance;Device.Gamma.GetIP(p[0],p[1],p[2],balance);p[3]=t->gray;p[4]=t->blur;p[5]=t->duality_h;p[6]=t->duality_v;p[7]=t->noise;p[8]=floorf(Device.fTimeGlobal*t->noise_fps);p[9]=t->noise_scale;
+void KichR4_NativePostprocess(float* p){CR4Target* t=static_cast<CR4Target*>(RImplementation.getTarget());Fcolor balance;Device.Gamma.GetIP(p[0],p[1],p[2],balance);p[3]=t->gray;p[4]=t->blur;p[5]=t->duality_h;p[6]=t->duality_v;p[7]=t->noise;
+    static kich_r4_noise::Cadence noise_clock;p[8]=noise_clock.Advance(Device.dwFrame,Device.fTimeDelta,t->noise_fps);p[9]=t->noise_scale;
     const u32 values[3]={t->color_base,t->color_add,t->color_gray};for(u32 i=0;i<3;++i){p[10+i*3]=color_get_R(values[i])/255.f;p[11+i*3]=color_get_G(values[i])/255.f;p[12+i*3]=color_get_B(values[i])/255.f;}p[19]=balance.r;p[20]=balance.g;p[21]=balance.b;
 }

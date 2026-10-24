@@ -7,6 +7,12 @@ namespace {
 float saturate(float x){return std::max(0.f,std::min(1.f,x));}
 float lerp(float a,float b,float x){return a+(b-a)*x;}
 // PRODUCTION_WALLMARK_SHADER
+void AuthoredShift(){
+    Require(fabsf(AuthoredWallmarkShift(0)-.003f)<1.e-7f,"near authored wallmark view shift is three millimeters");
+    Require(fabsf(AuthoredWallmarkShift(50)-.007f)<1.e-7f,"distance weight interpolates in meters over the declared 100m range");
+    Require(fabsf(AuthoredWallmarkShift(100)-.011f)<1.e-7f && fabsf(AuthoredWallmarkShift(10000)-.011f)<1.e-7f,"distant overlays never inherit donor's unbounded distance lerp");
+    Require(AuthoredWallmarkShift(-1)>=.003f,"bounded weight remains finite at the near limit");
+}
 void ColorContract(){using namespace kich_r4_wallmark;
     Require(Color("null",2,12)==FadeToVertex && Color("stub_default_ma",4,1)==FadeToVertex,"legacy stages and 1.6 wallmark shader share fade contract");
     Require(Color("simple",4,1)==TextureOnly && Color("null",2,1)==TextureOnly,"simple and SELECTARG1 ignore vertex gray/age");
@@ -59,5 +65,5 @@ void Frame(){using namespace kich_r4_capture;
     KichR4GeometryReport report={};Require(game.Stop(report)==0 && f->objects.empty(),"wallmark fixture releases native resources");
 }
 }
-int main(){try{(void)&Scenario;ColorContract();Scope();Frame();printf("E1.1 wallmark scope/color/receiver/order: %d checks passed (no GPU rasterization)\n",checks);return 0;}
+int main(){try{(void)&Scenario;AuthoredShift();ColorContract();Scope();Frame();printf("E1.1 wallmark scope/color/receiver/order: %d checks passed (no GPU rasterization)\n",checks);return 0;}
 catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

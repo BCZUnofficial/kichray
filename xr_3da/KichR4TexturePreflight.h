@@ -6,6 +6,7 @@
 #include "KichR4DetailSession.h"
 #include "KichR4Visibility.h"
 #include "KichR4LevelVisibility.h"
+#include "KichR4PostprocessNoise.h"
 namespace kich_r4_texture {
 inline void MaterialDemand(KichR4LevelSession& level,const kich_r4_material::Descriptor& m,uint32_t role){
     level.NeedTexture(m.base,role);
@@ -88,6 +89,10 @@ inline int32_t Preflight(KichR4FrameSession& frame,KichR4LevelSession& level,
             for(size_t i=0;i<selection.groups.size();++i)if(selection.groups[i].mesh<needed.size())needed[selection.groups[i].mesh]=1;}
         for(size_t i=0;i<needed.size();++i)if(needed[i])level.NeedTexture(source->meshes[i].texture,SHADOW_ALPHA);
     }
+    // The fullscreen effect shares the frame's residency plan. Never upload or
+    // evict world textures late in Process, and never request noise for menus.
+    if(scene && kich_r4_noise::Amount(input.postprocess[7])>0 && input.postprocess[9]>0 && std::isfinite(input.postprocess[9]))
+        level.NeedTexture(kich_r4_noise::Texture(),EFFECT);
     return level.CommitTexturePlan(frame);
 }
 }

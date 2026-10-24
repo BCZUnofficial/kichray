@@ -72,10 +72,19 @@ void DrawBasis(){fixture::Level source;Scene scene;Parse(View(source.level),View
 }
 void Metrics(){kich_r4_metrics::Window window;window.Add(1000,true);window.Add(1010,true);window.Add(1030,true);
     Require(window.count==2 && Near(float(window.Low()),50),"1 percent low uses slowest ceil(samples/100) intervals");
+    Require(Near(float(window.Current()),50) && Near(float(window.Recent()),200.f/3.f),"current FPS is latest interval, recent FPS is frames divided by elapsed time");
     window.Add(2000,false);window.Add(3000,true);Require(window.count==2,"snapshot and following gap excluded");
+    Require(window.Current()==0 && window.Recent()==0 && !window.ReportDue(),"first frame after diagnostic gap cannot reuse stale current FPS or report interval");
     for(unsigned i=1;i<=120;++i)window.Add(3000+i*10,true);
     Require(window.count==120 && Near(float(window.Low()),100),"bounded window overwrites old spikes");
     window.Gap();window.Add(999999,true);Require(window.count==120 && Near(float(window.Low()),100),"suspension excluded");
+    window=kich_r4_metrics::Window();window.Add(1000,true);
+    for(unsigned i=1;i<200;++i){window.Add(1000+i*10,true);Require(!window.ReportDue(),"high FPS cannot produce more than one log batch per two seconds");}
+    window.Add(3000,true);Require(window.ReportDue() && window.report_count==200 && Near(float(window.Recent()),100),"report gate uses elapsed time with constant-space accumulation");
+    window.Reported();Require(!window.ReportDue() && window.report_count==0 && window.Current()==100,"report clears only period totals, not latest FPS");
+    window.Add(5000,true);Require(window.ReportDue() && window.report_count==1 && Near(float(window.Current()),.5f),"severe frame stall is still reported without waiting for 300 frames");
+    window.Add(4000,true);Require(!window.ReportDue() && window.Current()==0 && window.Recent()==0,"clock regression restarts interval accounting");
+    window.Add(std::numeric_limits<double>::quiet_NaN(),true);Require(window.previous==0 && !window.ReportDue(),"invalid timestamp does not poison logging cadence");
 }
 }
 int main(){try{Static();Math();TreeLighting();DrawBasis();Metrics();printf("G3e XRLC draw basis / baked channels / frame windows: %d checks passed\n",checks);return 0;}

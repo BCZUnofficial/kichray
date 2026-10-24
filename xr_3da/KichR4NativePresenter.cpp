@@ -322,7 +322,13 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
         KichR4ResourceStats resources={};const bool stats_ok=native.api.resources.get_stats(c.frame.device,&resources,sizeof(resources))==0;
         if(eligible){c.created_window+=stats_ok?resources.created-c.last_created:0;c.meshes_window+=c.deferred.native_models.mesh_uploads;
             c.submit_peak_ms=(std::max)(c.submit_peak_ms,double(submitted.QuadPart-start.QuadPart)*1000.0/double(frequency.QuadPart));}
-        if(eligible && (c.metrics.frames==1 || c.metrics.frames==30 || c.metrics.frames==60 || c.metrics.frames==120 || c.metrics.frames%300==0)){
+        if(eligible && c.metrics.ReportDue()){
+            Write("[R4 E1.4 status] frame=%u fps_current=%.2f fps_recent=%.2f present_interval_ms=%.3f recent_samples=%u recent_ms=%.0f shadow_submission=%s sun_cascades=%u sun_map_size=%u spot_shadow_lights=%u point_shadow_lights=%u local_shadow_faces=%u local_map_size=%u; CPU_submission_counts_not_visible_pixels; report_period_ms=2000",
+                input.engine_frame,c.metrics.Current(),c.metrics.Recent(),c.metrics.interval,c.metrics.report_count,c.metrics.report_ms,
+                c.deferred.frame_sun_cascades || c.deferred.frame_local_shadow_faces?"ON":"NONE",
+                c.deferred.frame_sun_cascades,c.deferred.frame_sun_cascades?2048u:0u,
+                c.deferred.frame_spot_shadow_lights,c.deferred.frame_point_shadow_lights,c.deferred.frame_local_shadow_faces,
+                c.deferred.frame_local_shadow_faces?c.deferred.local_shadow_size:0u);
             Write("[R4 G3e frame] gameplay=%u samples=%u present_interval_1pct_low_fps=%.2f CPU_queue_ms=%.3f CPU_submit_ms=%.3f present_ms=%.3f created_frame=%u released_frame=%u stats_ok=%u shadow_passes=%u GPU_async_ready=%u GPU_ms=[%.3f %.3f %.3f %.3f %.3f %.3f %.3f]",
                 c.metrics.frames,c.metrics.count,c.metrics.Low(),input.prepare_ms,double(submitted.QuadPart-start.QuadPart)*1000.0/double(frequency.QuadPart),double(end.QuadPart-submitted.QuadPart)*1000.0/double(frequency.QuadPart),stats_ok?resources.created-c.last_created:0,stats_ok?resources.released-c.last_released:0,unsigned(stats_ok),c.deferred.shadow_passes-shadows_before,
                 !c.gpu_quarantine?profile.ready:0,!c.gpu_quarantine?profile.milliseconds[0]:0,!c.gpu_quarantine?profile.milliseconds[1]:0,!c.gpu_quarantine?profile.milliseconds[2]:0,!c.gpu_quarantine?profile.milliseconds[3]:0,!c.gpu_quarantine?profile.milliseconds[4]:0,!c.gpu_quarantine?profile.milliseconds[5]:0,!c.gpu_quarantine?profile.milliseconds[6]:0);
@@ -333,7 +339,12 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
                 c.deferred.visibility_plan.queries,c.deferred.visibility_plan.cache_hits,
                 static_cast<unsigned long long>(c.deferred.visibility_plan.bounds_tests),static_cast<unsigned long long>(c.deferred.visibility_plan.node_tests),
                 c.deferred.forward_sorts,plan_ms,preflight_ms);
-            c.created_window=c.meshes_window=0;c.submit_peak_ms=0;}
+            Write("[R4 E1.4 details] shadow_bounds=%llu shadow_queries=%llu shadow_reuses=%llu shadow_leaf_tests=%llu shadow_node_tests=%llu index_builds=%u index_refits=%u index_ms=%.3f selection_ms=%.3f; CPU_current_frame_includes_preflight; unchanged_caster_policy",
+                static_cast<unsigned long long>(c.deferred.details.shadow_bounds_built),static_cast<unsigned long long>(c.deferred.details.shadow_queries),
+                static_cast<unsigned long long>(c.deferred.details.shadow_cache_hits),static_cast<unsigned long long>(c.deferred.details.shadow_visibility_tests),
+                static_cast<unsigned long long>(c.deferred.details.shadow_node_tests),c.deferred.details.shadow_index_builds,c.deferred.details.shadow_index_refits,
+                c.deferred.details.shadow_index_ms,c.deferred.details.shadow_select_ms);
+            c.created_window=c.meshes_window=0;c.submit_peak_ms=0;c.metrics.Reported();}
         if(stats_ok){c.last_created=resources.created;c.last_released=resources.released;}
         {std::lock_guard<std::mutex> lock(runtime_mutex);std::set<std::string> alive;for(const auto& item:runtime)alive.insert(item.second.key);retired.clear();
             for(auto it=c.uploads.begin();it!=c.uploads.end();){if(!alive.count(it->first)){if(it->second.handle){c.level.bridge.resources.release_resource(c.frame.device,it->second.handle);++native.runtime_releases;}it=c.uploads.erase(it);}else ++it;}}

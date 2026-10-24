@@ -13,15 +13,19 @@
 #include "KichR4MaterialSession.h"
 #include "KichR4OpticalRules.h"
 #include "KichR4LodPolicy.h"
+#include "KichR4PostprocessNoise.h"
 #include <set>
 /* EXE-side pass planner. Native resources remain owned by the R4 device;
  * destroying that device releases partial construction and all cached maps. */
 struct KichR4DeferredSession {
-    enum Pipeline {StaticGeometry,ModelGeometry,StaticShadow,ModelShadow,Sun,Local,ForwardSun,ForwardLocal,Plain,Combine,Sky,Clouds,Water,Distortion,StaticForward,StaticWater,Copy,Postprocess,StaticPlain,DistortionMask,DistortionComposite,CelestialPipeline,WallmarkPipeline,PipelineCount};
+    enum Pipeline {StaticGeometry,ModelGeometry,StaticShadow,ModelShadow,Sun,Local,ForwardSun,ForwardLocal,Plain,Combine,Sky,Clouds,Water,Distortion,StaticForward,StaticWater,Copy,Postprocess,StaticPlain,DistortionMask,DistortionComposite,CelestialPipeline,WallmarkPipeline,StaticWallmarkPipeline,PipelineCount};
     KichR4DeferredAPI api;
     KichR4Handle pipelines[PipelineCount],shaders[21],cb,screen_vb,screen_ib,white;
     KichR4Handle albedo,normal,depth,light,sun_map,sun_far_map,scene_color,final_color,distortion_map;
     uint32_t width,height,frames,shadow_passes,local_passes;
+    // Successful submissions in this frame, not a measurement of visible shadow pixels.
+    uint32_t frame_sun_cascades=0,frame_spot_shadow_lights=0,frame_point_shadow_lights=0;
+    uint32_t frame_local_shadow_faces=0;
     // One bounded pool, shared by deferred, forward and HUD lighting. A point
     // source keeps all six faces; pressure reduces resolution, never drops it.
     std::vector<KichR4Handle> local_maps;
@@ -62,7 +66,7 @@ struct KichR4DeferredSession {
     uint32_t normals_revision=UINT32_MAX;
     const kich_r4_level::Draw* normals_storage=NULL;
     float lod_start=256.f,lod_end=64.f;
-    std::vector<size_t> plain_order,mixed_order;
+    std::vector<size_t> plain_order,mixed_order,static_wallmark_order;
     std::vector<kich_r4_visibility::Bounds> stream_bounds;
     const kich_r4_capture::Batch* bounded_batch=NULL;
     const kich_r4_capture::Batch* ordered_batch=NULL;
@@ -216,7 +220,7 @@ struct KichR4DeferredSession {
         for(unsigned i=0;i<21;++i){level.Continue();KichR4ShaderDesc d={};d.struct_size=sizeof(d);d.kind=i<4?KICH_R4_VERTEX_SHADER:KICH_R4_PIXEL_SHADER;
             memcpy(d.entry,entries[i],strlen(entries[i])+1);memcpy(d.name,"kich_b44_deferred",18);
             if(level.Expect(s,entries[i],level.bridge.resources.compile_shader(s.device,&d,source,static_cast<uint32_t>(strlen(source)),&shaders[i],level.bridge.shader_error,sizeof(level.bridge.shader_error)))<0)return s.failure;}
-        const unsigned vs[]={0,1,0,2,3,3,1,1,1,3,1,1,1,1,0,0,3,3,0,1,3,1,1},ps[]={4,4,5,5,6,7,8,9,10,11,12,13,14,15,8,14,10,16,10,17,18,19,20};
+        const unsigned vs[]={0,1,0,2,3,3,1,1,1,3,1,1,1,1,0,0,3,3,0,1,3,1,1,0},ps[]={4,4,5,5,6,7,8,9,10,11,12,13,14,15,8,14,10,16,10,17,18,19,20,20};
         for(unsigned i=0;i<PipelineCount;++i){KichR4PipelineDesc d={};d.struct_size=sizeof(d);d.vertex_shader=shaders[vs[i]];d.pixel_shader=shaders[ps[i]];
             const bool model=vs[i]==1 || vs[i]==2,screen=vs[i]==3;
             d.vertex_stride=model?sizeof(kich_r4_capture::Vertex):screen?20:sizeof(kich_r4_level::Vertex);
@@ -316,10 +320,40 @@ struct KichR4DeferredSession {
             if(!shadow){++l.visible;++l.submitted_draws;l.submitted_triangles+=mesh.count/3;}
         }if(!shadow)++l.frames;return 0;
     }
+    int32_t StaticWallmarks(KichR4FrameSession& s,KichR4LevelSession& l,const kich_r4_scene::Matrix& vp){
+        EnsureStaticPlan(l);
+        const kich_r4_level::StaticVisibility& visibility=visibility_plan.Select(vp,l.files.sector?l.files.sector(base.camera):UINT32_MAX);
+        static_wallmark_order.clear();
+        for(size_t n=0;n<visibility.selected.size();++n){const size_t i=visibility.selected[n];
+            if(kich_r4_material::AuthoredWallmark(l.scene.materials[l.scene.draws[i].material].descriptor))static_wallmark_order.push_back(i);}
+        // R2 mapWmark order: far to near, separate from ordinary transparency.
+        std::stable_sort(static_wallmark_order.begin(),static_wallmark_order.end(),[&](size_t a,size_t b){
+            const kich_r4_level::Draw& x=l.scene.draws[a];const kich_r4_level::Draw& y=l.scene.draws[b];
+            const float ax=(x.low.x+x.high.x)*.5f-base.camera[0],ay=(x.low.y+x.high.y)*.5f-base.camera[1],az=(x.low.z+x.high.z)*.5f-base.camera[2];
+            const float bx=(y.low.x+y.high.x)*.5f-base.camera[0],by=(y.low.y+y.high.y)*.5f-base.camera[1],bz=(y.low.z+y.high.z)*.5f-base.camera[2];
+            return ax*ax+ay*ay+az*az>bx*bx+by*by+bz*bz;});
+        for(size_t n=0;n<static_wallmark_order.size();++n){const size_t i=static_wallmark_order[n];kich_r4_level::Draw mesh=l.scene.draws[i];
+            const kich_r4_level::Material& m=l.scene.materials[mesh.material];const kich_r4_material::Descriptor& material=m.descriptor;
+            if(mesh.lod){const kich_r4_level::DrawRange range=kich_r4_level::SelectDrawRange(l.scene,mesh,i<static_lods.size()?static_lods[i]:1.f);mesh.first=range.first;mesh.count=range.count;}
+            kich_r4_lighting::Constants c=base;c.world=mesh.world;c.mvp=vp;c.normal_matrix=static_normals[i];
+            c.material[0]=512;c.alpha[0]=material.alpha_ref;c.alpha[1]=float(material.alpha_func);c.alpha[3]=3; // R2 simple.ps: texture only.
+            kich_r4_capture::Style style;kich_r4_material::Apply(material,style);
+            // Albedo-only projection retains receiver normal, sun/hemi, gloss,
+            // baked irradiance and depth used later to reconstruct position.
+            style.write=0;style.surface.color_mask=7;KichR4ReceiverState(style.surface,false);
+            KichR4DeferredDrawDesc d=Description(pipelines[StaticWallmarkPipeline],l.vertex_buffers[mesh.vb],l.index_buffers[mesh.ib],cb,mesh.count,mesh.first,style);
+            d.textures[0]=l.Texture(s,m.texture);
+            if(g_render_snapshot_active){SnapshotStatic(l,i,"R4_STATIC_WALLMARK_ALBEDO",&mesh);SnapshotVisibility("SELECTED","CAMERA_FRUSTUM; RECEIVER_ALBEDO; BOUNDED_WMARK_SHIFT");}
+            SnapshotResolvedTexture(l,0,m.texture.c_str(),d.textures[0]);
+            if(Constants(s,l,c)<0 || l.Expect(s,"E1.4 authored wallmark albedo",api.draw(s.device,&d))<0)return s.failure;
+            ++l.visible;++l.submitted_draws;l.submitted_triangles+=mesh.count/3;
+        }return 0;
+    }
     int32_t StaticTransparent(KichR4FrameSession& s,KichR4LevelSession& l,const kich_r4_scene::Matrix& vp){
         EnsureStaticPlan(l);
         const kich_r4_level::StaticVisibility& visibility=visibility_plan.Select(vp,l.files.sector?l.files.sector(base.camera):UINT32_MAX);
         std::vector<size_t> order;for(size_t n=0;n<visibility.selected.size();++n){const size_t i=visibility.selected[n];const kich_r4_level::Material& material=l.scene.materials[l.scene.draws[i].material];
+            if(kich_r4_material::AuthoredWallmark(material.descriptor))continue;
             if(material.descriptor.semantic!=kich_r4_material::UNKNOWN?(material.descriptor.passes&kich_r4_material::PASS_FORWARD)!=0:material.kind>=2)order.push_back(i);}
         std::stable_sort(order.begin(),order.end(),[&](size_t a,size_t b){
             const kich_r4_level::Draw& x=l.scene.draws[a];const kich_r4_level::Draw& y=l.scene.draws[b];
@@ -521,6 +555,9 @@ struct KichR4DeferredSession {
             RenderSnapshot_Skin("NONE");for(unsigned i=0;i<8;++i)RenderSnapshot_Texture(i,"RENDER_TARGET_HANDLE");}
         if(Constants(s,l,c)<0)return s.failure;
         kich_r4_capture::Style style;style.depth=style.write=0;style.cull=KICH_R4_CULL_NONE;style.clamp=1;
+        if(p==Postprocess){style.clamp=0; // global clamp would also override the noise sampler
+            style.surface.samplers[0]={3,3,3,2,2,2,1,0,0,0};
+            style.surface.samplers[1]={1,1,1,2,2,2,1,0,0,0};}
         if(add){style.blend=1;style.src=style.dst=2;}
         if(p==Local){KichR4LocalLight source={};memcpy(source.position,c.light_position,12);source.range=c.light_position[3];
             const kich_r4_visibility::ScreenRect rect=kich_r4_visibility::LightScreenRect(source,base.mvp);
@@ -552,7 +589,16 @@ struct KichR4DeferredSession {
         SnapshotPass("POSTPROCESS",RENDER_SNAPSHOT_PASS_POSTPROCESS,"postprocess");
         kich_r4_lighting::Constants c=base;const float* p=input.postprocess;
         c.screen[0]=static_cast<float>(input.width);c.screen[1]=static_cast<float>(input.height);
-        memcpy(c.alpha,p,16);memcpy(c.light_position,p+4,16);c.light_direction[0]=p[9];c.light_direction[1]=p[8];
+        memcpy(c.alpha,p,16);memcpy(c.light_position,p+4,16);memset(c.light_direction,0,sizeof(c.light_direction));
+        KichR4Handle noise=0;const char* noise_status=menu?"MENU_DISABLED":"DISABLED";
+        c.light_position[3]=0;
+        if(!menu && kich_r4_noise::Amount(p[7])>0){noise_status="UNAVAILABLE_OR_NOT_RESIDENT";
+            const auto found=l.texture_registry.entries.find(kich_r4_noise::Texture());
+            if(found!=l.texture_registry.entries.end()){const kich_r4_texture::Entry& texture=found->second;
+                if(texture.handle && texture.handle!=l.checker && texture.handle!=l.white && texture.faces==1 && texture.reason==kich_r4_texture::Ready){
+                    if(kich_r4_noise::Coordinates(input.width,input.height,texture.width,texture.height,p[9],p[8],c.light_direction)){
+                        noise=texture.handle;c.light_position[3]=kich_r4_noise::Amount(p[7]);noise_status="READY";
+                    }else noise_status="INVALID_SCALE_OR_DIMENSIONS";}}}
         memcpy(c.sun_color,p+10,12);memcpy(c.ambient,p+13,12);memcpy(c.hemi,p+16,12);memcpy(c.fog,p+19,12);
         if(menu){c.alpha[3]=0;memset(c.light_position,0,sizeof(c.light_position));
             for(unsigned i=0;i<3;++i){c.sun_color[i]=.5f;c.ambient[i]=0;c.hemi[i]=1.f/3.f;}}
@@ -560,13 +606,16 @@ struct KichR4DeferredSession {
             Text("POSTPROCESS",id,"requested_layout","gamma,brightness,contrast,gray,blur,duality_h,duality_v,noise,noise_phase,noise_scale,baseRGB,addRGB,grayRGB,balanceRGB");
             Vector("POSTPROCESS",id,"requested_0_15",p,16);Vector("POSTPROCESS",id,"requested_16_21",p+16,6);
             Vector("POSTPROCESS",id,"applied_gamma_brightness_contrast_gray",c.alpha,4);Vector("POSTPROCESS",id,"applied_blur_duality_noise",c.light_position,4);
-            Vector("POSTPROCESS",id,"applied_noise_scale_phase",c.light_direction,2);Vector("POSTPROCESS",id,"applied_baseRGB",c.sun_color,3);Vector("POSTPROCESS",id,"applied_addRGB",c.ambient,3);Vector("POSTPROCESS",id,"applied_grayRGB",c.hemi,3);Vector("POSTPROCESS",id,"applied_balanceRGB",c.fog,3);
+            Vector("POSTPROCESS",id,"applied_noise_uv_origin_span",c.light_direction,4);Text("POSTPROCESS",id,"noise_texture",kich_r4_noise::Texture());
+            Text("POSTPROCESS",id,"noise_status",noise_status);U64("POSTPROCESS",id,"noise_texture_handle",noise);
+            Text("POSTPROCESS",id,"noise_contract","R2_MULTIPLICATIVE; LINEAR_WRAP; SOURCE_DIMENSIONS; INDEPENDENT_UV; QUANTIZED_STRENGTH; NEUTRAL_IF_UNAVAILABLE");
+            Vector("POSTPROCESS",id,"applied_baseRGB",c.sun_color,3);Vector("POSTPROCESS",id,"applied_addRGB",c.ambient,3);Vector("POSTPROCESS",id,"applied_grayRGB",c.hemi,3);Vector("POSTPROCESS",id,"applied_balanceRGB",c.fog,3);
             Text("POSTPROCESS",id,"override",menu?"MENU_ZERO_GRAY_BLUR_DUALITY_NOISE; BASE=.5 ADD=0 GRAY=1/3":"NONE");
             Text("POSTPROCESS",id,"shader_parameter_transform","gamma=max(.01,alpha.x); brightness=alpha.y*.5; contrast=alpha.z*.5; SATURATED_OUTPUT");
             Text("POSTPROCESS",id,"HDR_exposure_bloom","NOT_SUPPORTED_BY_NATIVE_POSTPROCESS");Text("POSTPROCESS",id,"output_color_format","SWAPCHAIN_UNORM; NO_HDR_TONEMAP");
             U64("POSTPROCESS",id,"input_handle",final_color);Text("POSTPROCESS",id,"output","SWAPCHAIN_BACKBUFFER");Text("POSTPROCESS",id,"execution","PLANNED");}
         if(Pass(s,l,input.width,input.height,1,0,0,0,0)<0)return s.failure;
-        const int32_t result=Fullscreen(s,l,Postprocess,c,final_color,0,NULL);
+        const int32_t result=Fullscreen(s,l,Postprocess,c,final_color,noise,NULL);
         kich_r4_telemetry::Text("POSTPROCESS","native_postprocess","execution",result>=0?"DRAW_SUCCEEDED; PIXEL_CONTRIBUTION_NOT_MEASURED":"DRAW_FAILED");return result;
     }
     kich_r4_lighting::Constants LocalConstants(const KichR4LocalLight& l)const {
@@ -579,6 +628,7 @@ struct KichR4DeferredSession {
     }
     double model_prepare_ms=0;
     int32_t Draw(KichR4FrameSession& s,KichR4LevelSession& l,KichR4StreamSession& stream,const KichR4GameFrame& input,const kich_r4_capture::Batch* captured,uint32_t debug){
+        frame_sun_cascades=frame_spot_shadow_lights=frame_point_shadow_lights=frame_local_shadow_faces=0;
         if(!native_mode)l.texture_registry.Begin(); // Native presenter owns its submission epoch.
         if(!native_mode || visibility_frame!=input.engine_frame || visibility_revision!=l.revision)BeginFramePlan(l,input);
         ordinary_profile=debug==0; // diagnostic GPU timings must not enter the normal profile ring
@@ -629,7 +679,7 @@ struct KichR4DeferredSession {
                 if(Pass(s,l,2048,2048,0,0,0,map,KICH_R4_CLEAR_DEPTH)<0 || Static(s,l,base.shadow[cascade],true)<0)return s.failure;
                 kich_r4_lighting::Constants c=base;c.mvp=base.shadow[cascade];
                 if(Models(s,l,stream,captured,ShadowModels,c)<0 || details.Draw(s,l,cb,c,true,input.engine_frame,phase,RENDER_SNAPSHOT_PASS_SUN_SHADOW)<0)return s.failure;
-                kich_r4_telemetry::Text("SHADOW",phase,"execution","PASS_COMPLETED");++shadow_passes;
+                kich_r4_telemetry::Text("SHADOW",phase,"execution","PASS_COMPLETED");++shadow_passes;++frame_sun_cascades;
             }
             if(!native_mode){base.shadow[1]=base.shadow[0];sun_inputs[1]=sun_map;}
         }
@@ -648,13 +698,14 @@ struct KichR4DeferredSession {
                 if(Pass(s,l,local_shadow_size,local_shadow_size,0,0,0,map,KICH_R4_CLEAR_DEPTH)<0 || Static(s,l,local.shadow[face],true,light_sector)<0)return s.failure;
                 kich_r4_lighting::Constants c=local;c.mvp=local.shadow[face];
                 if(Models(s,l,stream,captured,ShadowModels,c)<0 || details.Draw(s,l,cb,c,true,input.engine_frame,phase,RENDER_SNAPSHOT_PASS_LOCAL_SHADOW)<0)return s.failure;
-                kich_r4_telemetry::Text("SHADOW",phase,"execution","PASS_COMPLETED");++shadow_passes;}}
+                kich_r4_telemetry::Text("SHADOW",phase,"execution","PASS_COMPLETED");++shadow_passes;++frame_local_shadow_faces;}
+            if(light_source.type==2)++frame_spot_shadow_lights;else ++frame_point_shadow_lights;}
         Mark(s,1);
         const kich_r4_scene::Matrix vp=base.mvp;
         SnapshotPass("GBUFFER",RENDER_SNAPSHOT_PASS_GBUFFER,"camera_geometry");
         if(Pass(s,l,width,height,3,albedo,normal,depth,7,NULL,light)<0 || Static(s,l,vp,false)<0 || Models(s,l,stream,captured,GeometryModels,base)<0 || details.Draw(s,l,cb,base,false,input.engine_frame,"camera_geometry",RENDER_SNAPSHOT_PASS_GBUFFER)<0)return s.failure;
         if(native_mode){SnapshotPass("GBUFFER",RENDER_SNAPSHOT_PASS_GBUFFER,"wallmarks_albedo_rgb");
-            if(Pass(s,l,width,height,1,albedo,0,depth,0)<0 || Models(s,l,stream,captured,Wallmarks,base)<0)return s.failure;}
+            if(Pass(s,l,width,height,1,albedo,0,depth,0)<0 || StaticWallmarks(s,l,vp)<0 || Models(s,l,stream,captured,Wallmarks,base)<0)return s.failure;}
         Mark(s,2);
         SnapshotPass("LIGHT_ACCUMULATION",RENDER_SNAPSHOT_PASS_LIGHT_ACCUMULATION,"sun_lighting");if(g_render_snapshot_active)RenderSnapshot_Light("sun","SCENE_ENVIRONMENT");
         sun_inputs[2]=albedo;

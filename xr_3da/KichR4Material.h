@@ -10,7 +10,7 @@
 // name heuristic or DDS-alpha inspection is allowed to change the surface route.
 namespace kich_r4_material {
 enum Semantic { UNKNOWN, MATERIAL_OPAQUE, CUTOUT, BLENDED, ADDITIVE, DISTORTION, EMISSIVE };
-enum Special { SPECIAL_NONE, SPECIAL_TERRAIN, SPECIAL_WATER };
+enum Special { SPECIAL_NONE, SPECIAL_TERRAIN, SPECIAL_WATER, SPECIAL_WALLMARK };
 enum Family { FAMILY_UNKNOWN, FAMILY_OPAQUE, FAMILY_AREF, FAMILY_MODEL, FAMILY_TREE, FAMILY_DETAIL, FAMILY_SPECIAL };
 enum Attribute { ATTR_NORMAL=1, ATTR_TANGENT=2, ATTR_BINORMAL=4, ATTR_UV1=8,
     ATTR_HEMI=16, ATTR_SUN=32, ATTR_COLOR=64, ATTR_TREE=128 };
@@ -39,13 +39,17 @@ struct Source {
 };
 struct PassState {
     KichR4SurfaceState surface=KichR4DefaultSurface();
-    bool blend,alpha_test,depth_test,depth_write,distortion,emissive,wallmark,unlit;
+    bool blend,alpha_test,depth_test,depth_write,distortion,emissive,wallmark,unlit,authored_wallmark;
     uint32_t src,dst,alpha_func,alpha_reference,cull;
-    PassState():blend(false),alpha_test(false),depth_test(true),depth_write(true),distortion(false),emissive(false),wallmark(false),unlit(false),
+    PassState():blend(false),alpha_test(false),depth_test(true),depth_write(true),distortion(false),emissive(false),wallmark(false),unlit(false),authored_wallmark(false),
         src(2),dst(1),alpha_func(8),alpha_reference(0),cull(0){}
 };
+inline bool AuthoredWallmarkSource(uint32_t element,const char* vertex_shader){
+    return element<2 && vertex_shader && !strcmp(vertex_shader,"wmark");
+}
 inline bool Geometry(const Descriptor& d){return (d.passes&PASS_GEOMETRY)!=0;}
 inline bool Shadow(const Descriptor& d){return (d.passes&PASS_SHADOW)!=0;}
+inline bool AuthoredWallmark(const Descriptor& d){return d.special==SPECIAL_WALLMARK;}
 inline bool Bumped(const Descriptor& d){return Geometry(d) && !d.bump.empty();}
 inline float MaterialClass(float material){return material==material?material<0?0:material>3?3:material:1;}
 inline const char* Name(Semantic s){switch(s){case MATERIAL_OPAQUE:return "opaque";case CUTOUT:return "cutout";
@@ -74,6 +78,17 @@ inline Descriptor Build(const Source& source,const PassState& state) {
     d.cull=state.cull;d.src_blend=state.src;d.dst_blend=state.dst;
     d.depth_test=state.depth_test;d.depth_write=state.depth_write;
     const bool true_blend=state.blend && !(state.src==2 && state.dst==1);
+    // Exact compiled wmark VS on E0/E1 identifies authored coplanar overlays.
+    // Keep forward compatibility for non-level consumers; static submission
+    // moves this special family to receiver albedo before deferred lighting.
+    if(state.authored_wallmark && !state.distortion){
+        d.special=SPECIAL_WALLMARK;d.semantic=true_blend?BLENDED:MATERIAL_OPAQUE;
+        d.passes=PASS_FORWARD;d.emissive_gain=d.emissive_specular=0;
+        // R1 wallmarkmult is ZERO/SRCCOLOR; R2's same wmark/simple pass is
+        // DESTCOLOR/SRCCOLOR (neutral gray leaves the receiver unchanged).
+        if(true_blend && state.src==1 && state.dst==3)d.src_blend=9;
+        d.source+=";SoC_wmark_receiver_albedo";return d;
+    }
     // Special families and explicit pass flags retain their source behavior.
     if(state.distortion)d.semantic=DISTORTION;
     else if((state.emissive || state.unlit) && !state.wallmark){
