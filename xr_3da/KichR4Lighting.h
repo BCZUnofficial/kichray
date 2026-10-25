@@ -95,6 +95,10 @@ struct KichR4LightingFrame {
     // HLSL fog.w (KichR4ShadowOptions). Direct/test producers: compact filter,
     // sun reach mask on, 2 texel lift.
     float shadow_options;
+    // P0-S10 r4_lamp_fade: {fade, ssa start, ssa end} of KichR4LampLOD; zero
+    // (direct/test producers) keeps every lamp at full colour. lamp_faded
+    // counts shadowed lamps dropped below LOD 0.001 this selection.
+    float lamp_fade[3];uint32_t lamp_faded;
     bool ShadowPlanned()const{return count && shadow_faces.size()>=count && shadow_sizes.size()>=count;}
     uint32_t ShadowFaceMask(unsigned index)const{
         if(index>=count || index>=lights.size())return 0;
@@ -104,7 +108,7 @@ struct KichR4LightingFrame {
     // entries. Captured frames resize to every visible registry source.
     KichR4LightingFrame():valid(0),count(0),shadow_mask(0),sun_direction(),sun_color(),ambient(),hemi(),fog(),fog_near(0),fog_far(0),fog_valid(0),
         env_ambient(),env_color(),gloss_factor(1),env_valid(0),sun_mode(KICH_R4_SUN_DEFAULT),sunmask(),sunmask_valid(0),sun_contact(),sun_contact_valid(0),sun_basis(),sun_basis_valid(0),sun_shadow_cull(0),sun_shafts(),sun_map_size(2048),sun_far_size(0),lights(8),sources(8),projectors(8),visibility_vp(),visibility_valid(0),r1_lights_requested(0),r1_lights_applied(0),occlusion_enabled(0),occlusion_tested(0),
-        selection_frame(0),local_shadow_size(0),shadow_plan_faces(0),shadow_resolution_changes(0),shadow_resolution_reason(0),local_shadow_quality(1),local_detail_shadows(1),local_shadows(1),shadow_options(32){
+        selection_frame(0),local_shadow_size(0),shadow_plan_faces(0),shadow_resolution_changes(0),shadow_resolution_reason(0),local_shadow_quality(1),local_detail_shadows(1),local_shadows(1),shadow_options(32),lamp_fade(),lamp_faded(0){
         const float defaults[8]={.3f,3.3f,.7f,1.f,0.f,.75f,.5f,0.f};memcpy(bloom,defaults,sizeof(bloom));
         const float tonemap[5]={0.f,.25f,.001f,5.f,0.f};memcpy(exposure,tonemap,sizeof(exposure));}
     bool CastsShadow(unsigned index)const {
@@ -143,6 +147,38 @@ inline uint32_t KichR4SunMode(const float* sun_color,float gloss_factor,bool sun
 inline float KichR4ShadowOptions(bool wide,bool sun_mask,float normal_bias){
     const float bias=normal_bias>0?(normal_bias<4?normal_bias:4.f):0.f;
     return float((wide?1u:0u)|(sun_mask?0u:2u)|(unsigned(bias*4+.5f)<<2));
+}
+/* P0-S10 R4 lamp fade (r4_lamp_fade). A shadow-casting lamp loses colour with
+ * its screen-space size, the measure of R2 light::get_LOD: ssa = fade*R/d^2 of
+ * the lamp's bounding sphere, against the r__geometry_lod window
+ * (ssa_start/3)^2 .. (ssa_end/3)^2 over the weighted screen area
+ * w*h*(90/fov)^2*r__geometry_lod, then the square root of the clamped ratio.
+ * Below 0.001 the lamp is not drawn. R2 scales only spot colour (points pop
+ * out at the cut); R4 scales both, so point lamps fade the same way. */
+inline void KichR4LampFadeWindow(float* out,float fade,uint32_t width,uint32_t height,float fov_degrees,float geometry_lod,float ssa_start,float ssa_end){
+    out[0]=out[1]=out[2]=0;
+    if(!(fade>0) || !width || !height || !(fov_degrees>0) || !(ssa_start>ssa_end) || !(ssa_end>=0))return;
+    const double factor=90.0/fov_degrees,screen=double(width)*height*factor*factor*(1e-7+geometry_lod);
+    if(!(screen>0))return;
+    out[0]=fade;out[1]=float((ssa_start/3.0)*(ssa_start/3.0)/screen);out[2]=float((ssa_end/3.0)*(ssa_end/3.0)/screen);
+}
+// Bounding sphere as R2 light::spatial_move (type 2 spot, cone in radians).
+inline void KichR4LightSphere(const KichR4LocalLight& l,float* center,float& radius){
+    radius=l.range;for(unsigned a=0;a<3;++a)center[a]=l.position[a];
+    if(l.type!=2)return;
+    float d[3]={l.direction[0],l.direction[1],l.direction[2]};const float n=sqrtf(d[0]*d[0]+d[1]*d[1]+d[2]*d[2]);
+    if(!(n>0))return;
+    const float half=l.cone*.5f;float along=0;
+    if(l.cone>=1.5707963f){radius=l.range*tanf(half);along=l.range;}
+    else{const float c=cosf(half);radius=l.range/(2*c*c);along=radius;}
+    for(unsigned a=0;a<3;++a)center[a]=l.position[a]+d[a]/n*along;
+}
+inline float KichR4LampLOD(const KichR4LocalLight& l,const float* camera,const float* window){
+    if(!(window[0]>0) || !(window[1]>window[2]))return 1;
+    float center[3],radius;KichR4LightSphere(l,center,radius);
+    double distance=1e-6;for(unsigned a=0;a<3;++a){const double d=double(center[a])-camera[a];distance+=d*d;}
+    const double ssa=window[0]*radius/distance,t=(ssa-window[2])/(double(window[1])-window[2]);
+    return float(sqrt(t<0?0:t>1?1:t));
 }
 static_assert(sizeof(KichR4LocalLight)==48,"CPU light layout");
 static_assert(sizeof(KichR4LightIdentity)==32,"CPU light provenance layout");

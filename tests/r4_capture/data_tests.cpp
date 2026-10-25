@@ -76,6 +76,23 @@ void Models(){for(unsigned weights=0;weights<3;++weights){const fixture::Bytes r
     fixture::Bytes container=fixture::Visual(0,1,0,0,3);Require(!Decode(View(container)),"level container skipped to avoid static duplicates");
     fixture::Bytes bad=capture_fixture::Model(2);const Span v=Chunk(View(bad),3);fixture::Set(bad,static_cast<unsigned>(v.p-bad.data())+8,0xffffffffu);
     Reject([&](){Decode(View(bad));},"bone IDs bounded");
+    // P0-S10 X-Ray find_chunk: the first match wins and the scan stops there.
+    {const fixture::Bytes raw=capture_fixture::Model(1);
+        // actors\neytral\stalker_neytral_balon_1: trailing chunk 19 claims 56 bytes, 52 remain.
+        fixture::Bytes tail=raw;fixture::U32(tail,19);fixture::U32(tail,56);tail.resize(tail.size()+52,0);
+        const std::shared_ptr<Mesh> repaired=Decode(View(tail));Require(repaired && repaired->indices.size()==6,"a damaged record after every model chunk is never read");
+        Reject([&](){FirstChunk(View(tail),19,false);},"the damaged record itself is rejected when requested");
+        fixture::Bytes partial=raw;fixture::U32(partial,7);partial.resize(partial.size()+3,0);
+        Require(Decode(View(partial)) && FirstChunk(View(partial),7,false).p==NULL,"a trailing header shorter than 8 bytes ends the search");
+        // A duplicate after the first: X-Ray reads the first one.
+        fixture::Bytes twice=raw;fixture::Bytes texture;fixture::Z(texture,"OTHER.dds");fixture::Chunk(twice,2,texture);
+        const std::shared_ptr<Mesh> first=Decode(View(twice));Require(first && first->texture=="base","duplicate chunk: the first one is used");
+        Reject([&](){Chunk(View(twice),2);},"level data keeps its strict duplicate check");
+        // A damaged record before a required chunk: not found, the model is rejected.
+        fixture::Bytes broken;fixture::U32(broken,99);fixture::U32(broken,100000);broken.insert(broken.end(),raw.begin(),raw.end());
+        Reject([&](){Decode(View(broken));},"a damaged record before the header rejects the model");
+        // The requested chunk itself must be complete.
+        fixture::Bytes cut(raw.begin(),raw.end()-1);Reject([&](){FirstChunk(View(cut),4);},"a truncated requested chunk is rejected");}
 }
 void HUD(){Batch b;b.Begin(1920,1080,9);Vertex v=b.Screen(0,0,.0001f,2,1,.5f,0x80402010u);
     Require(Near(v.p[0],(-1.f+1.f/1920)*.5f) && Near(v.p[1],(1.f-1.f/1080)*.5f) && Near(v.p[3],.5f),"DX9 pixels/RHW mapped to DX11 clip space");
@@ -123,5 +140,41 @@ void ABI(){KichR4StreamDrawDesc d={};d.struct_size=sizeof(d);d.draw.struct_size=
         case 10:bad.scissor_enable=1;bad.scissor[2]=-1;break;case 11:bad.texture=0;break;}Require(!kich_r4::ValidStreamDraw(bad),"invalid stream state rejected before GPU calls");}
 }
 }
-int main(){try{Models();ModelBudgets();HUD();SnapshotCapture();ABI();printf("B4.3b OGF / skinning / stream ownership / state validation: %d checks passed\n",checks);return 0;}
+// P0-S10 r4_lamp_fade against R2 light::get_LOD written out independently:
+// g_fSCREEN = w*h*(90/fov)^2*(EPS_S+r__LOD), r_ssaGLOD_* = (ssa/3)^2/g_fSCREEN.
+double ReferenceLOD(double radius,double distance_squared,double fade,double w,double h,double fov,double lod,double start,double end){
+    const double screen=w*h*(90/fov)*(90/fov)*(.0000001+lod),s=(start/3)*(start/3)/screen,e=(end/3)*(end/3)/screen;
+    const double ssa=fade*radius/(distance_squared+1e-6),t=(ssa-e)/(s-e);return std::sqrt(t<0?0:t>1?1:t);}
+void LampFade(){
+    float window[3];KichR4LampFadeWindow(window,1,1920,1080,67.5f,1,256,64);
+    Require(window[0]==1 && window[1]>window[2] && window[2]>0,"fade window from r__geometry_lod");
+    const float camera[3]={0,0,0};KichR4LocalLight point={};point.type=1;point.range=10;point.color[0]=point.color[1]=point.color[2]=1;
+    for(float d:{1.f,30.f,60.f,90.f,150.f,240.f,400.f}){point.position[0]=d;
+        Require(std::fabs(KichR4LampLOD(point,camera,window)-ReferenceLOD(10,double(d)*d,1,1920,1080,67.5,1,256,64))<1e-4,"point lamp LOD follows the R2 measure");}
+    point.position[0]=20;Require(KichR4LampLOD(point,camera,window)==1,"a near lamp keeps full colour");
+    point.position[0]=400;Require(KichR4LampLOD(point,camera,window)<=.001f,"a distant lamp falls below the cut");
+    // Spot spheres as light::spatial_move: acute cone R=range/(2cos^2(cone/2)) along the axis; obtuse range*tan(cone/2) at range.
+    KichR4LocalLight spot=point;spot.type=2;spot.position[0]=0;spot.direction[2]=2;spot.cone=1.0471976f;float c[3],r;
+    KichR4LightSphere(spot,c,r);Require(std::fabs(r-10/1.5f)<1e-4f && std::fabs(c[2]-10/1.5f)<1e-4f && c[0]==0,"acute spot sphere");
+    spot.cone=2.0943951f;KichR4LightSphere(spot,c,r);Require(std::fabs(r-10*std::tan(1.0471976f))<1e-3f && std::fabs(c[2]-10)<1e-4f,"obtuse spot sphere");
+    float off[3]={0,0,0};Require(KichR4LampLOD(point,camera,off)==1,"r4_lamp_fade 0 keeps every lamp");
+    KichR4LampFadeWindow(off,0,1920,1080,67.5f,1,256,64);Require(off[0]==0,"zero fade disables the window");
+    // Selection: shadowed lamps fade or drop, unshadowed ones keep their colour.
+    State state;KichR4LocalLight near_lamp=point,mid=point,far_lamp=point,plain=point;
+    near_lamp.position[0]=20;mid.position[0]=150;far_lamp.position[0]=400;plain.position[0]=400;plain.position[1]=1;
+    state.Light(reinterpret_cast<void*>(1),near_lamp,true);state.Light(reinterpret_cast<void*>(2),mid,true);
+    state.Light(reinterpret_cast<void*>(3),far_lamp,true);state.Light(reinterpret_cast<void*>(4),plain,true);
+    state.unshadowed_lights.insert(reinterpret_cast<void*>(4));
+    KichR4LightingFrame frame;memcpy(frame.lamp_fade,window,sizeof(window));state.SelectLights(camera,frame);
+    Require(frame.count==3 && frame.lamp_faded==1,"the shadowed lamp below LOD 0.001 is dropped");
+    const float expected=float(ReferenceLOD(10,150.*150,1,1920,1080,67.5,1,256,64));Require(expected>.05f && expected<.95f,"mid lamp lies inside the fade window");
+    bool near_seen=false,mid_seen=false,plain_seen=false;
+    for(unsigned i=0;i<frame.count;++i){const KichR4LocalLight& l=frame.lights[i];
+        if(l.position[0]==20){near_seen=l.color[0]==1;}
+        if(l.position[0]==150){mid_seen=std::fabs(l.color[0]-expected)<1e-4f && std::fabs(l.color[2]-expected)<1e-4f;}
+        if(l.position[1]==1){plain_seen=l.color[0]==1 && !frame.CastsShadow(i);}}
+    Require(near_seen && mid_seen && plain_seen,"near full, mid scaled by LOD, unshadowed untouched");
+    KichR4LightingFrame direct;state.SelectLights(camera,direct);Require(direct.count==4 && !direct.lamp_faded,"no window (direct/test producers): no fade");
+}
+int main(){try{Models();ModelBudgets();HUD();SnapshotCapture();ABI();LampFade();printf("B4.3b OGF / skinning / stream ownership / state validation: %d checks passed\n",checks);return 0;}
 catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

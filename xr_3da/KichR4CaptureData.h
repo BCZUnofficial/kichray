@@ -15,7 +15,7 @@
 #include <stdio.h>
 namespace kich_r4_capture {
 using kich_r4_level::Span;using kich_r4_level::Reader;using kich_r4_level::Check;
-using kich_r4_level::Chunk;using kich_r4_level::Finite;using kich_r4_scene::Matrix;
+using kich_r4_level::Chunk;using kich_r4_level::FirstChunk;using kich_r4_level::Finite;using kich_r4_scene::Matrix;
 struct Vertex {float p[4],uv[2];uint32_t color;float normal[4],world[3];};
 static_assert(sizeof(Vertex)==56,"B4.4 native vertex stride");
 struct SourceVertex {
@@ -107,17 +107,17 @@ inline float SkinWeight(float w,uint32_t mode){
 /* Decode original OGF data, before the DX9 renderer quantizes it. Containers
  * belong to the static level and are already drawn by B4.2. */
 inline std::shared_ptr<Mesh> Decode(Span source) {
-    Reader header(Chunk(source,1));Check(header.Left()>=44,"model OGF header size");const unsigned char* first=header.Take(2);
+    Reader header(FirstChunk(source,1));Check(header.Left()>=44,"model OGF header size");const unsigned char* first=header.Take(2);
     Check(first[0]==4,"model OGF version");const unsigned type=first[1];
     if(type!=0 && type!=2 && type!=4 && type!=5)return std::shared_ptr<Mesh>();
-    if(Chunk(source,21,false).p || Chunk(source,7,false).p)return std::shared_ptr<Mesh>();
+    if(FirstChunk(source,21,false).p || FirstChunk(source,7,false).p)return std::shared_ptr<Mesh>();
     std::shared_ptr<Mesh> mesh(new Mesh());mesh->skinned=type==4 || type==5;
-    Reader texture(Chunk(source,2));mesh->texture=kich_r4_level::Lower(texture.Z());mesh->texture_list=mesh->texture;
+    Reader texture(FirstChunk(source,2));mesh->texture=kich_r4_level::Lower(texture.Z());mesh->texture_list=mesh->texture;
     if(texture.Left())mesh->shader=texture.Z();
     const size_t comma=mesh->texture.find(',');if(comma!=std::string::npos)mesh->texture.resize(comma);
     if(mesh->texture.size()>4 && mesh->texture.substr(mesh->texture.size()-4)==".dds")mesh->texture.resize(mesh->texture.size()-4);
     Check(mesh->texture.empty() || (kich_r4_level::SafeName(mesh->texture) && mesh->texture[0]!='$'),"model texture name");
-    Reader vertices(Chunk(source,3));const uint32_t format=vertices.U32(),count=vertices.U32();
+    Reader vertices(FirstChunk(source,3));const uint32_t format=vertices.U32(),count=vertices.U32();
     Check(count && count<=65536,"model vertex limit");uint32_t stride=0,uv=0,uv1=0,pos=0,color=0;
     if(mesh->skinned){Check(format==0x12071980u || format==0x240e3300u,"model bone format");
         stride=format==0x12071980u?60:64;pos=stride==64?4:0;uv=stride==64?56:48;mesh->two_weights=stride==64;
@@ -163,7 +163,7 @@ inline std::shared_ptr<Mesh> Decode(Span source) {
             mesh->bones=std::max(mesh->bones,uint32_t(std::max(v.bone[0],v.bone[1]))+1);}
         if(!(v.attributes&kich_r4_level::ATTR_TANGENT))missing_basis=true;
     }
-    Reader indices(Chunk(source,4));const uint32_t n=indices.U32();Check(n && n%3==0 && n<=3u*1024u*1024u && n<=indices.Left()/2,"model index limit");
+    Reader indices(FirstChunk(source,4));const uint32_t n=indices.U32();Check(n && n%3==0 && n<=3u*1024u*1024u && n<=indices.Left()/2,"model index limit");
     mesh->indices.resize(n);for(uint32_t i=0;i<n;++i){mesh->indices[i]=indices.U16();Check(mesh->indices[i]<count,"model index range");}
     /* Repair only missing T/B, once in the common model bind space. Skeletal
      * render matrices already include inverse bind transforms, so 1W/2W source
@@ -421,7 +421,9 @@ struct Batch {
 // Registration identity survives pointer reuse and shared geometry copies. It
 // performs no per-frame allocation and is intentionally separate from mesh ID.
 inline uint64_t NextModelLifetime(){static uint64_t serial=0;return ++serial;}
-struct Entry {std::shared_ptr<Mesh> mesh;std::string error,name;uint64_t lifecycle_serial;Entry():lifecycle_serial(0){}};
+/* P0-S10 draw_skip_logged: a rejected model's first skipped draw is logged
+ * with its load error, so an invisible object names itself in the log. */
+struct Entry {std::shared_ptr<Mesh> mesh;std::string error,name;uint64_t lifecycle_serial;mutable bool draw_skip_logged;Entry():lifecycle_serial(0),draw_skip_logged(false){}};
 inline std::string ModelError(const Entry& entry,const char* why){return "model="+entry.name+"; "+why;}
 struct Segment {uint32_t offset;std::vector<unsigned char> bytes;};
 struct Buffer {
@@ -443,8 +445,10 @@ struct State {
     std::map<const void*,LightObservation> light_observations;
     uint64_t light_observation_overflow=0,light_identity_rejections=0;
     uint64_t stream_bytes;bool native_models;
-    uint32_t diagnostics;void (*log)(const char*);
-    State():stream_bytes(0),native_models(false),diagnostics(0),log(NULL){}
+    // P0-S10: rejections/skips have their own budget; 2W notes on every NPC
+    // model used to exhaust the shared 64 lines before a later rejection.
+    uint32_t diagnostics,failure_diagnostics;void (*log)(const char*);
+    State():stream_bytes(0),native_models(false),diagnostics(0),failure_diagnostics(0),log(NULL){}
     void Light(const void* id,const KichR4LocalLight& light,bool active){
         if(!id)return;
         const bool valid=kich_r4_lighting::ValidLight(light);
@@ -467,7 +471,7 @@ struct State {
         out.count=0;out.shadow_mask=0;out.shadows.clear();out.shadow_faces.clear();out.shadow_sizes.clear();out.sources.clear();out.projectors.clear();out.lights.clear();out.visibility_valid=camera_vp?1u:0u;
         if(camera_vp)memcpy(out.visibility_vp,camera_vp,sizeof(out.visibility_vp));
         else memset(out.visibility_vp,0,sizeof(out.visibility_vp));
-        out.r1_lights_requested=out.r1_lights_applied=r1_lights_enabled?1u:0u;
+        out.r1_lights_requested=out.r1_lights_applied=r1_lights_enabled?1u:0u;out.lamp_faded=0;
         out.occlusion_enabled=(occlusion && camera_vp)?1u:0u;out.occlusion_tested=0;out.occlusion_rejected.clear();
         if(!camera)return;
         Matrix vp={};if(camera_vp)memcpy(vp.m,camera_vp,sizeof(vp.m));
@@ -477,6 +481,12 @@ struct State {
             for(unsigned a=0;a<3;++a){const float d=l.position[a]-camera[a];distance+=d*d;}
             const float brightness=std::max(l.color[0],std::max(l.color[1],l.color[2]));
             if(brightness<=0 || (camera_vp && !kich_r4_visibility::VisibleSphere(l.position,l.range,vp)))continue;
+            // P0-S10 r4_lamp_fade: shadowed lamps fade with screen size; below
+            // LOD 0.001 they are dropped before any occlusion query (R2 order).
+            const bool shadow=unshadowed_lights.count(it->first)==0;KichR4LocalLight light=l;
+            if(shadow){const float lod=KichR4LampLOD(l,camera,out.lamp_fade);
+                if(lod<=.001f){++out.lamp_faded;continue;}
+                for(unsigned a=0;a<3;++a)light.color[a]*=lod;}
             if(out.occlusion_enabled){++out.occlusion_tested;bool visible=true;
                 try{visible=occlusion(l,camera_vp);}catch(...){visible=true;}
                 KichR4LightIdentity identity={};const auto source=light_sources.find(it->first);
@@ -484,7 +494,7 @@ struct State {
                 else identity.process_handle=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(it->first));
                 if(admission)visible=admission->Observe(identity,visible,unshadowed_lights.count(it->first)?0u:l.type==2?1u:6u);
                 if(!visible){out.occlusion_rejected.push_back(identity);continue;}}
-            Choice c={brightness*l.range*l.range/(distance+1)+(l.type==2 && distance<4?1.e10f:0),l,unshadowed_lights.count(it->first)==0,it->first};choices.push_back(c);
+            Choice c={brightness*l.range*l.range/(distance+1)+(l.type==2 && distance<4?1.e10f:0),light,shadow,it->first};choices.push_back(c);
         }
         // Sorting is deterministic scheduling only. Every visible source is
         // admitted; the bounded registry is not a global gameplay light quota.
@@ -560,6 +570,8 @@ struct State {
         RenderSnapshot_U64("LIGHT_REGISTRY","rejected_NONPOSITIVE_COLOR",rejected_color);RenderSnapshot_U64("LIGHT_REGISTRY","rejected_SELECTION_NOT_CAPTURED",rejected_missing);
         RenderSnapshot_U64("LIGHT_REGISTRY","occlusion_query_candidates",selected.occlusion_tested);
         RenderSnapshot_U64("LIGHT_REGISTRY","rejected_OCCLUDED_LIGHT_VOLUME",selected.occlusion_rejected.size());
+        RenderSnapshot_U64("LIGHT_REGISTRY","rejected_R4_LAMP_FADE",selected.lamp_faded);
+        kich_r4_telemetry::Vector("LIGHT_REGISTRY","lamp_fade","fade_ssa_start_ssa_end",selected.lamp_fade,3);
         RenderSnapshot_U64("LIGHT_REGISTRY","admitted",admitted);RenderSnapshot_U64("LIGHT_REGISTRY","selected",selected_count);
         RenderSnapshot_U64("LIGHT_REGISTRY","selected_LEVEL_RECORD",selected_level);RenderSnapshot_U64("LIGHT_REGISTRY","selected_RUNTIME_REGISTERED",selected_runtime);RenderSnapshot_U64("LIGHT_REGISTRY","selected_UNKNOWN",selected_unknown);
         RenderSnapshot_U64("LIGHT_REGISTRY","slots_used",selected.count);RenderSnapshot_U64("LIGHT_REGISTRY","slots_capacity",KICH_R4_LIGHT_REGISTRY_CAPACITY);RenderSnapshot_U64("LIGHT_REGISTRY","selected_shadow_requested",selected_shadow);
@@ -569,7 +581,8 @@ struct State {
         RenderSnapshot_Text("LIGHT_REGISTRY","policy","BSTATIC_REQUIRES_R2FLAG_R1LIGHTS; ALL_VISIBLE_POSITIVE_SOURCES; NO_GLOBAL_DRAW_LIGHT_LIMIT; ENVIRONMENT_SUN_SEPARATE; NO_DEDUP");
         RenderSnapshot_Text("LIGHT_REGISTRY","visibility_filter",selected.occlusion_enabled?"SOURCE_RANGE_SPHERE_FRUSTUM; CURRENT_CAMERA_CPU_HOM_FULL_LIGHT_VOLUME; FAIL_OPEN":selected.visibility_valid?"SOURCE_RANGE_SPHERE_INTERSECTS_CAMERA_FRUSTUM":"NO_CAMERA_FRUSTUM_SUPPLIED; CONSERVATIVE_ALL_SOURCES");
     }
-    void Diagnostic(const std::string& message){if(log && diagnostics<64){++diagnostics;log(("[R4 bridge B4.3b.1] "+message).c_str());}}
+    void Diagnostic(const std::string& message,bool failure=false){uint32_t& count=failure?failure_diagnostics:diagnostics;
+        if(log && count<(failure?512u:64u)){++count;log(("[R4 bridge B4.3b.1] "+message).c_str());}}
     void Begin(uint32_t w,uint32_t h,uint32_t f){frame.Begin(w,h,f);stream_bytes=0;
         for(std::map<void*,Buffer>::iterator i=buffers.begin();i!=buffers.end();++i)if(!i->second.fixed){i->second.segments.clear();i->second.pending=NULL;}}
     uint64_t ModelBytes()const {uint64_t result=0;std::set<const Mesh*> counted;
@@ -581,13 +594,13 @@ struct State {
                     static_cast<unsigned long long>(total-requested),static_cast<unsigned long long>(requested),
                     static_cast<unsigned long long>(ModelRegistryBudgetBytes));Check(false,reason);}
             entry.mesh->FreezeRanges();}}
-        catch(const std::exception& e){entry.mesh.reset();entry.error=ModelError(entry,e.what());Diagnostic("model rejected: "+entry.error);return;}
+        catch(const std::exception& e){entry.mesh.reset();entry.error=ModelError(entry,e.what());Diagnostic("model rejected: "+entry.error,true);return;}
         if(entry.mesh && entry.mesh->invalid_uvs){char count[96];snprintf(count,sizeof(count),"; non-finite UVs zeroed=%u",entry.mesh->invalid_uvs);
             Diagnostic("model repaired: model="+entry.name+count);}
         if(entry.mesh && (entry.mesh->ignored_weights || entry.mesh->outside_weights)){char counts[128];snprintf(counts,sizeof(counts),"; ignored_unused=%u active_outside_01=%u; ",entry.mesh->ignored_weights,entry.mesh->outside_weights);
             Diagnostic("2W compatibility: model="+entry.name+counts+entry.mesh->first_weight_detail);}}
     void Copy(void* visual,const void* source){const std::map<const void*,Entry>::const_iterator i=models.find(source);
-        if(i!=models.end())models[visual]=i->second;else{Entry e;e.error="model copy without source registration";models[visual]=e;}models[visual].lifecycle_serial=NextModelLifetime();}
+        if(i!=models.end())models[visual]=i->second;else{Entry e;e.error="model copy without source registration";models[visual]=e;Diagnostic("model rejected: "+e.error,true);}models[visual].lifecycle_serial=NextModelLifetime();}
     void Lock(void* buffer,const void* data,uint32_t at,uint32_t capacity,uint32_t discard){if(!frame.ui_scope)return;
         Buffer& b=buffers[buffer];Check(!b.pending && !b.fixed,"HUD nested buffer lock");if(b.discard!=discard)b.segments.clear();
         b.pending=data;b.offset=at;b.capacity=capacity;b.discard=discard;}

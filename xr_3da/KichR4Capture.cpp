@@ -210,7 +210,9 @@ bool KichR4_CaptureModelNeeded(void* visual,uint32_t& bones){bool needed=false;b
         kich_r4_level::Check(found!=c.models.end(),"visual missing CPU registration; rebuild XR_3DA and renderer");
         /* A model rejected at load (its reason is logged then) is skipped:
          * native mode has no DX9 frame, so failing here ends the game. */
-        if(!found->second.error.empty())return;
+        if(!found->second.error.empty()){
+            if(!found->second.draw_skip_logged){found->second.draw_skip_logged=true;c.Diagnostic("model skipped at draw: "+found->second.error,true);}
+            return;}
         if(found->second.mesh){bones=found->second.mesh->bones;needed=true;}});return needed;
 }
 void KichR4_CaptureSubmitModel(const kich_r4_capture::ModelInput& input){GuardCapture([&](kich_r4_capture::State& c){

@@ -702,6 +702,8 @@ ENGINE_API int ps_r4_lamp_shadows = 1;
 ENGINE_API int ps_r4_shadow_filter = 0;
 ENGINE_API int ps_r4_sun_mask = 1;
 ENGINE_API float ps_r4_shadow_normal_bias = 2.f;
+// P0-S10 R4 shadowed-lamp fade with screen size over the r__geometry_lod window (0 = off).
+ENGINE_API float ps_r4_lamp_fade = 1.f;
 // P0-S5 R4 grass draw distance = r__detail_radius x this (cache: 192 m); grass shadows keep r__detail_radius.
 ENGINE_API float ps_r4_detail_radius_scale = 3.f;
 void CCC_Register()
@@ -721,6 +723,7 @@ void CCC_Register()
     CMD4(CCC_Integer, "r4_shadow_filter", &ps_r4_shadow_filter, 0, 1);
     CMD4(CCC_Integer, "r4_sun_mask", &ps_r4_sun_mask, 0, 1);
     CMD4(CCC_Float, "r4_shadow_normal_bias", &ps_r4_shadow_normal_bias, 0.f, 4.f);
+    CMD4(CCC_Float, "r4_lamp_fade", &ps_r4_lamp_fade, 0.f, 2.f);
     CMD4(CCC_Float, "r4_detail_radius_scale", &ps_r4_detail_radius_scale, 1.f, 3.f);
 #endif
 	CMD1(CCC_Help, "help");

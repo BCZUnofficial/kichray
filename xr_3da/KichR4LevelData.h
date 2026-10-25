@@ -35,6 +35,19 @@ inline Span Chunk(Span source,uint32_t wanted,bool required=true){Reader r(sourc
         const unsigned char* p=r.Take(bytes);if((id&0x7fffffffu)==wanted){Check(!(id&0x80000000u),"compressed requested chunk unsupported");Check(!found.p,"duplicate level chunk");found=Span(p,bytes);}}
     Check(found.p || !required,"required level chunk missing");return found;
 }
+/* P0-S10 OGF model search, as X-Ray IReader::find_chunk: the first chunk with
+ * the wanted id wins and the scan stops there, so a later duplicate or a
+ * damaged trailing record is never read (actors\neytral\stalker_neytral_balon_1:
+ * its last chunk, 19, is 4 bytes short and the strict search rejected it). The
+ * requested chunk itself must be complete; a damaged record before it ends
+ * the search as not found, where X-Ray would read past the buffer. */
+inline Span FirstChunk(Span source,uint32_t wanted,bool required=true){uint32_t at=0;
+    while(source.n-at>=8){Reader h(Span(source.p+at,8));const uint32_t id=h.U32(),bytes=h.U32();at+=8;
+        if((id&0x7fffffffu)==wanted){Check(bytes<=source.n-at,"truncated requested model chunk");Check(!(id&0x80000000u),"compressed requested chunk unsupported");return Span(source.p+at,bytes);}
+        if(bytes>source.n-at)break;
+        at+=bytes;}
+    Check(!required,"required model chunk missing");return Span();
+}
 inline void Header(Span file){Reader h(Chunk(file,1));Check(h.U16()==14,"expected SoC XRLC version 14");h.U16();}
 inline bool SafeName(const std::string& s){if(s.empty() || s.size()>120 || s[0]=='\\' || s[0]=='/' || s.find("..")!=std::string::npos)return false;
     for(size_t i=0;i<s.size();++i){const unsigned char c=static_cast<unsigned char>(s[i]);if(c<32 || c==':' || c=='"' || c=='<' || c=='>' || c=='|' || c=='*' || c=='?')return false;}return true;}
