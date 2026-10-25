@@ -13,7 +13,7 @@ def function(signature):
     while depth:
         depth+=(source[at]=='{')-(source[at]=='}');at+=1
     return source[start:at]
-helpers='\n'.join(function(x) for x in ('float3 RelativePosition(', 'float3 WorldPosition(', 'float3 ReceiverPosition(', 'float3 ShadowNumericalOffset(', 'bool ShadowPlaneStable(', 'float ShadowPlaneErrorSquared(', 'bool ShadowGradient(', 'float ShadowTent(', 'float3 ShadowDerivative(', 'float PCF(', 'void ShadowWideTexel(', 'float ShadowMapSize(', 'float4 ShadowGather(', 'float ShadowCompare(', 'float PCFWide(', 'void ShadowNormalPlane('))
+helpers='\n'.join(function(x) for x in ('float3 RelativePosition(', 'float3 WorldPosition(', 'float3 ReceiverPosition(', 'float3 ShadowNumericalOffset(', 'bool ShadowPlaneStable(', 'float ShadowPlaneErrorSquared(', 'bool ShadowGradient(', 'float ShadowTent(', 'float3 ShadowDerivative(', 'float PCF(', 'void ShadowWideTexel(', 'float ShadowCrease(', 'float ShadowMapSize(', 'float4 ShadowGather(', 'float ShadowCompare(', 'float PCFWide(', 'void ShadowNormalPlane('))
 helpers=helpers.replace('float PCF(Texture2D map','float PCF(const Texture2D& map').replace('float PCFWide(Texture2D map','float PCFWide(const Texture2D& map').replace('[unroll]','').replace('[branch]','').replace('inout float3','float3&').replace('inout float','float&').replace('projected.xyz','xyz(projected)').replace('derivative.xyz','xyz(derivative)')
 helpers=helpers.replace('p.xyz','xyz(p)').replace('camera.xyz','xyz(camera)')
 helpers=helpers.replace('out float2 gradient','float2& gradient')

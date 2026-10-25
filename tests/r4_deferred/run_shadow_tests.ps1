@@ -11,7 +11,7 @@ function Extract([string]$signature) {
 }
 $helpers = (('float3 RelativePosition(', 'float3 WorldPosition(', 'float3 ReceiverPosition(', 'float3 ShadowNumericalOffset(',
     'bool ShadowPlaneStable(', 'float ShadowPlaneErrorSquared(', 'bool ShadowGradient(', 'float ShadowTent(',
-    'float3 ShadowDerivative(', 'float PCF(', 'void ShadowWideTexel(', 'float ShadowMapSize(', 'float4 ShadowGather(', 'float ShadowCompare(', 'float PCFWide(', 'void ShadowNormalPlane(') | ForEach-Object { Extract $_ }) -join "`n"
+    'float3 ShadowDerivative(', 'float PCF(', 'void ShadowWideTexel(', 'float ShadowCrease(', 'float ShadowMapSize(', 'float4 ShadowGather(', 'float ShadowCompare(', 'float PCFWide(', 'void ShadowNormalPlane(') | ForEach-Object { Extract $_ }) -join "`n"
 $helpers = $helpers.Replace('float PCF(Texture2D map', 'float PCF(const Texture2D& map').Replace('float PCFWide(Texture2D map', 'float PCFWide(const Texture2D& map').Replace('[unroll]', '').Replace('[branch]', '').Replace('inout float3', 'float3&').Replace('inout float', 'float&')
 $helpers = $helpers.Replace('projected.xyz', 'xyz(projected)').Replace('derivative.xyz', 'xyz(derivative)')
 $helpers = $helpers.Replace('p.xyz', 'xyz(p)').Replace('camera.xyz', 'xyz(camera)')

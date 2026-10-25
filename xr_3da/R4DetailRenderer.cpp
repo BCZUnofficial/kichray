@@ -93,14 +93,22 @@ void KichR4_DetailPrepare(CDetailManager& manager){
     const float limit=radius*radius,fade_range=camera_radius*camera_radius-1.f;
     std::sort(camera_parts.begin(),camera_parts.end(),std::less<const CDetailManager::SlotItemVec*>());
     std::vector<std::vector<ShadowDetailItem> > buckets(manager.objects.size()*3);
-    frame.shadow_cells.resize(dm_cache_size);
+    frame.shadow_cells.resize(dm_cache_size);frame.shadow_radius=radius;
     size_t candidates=0;
     // Shadow topology covers the slot square around the camera slot that holds
     // the shadow radius. It moves with the cache in whole slots, so the 192 m
     // camera cache does not grow the shadow BVH or add rebuilds.
     const int camera_sx=iFloor(Device.vCameraPosition.x/dm_slot_size+.5f),camera_sz=iFloor(Device.vCameraPosition.z/dm_slot_size+.5f);
     const int shadow_slots=int(ceilf(radius/dm_slot_size))+1;
-    for(unsigned slot=0;slot<dm_cache_size;++slot){const CDetailManager::Slot& cell=manager.cache_pool[slot];
+    // P0-S8: cache_Update keeps the grid centred on the camera slot, so only
+    // its central window can hold shadow cells. Visiting that window instead
+    // of all 37249 pool slots (dm_size 96) avoids streaming ~9 MB of slot
+    // headers per frame; slots outside it stay not ready, as before.
+    const int reach=std::min(dm_size,shadow_slots+2);
+    for(int gz=dm_size-reach;gz<=dm_size+reach;++gz)for(int gx=dm_size-reach;gx<=dm_size+reach;++gx){
+        const CDetailManager::Slot* pointer=manager.cache[gz][gx];
+        if(pointer<manager.cache_pool || pointer>=manager.cache_pool+dm_cache_size)continue;
+        const unsigned slot=static_cast<unsigned>(pointer-manager.cache_pool);const CDetailManager::Slot& cell=*pointer;
         ShadowCell& provenance=frame.shadow_cells[slot];provenance.sx=cell.sx;provenance.sz=cell.sz;
         provenance.ready=!cell.empty && cell.type==CDetailManager::stReady && abs(cell.sx-camera_sx)<=shadow_slots && abs(cell.sz-camera_sz)<=shadow_slots;
         provenance.center[0]=cell.vis.sphere.P.x;provenance.center[1]=cell.vis.sphere.P.y;provenance.center[2]=cell.vis.sphere.P.z;
@@ -112,6 +120,9 @@ void KichR4_DetailPrepare(CDetailManager& manager){
         const float edge=within_radius?std::min(1.f,(radius-sqrtf(distance))/(.3f*radius)):0;
         for(unsigned part=0;part<dm_obj_in_slot;++part){const CDetailManager::SlotPart& source=cell.G[part];
             if(source.id==DetailSlot::ID_Empty || source.id>=manager.objects.size())continue;
+            // P0-S8: flat clutter (leaves) casts no shadow (P0-S5/S7); drop it
+            // here instead of after bounds, BVH and selection for every view.
+            if(source.id<frame.meshes.size() && FlatGroundClutter(frame.meshes[source.id]))continue;
             bool camera_part=false;
             for(unsigned variant=0;variant<3;++variant){const CDetailManager::SlotItemVec& items=source.r_items[variant];
                 if(items.empty() || !std::binary_search(camera_parts.begin(),camera_parts.end(),&items,std::less<const CDetailManager::SlotItemVec*>()))continue;

@@ -34,19 +34,32 @@ void CoherentCachedPose(){
             else{independent=true;Require(group.variant==0);Require(std::fabs(shadow.row[1][1]-(1.f-399.f/3599))<1.e-6f);}}
         Require(matched && independent);
     }
-    // A still-drawn cached part can briefly extend beyond the fresh radius.
-    // Keep its matching caster, without extending off-camera admission.
+    // P0-S5: past the shadow radius (r__detail_radius) grass casts no shadow,
+    // even a cached part the camera still draws (its caster faded out first).
     manager.cache_pool[0].vis.sphere.P.z=61;manager.cache_pool[1].vis.sphere.P.z=-61;
     manager.m_visibles[2][0].push_back(&part.r_items[2]);KichR4_DetailPrepare(manager);
-    Require(frame.instances.size()==1 && frame.shadow_instances.size()==1 && frame.shadow_groups[0].variant==2);
-    Require(memcmp(&frame.instances[0],&frame.shadow_instances[0],sizeof(frame.instances[0]))==0);
+    Require(frame.instances.size()==1 && frame.shadow_instances.empty());
     // Leaving the camera list must not leave a stale pointer/pose override.
     manager.cache_pool[0].vis.sphere.P.z=20;KichR4_DetailPrepare(manager);
     Require(frame.instances.empty() && frame.shadow_instances.size()==1 && frame.shadow_groups[0].variant==0);
     Require(std::fabs(frame.shadow_instances[0].row[1][1]-(1.f-399.f/3599))<1.e-6f);
     KichR4_DetailUnload();ps_r__Detail_radius=saved_radius;r_ssaDISCARD=saved_discard;
 }
+// P0-S8: flat clutter (local height < 10 cm) stays visible but never becomes a
+// shadow candidate: no bounds, BVH, selection or upload for any shadow view.
+void FlatClutterCastsNothing(){
+    CDetail::fvfVertexIn vertices[3]={{{0,0,0},0,0},{{1,.03f,0},1,1},{{0,0,1},0,.5f}};uint16_t indices[3]={0,1,2};
+    CDetail mesh={vertices,indices,3,3,{{0,0,0},{1,.03f,1}},NULL,{1}};CDetailManager manager;
+    manager.objects.push_back(&mesh);manager.swing_current={10,20,.1f,.2f,1};for(unsigned i=0;i<3;++i)manager.m_visibles[i].resize(1);
+    CDetailManager::SlotItem item={1,{1,0,0,0,0,1,0,0,0,0,1,0,1,0,1,1},.5f,.5f,1,0};
+    CDetailManager::Slot& cell=manager.cache_pool[4];cell.empty=false;cell.G[0].id=0;cell.G[0].items.push_back(&item);cell.G[0].r_items[0].push_back(&item);
+    KichR4_DetailLoad(manager);auto& frame=KichR4_DetailFrame();
+    manager.m_visibles[0][0].push_back(&cell.G[0].r_items[0]);Device.dwFrame=900;KichR4_DetailPrepare(manager);
+    Require(frame.instances.size()==1 && frame.shadow_instances.empty() && frame.shadow_groups.empty() && frame.shadow_cells[4].ready);
+    KichR4_DetailUnload();
+}
 int main(){try{
+    FlatClutterCastsNothing();
     CDetail::fvfVertexIn vertices[3]={{{0,0,0},-.1f,0},{{1,2,0},1,1},{{0,1,1},0,.5f}};uint16_t indices[3]={0,1,2};
     Texture texture={"grass\\test"};VS vs={"deffer_detail_w_flat"};STextureList textures={{0,&texture}};SPass pass={&vs,&textures};Element e;e.passes.push_back(&pass);Shader shader={{&e,&e}};
     CDetail mesh={vertices,indices,3,3,{{0,0,0},{1,2,1}},&shader,{2}};CDetailManager manager;manager.objects.push_back(&mesh);
@@ -89,8 +102,12 @@ int main(){try{
     // Crossing an SSA wind/still threshold changes packed group, not cell ID.
     const auto old_discard=r_ssaDISCARD;r_ssaDISCARD=10.f;manager.cache_pool[0].vis.sphere.P={0,0,-1};
     KichR4_DetailPrepare(manager);Require(frame.shadow_groups.size()==1 && frame.shadow_groups[0].variant==0 && frame.shadow_instance_cells[0]==0);
-    r_ssaDISCARD=old_discard;manager.cache_pool[0].sx=37;manager.cache_pool[0].sz=-11;
-    KichR4_DetailPrepare(manager);Require(frame.shadow_cells[0].sx==37 && frame.shadow_cells[0].sz==-11 && frame.shadow_instance_cells[0]==0);
+    // A recycled slot (new coordinates within the shadow square, P0-S5) keeps its cell ID.
+    r_ssaDISCARD=old_discard;manager.cache_pool[0].sx=17;manager.cache_pool[0].sz=-11;
+    KichR4_DetailPrepare(manager);Require(frame.shadow_cells[0].sx==17 && frame.shadow_cells[0].sz==-11 && frame.shadow_instance_cells[0]==0);
+    // P0-S8: slots outside the shadow square are not ready and give no casters.
+    manager.cache_pool[0].sx=37;KichR4_DetailPrepare(manager);Require(!frame.shadow_cells[0].ready && frame.shadow_instances.empty());
+    manager.cache_pool[0].sx=17;
     manager.cache_pool[0].empty=true;KichR4_DetailPrepare(manager);Require(frame.shadow_instances.empty() && frame.shadow_groups.empty());
     bool rejected=false;try{auto bad=item;bad.mRotY._11=std::numeric_limits<float>::quiet_NaN();items[0]=&bad;manager.m_visibles[0][0].push_back(&items);KichR4_DetailPrepare(manager);}catch(const std::exception&){rejected=true;}Require(rejected);
     const auto generation=frame.generation;KichR4_DetailUnload();Require(frame.meshes.empty() && frame.instances.empty() && frame.shadow_cells.empty() && frame.shadow_instance_cells.empty() && frame.generation==generation+1);

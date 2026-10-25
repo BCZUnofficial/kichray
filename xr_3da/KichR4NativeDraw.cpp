@@ -18,10 +18,32 @@
 #include <map>
 #include <string>
 #include <chrono>
+#include <dxgi.h>
 
 namespace {
 bool selected=false,menu_pp=false,menu_overlay=false,distortion_enabled=true;
-uint32_t texture_budget_mb=384;
+uint32_t texture_budget_mb=0; // 0: chosen from the primary adapter's VRAM
+// P0-S8: the fixed 384 MB DDS budget stayed full and evicted ~5 textures/s on
+// Cordon, each reload a synchronous file read. Cards with more dedicated
+// memory get more, still within the existing -kich_r4_texture_mb maximum
+// (768 MB) for this 32-bit process; the command line keeps precedence.
+uint32_t AdapterTextureBudgetMB(){
+    uint64_t dedicated=0;
+    if(HMODULE dxgi=LoadLibraryA("dxgi.dll")){
+        typedef HRESULT (WINAPI *CreateFactory)(REFIID,void**);
+        if(CreateFactory create=reinterpret_cast<CreateFactory>(GetProcAddress(dxgi,"CreateDXGIFactory1"))){
+            IDXGIFactory1* factory=NULL;
+            if(SUCCEEDED(create(__uuidof(IDXGIFactory1),reinterpret_cast<void**>(&factory))) && factory){
+                IDXGIAdapter1* adapter=NULL;
+                if(SUCCEEDED(factory->EnumAdapters1(0,&adapter)) && adapter){DXGI_ADAPTER_DESC1 desc={};
+                    if(SUCCEEDED(adapter->GetDesc1(&desc)))dedicated=desc.DedicatedVideoMemory;adapter->Release();}
+                factory->Release();}}
+        FreeLibrary(dxgi);}
+    const uint64_t mb=dedicated/(1024*1024);
+    const uint32_t budget=mb>=3800?768u:mb>=1900?512u:384u;
+    Msg("[R4 P0-S8] DDS texture budget %u MB (adapter dedicated VRAM %u MB; -kich_r4_texture_mb overrides)",budget,static_cast<unsigned>(mb));
+    return budget;
+}
 bool celestial_source=false;
 bool lens_effect=false,glow_scope=false,object_light_valid=false;float object_hemi=1,object_sun=1;
 std::chrono::steady_clock::time_point queue_begin;
@@ -93,7 +115,7 @@ bool KichR4_NativeInlineGeometry(void* visual){const kich_r4_capture::State* s=K
 bool KichR4_NativeSelect(const char* params){if(selected)return true;char token[512];int read=0;while((read=KichR4_NextToken(params,token,sizeof(token)))!=0)if(read>0){
     if(!strcmp(token,"-kich_r4_game"))selected=true;else if(!strcmp(token,"-nodistort"))distortion_enabled=false;
     else if(!strncmp(token,"-kich_r4_texture_mb=",20)){char* end=NULL;const unsigned long value=strtoul(token+20,&end,10);if(end!=token+20 && !*end && value>=32 && value<=768)texture_budget_mb=static_cast<uint32_t>(value);}}return selected;}
-uint32_t KichR4_NativeTextureBudgetMB(){return texture_budget_mb;}
+uint32_t KichR4_NativeTextureBudgetMB(){if(!texture_budget_mb)texture_budget_mb=AdapterTextureBudgetMB();return texture_budget_mb;}
 bool KichR4_NativeDistortionEnabled(){return distortion_enabled;}
 void KichR4_NativeSetState(uint32_t key,uint32_t value){if(key<256)states[key]=value;}
 void KichR4_NativeSetSampler(uint32_t stage,uint32_t key,uint32_t value){if(stage<8 && key<14)sampler_states[stage][key]=value;}

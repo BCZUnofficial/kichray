@@ -22,6 +22,8 @@ struct KichR4DetailSession {
     uint64_t submitted_instances,shadow_submitted_instances;
     uint64_t shadow_upload_bytes,shadow_candidates,shadow_culled;
     std::vector<KichR4DetailInstance> selected_instances;
+    // P0-S8: grass shadow distance of the current frame (0 = unknown).
+    float ShadowRadius()const{return source?source->shadow_radius:0;}
     std::vector<kich_r4_detail::Group> selected_groups;
     KichR4DetailSession():source(NULL),instance_buffer(0),shadow_instance_buffer(0),vs(0),generation(UINT64_MAX),vertex_bytes(0),index_bytes(0),capacity(0),shadow_capacity(0),uploaded_frame(UINT32_MAX),draw_calls(0),shadow_draw_calls(0),telemetry_frame(UINT32_MAX),uploaded_instances(0),submitted_instances(0),shadow_submitted_instances(0),shadow_upload_bytes(0),shadow_candidates(0),shadow_culled(0){memset(&api,0,sizeof(api));pipelines[0]=pipelines[1]=0;}
     static std::string MaterialKey(const std::string& identity){
@@ -139,11 +141,15 @@ struct KichR4DetailSession {
     uint32_t shadow_rebuild_reasons=0;
     ShadowBounds BoundsFor(const kich_r4_detail::Mesh& mesh,const KichR4DetailInstance& instance,uint32_t variant)const{
         ShadowBounds result;if(!mesh.bounds_known || !source || variant>2)return result;
-        for(unsigned corner=0;corner<8;++corner){const float p[3]={corner&1?mesh.maximum[0]:mesh.minimum[0],corner&2?mesh.maximum[1]:mesh.minimum[1],corner&4?mesh.maximum[2]:mesh.minimum[2]};
-            for(unsigned a=0;a<3;++a){const float value=instance.row[a][0]*p[0]+instance.row[a][1]*p[1]+instance.row[a][2]*p[2]+instance.row[a][3];
-                if(!kich_r4_detail::Finite(value))return result;
-                if(!corner || value<result.low[a])result.low[a]=value;
-                if(!corner || value>result.high[a])result.high[a]=value;}}
+        // P0-S8: the AABB of the transformed mesh box directly (centre plus
+        // |row|.half-extent), the same box as its eight transformed corners.
+        const float centre[3]={(mesh.minimum[0]+mesh.maximum[0])*.5f,(mesh.minimum[1]+mesh.maximum[1])*.5f,(mesh.minimum[2]+mesh.maximum[2])*.5f};
+        const float half[3]={(mesh.maximum[0]-mesh.minimum[0])*.5f,(mesh.maximum[1]-mesh.minimum[1])*.5f,(mesh.maximum[2]-mesh.minimum[2])*.5f};
+        for(unsigned a=0;a<3;++a){const float* r=instance.row[a];
+            const float middle=r[0]*centre[0]+r[1]*centre[1]+r[2]*centre[2]+r[3];
+            const float extent=std::fabs(r[0])*half[0]+std::fabs(r[1])*half[1]+std::fabs(r[2])*half[2];
+            if(!kich_r4_detail::Finite(middle) || !kich_r4_detail::Finite(extent))return result;
+            result.low[a]=middle-extent;result.high[a]=middle+extent;}
         if(variant){const float height=std::max(std::fabs(result.low[1]-instance.row[1][3]),std::fabs(result.high[1]-instance.row[1][3]));
             for(unsigned a=0;a<3;a+=2){const float pad=std::fabs(source->wind[variant][a])*height*mesh.height_factor;result.low[a]-=pad;result.high[a]+=pad;}}
         // Invalid authoring/wind data must never poison a merged node and

@@ -46,7 +46,7 @@ inline kich_r4_scene::Vec3 UnpackNormal(uint32_t bits){if(!bits)return kich_r4_s
 struct Mesh {
     std::vector<SourceVertex> vertices;std::vector<uint16_t> indices;std::string texture,shader,texture_list;
     Bounds source_bounds;std::vector<Bounds> bone_bounds;
-    uint32_t bones,ignored_weights,outside_weights,diagnostic_modes,available_attributes,basis_vertices,derived_basis_vertices;bool skinned,two_weights,hardware_weights_safe;
+    uint32_t bones,ignored_weights,outside_weights,diagnostic_modes,available_attributes,basis_vertices,derived_basis_vertices,invalid_uvs;bool skinned,two_weights,hardware_weights_safe;
     std::string first_weight_detail;
     mutable uint64_t snapshot_hash;mutable bool snapshot_hashed;
     struct RangeInfo {uint32_t first,count,maximum,attributes,basis_indices;};
@@ -61,7 +61,7 @@ private:
     mutable size_t range_next=0;
     mutable uint64_t range_scanned_indices=0,range_cache_hits=0;
 public:
-    Mesh():bones(0),ignored_weights(0),outside_weights(0),diagnostic_modes(0),available_attributes(0),basis_vertices(0),derived_basis_vertices(0),skinned(false),two_weights(false),hardware_weights_safe(true),snapshot_hash(0),snapshot_hashed(false){}
+    Mesh():bones(0),ignored_weights(0),outside_weights(0),diagnostic_modes(0),available_attributes(0),basis_vertices(0),derived_basis_vertices(0),invalid_uvs(0),skinned(false),two_weights(false),hardware_weights_safe(true),snapshot_hash(0),snapshot_hashed(false){}
     uint64_t Bytes()const{return uint64_t(vertices.size())*sizeof(SourceVertex)+uint64_t(indices.size())*2;}
     void InvalidateRanges(){ranges_frozen=false;range_cache.clear();range_next=0;snapshot_hashed=false;}
     void FreezeRanges(){InvalidateRanges();frozen_vertices=vertices.data();frozen_indices=indices.data();
@@ -132,15 +132,17 @@ inline std::shared_ptr<Mesh> Decode(Span source) {
     }
     Check(count<=vertices.Left()/stride,"truncated model vertices");mesh->vertices.resize(count);bool missing_basis=false;
     for(uint32_t i=0;i<count;++i){const unsigned char* p=vertices.Take(stride);SourceVertex& v=mesh->vertices[i];v={};v.hemi=v.sun=1;v.color=0xffffffffu;
-        Reader xyz(Span(p+pos,12)),tc(Span(p+uv,8));for(unsigned a=0;a<3;++a)v.p[a]=xyz.Float();
-        v.uv[0]=tc.Float();v.uv[1]=tc.Float();
+        Reader xyz(Span(p+pos,12));for(unsigned a=0;a<3;++a)v.p[a]=xyz.Float();
+        /* Modded OGFs ship NaN UVs (wpn_ak74: 42 vertices); DX9 samples them
+         * as garbage texels without failing. Zero them, keep the model. */
+        memcpy(v.uv,p+uv,8);if(!Finite(v.uv[0]) || !Finite(v.uv[1])){v.uv[0]=v.uv[1]=0;++mesh->invalid_uvs;}
         if(mesh->skinned || (format&0x10u)){float normal[3];memcpy(normal,p+(mesh->skinned?pos+12:12),12);
             v.normal=PackNormal(normal[0],normal[1],normal[2]);if(v.normal)v.attributes|=kich_r4_level::ATTR_NORMAL;
             if(mesh->skinned){float tangent[3],binormal[3];memcpy(tangent,p+pos+24,12);memcpy(binormal,p+pos+36,12);
                 if(kich_r4_level::Basis(normal,tangent,binormal)){
                     v.tangent=PackNormal(tangent[0],tangent[1],tangent[2]);v.binormal=PackNormal(binormal[0],binormal[1],binormal[2]);
                     v.attributes|=kich_r4_level::ATTR_TANGENT|kich_r4_level::ATTR_BINORMAL;}}}
-        if(uv1){Reader tc1(Span(p+uv1,8));v.uv1[0]=tc1.Float();v.uv1[1]=tc1.Float();v.attributes|=kich_r4_level::ATTR_UV1;}
+        if(uv1){memcpy(v.uv1,p+uv1,8);if(!Finite(v.uv1[0]) || !Finite(v.uv1[1])){v.uv1[0]=v.uv1[1]=0;++mesh->invalid_uvs;}v.attributes|=kich_r4_level::ATTR_UV1;}
         if(color){const unsigned char* c=p+color;v.color=uint32_t(c[2])|(uint32_t(c[1])<<8)|(uint32_t(c[0])<<16)|(uint32_t(c[3])<<24);v.attributes|=kich_r4_level::ATTR_COLOR;}
         if(mesh->skinned){if(stride==60){Reader b(Span(p+56,4));const uint32_t id=b.U32();Check(id<256,"1W model bone limit");v.bone[0]=v.bone[1]=static_cast<uint16_t>(id);}
             else {Reader b(Span(p,4)),w(Span(p+52,4));v.bone[0]=b.U16();v.bone[1]=b.U16();const uint32_t bits=w.U32();memcpy(&v.weight,&bits,4);
@@ -580,6 +582,8 @@ struct State {
                     static_cast<unsigned long long>(ModelRegistryBudgetBytes));Check(false,reason);}
             entry.mesh->FreezeRanges();}}
         catch(const std::exception& e){entry.mesh.reset();entry.error=ModelError(entry,e.what());Diagnostic("model rejected: "+entry.error);return;}
+        if(entry.mesh && entry.mesh->invalid_uvs){char count[96];snprintf(count,sizeof(count),"; non-finite UVs zeroed=%u",entry.mesh->invalid_uvs);
+            Diagnostic("model repaired: model="+entry.name+count);}
         if(entry.mesh && (entry.mesh->ignored_weights || entry.mesh->outside_weights)){char counts[128];snprintf(counts,sizeof(counts),"; ignored_unused=%u active_outside_01=%u; ",entry.mesh->ignored_weights,entry.mesh->outside_weights);
             Diagnostic("2W compatibility: model="+entry.name+counts+entry.mesh->first_weight_detail);}}
     void Copy(void* visual,const void* source){const std::map<const void*,Entry>::const_iterator i=models.find(source);

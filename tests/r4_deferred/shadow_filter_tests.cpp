@@ -22,6 +22,7 @@ float2 operator+(float2 a,float b){return a+float2(b,b);}
 float2 operator-(float2 a,float2 b){return float2(a.x-b.x,a.y-b.y);}
 float2 operator-(float2 a,float b){return float2(a.x-b,a.y-b);}
 float2 operator*(float2 a,float b){return float2(a.x*b,a.y*b);}
+float2 operator*(float a,float2 b){return b*a;}
 float2 operator/(float2 a,float b){return a*(1.f/b);}
 float3 operator-(float3 a,float3 b){return float3(a.x-b.x,a.y-b.y,a.z-b.z);}
 float3 operator+(float3 a,float3 b){return float3(a.x+b.x,a.y+b.y,a.z+b.z);}
@@ -32,6 +33,7 @@ float3& operator*=(float3& a,float b){a=a*b;return a;}
 float3& operator+=(float3& a,float3 b){a=a+b;return a;}
 float rsqrt(float a){return 1.f/std::sqrt(a);}
 float length(float3 a){return std::sqrt(a.x*a.x+a.y*a.y+a.z*a.z);}
+float length(float2 a){return std::sqrt(a.x*a.x+a.y*a.y);}
 bool operator<(float2 a,float b){return a.x<b || a.y<b;}
 bool operator>(float2 a,float b){return a.x>b || a.y>b;}
 bool any(bool v){return v;}
@@ -56,13 +58,15 @@ float Dim(){return dimension_override?float(dimension_override):screen.w;}
 void Require(bool v,const char* message){++checks;if(!v)throw std::runtime_error(message);}
 struct Texture2D;std::map<const Texture2D*,unsigned> texture_uses; // the runners pass maps to PCF by reference
 struct Texture2D {
-    double a,b,c;bool edge;
+    // P0-S8: bend adds a second plane beyond u=crease (a mesh edge between two facets).
+    double a,b,c;bool edge;double bend,crease;
+    double Depth(double u,double v)const{return edge?(u<.5?.4:.6):a*u+b*v+c+(bend && u>crease?bend*(u-crease):0);}
     void GetDimensions(uint& width,uint& height)const{width=height=uint(Dim());}
     float SampleCmpLevelZero(int,float2 uv,float compare)const{
         ++comparisons;++texture_uses[this];
         Require(std::fabs(uv.x*Dim()-.5-std::round(uv.x*Dim()-.5))<1e-4,"point comparison must hit an exact texel centre");
         Require(uv.x>=0 && uv.x<=1 && uv.y>=0 && uv.y<=1,"comparison must not read the white border");
-        const double stored=edge?(uv.x<.5?.4:.6):a*uv.x+b*uv.y+c;
+        const double stored=Depth(uv.x,uv.y);
         return double(compare)<=stored?1.f:0.f;
     }
     // D3D11 Gather at a texel corner: x,y,z,w = lower-left, lower-right,
@@ -78,14 +82,14 @@ struct Texture2D {
     float Stored(int x,int y)const{
         if(x<0 || y<0 || x>=int(Dim()) || y>=int(Dim()))return 0;
         const double u=(x+.5)/Dim(),v=(y+.5)/Dim();
-        return float(edge?(u<.5?.4:.6):a*u+b*v+c);
+        return float(Depth(u,v));
     }
 };
 // P0-S5 cascade maps: contact (t7), 128 m (t2), 512 m (t3); P0-S7 lamp cube faces t2..t7.
 Texture2D shadow0,shadow1,shadow2,shadow3,shadow4,shadow5;
 // PRODUCTION_SHADOW_HELPERS
 // P0-S7 PCFWide takes a map index (t2..t7); bind a fixture map at shadow0.
-float Wide(const Texture2D& map,float4 projected,float4 dx,float4 dy){shadow0=map;return PCFWide(0,projected,dx,dy);}
+float Wide(const Texture2D& map,float4 projected,float4 dx,float4 dy,float crease=0){shadow0=map;return PCFWide(0,projected,dx,dy,crease);}
 float4 Transform(float3 p,float w,const kich_r4_scene::Matrix& m){
     return float4(p.x*m.m[0]+p.y*m.m[4]+p.z*m.m[8]+w*m.m[12],
         p.x*m.m[1]+p.y*m.m[5]+p.z*m.m[9]+w*m.m[13],
@@ -335,9 +339,53 @@ void WideCases(){using namespace kich_r4_lighting;
         Require(std::fabs(Wide(light,projected,dx,dy)-1)<1e-6,"wide filter: edge normalization preserves full light");
     }
 }
+// P0-S8 night stripes: a concave mesh edge (two facets bent by B toward the
+// light) under the moon at 13 degrees. The receiver plane of one facet,
+// extended across the 6x6 support, ran under the next facet. The production
+// crease allowance (ShadowCrease) must clear edges up to 3 degrees at every
+// elevation, while 5-10 cm contact blockers keep their shadow.
+float CreaseMinimum(unsigned size,float elevation,float bend,bool allowance){using namespace kich_r4_lighting;
+    dimension_override=size;screen.w=4096;
+    const float tilt=90-elevation,sx=std::tan(tilt*3.14159265f/180),sx2=std::tan((tilt-bend)*3.14159265f/180),d=10,x0=.3f;
+    const float origin[3]={0,0,0},direction[3]={0,0,1};const Matrix projection=SunShadow(origin,direction,512,size);
+    const Texture2D surface={sx*512/1024.,0,(512+d-sx*256)/1024.,false,(sx2-sx)*512/1024.,(x0+256)/512.};
+    float worst=1;
+    for(float x=x0-1.5f;x<=x0+1.5f;x+=.01f){
+        const float slope=x>x0?sx2:sx;const float3 tangent_x(.01f,0,.01f*slope),tangent_y(0,.01f,0);
+        const float4 dx=Transform(tangent_x,0,projection),dy=Transform(tangent_y,0,projection);
+        float3 position(x,.017f,d+sx*x+(x>x0?(sx2-sx)*(x-x0):0));
+        const float crease=allowance?ShadowCrease(tangent_x,tangent_y,float3(0,0,-1)):0;
+        position=ShadowNumericalOffset(position,tangent_x,tangent_y,float3(0,0,-1));position.z-=.01f;
+        worst=std::min(worst,Wide(surface,Transform(position,1,projection),dx,dy,crease));}
+    dimension_override=0;return worst;
+}
+void CreaseCases(){using namespace kich_r4_lighting;
+    Require(CreaseMinimum(4096,13,2,false)<.7f && CreaseMinimum(8192,13,1,false)<.7f,"crease fixture reproduces the night stripes without the allowance");
+    for(unsigned size:{4096u,8192u})for(float elevation:{10.f,13.f,20.f,31.f,45.f,60.f,80.f})for(float bend:{.5f,1.f,2.f,3.f})
+        Require(CreaseMinimum(size,elevation,bend,true)>.99f,"concave mesh edges up to 3 degrees never shadow their own surface");
+    for(unsigned size:{4096u,8192u})for(float elevation:{10.f,13.f,20.f,31.f,45.f,60.f,90.f}){
+        dimension_override=size;screen.w=4096;
+        const float tilt=90-elevation,sx=std::tan(tilt*3.14159265f/180),d=10;
+        const float origin[3]={0,0,0},direction[3]={0,0,1};const Matrix projection=SunShadow(origin,direction,512,size);
+        const Texture2D surface={sx*512/1024.,0,(512+d-sx*256)/1024.,false};
+        const float3 tangent_x(.01f,0,.01f*sx),tangent_y(0,.01f,0);
+        const float4 dx=Transform(tangent_x,0,projection),dy=Transform(tangent_y,0,projection);
+        const float crease=ShadowCrease(tangent_x,tangent_y,float3(0,0,-1));
+        Require(crease>=0 && crease<=.5f,"crease allowance is bounded");
+        for(float x:{-.01f,.1f,.37f}){float3 position(x,.017f,d+sx*x);
+            position=ShadowNumericalOffset(position,tangent_x,tangent_y,float3(0,0,-1));position.z-=.01f;
+            const float4 projected=Transform(position,1,projection);
+            Require(Wide(surface,projected,dx,dy,crease)>.9999f,"crease allowance: flat receiver stays lit");
+            auto blocked=[&](float h){Texture2D blocker=surface;blocker.c+=-h*std::sqrt(1+sx*sx)/1024.;return Wide(blocker,projected,dx,dy,crease);};
+            Require(blocked(.1f)<.05f && blocked(.2f)<.0001f,"crease allowance: 10-20 cm contact blockers keep their shadow");
+            if(elevation>=20)Require(blocked(.05f)<.05f,"crease allowance: 5 cm blockers keep their shadow above 20 degrees");
+            if(size==8192 && elevation>=31)Require(blocked(.02f)<.05f,"crease allowance: 2 cm blockers keep their shadow on the 8192 map by day");}
+    }
+    dimension_override=0;
+}
 #include "receiver_raster_tests.h"
 int main(){try{
-    WideCases();CascadeSelection();NormalPlaneFallback();PlaneCases();Continuity();CubeGuard();GrazingReceiver();ReceiverReconstruction();ReceiverRasterization();
+    CreaseCases();WideCases();CascadeSelection();NormalPlaneFallback();PlaneCases();Continuity();CubeGuard();GrazingReceiver();ReceiverReconstruction();ReceiverRasterization();
     float2 gradient;Require(!ShadowGradient(float3(0,0,1),float3(0,0,2),gradient),"singular UV Jacobian requests bounded fallback");
     Require(!ShadowGradient(float3(1,0,std::numeric_limits<float>::infinity()),float3(0,1,1),gradient),"nonfinite slope requests bounded fallback");
     Require(ShadowPlaneStable(4,.01f,0) && !ShadowPlaneStable(4,10000,10000),"noncoplanar jump does not become a receiver plane");

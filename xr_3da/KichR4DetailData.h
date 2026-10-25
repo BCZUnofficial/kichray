@@ -54,13 +54,15 @@ struct Frame {
     std::vector<ShadowCell> shadow_cells;
     std::vector<uint32_t> shadow_instance_cells;
     float wave[3][4],wind[3][4];
+    // P0-S8: metres within which grass casts shadows (r__detail_radius); 0 = unknown.
+    float shadow_radius;
     uint32_t variants[3];
     uint32_t legacy_draws;
     uint64_t legacy_vertices,legacy_indices;
     double prepare_ms;
     Frame():generation(0),engine_frame(0),legacy_draws(0),legacy_vertices(0),legacy_indices(0),prepare_ms(0){ClearFrame(0);source_frame_known=false;}
     void ClearFrame(uint32_t frame){if(engine_frame!=frame){legacy_draws=0;legacy_vertices=legacy_indices=0;}
-        engine_frame=frame;source_frame_known=true;groups.clear();instances.clear();shadow_groups.clear();shadow_instances.clear();shadow_cells.clear();shadow_instance_cells.clear();prepare_ms=0;
+        engine_frame=frame;source_frame_known=true;groups.clear();instances.clear();shadow_groups.clear();shadow_instances.clear();shadow_cells.clear();shadow_instance_cells.clear();prepare_ms=0;shadow_radius=0;
         for(unsigned i=0;i<3;++i){variants[i]=0;for(unsigned j=0;j<4;++j)wave[i][j]=wind[i][j]=0;}}
     void Reset(){meshes.clear();ClearFrame(0);legacy_draws=0;legacy_vertices=legacy_indices=0;++generation;source_frame_known=false;}
     static void Validate(const KichR4DetailInstance& v){

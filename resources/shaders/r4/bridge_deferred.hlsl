@@ -332,10 +332,29 @@ float PCF(Texture2D map,float4 projected,float4 dx,float4 dy){if(projected.w<=0)
 }
 // P0-S6: one PCFWide texel, the plane-corrected point comparison at its
 // centre against the depth Gather returned (LESS_EQUAL, as shadow_surface).
-void ShadowWideTexel(float stored,float2 centre,float2 texel,float size,float depth,float2 gradient,inout float result,inout float weight){
+void ShadowWideTexel(float stored,float2 centre,float2 texel,float size,float depth,float2 gradient,float2 slack,inout float result,inout float weight){
     float2 offset=centre-texel;float w=ShadowTent(offset.x*.5)*ShadowTent(offset.y*.5);
     if(w<=0 || any(centre<0) || any(centre>size))return;
-    result+=w*(saturate(depth+dot(gradient,offset/size))<=stored?1:0);weight+=w;
+    result+=w*(saturate(depth+dot(gradient,offset/size)-abs(dot(slack,offset)))<=stored?1:0);weight+=w;
+}
+// P0-S8 crease allowance. The receiver plane is exact for one facet, but the
+// filter footprint crosses mesh edges: beyond a concave edge the next facet
+// lies above the extended plane and shadows it. With the light at angle T to
+// the normal the depth slope is tan T; a facet turned by B (3 degrees here)
+// steepens it by tan(T+B)-tan T, that fraction of |gradient| along the
+// gradient (across it the change is cos T times smaller, left out). The error
+// grows with the distance from the receiver, so the allowance does too and is
+// zero at the receiver: contact shadows stay, 2 cm blockers soften at the rim.
+// Without it the moon at 13 degrees made 1-2 degree road and terrain edges
+// 35-55% dark ("night stripes"); at 31 degrees the same edges stayed below 7%.
+float ShadowCrease(float3 dx,float3 dy,float3 towards){
+    float3 n=cross(dx,dy);float squared=dot(n,n);
+    if(squared<=1e-20)return 0;
+    float c=saturate(abs(dot(n,towards))*rsqrt(squared)),s=sqrt(saturate(1-c*c));
+    float t=s/max(c,1e-4),b=.0524; // tan 3 degrees
+    // (tan(T+B)-tan T)/tan T; past 87 degrees the cap holds.
+    float denominator=t*(1-t*b);
+    return denominator>0?min(b*(1+t*t)/denominator,.5):.5;
 }
 // P0-S5 sun PCF: the same plane-corrected point comparisons at texel centres,
 // with the quadratic B-spline (ShadowTent) stretched to two texels. The 6x6
@@ -365,7 +384,7 @@ float ShadowCompare(uint map,float2 uv,float depth){float lit=0;
         case 2:lit=shadow2.SampleCmpLevelZero(shadow_surface,uv,depth);break;case 3:lit=shadow3.SampleCmpLevelZero(shadow_surface,uv,depth);break;
         case 4:lit=shadow4.SampleCmpLevelZero(shadow_surface,uv,depth);break;default:lit=shadow5.SampleCmpLevelZero(shadow_surface,uv,depth);break;}
     return lit;}
-float PCFWide(uint map,float4 projected,float4 dx,float4 dy){if(projected.w<=0)return 0;
+float PCFWide(uint map,float4 projected,float4 dx,float4 dy,float crease){if(projected.w<=0)return 0;
     float3 q=projected.xyz/projected.w;float2 uv=float2(q.x*.5+.5,.5-q.y*.5);
     if(any(uv<0) || any(uv>1) || q.z<0 || q.z>1)return 0;
     float size=ShadowMapSize(map);
@@ -376,12 +395,13 @@ float PCFWide(uint map,float4 projected,float4 dx,float4 dy){if(projected.w<=0)r
         return ShadowCompare(map,fallback_uv,q.z);
     }
     float2 texel=uv*size,first=floor(texel-2.5)+.5;float result=0,weight=0;
+    float2 slack=crease*gradient/size;
     [unroll]for(int y=0;y<6;y+=2)[unroll]for(int x=0;x<6;x+=2){
         float2 corner=first+float2(x,y);float4 stored=ShadowGather(map,(corner+.5)/size);
-        ShadowWideTexel(stored.x,corner+float2(0,1),texel,size,q.z,gradient,result,weight);
-        ShadowWideTexel(stored.y,corner+float2(1,1),texel,size,q.z,gradient,result,weight);
-        ShadowWideTexel(stored.z,corner+float2(1,0),texel,size,q.z,gradient,result,weight);
-        ShadowWideTexel(stored.w,corner,texel,size,q.z,gradient,result,weight);
+        ShadowWideTexel(stored.x,corner+float2(0,1),texel,size,q.z,gradient,slack,result,weight);
+        ShadowWideTexel(stored.y,corner+float2(1,1),texel,size,q.z,gradient,slack,result,weight);
+        ShadowWideTexel(stored.z,corner+float2(1,0),texel,size,q.z,gradient,slack,result,weight);
+        ShadowWideTexel(stored.w,corner,texel,size,q.z,gradient,slack,result,weight);
     }
     return weight>0?result/weight:0;
 }
@@ -424,10 +444,10 @@ float SunVisibility(float3 p,float3 dx,float3 dy){
     rest-=near_weight;
     {float3 q=far_position.xyz/far_position.w;float edge=max(max(abs(q.x),abs(q.y)),abs(q.z*2-1));
         if(edge<1)far_weight=rest*ShadowCascadeWeight(edge);}
-    float result=rest-far_weight;
-    [branch] if(contact_weight>0)result+=contact_weight*PCFWide(5,contact_position,mul(float4(dx,0),shadow[2]),mul(float4(dy,0),shadow[2]));
-    [branch] if(near_weight>0)result+=near_weight*PCFWide(0,near_position,mul(float4(dx,0),shadow[0]),mul(float4(dy,0),shadow[0]));
-    [branch] if(far_weight>0)result+=far_weight*PCFWide(1,far_position,mul(float4(dx,0),shadow[1]),mul(float4(dy,0),shadow[1]));
+    float result=rest-far_weight,crease=ShadowCrease(dx,dy,-sun_direction.xyz);
+    [branch] if(contact_weight>0)result+=contact_weight*PCFWide(5,contact_position,mul(float4(dx,0),shadow[2]),mul(float4(dy,0),shadow[2]),crease);
+    [branch] if(near_weight>0)result+=near_weight*PCFWide(0,near_position,mul(float4(dx,0),shadow[0]),mul(float4(dy,0),shadow[0]),crease);
+    [branch] if(far_weight>0)result+=far_weight*PCFWide(1,far_position,mul(float4(dx,0),shadow[1]),mul(float4(dy,0),shadow[1]),crease);
     return result;
 }
 // P0-S1 R2 shadow.h sunmask(): sunmask.dds alpha through m_sunmask, 1/500 m
@@ -518,14 +538,14 @@ uint CubeFace(float3 d){float3 a=abs(d);if(a.x>=a.y && a.x>=a.z)return d.x>=0?0:
 float LocalVisibility(float3 p,float3 dx,float3 dy){if(alpha.w<.5)return 1;uint face=light_color.w>1.5?0:CubeFace(p-light_position.xyz);
     // A fixed projected-depth subtraction scales to meters near the far plane.
     // Move the receiver by only 3 mm instead, preserving nearby blockers.
-    float3 towards=light_position.xyz-p;
+    float3 towards=light_position.xyz-p;float crease=ShadowCrease(dx,dy,towards/max(length(towards),.003));
     p=ShadowNumericalOffset(p,dx,dy,towards/max(length(towards),.003));
     p+=towards*(.003/max(length(towards),.003));
     float4 projected=mul(float4(p,1),shadow[face]);
     float4 sx=mul(float4(dx,0),shadow[face]),sy=mul(float4(dy,0),shadow[face]);
     // P0-S7: lamps use the sun's wide plane-corrected filter (each face map's
     // own size; culled faces bind a 16x16 lit map).
-    return PCFWide(face,projected,sx,sy);}
+    return PCFWide(face,projected,sx,sy,crease);}
 // R2 accum_point uses 1/(range*range); only accum_spot shortens to range*.95.
 float LocalAttenuation(float distance_squared,float range,bool spot){float radius=max(spot?range*.95:range,.0001);
     return saturate(1-distance_squared/(radius*radius));}

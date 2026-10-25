@@ -26,8 +26,11 @@ struct CDetail {
     Shader* shader;
     struct Sphere {float R;}bv_sphere;
 };
-const unsigned dm_cache_size=4,dm_obj_in_slot=4;
-const float dm_fade=63.5f;
+// A 3x3 cache grid around the camera slot (production: dm_size 96, 193x193).
+const int dm_size=1,dm_cache_line=dm_size+1+dm_size;
+const unsigned dm_cache_size=dm_cache_line*dm_cache_line,dm_obj_in_slot=4;
+const float dm_fade=63.5f,dm_slot_size=2.f;
+inline int iFloor(float v){return int(std::floor(v));}
 struct DetailSlot {enum {ID_Empty=0xffff};};
 class CDetailManager {
 public:
@@ -39,8 +42,12 @@ public:
     struct Slot {bool empty;SlotType type;int sx,sz;struct Vis {struct Sphere {Fvector P;}sphere;}vis;SlotPart G[dm_obj_in_slot];Slot():empty(true),type(stReady),sx(0),sz(0),vis(){}};
     typedef std::vector<Items<SlotItemVec*> > vis_list;
     std::vector<CDetail*> objects;vis_list m_visibles[3];
+    Slot* cache[dm_cache_line][dm_cache_line];
     Slot cache_pool[dm_cache_size];
+    CDetailManager(){for(int z=0;z<dm_cache_line;++z)for(int x=0;x<dm_cache_line;++x)cache[z][x]=&cache_pool[z*dm_cache_line+x];}
+    static float FadeRadius();
 };
 struct DetailDevice {uint32_t dwFrame;float fTimeGlobal;Fvector vCameraPosition;};
 extern DetailDevice Device;
 extern float ps_r__Detail_radius,r_ssaDISCARD;
+inline float CDetailManager::FadeRadius(){return ps_r__Detail_radius;}

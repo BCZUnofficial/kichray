@@ -102,6 +102,10 @@ void SourceBasis(){Require(sizeof(SourceVertex)==sizeof(KichR4ModelVertex) && si
     }
     auto bad=Skinned(1,false,false);const Span vertices=Chunk(View(bad),3);SetFloat(bad,static_cast<unsigned>(vertices.p-bad.data())+8+12,std::numeric_limits<float>::quiet_NaN());const auto flat=Decode(View(bad));
     Require(flat->vertices[0].normal==0 && flat->vertices[0].tangent==0 && !(flat->available_attributes&7),"nonfinite basis does not reject or poison the otherwise valid model geometry");
+    // Modded wpn_ak74 ships NaN UVs on 42 vertices: zeroed, the model stays.
+    auto uv=Skinned(1,false,false);const Span uv_vertices=Chunk(View(uv),3);SetFloat(uv,static_cast<unsigned>(uv_vertices.p-uv.data())+8+48,std::numeric_limits<float>::quiet_NaN());
+    const auto repaired=Decode(View(uv));
+    Require(repaired && repaired->invalid_uvs==1 && repaired->vertices[0].uv[0]==0 && repaired->vertices[0].uv[1]==0 && repaired->vertices.size()==3,"nonfinite UV is zeroed instead of rejecting the model");
 }
 void RigidBasis(){for(unsigned mirrored=0;mirrored<2;++mirrored){const auto raw=Rigid(mirrored!=0);const auto mesh=Decode(View(raw));const SourceVertex& v=mesh->vertices[0];
         Require(mesh->vertices.size()==3 && mesh->indices.size()==3 && mesh->derived_basis_vertices==3 && mesh->basis_vertices==3,"rigid FVF computes its indexed tangent basis once at source loading without mesh expansion");

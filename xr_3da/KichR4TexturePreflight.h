@@ -67,10 +67,10 @@ inline int32_t Preflight(KichR4FrameSession& frame,KichR4LevelSession& level,
     if(scene && shared_plan==&fallback)shared_plan->sun_casters=kich_r4_visibility::BuildSunCasterVolume(camera,input.lighting.sun_direction);
     if(scene)details.EnsureVisibilityFrame(input.engine_frame,shared_plan->sun_casters);
     std::vector<kich_r4_scene::Matrix> shadows;
-    std::vector<unsigned char> shadow_sun;
+    std::vector<unsigned char> shadow_sun,shadow_grass;
     std::vector<unsigned char> shadow_static(level.scene.draws.size(),0);
     auto add_shadow=[&](const kich_r4_scene::Matrix& vp,uint32_t seed,bool sun){
-        shadows.push_back(vp);shadow_sun.push_back(sun?1:0);const kich_r4_level::StaticVisibility& mask=shared_plan->Select(vp,seed,sun);
+        shadows.push_back(vp);shadow_sun.push_back(sun?1:0);shadow_grass.push_back(1);const kich_r4_level::StaticVisibility& mask=shared_plan->Select(vp,seed,sun);
         for(size_t i=0;i<mask.selected.size();++i)shadow_static[mask.selected[i]]=1;
     };
     if(scene){
@@ -84,6 +84,8 @@ inline int32_t Preflight(KichR4FrameSession& frame,KichR4LevelSession& level,
             if(input.lighting.sunmask_valid)demand.NeedTexture("sunmask",LIGHTING); // R2 cloud sun mask
             add_shadow(kich_r4_lighting::SunCascade(input.lighting,input.position,128.f),UINT32_MAX,true);
             add_shadow(kich_r4_lighting::SunFarCascade(input.lighting,input.position),UINT32_MAX,true);
+            // P0-S8: as the deferred pass, no grass in the 512 m map within 64 m.
+            {const float grass_radius=details.ShadowRadius();if(grass_radius>0 && grass_radius<=64.f)shadow_grass.back()=0;}
             kich_r4_scene::Matrix contact;if(kich_r4_lighting::SunContactShadow(input.lighting,contact))add_shadow(contact,UINT32_MAX,true);}
         std::vector<uint8_t> selected;kich_r4_visibility::SelectShadowLights(input.lighting,true,selected);
         uint32_t faces=0;for(size_t i=0;i<selected.size() && i<input.lighting.lights.size();++i)if(selected[i])faces+=input.lighting.lights[i].type==2?1:6;
@@ -136,6 +138,7 @@ inline int32_t Preflight(KichR4FrameSession& frame,KichR4LevelSession& level,
         std::vector<unsigned char> needed(source->meshes.size(),0);
         for(size_t view=0;view<shadows.size();++view){
             if(!shadow_sun[view] && !input.lighting.local_detail_shadows)continue; // P0-S7: no grass in lamp maps
+            if(!shadow_grass[view])continue;
             const KichR4DetailSession::ShadowSelection& selection=details.SelectShadow(shadows[view],shadow_sun[view]!=0);
             for(size_t i=0;i<selection.groups.size();++i)if(selection.groups[i].mesh<needed.size())needed[selection.groups[i].mesh]=1;}
         for(size_t i=0;i<needed.size();++i)if(needed[i])demand.NeedTexture(source->meshes[i].texture,SHADOW_ALPHA);

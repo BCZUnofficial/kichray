@@ -64,6 +64,35 @@ void Sun(){Scene s;s.materials.resize(1);s.draws.push_back(Box(0,0,.5f,.1f));s.d
     Require(plan.views.size()==2 && &sun!=&local,"identical shadow matrix has distinct sun and local cache entries");
     plan.Begin(s,1,0,0);plan.sun_casters=kich_r4_visibility::SunCasterVolume();Require(plan.Select(shadow,UINT32_MAX,true).selected.size()==2,"invalid sun volume fails open");
 }
+// P0-S8 cascade holes: the 512 m view skips casters inside 0.88 of the 128 m
+// cascade (a pixel there gives the 512 m map zero weight); casters reaching
+// past it, other views and frames without a registered hole are unchanged.
+void Holes(){Scene s;s.materials.resize(1);
+    const float xs[]={0,20,40,55,56.5f,57.5f,62,70,150,240};
+    for(float x:xs)s.draws.push_back(Box(x,0,0,.5f));
+    s.draws.push_back(Box(30,0,0,30)); // spans 0..60 m: reaches past the hole
+    StaticFramePlan plan;plan.Begin(s,1,0,0);
+    const float origin[3]={0,0,0},down[3]={.1f,-1,.05f};
+    const Matrix near_view=kich_r4_lighting::SunShadow(origin,down,128,4096),far_view=kich_r4_lighting::SunShadow(origin,down,512,8192);
+    const size_t without=plan.Select(far_view,UINT32_MAX,true).selected.size(),near_without=plan.Select(near_view,UINT32_MAX,true).selected.size();
+    Require(without==s.draws.size(),"without a hole the 512 m view keeps every caster");
+    plan.Begin(s,1,0,0);plan.AddSunHole(far_view,near_view);
+    const StaticVisibility& far=plan.Select(far_view,UINT32_MAX,true);
+    for(size_t i=0;i<s.draws.size();++i){bool inside=true;
+        for(unsigned c=0;c<8;++c){const float p[3]={c&1?s.draws[i].high.x:s.draws[i].low.x,c&2?s.draws[i].high.y:s.draws[i].low.y,c&4?s.draws[i].high.z:s.draws[i].low.z};
+            float q[4];for(unsigned a=0;a<4;++a)q[a]=p[0]*near_view.m[a]+p[1]*near_view.m[4+a]+p[2]*near_view.m[8+a]+near_view.m[12+a];
+            inside=inside && std::fabs(q[0])<=.88f*q[3] && std::fabs(q[1])<=.88f*q[3];}
+        Require(far.draws[i]==(inside?0:1),"512 m view drops exactly the casters inside 0.88 of the 128 m cascade");}
+    Require(far.draws[0]==0 && far.draws[3]==0 && far.draws[7]==1 && far.draws[8]==1 && far.draws.back()==1,"near casters dropped, far and straddling casters kept");
+    Require(far.hole_rejected==std::count(far.draws.begin(),far.draws.end(),0),"hole rejections are counted");
+    Require(plan.Select(near_view,UINT32_MAX,true).selected.size()==near_without,"the 128 m view itself has no hole");
+    Require(plan.Select(far_view,UINT32_MAX,false).selected.size()==s.draws.size(),"a local (non-sun) query with the same matrix ignores the hole");
+    // Many casters: whole BVH branches inside the hole are skipped.
+    Scene many;many.materials.resize(1);for(unsigned i=0;i<4096;++i)many.draws.push_back(Box(Random(-45,45),Random(-5,5),Random(-45,45),Random(.1f,2)));
+    plan.Begin(many,2,0,0);plan.AddSunHole(far_view,near_view);
+    const StaticVisibility& dense=plan.Select(far_view,UINT32_MAX,true);
+    Require(dense.selected.empty() && dense.hole_rejected==many.draws.size() && dense.bounds_tests<many.draws.size()/4,"dense near casters are skipped by branch");
+}
 void Reuse(){Scene s;s.materials.resize(1);s.topology.valid=true;s.topology.sectors.resize(2);
     s.draws.resize(2048);s.sector_owned.assign(s.draws.size(),1);
     for(size_t i=0;i<s.draws.size();++i){s.draws[i]=Box(float(i%4)*.2f,0,.5f,.05f);s.topology.sectors[i%2].draws.push_back(static_cast<uint32_t>(i));}
@@ -92,4 +121,4 @@ void Reuse(){Scene s;s.materials.resize(1);s.topology.valid=true;s.topology.sect
     Require(plan.view_slots.empty() && plan.views.empty() && plan.allowed.empty(),"level revision releases prior level high-water scratch");
 }
 }
-int main(){try{Spatial();PortalsAndWind();Sun();Reuse();printf("E1.3/E1.6 shared static frame plan: %u checks passed\n",checks);return 0;}catch(const std::exception& e){count_allocations=false;fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}
+int main(){try{Spatial();PortalsAndWind();Sun();Holes();Reuse();printf("E1.3/E1.6 shared static frame plan: %u checks passed\n",checks);return 0;}catch(const std::exception& e){count_allocations=false;fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

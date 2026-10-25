@@ -207,7 +207,9 @@ bool KichR4_CaptureModelNeeded(void* visual,uint32_t& bones){bool needed=false;b
     GuardCapture([&](kich_r4_capture::State& c){c.frame.renderer_seen=true;
         const std::map<const void*,kich_r4_capture::Entry>::const_iterator found=c.models.find(visual);
         kich_r4_level::Check(found!=c.models.end(),"visual missing CPU registration; rebuild XR_3DA and renderer");
-        kich_r4_level::Check(found->second.error.empty(),found->second.error.c_str());
+        /* A model rejected at load (its reason is logged then) is skipped:
+         * native mode has no DX9 frame, so failing here ends the game. */
+        if(!found->second.error.empty())return;
         if(found->second.mesh){bones=found->second.mesh->bones;needed=true;}});return needed;
 }
 void KichR4_CaptureSubmitModel(const kich_r4_capture::ModelInput& input){GuardCapture([&](kich_r4_capture::State& c){

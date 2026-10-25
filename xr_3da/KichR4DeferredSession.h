@@ -160,6 +160,12 @@ struct KichR4DeferredSession {
         BeginStaticPlan(l,input.tree_wind[0],input.tree_wind[2]);visibility_frame=input.engine_frame;visibility_revision=l.revision;
         kich_r4_scene::Matrix camera;memcpy(camera.m,input.view_projection,sizeof(camera.m));
         visibility_plan.sun_casters=kich_r4_visibility::BuildSunCasterVolume(camera,input.lighting.sun_direction);
+        // P0-S8: the 512 m view skips statics inside the 128 m cascade, the
+        // 128 m view those inside the contact cascade (same matrices as Draw).
+        if(native_mode && kich_r4_visibility::SunEnabled(input.lighting)){
+            const kich_r4_scene::Matrix near_view=kich_r4_lighting::SunCascade(input.lighting,input.position,128.f);
+            visibility_plan.AddSunHole(kich_r4_lighting::SunFarCascade(input.lighting,input.position),near_view);
+            kich_r4_scene::Matrix contact;if(kich_r4_lighting::SunContactShadow(input.lighting,contact))visibility_plan.AddSunHole(near_view,contact);}
         native_models.SetSunCasterVolume(visibility_plan.sun_casters);
         details.BeginVisibilityFrame(input.engine_frame,visibility_plan.sun_casters);
         const kich_r4_lod::Parameters lod=kich_r4_lod::CameraParameters(input.width,input.height,input.geometry_lod[3],input.geometry_lod[0],input.geometry_lod[1],input.geometry_lod[2]);
@@ -395,7 +401,7 @@ struct KichR4DeferredSession {
         if(g_render_snapshot_active){char id[96];snprintf(id,sizeof(id),"STATIC_VISIBILITY %s",snapshot_phase);
             RenderSnapshot_U64(id,"portal_used",visibility.portal_used);RenderSnapshot_U64(id,"sectors",visibility.sectors);
             RenderSnapshot_U64(id,"portal_tests",visibility.portal_tests);RenderSnapshot_U64(id,"sector_rejected",visibility.sector_rejected);
-            RenderSnapshot_U64(id,"frustum_rejected",visibility.frustum_rejected);
+            RenderSnapshot_U64(id,"frustum_rejected",visibility.frustum_rejected);RenderSnapshot_U64(id,"cascade_hole_rejected",visibility.hole_rejected);
             RenderSnapshot_U64(id,"bounds_tests",visibility.bounds_tests);RenderSnapshot_U64(id,"bvh_node_tests",visibility.node_tests);
             uint64_t selected=0;for(size_t n=0;n<visibility.selected.size();++n)selected+=StaticEligible(l,l.scene.draws[visibility.selected[n]],shadow)?1:0;
             const uint64_t omitted=static_candidates[shadow?1:0]>=selected?static_candidates[shadow?1:0]-selected:0;
@@ -938,7 +944,14 @@ struct KichR4DeferredSession {
                 if(record)record->begun=true;
                 if(Static(s,l,base.shadow[cascade],true)<0)return s.failure;
                 kich_r4_lighting::Constants c=base;c.mvp=base.shadow[cascade];
-                if(Models(s,l,stream,captured,ShadowModels,c)<0 || details.Draw(s,l,cb,c,true,input.engine_frame,phase,RENDER_SNAPSHOT_PASS_SUN_SHADOW)<0)return s.failure;
+                // P0-S8: grass casts within r__detail_radius, and a shadow lands
+                // at its caster's light-space XY, so within the 128 m cascade's
+                // half span (64 m) the 512 m map never shows it: skip its
+                // selection, upload and draws there (casters past 57.6 m, in the
+                // blend band, are already shrunk below 13% by the radius fade).
+                const float grass_radius=details.ShadowRadius();
+                const bool grass=!native_mode || cascade!=1 || !(grass_radius>0) || grass_radius>spans[0]*.5f;
+                if(Models(s,l,stream,captured,ShadowModels,c)<0 || (grass && details.Draw(s,l,cb,c,true,input.engine_frame,phase,RENDER_SNAPSHOT_PASS_SUN_SHADOW)<0))return s.failure;
                 if(record)record->completed=true;
                 kich_r4_telemetry::Text("SHADOW",phase,"execution","PASS_COMPLETED");++shadow_passes;++frame_sun_cascades;
             }

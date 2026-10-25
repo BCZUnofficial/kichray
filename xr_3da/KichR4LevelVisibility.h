@@ -11,11 +11,11 @@ namespace kich_r4_level {
 struct StaticVisibility {
     std::vector<unsigned char> draws;
     std::vector<uint32_t> selected;
-    uint32_t sectors,portal_tests,sector_rejected,frustum_rejected,bounds_tests,node_tests;bool portal_used;
-    StaticVisibility():sectors(0),portal_tests(0),sector_rejected(0),frustum_rejected(0),bounds_tests(0),node_tests(0),portal_used(false){}
+    uint32_t sectors,portal_tests,sector_rejected,frustum_rejected,bounds_tests,node_tests,hole_rejected;bool portal_used;
+    StaticVisibility():sectors(0),portal_tests(0),sector_rejected(0),frustum_rejected(0),bounds_tests(0),node_tests(0),hole_rejected(0),portal_used(false){}
     void Reset(size_t count,unsigned char value){
         draws.assign(count,value);selected.clear();
-        sectors=portal_tests=sector_rejected=frustum_rejected=bounds_tests=node_tests=0;portal_used=false;
+        sectors=portal_tests=sector_rejected=frustum_rejected=bounds_tests=node_tests=hole_rejected=0;portal_used=false;
     }
 };
 struct StaticSectorScratch {
@@ -96,6 +96,23 @@ struct StaticFramePlan {
     StaticSectorScratch sector_scratch;
     std::vector<unsigned char> allowed;
     kich_r4_visibility::SunCasterVolume sun_casters;
+    /* P0-S8 cascade holes. A sun shadow lands at its caster's light-space XY,
+     * and a pixel inside 90% of a finer cascade (contact in 128 m, 128 m in
+     * 512 m) gives the coarser map zero weight (SunVisibility). A caster whose
+     * box lies inside the finer cascade's |x|,|y| <= limit therefore only
+     * changes texels that no pixel reads: the coarser view skips it. limit
+     * keeps 0.02 (>1 m) from 0.9 for the coarser filter footprint (3.5 texels,
+     * 0.22 m at 512 m/8192). Registered per frame for the exact view matrix. */
+    struct SunHole {Matrix view,inner;float limit;};
+    std::vector<SunHole> sun_holes;
+    void AddSunHole(const Matrix& view,const Matrix& inner,float limit=.88f){SunHole h={view,inner,limit};sun_holes.push_back(h);}
+    static bool InsideHole(const Draw& d,const SunHole& h){
+        if(!ValidBounds(d))return false;
+        for(unsigned corner=0;corner<8;++corner){const float p[3]={corner&1?d.high.x:d.low.x,corner&2?d.high.y:d.low.y,corner&4?d.high.z:d.low.z};float c[4];
+            for(unsigned a=0;a<4;++a)c[a]=p[0]*h.inner.m[a]+p[1]*h.inner.m[4+a]+p[2]*h.inner.m[8+a]+h.inner.m[12+a];
+            if(!(c[3]>0) || !(fabsf(c[0])<=h.limit*c[3]) || !(fabsf(c[1])<=h.limit*c[3]))return false;}
+        return true;
+    }
     float wind_x=0,wind_z=0;
     uint32_t queries=0,cache_hits=0;
     uint64_t bounds_tests=0,node_tests=0;
@@ -128,7 +145,7 @@ struct StaticFramePlan {
     void Begin(const Scene& value,uint32_t generation,float x,float z){
         const Draw* data=value.draws.empty()?NULL:&value.draws[0];
         const bool rebuild=scene!=&value || storage!=data || revision!=generation || bounds.size()!=value.draws.size();
-        scene=&value;storage=data;revision=generation;wind_x=x;wind_z=z;views.clear();queries=cache_hits=0;bounds_tests=node_tests=0;
+        scene=&value;storage=data;revision=generation;wind_x=x;wind_z=z;views.clear();sun_holes.clear();queries=cache_hits=0;bounds_tests=node_tests=0;
         // A new level/revision must not retain the old level's view/portal
         // scratch. Normal camera/light changes only reset the active keys.
         if(rebuild){std::deque<StaticVisibility>().swap(view_slots);uncached=StaticVisibility();
@@ -149,10 +166,13 @@ struct StaticFramePlan {
         const float pad=size*.00001f+.001f;d.low.x-=pad;d.low.y-=pad;d.low.z-=pad;d.high.x+=pad;d.high.y+=pad;d.high.z+=pad;
         return Visible(d,vp);
     }
-    void Visit(uint32_t id,const Matrix& vp,const std::vector<unsigned char>& allowed,StaticVisibility& out,bool sun){
+    void Visit(uint32_t id,const Matrix& vp,const std::vector<unsigned char>& allowed,StaticVisibility& out,bool sun,const SunHole* hole=NULL){
         const Node& n=nodes[id];++out.node_tests;if(!NodeVisible(n,vp) || (sun && n.finite && !sun_casters.Visible(&n.bounds.low.x,&n.bounds.high.x)))return;
-        if(n.left!=UINT32_MAX){Visit(n.left,vp,allowed,out,sun);Visit(n.right,vp,allowed,out,sun);return;}
+        if(hole && n.finite && InsideHole(n.bounds,*hole)){
+            for(uint32_t j=0;j<n.count;++j)if(allowed[order[n.first+j]])++out.hole_rejected;return;}
+        if(n.left!=UINT32_MAX){Visit(n.left,vp,allowed,out,sun,hole);Visit(n.right,vp,allowed,out,sun,hole);return;}
         for(uint32_t j=0;j<n.count;++j){const uint32_t i=order[n.first+j];if(!allowed[i])continue;++out.bounds_tests;
+            if(hole && InsideHole(bounds[i],*hole)){++out.hole_rejected;continue;}
             if(!ValidBounds(bounds[i]) || (Visible(bounds[i],vp) && (!sun || sun_casters.Visible(&bounds[i].low.x,&bounds[i].high.x)))){out.draws[i]=1;out.selected.push_back(i);}}
     }
     const StaticVisibility& Select(const Matrix& vp,uint32_t sector,bool sun=false){
@@ -170,7 +190,9 @@ struct StaticFramePlan {
         SelectStaticSectors(*scene,vp,sector,result,&sector_scratch);
         allowed.assign(result.draws.begin(),result.draws.end());std::fill(result.draws.begin(),result.draws.end(),0);
         for(size_t i=0;i<allowed.size();++i)if(!allowed[i])++result.sector_rejected;
-        if(!nodes.empty())Visit(0,vp,allowed,result,sun);
+        const SunHole* hole=NULL;
+        if(sun)for(size_t i=0;i<sun_holes.size();++i)if(!memcmp(sun_holes[i].view.m,vp.m,sizeof(vp.m))){hole=&sun_holes[i];break;}
+        if(!nodes.empty())Visit(0,vp,allowed,result,sun,hole);
         std::sort(result.selected.begin(),result.selected.end());
         result.frustum_rejected=static_cast<uint32_t>(bounds.size()-result.sector_rejected-result.selected.size());
         bounds_tests+=result.bounds_tests;node_tests+=result.node_tests;return result;
