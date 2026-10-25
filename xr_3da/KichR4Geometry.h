@@ -12,6 +12,12 @@
 enum KichR4Semantic {KICH_R4_POSITION=1,KICH_R4_NORMAL=2,KICH_R4_TEXCOORD=3,KICH_R4_COLOR=4};
 enum KichR4VertexFormat {KICH_R4_FLOAT2=1,KICH_R4_FLOAT3=2,KICH_R4_FLOAT4=3,KICH_R4_UNORM8X4=4};
 enum KichR4CullMode {KICH_R4_CULL_BACK=0,KICH_R4_CULL_FRONT=1,KICH_R4_CULL_NONE=2};
+/* KichRay R2 r2_sun_shadow_cull for sun caster passes only: 0 keeps the
+ * material cull (R2 near cascade CULL_CCW), 1 none (one-sided fences, signs
+ * and boards cast from both sides), 2 back faces. */
+#ifdef __cplusplus
+inline uint32_t KichR4SunShadowCull(uint32_t cull,int32_t mode){return mode==1?(uint32_t)KICH_R4_CULL_NONE:mode==2?(uint32_t)KICH_R4_CULL_BACK:cull;}
+#endif
 enum KichR4DepthMode {KICH_R4_DEPTH_OFF=0,KICH_R4_DEPTH_ON=1};
 #pragma pack(push,4)
 typedef struct KichR4VertexElement {uint32_t semantic,semantic_index,format,byte_offset;} KichR4VertexElement;

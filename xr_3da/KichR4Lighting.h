@@ -54,6 +54,14 @@ struct KichR4LightingFrame {
     // sphere around the first r2_sun_near metres of the view (KichRay R2
     // kich_sun::radius/extent). Zero valid = the 128/512 m cascades only.
     float sun_contact[4];uint32_t sun_contact_valid;
+    // P0-S4: held shadow basis while sun_direction moves continuously (the
+    // cascades shear onto the true direction); zero valid = basis is the sun.
+    float sun_basis[3];uint32_t sun_basis_valid;
+    // KichRay R2 r2_sun_shadow_cull: 0 material cull, 1 none, 2 back faces.
+    int32_t sun_shadow_cull;
+    // P0-S5 volumetric shafts: r4_sun_shafts mode (0 off), r4_sun_shafts_intensity,
+    // r2_sun_near and min(180 m, far_plane).
+    float sun_shafts[4];
     std::vector<KichR4LocalLight> lights;
     std::vector<KichR4LightIdentity> sources;
     std::vector<KichR4LightProjector> projectors;
@@ -71,7 +79,7 @@ struct KichR4LightingFrame {
     // Small direct/test producers can still fill the original first eight
     // entries. Captured frames resize to every visible registry source.
     KichR4LightingFrame():valid(0),count(0),shadow_mask(0),sun_direction(),sun_color(),ambient(),hemi(),fog(),fog_near(0),fog_far(0),fog_valid(0),
-        env_ambient(),env_color(),gloss_factor(1),env_valid(0),sun_mode(KICH_R4_SUN_DEFAULT),sunmask(),sunmask_valid(0),sun_contact(),sun_contact_valid(0),lights(8),sources(8),projectors(8),visibility_vp(),visibility_valid(0),r1_lights_requested(0),r1_lights_applied(0),occlusion_enabled(0),occlusion_tested(0),
+        env_ambient(),env_color(),gloss_factor(1),env_valid(0),sun_mode(KICH_R4_SUN_DEFAULT),sunmask(),sunmask_valid(0),sun_contact(),sun_contact_valid(0),sun_basis(),sun_basis_valid(0),sun_shadow_cull(0),sun_shafts(),lights(8),sources(8),projectors(8),visibility_vp(),visibility_valid(0),r1_lights_requested(0),r1_lights_applied(0),occlusion_enabled(0),occlusion_tested(0),
         selection_frame(0),local_shadow_size(0),shadow_plan_faces(0),shadow_resolution_changes(0),shadow_resolution_reason(0){
         const float defaults[8]={.3f,3.3f,.7f,1.f,0.f,.75f,.5f,0.f};memcpy(bloom,defaults,sizeof(bloom));
         const float tonemap[5]={0.f,.25f,.001f,5.f,0.f};memcpy(exposure,tonemap,sizeof(exposure));}

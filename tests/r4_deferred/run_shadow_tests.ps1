@@ -12,11 +12,16 @@ function Extract([string]$signature) {
 $helpers = (('float3 RelativePosition(', 'float3 WorldPosition(', 'float3 ReceiverPosition(', 'float3 ShadowNumericalOffset(',
     'bool ShadowPlaneStable(', 'float ShadowPlaneErrorSquared(', 'bool ShadowGradient(', 'float ShadowTent(',
     'float3 ShadowDerivative(', 'float PCF(', 'void ShadowNormalPlane(') | ForEach-Object { Extract $_ }) -join "`n"
-$helpers = $helpers.Replace('[unroll]', '').Replace('[branch]', '').Replace('inout float3', 'float3&')
+$helpers = $helpers.Replace('float PCF(Texture2D map', 'float PCF(const Texture2D& map').Replace('[unroll]', '').Replace('[branch]', '').Replace('inout float3', 'float3&')
 $helpers = $helpers.Replace('projected.xyz', 'xyz(projected)').Replace('derivative.xyz', 'xyz(derivative)')
 $helpers = $helpers.Replace('p.xyz', 'xyz(p)').Replace('camera.xyz', 'xyz(camera)')
 $helpers = $helpers.Replace('out float2 gradient', 'float2& gradient').Replace('receiver_inverse[3][3]', 'receiver_inverse.m[15]')
 $helpers = $helpers.Replace('return mul(float4(ndc*linear_depth,linear_depth,1),receiver_inverse).xyz;', 'return xyz(mul(float4(ndc*linear_depth,linear_depth,1),receiver_inverse));')
+# P0-S5 cascade selection: production SunFarVisibility/SunCascadeVisibility/SunVisibility.
+$cascades = (('float SunFarVisibility(', 'float SunCascadeVisibility(', 'float SunVisibility(') | ForEach-Object { Extract $_ }) -join "`n"
+$cascades = $cascades.Replace('[branch]', '').Replace('shadow[2][3][3]', 'shadow[2].m[15]')
+$cascades = [regex]::Replace($cascades, '\b(\w+)\.xyz\b', 'xyz($1)')
+$helpers = $helpers + "`n" + $cascades
 $fixture = [IO.File]::ReadAllText((Join-Path $root 'tests\r4_deferred\shadow_filter_tests.cpp')).Replace('// PRODUCTION_SHADOW_HELPERS', $helpers)
 $work = Join-Path ([IO.Path]::GetTempPath()) 'kich-shadow'; New-Item -ItemType Directory -Force $work | Out-Null
 [IO.File]::WriteAllText((Join-Path $work 'shadow.cpp'), $fixture)

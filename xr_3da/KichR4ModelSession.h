@@ -38,6 +38,7 @@ struct KichR4ModelSession {
     KichR4Handle vs[KICH_R4_MODEL_CAPACITY_CLASSES],pipelines[KICH_R4_MODEL_CAPACITY_CLASSES][PassCount],rigid_pose,white,plain_pipeline[KICH_R4_MODEL_CAPACITY_CLASSES];
     std::map<const Source*,Mesh> meshes;
     kich_r4_visibility::SunCasterVolume sun_casters;
+    int32_t sun_shadow_cull=0; // KichRay r2_sun_shadow_cull, set by the deferred planner per frame
     void SetSunCasterVolume(const kich_r4_visibility::SunCasterVolume& volume){sun_casters=volume;}
     std::vector<PoseSlot> poses;std::vector<KichR4Handle> command_poses;std::vector<uint32_t> command_classes;size_t pose_cursor[KICH_R4_MODEL_CAPACITY_CLASSES];
     // Immutable within one captured frame. Keep vector capacity across frames;
@@ -409,7 +410,8 @@ struct KichR4ModelSession {
                 constants.ambient[3]=c.material.emissive_gain;constants.hemi[3]=c.material.emissive_specular;}
             kich_r4_capture::Style style=c.style;
             if(c.has_material)kich_r4_material::Apply(c.material,style);
-            if(pass==Shadow){style.depth=style.write=1;style.blend=style.clamp=0;style.scissor=false;style.min_z=0;style.max_z=1;}
+            if(pass==Shadow){style.depth=style.write=1;style.blend=style.clamp=0;style.scissor=false;style.min_z=0;style.max_z=1;
+                if(sun_pass)style.cull=KichR4SunShadowCull(style.cull,sun_shadow_cull);}
             if(pass==ForwardAdd || pass==HUDAdd){style.blend=1;style.src=style.dst=2;style.write=0;}
             if(pass==Distortion){style.depth=1;style.write=0;style.blend=1;style.src=5;style.dst=6;}
             constants.fog_params[2]=(pass==Forward || pass==ForwardAdd) && style.fog_enabled?(style.blend && style.dst==2?2.f:1.f):0;

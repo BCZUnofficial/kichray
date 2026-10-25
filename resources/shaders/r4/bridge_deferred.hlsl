@@ -25,7 +25,8 @@ Texture2D terrain_lmap:register(t10); SamplerState terrain_lmap_surface:register
 // Fullscreen-only linear clip W; D24 remains the coverage/stencil authority.
 Texture2D receiver_depth_texture:register(t11);
 // Material flags: bump=1, baked lightmap=2, hemi map=4, detail=8,
-// vertex baked RGB=16, source sun=32, tree light scale/bias=64, emissive=256, authored wallmark=512.
+// vertex baked RGB=16, source sun=32, tree light scale/bias=64, emissive=256, authored wallmark=512,
+// detail pseudo normal on both faces=32768.
 struct StaticInput {float3 p:POSITION;float2 uv:TEXCOORD0;float4 n:NORMAL;
     float3 t:TEXCOORD1;float3 b:TEXCOORD2;float3 uv_sun:TEXCOORD3;float4 light:COLOR0;float2 tree:TEXCOORD4;};
 struct ModelInput {float4 p:POSITION;float2 uv:TEXCOORD0;float4 c:COLOR0;float4 n:NORMAL;float3 w:TEXCOORD1;};
@@ -153,7 +154,9 @@ float3 NormalWithTerrain(Varying v,bool front,float4 channels,float total){float
         if(dot(result,result)>1e-8)n=normalize(result);
     }
     // Flip the complete mapped normal on the back face, preserving mirrored UV handedness.
-    return front?n:-n;}
+    // Details (32768) keep their R2 pseudo normal on both faces: SoC R2 detail
+    // shaders never flip it, and a flipped curled leaf edge read as a shadow.
+    return front || ((uint)material.x&32768)!=0?n:-n;}
 float3 Normal(Varying v,bool front){float4 channels=0;float total=0;
     [branch] if(((uint)material.x&8192)!=0){float4 weights=TerrainWeights(v);channels=TerrainChannels(v,weights);total=dot(weights,1);}
     return NormalWithTerrain(v,front,channels,total);}
@@ -339,15 +342,25 @@ float3 ShadowNumericalOffset(float3 p,float3 dx,float3 dy,float3 towards){
     float allowance=min(.002,16*1.192092896e-7*coordinate/max(abs(facing),.02));
     return p+n*allowance;
 }
+// P0-S5 coverage: beyond the 512 m cascade there is no caster information.
+// PCF() returns full shadow outside a map, which would black out distant
+// terrain; the last 10% of the far cascade fades to lit instead.
+float SunFarVisibility(float3 p,float3 dx,float3 dy){
+    float4 far_position=mul(float4(p,1),shadow[1]);
+    float3 q=far_position.xyz/far_position.w;
+    float edge=max(abs(q.x),abs(q.y)),result=1;
+    [branch] if(q.z>=0 && q.z<=1 && edge<1){result=PCF(shadow1,far_position,mul(float4(dx,0),shadow[1]),mul(float4(dy,0),shadow[1]));
+        [branch] if(edge>.9)result=lerp(result,1,saturate((edge-.9)*10));}
+    return result;
+}
 // E1.9 128/512 m pair for an already offset receiver; unchanged selection and blend.
 float SunCascadeVisibility(float3 p,float3 dx,float3 dy){
     float4 near_position=mul(float4(p,1),shadow[0]);
     float3 q=near_position.xyz/near_position.w;
     float edge=max(abs(q.x),abs(q.y)),result;
-    [branch] if(q.z<0 || q.z>1 || edge>=1)result=PCF(shadow1,mul(float4(p,1),shadow[1]),mul(float4(dx,0),shadow[1]),mul(float4(dy,0),shadow[1]));
+    [branch] if(q.z<0 || q.z>1 || edge>=1)result=SunFarVisibility(p,dx,dy);
     else{result=PCF(shadow0,near_position,mul(float4(dx,0),shadow[0]),mul(float4(dy,0),shadow[0]));
-        [branch] if(edge>.9){float far_visibility=PCF(shadow1,mul(float4(p,1),shadow[1]),mul(float4(dx,0),shadow[1]),mul(float4(dy,0),shadow[1]));
-            result=lerp(result,far_visibility,saturate((edge-.9)*10));}}
+        [branch] if(edge>.9)result=lerp(result,SunFarVisibility(p,dx,dy),saturate((edge-.9)*10));}
     return result;
 }
 // P0-S2: shadow[2] (t7) is a texel-snapped contact cascade over the stable
@@ -481,6 +494,13 @@ float4 LocalLight(float3 p,float3 n,float gloss,float m,float3 dx,float3 dy){flo
         else attenuation*=saturate((angle-light_direction.w)/max(.001,(1-light_direction.w)*.2));}
     if(attenuation<=0)return 0;
     return DirectLight(p,n,direction,light_color.rgb,gloss,m)*(attenuation*LocalVisibility(p,dx,dy))*profile;}
+float3 CameraForward(){float4 n=mul(float4(0,0,0,1),inverse_vp),f=mul(float4(0,0,.5,1),inverse_vp);
+    float3 d=f.xyz/f.w-n.xyz/n.w;return d*rsqrt(max(dot(d,d),1e-12));}
+// P0-S4 KichRay R2 accum_sun_far SUN_FARPLANE: dynamic sunlight fades to 1/3
+// by 180 m of view depth, f=(z/180)^2; it scales light, never fills a shadow.
+// R2 applies it from r2_sun_near on (1.3% step there); here it is continuous.
+float SunFarFade(float3 relative){float f=saturate(dot(relative,CameraForward())/180);
+    return sun_color.w>.5 && sun_color.w<1.5?lerp(1,.333,f*f):1;}
 float4 PSSun(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=image1.Load(int3(at,0)).r;
     float3 relative=LoadReceiverPosition(v.p.xy,depth),p=relative+camera.xyz,dx,dy;ShadowDerivatives(relative,dx,dy);
     if(depth>=1)return 0;float4 n=image0.Load(int3(at,0));
@@ -489,7 +509,7 @@ float4 PSSun(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=image1.Load(
     float3 normal=DecodeNormal(n.xy);
     if((int)screen.z==8){ShadowNormalPlane(normal,-sun_direction.xyz,p,dx,dy);return float4(SunDirect(p,dx,dy,static_sun).xxx,0);}
     // Indirect light is R2 hmodel in combine, applied once per receiver.
-    return SunLighting(p,normal,MaterialGloss(n.w),MaterialClass(n.w),dx,dy,static_sun);}
+    return SunLighting(p,normal,MaterialGloss(n.w),MaterialClass(n.w),dx,dy,static_sun)*SunFarFade(relative);}
 float4 PSLocal(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=image1.Load(int3(at,0)).r;
     float3 relative=LoadReceiverPosition(v.p.xy,depth),p=relative+camera.xyz,dx,dy;ShadowDerivatives(relative,dx,dy);
     if(depth>=1)return 0;float4 n=image0.Load(int3(at,0));
@@ -628,6 +648,14 @@ float4 PSLuminance3(Varying v):SV_Target {
     float scale=light_position.x/(result*light_position.y+light_position.z);
     return lerp(image1.Load(int3(0,0,0)).r,scale,light_position.w).xxxx;
 }
+// P0-S4: R2 renders HUD models into the G-buffer, so combine writes them into
+// generic1 (high = low/8) and they occlude the sky in the bloom source. R4
+// draws the HUD after combine; copy its pixels (image1 HUD-only depth < 1)
+// from the final colour into high_color before the bloom build.
+float4 PSHudBloomSource(Varying v):SV_Target {int2 at=int2(v.p.xy);
+    if(image1.Load(int3(at,0)).r>=1)discard;
+    float4 c=image0.Load(int3(at,0));return float4(c.rgb/8,c.a);
+}
 // combine_2_naa.ps combine_bloom: low + bloom.rgb*bloom.a, bloom sampled at the pixel centre.
 float4 PSBloomComposite(Varying v):SV_Target {
     float4 bloom=image1.SampleLevel(surface1,v.p.xy/screen.xy,0);
@@ -650,3 +678,68 @@ float4 PSPostprocess(Varying v):SV_Target {
     c=((contrast+.5)*pow(saturate(c),1/gamma)+(brightness-.5)*.5-contrast*.5+.25)*fog.rgb;
     return float4(saturate(c),1);
 }
+
+// P0-S5 DX11 volumetric sun shafts (r4_sun_shafts 0..3, r4_sun_shafts_intensity).
+// The scattering model is KichRay R2 accum_volumetric_sun.ps: two view-depth
+// segments (0..r2_sun_near, r2_sun_near..min(180 m, far plane)), extinction
+// weights exp(-0.006 d) per bin, (cos)^4 phase, x0.45. DX11 differences: every
+// full-size pixel marches its own path, so thin foliage in front of the sky
+// keeps its shorter path (R2 upsamples a half-size target and leaves dark
+// holes); shadow-space positions advance by one affine step per cascade; each
+// sample takes the finest cascade containing it (contact t7, 128 m t2, 512 m
+// t3); the R2 cloud sunmask (t6) breaks the beams; a depth-aware separable
+// blur removes the per-pixel jitter pattern. A volume point is not a surface:
+// one comparison, no receiver bias, and no map means no contribution.
+float ShaftCompare(Texture2D map,float4 q,inout bool done){float result=0;
+    [branch] if(!done && all(abs(q.xy)<1) && q.z>=0 && q.z<=1){result=map.SampleCmpLevelZero(shadow_surface,float2(q.x*.5+.5,.5-q.y*.5),q.z);done=true;}
+    return result;}
+float ShaftSample(float4 contact,float4 near_q,float4 far_q,bool use_contact){bool done=false;float result=0;
+    [branch] if(use_contact)result=ShaftCompare(shadow5,contact,done);
+    result+=ShaftCompare(shadow0,near_q,done);
+    result+=ShaftCompare(shadow1,far_q,done);
+    return result;}
+float ShaftSegment(float3 ray,float cos_z,float scene,float near_z,float far_z,float samples,float jitter){
+    float start=max(.05,near_z/cos_z),end=min(min(scene,180),far_z/cos_z),span=max(0,end-start);
+    float stride=span/samples,transmission=exp(-.006*start),step_transmission=exp(-.006*stride),visibility=0;
+    [branch] if(span>.001){
+        float4 origin=float4(camera.xyz+ray*start,1),delta=float4(ray*stride,0);
+        float4 c0=mul(origin,shadow[2]),d0=mul(delta,shadow[2]),c1=mul(origin,shadow[0]),d1=mul(delta,shadow[0]);
+        float4 c2=mul(origin,shadow[1]),d2=mul(delta,shadow[1]);
+        float2 m0=float2(dot(origin,sunmask_u),dot(origin,sunmask_v)),md=float2(dot(delta,sunmask_u),dot(delta,sunmask_v));
+        bool use_contact=shadow[2][3][3]>.5;
+        [loop]for(int i=0;i<16;++i){[branch] if(i<samples){
+            float t=float(i)+frac(jitter+float(i)*.61803398875);
+            float lit=ShaftSample(c0+d0*t,c1+d1*t,c2+d2*t,use_contact)*shadow4.SampleLevel(surface6,frac(m0+md*t),0).a;
+            visibility+=lit*transmission*(1-step_transmission);transmission*=step_transmission;}}}
+    return visibility;}
+// Full size, RGBA16F. light_position: samples per segment, intensity,
+// r2_sun_near, far limit. image0 is the D24 depth. Alpha keeps the path
+// length/180 for the blur.
+float4 PSSunShafts(Varying v):SV_Target {
+    int2 at=int2(v.p.xy);float2 pixel=float2(at)+.5;float depth=image0.Load(int3(at,0)).r;
+    float3 ray=RelativePosition(pixel,.5);ray*=rsqrt(max(dot(ray,ray),1e-12));
+    float scene=180;
+    [branch] if(depth<1)scene=min(length(LoadReceiverPosition(pixel,depth)),180);
+    float cos_z=max(dot(ray,CameraForward()),.01);
+    float alignment=saturate((dot(ray,-sun_direction.xyz)+.05)/1.05),phase=alignment*alignment*alignment*alignment;
+    float samples=clamp(light_position.x,1,16);
+    float jitter=frac(52.9829189*frac(dot(float2(at),float2(.06711056,.00583715))));
+    float visibility=0;
+    [branch] if(phase>.0001)visibility=ShaftSegment(ray,cos_z,scene,0,light_position.z,samples,jitter)+
+        ShaftSegment(ray,cos_z,scene,light_position.z,light_position.w,samples,jitter);
+    return float4(max(sun_color.rgb,0)*visibility*phase*light_position.y*.45,scene/180);
+}
+// Depth-aware separable blur: 9 taps, Gaussian sigma 3 px along
+// light_position.xy; a tap whose path length differs (tree vs sky) is
+// rejected, so beams never bleed across silhouettes.
+float4 PSSunShaftsBlur(Varying v):SV_Target {int2 at=int2(v.p.xy),limit=int2(screen.xy)-1,axis=int2(light_position.xy);
+    float4 center=image0.Load(int3(at,0));float d0=center.a*180,tolerance=max(.05*d0,.5);
+    float3 sum=center.rgb;float weight=1;
+    [unroll]for(int i=1;i<=4;++i){float g=exp(-float(i*i)/18.0);
+        [unroll]for(int s=-1;s<=1;s+=2){float4 t=image0.Load(int3(clamp(at+axis*(i*s),int2(0,0),limit),0));
+            float r=(t.a*180-d0)/tolerance,w=g*exp(-r*r);sum+=t.rgb*w;weight+=w;}}
+    return float4(sum/weight,center.a);
+}
+// R2 phase_combine_sun_shafts: additive into the low colour after combine,
+// before clouds and forward; not part of the bloom source.
+float4 PSSunShaftsComposite(Varying v):SV_Target {return float4(image0.Load(int3(int2(v.p.xy),0)).rgb,0);}

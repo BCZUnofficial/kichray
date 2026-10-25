@@ -46,6 +46,8 @@ void KichR4_DetailLoad(CDetailManager& manager){
         mesh.CalculateBounds();frame.meshes.push_back(std::move(mesh));
     }
     Msg("[R4 G3a] details loaded: meshes=%u; native DX11 instancing; legacy detail buffers/capture=0",static_cast<u32>(frame.meshes.size()));
+    for(size_t i=0;i<frame.meshes.size();++i){const Mesh& m=frame.meshes[i];
+        Msg("[R4 P0-S4] %s height=%.3f m sun_caster=%u",m.name.c_str(),m.bounds_known?m.maximum[1]-m.minimum[1]:-1.f,FlatGroundClutter(m)?0u:1u);}
 }
 void KichR4_DetailPrepare(CDetailManager& manager){
     using namespace kich_r4_detail;

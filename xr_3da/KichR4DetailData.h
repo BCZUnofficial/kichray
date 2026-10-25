@@ -25,6 +25,13 @@ struct Mesh {
                 if(!i || v.position[a]>maximum[a])maximum[a]=v.position[a];}
             if(!Finite(v.misc[2])){bounds_known=false;return;}height_factor=std::max(height_factor,std::fabs(v.misc[2]));}}
 };
+// P0-S4: fallen leaves, litter and pebbles lie within a few cm of the ground.
+// R2 renders them into its sun map too, but its coarse map and 2x2 PCF wash
+// their shadows out; the sharp contact cascade would show a dark halo under
+// every leaf. Flat meshes (local height < 10 cm) therefore never cast sun
+// shadows; grass and bushes keep theirs. They still receive shadows.
+static const float kFlatClutterHeight=.1f;
+inline bool FlatGroundClutter(const Mesh& m){return m.bounds_known && m.maximum[1]-m.minimum[1]<kFlatClutterHeight;}
 struct Group {uint32_t mesh,variant,first,count;};
 // EXE-side provenance only. A cache slot remains the same spatial cell while
 // fade/SSA/variant changes repack its accepted instances into different groups.

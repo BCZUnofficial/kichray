@@ -29,7 +29,7 @@ signatures = (
     "float2 MaterialLutSlice(", "float2 MaterialResponse(", "float SpecularIntensity(",
     "float FogTransmittance(", "float3 ForwardFog(",
     "float SunMask(", "float SunDirect(", "float4 DirectLight(", "float3 ForwardIndirect(", "void ShadowNormalPlane(",
-    "float4 SunLighting(", "float4 PSSun(", "float4 PSForwardSun(",
+    "float4 SunLighting(", "float SunFarFade(", "float4 PSSun(", "float4 PSForwardSun(",
 )
 helpers = "\n".join(function(signature) for signature in signatures)
 # Syntax-only adapters: execute the production branches and numerical expressions.

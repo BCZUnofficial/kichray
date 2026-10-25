@@ -419,6 +419,7 @@ struct KichR4DetailSession {
         static const float kDetailSunCasterPush=.06f;
         const bool sun_caster=shadow && strncmp(phase,"sun_",4)==0;
         for(size_t i=0;i<groups->size();++i){const kich_r4_detail::Group& g=(*groups)[i];
+            if(sun_caster && g.mesh<source->meshes.size() && kich_r4_detail::FlatGroundClutter(source->meshes[g.mesh]))continue;
             const size_t count=shadow?selected_instances.size():source->instances.size();
             if(g.mesh>=meshes.size() || g.variant>2 || g.first>count || g.count>count-g.first)return s.Record("G3a detail group range",KICH_R4_E_ARGUMENT);
             const Mesh& mesh=meshes[g.mesh];kich_r4_lighting::Constants c=base;
@@ -443,7 +444,9 @@ struct KichR4DetailSession {
             /* VSDetail owns world rows: wave, wind, variant. Other shaders keep
              * their ordinary matrix meaning; the 816-byte frame ABI is intact. */
             memcpy(c.world.m,source->wave[g.variant],16);memcpy(c.world.m+4,source->wind[g.variant],16);
-            c.world.m[8]=static_cast<float>(g.variant);c.world.m[9]=sun_caster?kDetailSunCasterPush:0.f;c.alpha[0]=200.f/255;c.alpha[1]=7;c.alpha[2]=c.alpha[3]=0;
+            c.world.m[8]=static_cast<float>(g.variant);c.world.m[9]=sun_caster?kDetailSunCasterPush:0.f;
+            c.material[0]=32768.f; // SHADER_DETAIL_NORMAL: R2 keeps the pseudo normal on both faces
+            c.alpha[0]=200.f/255;c.alpha[1]=7;c.alpha[2]=c.alpha[3]=0;
             if(l.Expect(s,"G3a detail constants",l.bridge.api.update_buffer(s.device,cb,&c,sizeof(c)))<0)return s.failure;
             KichR4DetailDrawDesc d={};d.struct_size=sizeof(d);d.surface.struct_size=sizeof(d.surface);
             KichR4StreamDrawDesc& state=d.surface.state;state.struct_size=sizeof(state);

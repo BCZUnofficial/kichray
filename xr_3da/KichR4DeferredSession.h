@@ -24,9 +24,9 @@
  * destroying that device releases partial construction and all cached maps. */
 struct KichR4DeferredSession {
     enum Pipeline {StaticGeometry,ModelGeometry,StaticShadow,ModelShadow,Sun,Local,ForwardSun,ForwardLocal,Plain,Combine,Sky,Clouds,Water,Distortion,StaticForward,StaticWater,Copy,Postprocess,StaticPlain,DistortionMask,DistortionComposite,CelestialPipeline,WallmarkPipeline,StaticWallmarkPipeline,
-        BloomBuild,BloomFilter,BloomFilterFast,BloomComposite,Luminance1,Luminance2,Luminance3,PipelineCount};
+        BloomBuild,BloomFilter,BloomFilterFast,BloomComposite,Luminance1,Luminance2,Luminance3,SunShafts,SunShaftsComposite,HudBloomSource,SunShaftsBlur,PipelineCount};
     KichR4DeferredAPI api;
-    enum {ShaderCount=28};
+    enum {ShaderCount=32};
     KichR4Handle pipelines[PipelineCount],shaders[ShaderCount],cb,screen_vb,screen_ib,white;
     // P0-C2: R2 generic1 (high = colour/8, RGBA8) and the 256^2 bloom1/bloom2.
     KichR4Handle high_color=0,bloom1=0,bloom2=0;
@@ -45,6 +45,8 @@ struct KichR4DeferredSession {
     kich_r4_shadow_record::Frame shadow_record;
     uint64_t sun_map_generation[3]={0,0,0},local_pool_generation=0;
     KichR4Handle sun_contact_map=0; // P0-S2 contact cascade, bound at t7 when shadow[2] is valid
+    int32_t sun_shadow_cull=0; // this frame's KichRay r2_sun_shadow_cull
+    KichR4Handle shafts=0,shafts_blur=0; // P0-S5 full-size RGBA16F volume light and its blur ping-pong
     // One bounded pool, shared by deferred, forward and HUD lighting. A point
     // source keeps all six faces; pressure reduces resolution, never drops it.
     std::vector<KichR4Handle> local_maps;
@@ -239,13 +241,13 @@ struct KichR4DeferredSession {
     int32_t Start(KichR4FrameSession& s,KichR4LevelSession& level){
         if(!ValidAPI(api))return s.Record("B4.4 deferred ABI",KICH_R4_E_ARGUMENT);
         const char* entries[]={"VSStatic","VSModel","VSModelShadow","VSScreen","PSGeometry","PSShadow","PSSun","PSLocal","PSForwardSun","PSForwardLocal","PSPlain","PSCombine","PSSky","PSClouds","PSWater","PSDistortion","PSPostprocess","PSParticleDistortionMask","PSDistortionComposite","PSCelestial","PSWallmark",
-            "PSBloomBuild","PSBloomFilter","PSBloomFilterFast","PSBloomComposite","PSLuminance1","PSLuminance2","PSLuminance3"};
+            "PSBloomBuild","PSBloomFilter","PSBloomFilterFast","PSBloomComposite","PSLuminance1","PSLuminance2","PSLuminance3","PSSunShafts","PSSunShaftsComposite","PSHudBloomSource","PSSunShaftsBlur"};
         static_assert(sizeof(entries)/sizeof(entries[0])==ShaderCount,"deferred shader entries");
         const char* source=KichR4DeferredShaderSource();
         for(unsigned i=0;i<ShaderCount;++i){level.Continue();KichR4ShaderDesc d={};d.struct_size=sizeof(d);d.kind=i<4?KICH_R4_VERTEX_SHADER:KICH_R4_PIXEL_SHADER;
             memcpy(d.entry,entries[i],strlen(entries[i])+1);memcpy(d.name,"kich_b44_deferred",18);
             if(level.Expect(s,entries[i],level.bridge.resources.compile_shader(s.device,&d,source,static_cast<uint32_t>(strlen(source)),&shaders[i],level.bridge.shader_error,sizeof(level.bridge.shader_error)))<0)return s.failure;}
-        const unsigned vs[]={0,1,0,2,3,3,1,1,1,3,1,1,1,1,0,0,3,3,0,1,3,1,1,0,3,3,3,3,3,3,3},ps[]={4,4,5,5,6,7,8,9,10,11,12,13,14,15,8,14,10,16,10,17,18,19,20,20,21,22,23,24,25,26,27};
+        const unsigned vs[]={0,1,0,2,3,3,1,1,1,3,1,1,1,1,0,0,3,3,0,1,3,1,1,0,3,3,3,3,3,3,3,3,3,3,3},ps[]={4,4,5,5,6,7,8,9,10,11,12,13,14,15,8,14,10,16,10,17,18,19,20,20,21,22,23,24,25,26,27,28,29,30,31};
         static_assert(sizeof(vs)/sizeof(vs[0])==PipelineCount && sizeof(ps)/sizeof(ps[0])==PipelineCount,"deferred pipeline table");
         for(unsigned i=0;i<PipelineCount;++i){KichR4PipelineDesc d={};d.struct_size=sizeof(d);d.vertex_shader=shaders[vs[i]];d.pixel_shader=shaders[ps[i]];
             const bool model=vs[i]==1 || vs[i]==2,screen=vs[i]==3;
@@ -278,8 +280,9 @@ struct KichR4DeferredSession {
         return l.Expect(s,"B4.4 target allocation",l.bridge.resources.create_texture(s.device,&d,&h));}
     int32_t ScreenTargets(KichR4FrameSession& s,KichR4LevelSession& l,uint32_t w,uint32_t h){
         if(w==width && h==height)return 0;
-        if(uint64_t(w)*h*(native_mode?48u:28u)>(native_mode?384u:192u)*1024u*1024u)return s.Record("B4.4 screen target budget",KICH_R4_E_MEMORY);
-        KichR4Handle* old[]={&albedo,&normal,&depth,&receiver_depth,&light,&scene_color,&final_color,&distortion_map,&high_color,&bloom1,&bloom2,&lum64,&lum8,&lum_pool[0],&lum_pool[1]};
+        // Native: 48 bytes of G-buffer/colour targets plus 16 of P0-S5 shafts per pixel; same resolution limit.
+        if(uint64_t(w)*h*(native_mode?64u:28u)>(native_mode?512u:192u)*1024u*1024u)return s.Record("B4.4 screen target budget",KICH_R4_E_MEMORY);
+        KichR4Handle* old[]={&albedo,&normal,&depth,&receiver_depth,&light,&scene_color,&final_color,&distortion_map,&high_color,&bloom1,&bloom2,&lum64,&lum8,&lum_pool[0],&lum_pool[1],&shafts,&shafts_blur};
         lum_ready=false;
         for(unsigned i=0;i<sizeof(old)/sizeof(old[0]);++i)if(*old[i]){if(l.Expect(s,"B4.4 old screen target",l.bridge.resources.release_resource(s.device,*old[i]))<0)return s.failure;*old[i]=0;}
         if(Target(s,l,albedo,w,h,KICH_R4_RGBA8,false)<0 || Target(s,l,normal,w,h,KICH_R4_RGBA16F,false)<0 ||
@@ -290,7 +293,8 @@ struct KichR4DeferredSession {
         if(native_mode && (Target(s,l,high_color,w,h,KICH_R4_RGBA8,false)<0 || Target(s,l,bloom1,kich_r4_bloom::Size,kich_r4_bloom::Size,KICH_R4_RGBA8,false)<0 ||
             Target(s,l,bloom2,kich_r4_bloom::Size,kich_r4_bloom::Size,KICH_R4_RGBA8,false)<0 ||
             Target(s,l,lum64,64,64,KICH_R4_RGBA16F,false)<0 || Target(s,l,lum8,8,8,KICH_R4_RGBA16F,false)<0 ||
-            Target(s,l,lum_pool[0],1,1,KICH_R4_R32F,false)<0 || Target(s,l,lum_pool[1],1,1,KICH_R4_R32F,false)<0))return s.failure;
+            Target(s,l,lum_pool[0],1,1,KICH_R4_R32F,false)<0 || Target(s,l,lum_pool[1],1,1,KICH_R4_R32F,false)<0 ||
+            Target(s,l,shafts,w,h,KICH_R4_RGBA16F,false)<0 || Target(s,l,shafts_blur,w,h,KICH_R4_RGBA16F,false)<0))return s.failure; // P0-S5 shafts + blur
         width=w;height=h;return 0;
     }
     int32_t Pass(KichR4FrameSession& s,KichR4LevelSession& l,uint32_t w,uint32_t h,uint32_t count,KichR4Handle c0,KichR4Handle c1,KichR4Handle z,uint32_t clear,const float* color=NULL,KichR4Handle c2=0,KichR4Handle c3=0){
@@ -337,6 +341,7 @@ struct KichR4DeferredSession {
             const float cutoff=native_mode?m.alpha_ref:m.cutout?200.f/255:0;c.alpha[0]=cutoff;c.alpha[1]=native_mode?float(m.alpha_func):cutoff>0?7.f:8.f;
             kich_r4_capture::Style style;style.cull=l.cull;style.depth=style.write=1;
             if(described)kich_r4_material::Apply(material,style);
+            if(shadow && strncmp(snapshot_phase,"sun_",4)==0)style.cull=KichR4SunShadowCull(style.cull,sun_shadow_cull);
             KichR4DeferredDrawDesc d=Description(pipelines[shadow?StaticShadow:StaticGeometry],l.vertex_buffers[mesh.vb],l.index_buffers[mesh.ib],cb,mesh.count,mesh.first,style);
             d.textures[0]=shadow && (described?kich_r4_material::AlphaFunction(material,true):m.alpha_func)==8?0:l.Texture(s,m.texture);
             if(described){kich_r4_material::Bind(s,l,material,mesh.available_attributes,c,d,shadow,!kich_r4_material::Terrain(material),mesh.tree?(!shadow?112u:0u)|(material.tree_wave?128u:0u):0u);
@@ -529,7 +534,8 @@ struct KichR4DeferredSession {
             if(pass==Celestial)pipeline=CelestialPipeline;
             if(pass==Wallmarks)pipeline=WallmarkPipeline;
             if(pass==DistortionModels){pipeline=DistortionMask;style.depth=1;style.write=0;style.blend=1;style.src=5;style.dst=6;}
-            if(pass==ShadowModels){style.depth=style.write=1;style.blend=style.clamp=0;style.scissor=false;style.min_z=0;style.max_z=1;}
+            if(pass==ShadowModels){style.depth=style.write=1;style.blend=style.clamp=0;style.scissor=false;style.min_z=0;style.max_z=1;
+                if(strncmp(snapshot_phase,"sun_",4)==0)style.cull=KichR4SunShadowCull(style.cull,sun_shadow_cull);}
             if(pass==ForwardAdd){style.blend=1;style.src=style.dst=2;style.write=0;}
             KichR4DeferredDrawDesc d=Description(pipelines[pipeline],stream.vb,stream.ib,cb,c.count,c.first,style);
             if(pass==ForwardAdd && kich_r4_projector::Enabled(constants))kich_r4_projector::Sampler(d.state.surface);
@@ -612,7 +618,7 @@ struct KichR4DeferredSession {
         if(p==Postprocess){style.clamp=0; // global clamp would also override the noise sampler
             style.surface.samplers[0]={3,3,3,2,2,2,1,0,0,0};
             style.surface.samplers[1]={1,1,1,2,2,2,1,0,0,0};}
-        if(p==Sun)style.surface.samplers[6]={1,1,1,2,2,2,1,0,0,0}; // R2 sunmask: wrap, trilinear
+        if(p==Sun || p==SunShafts)style.surface.samplers[6]={1,1,1,2,2,2,1,0,0,0}; // R2 sunmask: wrap, trilinear
         // R2 phase_bloom/combine_2 r_Sampler_clf: clamp, linear, no mips.
         if(p==BloomBuild || p==BloomFilter || p==BloomFilterFast || p==BloomComposite || p==Luminance1 || p==Luminance2 || p==Luminance3)
             style.surface.samplers[0]=style.surface.samplers[1]={3,3,3,2,2,0,1,0,0,0};
@@ -627,6 +633,7 @@ struct KichR4DeferredSession {
         KichR4DeferredDrawDesc d=Description(pipelines[p],screen_vb,screen_ib,cb,3,0,style);d.textures[0]=t0;d.textures[1]=t1;
         if(p==Local && kich_r4_projector::Enabled(c))kich_r4_projector::Sampler(d.state.surface);
         if(maps)for(unsigned i=0;i<6;++i)d.textures[i+2]=maps[i];
+        if(p==SunShafts)d.textures[11]=receiver_depth;
         if(p==Sun || p==Local || p==Combine){d.textures[11]=receiver_depth;
             const KichR4Handle lut=l.MaterialLut(s);if(!lut)return s.failure;kich_r4_material_lut::Bind(d,lut);}
         const int32_t result=l.Expect(s,"B4.4 fullscreen draw",api.draw(s.device,&d));
@@ -817,13 +824,14 @@ struct KichR4DeferredSession {
             // light_color.w: sky, combine and clouds read the R2 s_tonemap scale at t7.
             base.light_color[3]=1;}
         KichR4Handle sun_inputs[6]={};
+        sun_shadow_cull=native_mode?input.lighting.sun_shadow_cull:0;native_models.sun_shadow_cull=sun_shadow_cull;
         if(sun){
             // P0-S2: optional contact cascade (shadow[2], t7) inside the unchanged 128/512 m pair.
             kich_r4_scene::Matrix contact={};
             const bool contact_cascade=native_mode && kich_r4_lighting::SunContactShadow(input.lighting,contact);
             const unsigned cascades=native_mode?(contact_cascade?3:2):1;
-            base.shadow[0]=kich_r4_lighting::SunShadow(input.position,input.lighting.sun_direction,native_mode?128.f:512.f);
-            base.shadow[1]=kich_r4_lighting::SunShadow(input.position,input.lighting.sun_direction,512.f);
+            base.shadow[0]=kich_r4_lighting::SunCascade(input.lighting,input.position,native_mode?128.f:512.f);
+            base.shadow[1]=kich_r4_lighting::SunCascade(input.lighting,input.position,512.f);
             if(contact_cascade)base.shadow[2]=contact;
             const float spans[3]={native_mode?128.f:512.f,512.f,contact_cascade?input.lighting.sun_contact[3]:0.f};
             KichR4Handle* targets[3]={&sun_map,&sun_far_map,&sun_contact_map};const unsigned slots[3]={0,1,5}; // t2, t3, t7
@@ -893,6 +901,17 @@ struct KichR4DeferredSession {
             if(Fullscreen(s,l,Local,c,normal,depth,maps,true)<0)return s.failure;
             SnapshotSubmittedLight(input.lighting.sources[i],i);++local_passes;}
         if(g_render_snapshot_active)RenderSnapshot_U64("LIGHT_REGISTRY","submitted_local_lights",input.lighting.count);
+        // P0-S5 DX11 shafts (r4_sun_shafts 1/2/3 = 8/12/16 samples per segment):
+        // full-size march, then a depth-aware X/Y blur; every pixel is written.
+        const bool shafts_on=native_mode && !debug && sun && input.lighting.sun_shafts[0]>.5f && input.lighting.sun_shafts[1]>=.0001f;
+        if(shafts_on){SnapshotPhase("sun_shafts");kich_r4_lighting::Constants c=base;c.alpha[1]=8;c.alpha[3]=0;
+            memcpy(c.light_position,input.lighting.sun_shafts,sizeof(c.light_position));
+            c.light_position[0]=input.lighting.sun_shafts[0]<1.5f?8.f:input.lighting.sun_shafts[0]<2.5f?12.f:16.f;
+            if(Pass(s,l,width,height,1,shafts,0,0,0)<0 || Fullscreen(s,l,SunShafts,c,depth,0,sun_inputs)<0)return s.failure;
+            for(unsigned vertical=0;vertical<2;++vertical){SnapshotPhase(vertical?"sun_shafts_blur_y":"sun_shafts_blur_x");
+                c.light_position[0]=vertical?0.f:1.f;c.light_position[1]=vertical?1.f:0.f;
+                if(Pass(s,l,width,height,1,vertical?shafts:shafts_blur,0,0,0)<0 || Fullscreen(s,l,SunShaftsBlur,c,vertical?shafts_blur:shafts,0,NULL)<0)return s.failure;}
+            if(g_render_snapshot_active)kich_r4_telemetry::Vector("ENVIRONMENT","sun_shafts","mode_intensity_near_far",input.lighting.sun_shafts,4);}
         Mark(s,3);
         // t4/t5: R2 env_s0/env_s1 (sky_r_textures_env), neutral until resident.
         KichR4Handle combine_inputs[6]={normal,depth,l.CubeTexture(s,input.lighting.env_textures[0]),l.CubeTexture(s,input.lighting.env_textures[1]),0,0};
@@ -912,6 +931,10 @@ struct KichR4DeferredSession {
             SnapshotPass("ENVIRONMENT_COMBINE",RENDER_SNAPSHOT_PASS_ENVIRONMENT_COMBINE,"environment_combine");}
         kich_r4_lighting::Constants combination=base;if(native_mode)combination.alpha[3]=20;
         if(Pass(s,l,width,height,native_mode?2:1,native_mode?scene_color:0,native_mode?high_color:0,0,0)<0 || Fullscreen(s,l,Combine,combination,albedo,light,combine_inputs)<0)return s.failure;
+        // R2 phase_combine_sun_shafts: additive into generic0 (low only, not the
+        // bloom source), after combine and before clouds/forward.
+        if(shafts_on){SnapshotPhase("sun_shafts_composite");kich_r4_lighting::Constants c=base;c.alpha[1]=8;c.alpha[3]=0;
+            if(Pass(s,l,width,height,1,scene_color,0,0,0)<0 || Fullscreen(s,l,SunShaftsComposite,c,shafts,0,NULL,true)<0)return s.failure;}
         // Match R2 phase_combine: sky/source, combine, clouds, forward. Clouds
         // must cover the source instead of having the disc blended over them.
         if(native_mode && !debug){SnapshotPhase("clouds_after_combine");
@@ -936,6 +959,10 @@ struct KichR4DeferredSession {
                 for(unsigned face=0;face<(input.lighting.lights[i].type==2?1u:6u);++face)maps[face]=shadowed[i]?LocalMap(i,face):0;
                 LocalInputs(l,input.lighting,i,c,maps);
                 if(native_models.Draw(s,l,cb,c,*captured,KichR4ModelSession::HUDAdd,snapshot_pass_mask,snapshot_phase,maps)<0)return s.failure;}
+            // P0-S4: R2 HUD lives in the G-buffer, so it occludes the sky in the
+            // bloom source (generic1). The depth now holds the HUD alone.
+            SnapshotPhase("hud_bloom_source");kich_r4_lighting::Constants hud=base;hud.alpha[1]=8;hud.alpha[3]=0;
+            if(Pass(s,l,width,height,1,high_color,0,0,0)<0 || Fullscreen(s,l,HudBloomSource,hud,final_color,depth,NULL)<0)return s.failure;
         }
         Mark(s,5);
         if(native_mode){

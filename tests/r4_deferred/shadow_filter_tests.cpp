@@ -6,6 +6,8 @@
 #include <stdexcept>
 #include <limits>
 #include <algorithm>
+#include <map>
+#include <cstring>
 using std::isfinite;
 float max(float a,float b){return std::max(a,b);}
 float min(float a,float b){return std::min(a,b);}
@@ -13,7 +15,8 @@ using std::abs;
 float saturate(float a){return std::max(0.f,std::min(1.f,a));}
 struct float2 {float x,y;float2(float a=0,float b=0):x(a),y(b){} };
 struct float3 {float x,y,z;float3(float a=0,float b=0,float c=0):x(a),y(b),z(c){} };
-struct float4 {float x,y,z,w;float4(float a=0,float b=0,float c=0,float d=0):x(a),y(b),z(c),w(d){} float4(float2 a,float c,float d):x(a.x),y(a.y),z(c),w(d){} };
+struct float4 {float x,y,z,w;float4(float a=0,float b=0,float c=0,float d=0):x(a),y(b),z(c),w(d){} float4(float2 a,float c,float d):x(a.x),y(a.y),z(c),w(d){}
+    float4(float3 a,float d):x(a.x),y(a.y),z(a.z),w(d){} };
 float2 operator+(float2 a,float2 b){return float2(a.x+b.x,a.y+b.y);}
 float2 operator+(float2 a,float b){return a+float2(b,b);}
 float2 operator-(float2 a,float2 b){return float2(a.x-b.x,a.y-b.y);}
@@ -39,21 +42,26 @@ float dot(float3 a,float3 b){return a.x*b.x+a.y*b.y+a.z*b.z;}
 float3 cross(float3 a,float3 b){return float3(a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x);}
 float3 normalize(float3 a){return a*(1.f/std::sqrt(dot(a,a)));}
 float3 xyz(float4 v){return float3(v.x,v.y,v.z);}
-float4 screen,camera;int shadow_surface=0;
+float lerp(float a,float b,float t){return a+(b-a)*t;}
+float4 screen,camera,sun_color,sun_direction;int shadow_surface=0;
+kich_r4_scene::Matrix shadow[6];
 kich_r4_scene::Matrix inverse_vp,receiver_inverse;
 float4 mul(float4 p,const kich_r4_scene::Matrix& m);
 unsigned checks=0,comparisons=0;
 void Require(bool v,const char* message){++checks;if(!v)throw std::runtime_error(message);}
+struct Texture2D;std::map<const Texture2D*,unsigned> texture_uses; // the runners pass maps to PCF by reference
 struct Texture2D {
     double a,b,c;bool edge;
     float SampleCmpLevelZero(int,float2 uv,float compare)const{
-        ++comparisons;
+        ++comparisons;++texture_uses[this];
         Require(std::fabs(uv.x*screen.w-.5-std::round(uv.x*screen.w-.5))<1e-4,"point comparison must hit an exact texel centre");
         Require(uv.x>=0 && uv.x<=1 && uv.y>=0 && uv.y<=1,"comparison must not read the white border");
         const double stored=edge?(uv.x<.5?.4:.6):a*uv.x+b*uv.y+c;
         return double(compare)<=stored?1.f:0.f;
     }
 };
+// P0-S5 cascade maps: contact (t7), 128 m (t2), 512 m (t3).
+Texture2D shadow0,shadow1,shadow5;
 // PRODUCTION_SHADOW_HELPERS
 float4 Transform(float3 p,float w,const kich_r4_scene::Matrix& m){
     return float4(p.x*m.m[0]+p.y*m.m[4]+p.z*m.m[8]+w*m.m[12],
@@ -213,9 +221,31 @@ void NormalPlaneFallback(){using namespace kich_r4_lighting;
     dx=float3(.01f,0,0);dy=float3(0,.01f,0);ShadowNormalPlane(float3(0,0,-1),towards,p,dx,dy);
     Require(dx.x==.01f && dy.y==.01f && p.z==10,"screen-derived plane wins over the shading normal");
 }
+// P0-S5 production cascade selection and coverage: the finest map containing
+// the receiver is read, edge blends are continuous, and beyond the 512 m
+// cascade the receiver fades to lit instead of the PCF out-of-map shadow.
+void CascadeSelection(){using namespace kich_r4_lighting;
+    const float origin[3]={0,0,0},direction[3]={-.3f,-.9f,-.3f};
+    shadow[0]=SunShadow(origin,direction,128,2048);shadow[1]=SunShadow(origin,direction,512,2048);shadow[2]=SunShadow(origin,direction,40,2048);
+    screen.w=2048;camera=float4(0,0,0,0);sun_color=float4(1,1,1,1);
+    const Vec3 d=Normalize(Vec3{direction[0],direction[1],direction[2]});sun_direction=float4(d.x,d.y,d.z,0);
+    shadow5={0,0,0,false};shadow0={0,0,1,false};shadow1={0,0,0,false}; // contact dark, near lit, far dark
+    const float3 dx(.01f,0,0),dy(0,0,.01f);
+    auto at=[&](float x){texture_uses.clear();return SunVisibility(float3(x,-2,x*.37f),dx,dy);};
+    Require(at(1)<.0001f && texture_uses[&shadow5]>0 && !texture_uses[&shadow0] && !texture_uses[&shadow1],"contact cascade owns the first metres");
+    Require(at(40)>.9999f && texture_uses[&shadow0]>0 && !texture_uses[&shadow5] && !texture_uses[&shadow1],"128 m cascade beyond the contact sphere");
+    Require(at(120)<.0001f && texture_uses[&shadow1]>0 && !texture_uses[&shadow0],"512 m cascade beyond 128 m");
+    Require(at(2000)>.9999f && texture_uses.empty(),"outside every map is lit, not the PCF border shadow");
+    float previous=at(0),largest=0;
+    for(float x=.05f;x<=400;x+=.05f){const float v=at(x);Require(v>=0 && v<=1,"visibility range");
+        largest=std::max(largest,std::fabs(v-previous));previous=v;}
+    Require(largest<.05f,"contact, 128/512 m and far-coverage transitions are continuous");
+    shadow[2].m[15]=0;Require(at(1)>.9999f && texture_uses[&shadow0]>0 && !texture_uses[&shadow5],"invalid contact matrix falls back to the E1.9 pair");
+    std::memset(shadow,0,sizeof(shadow));
+}
 #include "receiver_raster_tests.h"
 int main(){try{
-    NormalPlaneFallback();PlaneCases();Continuity();CubeGuard();GrazingReceiver();ReceiverReconstruction();ReceiverRasterization();
+    CascadeSelection();NormalPlaneFallback();PlaneCases();Continuity();CubeGuard();GrazingReceiver();ReceiverReconstruction();ReceiverRasterization();
     float2 gradient;Require(!ShadowGradient(float3(0,0,1),float3(0,0,2),gradient),"singular UV Jacobian requests bounded fallback");
     Require(!ShadowGradient(float3(1,0,std::numeric_limits<float>::infinity()),float3(0,1,1),gradient),"nonfinite slope requests bounded fallback");
     Require(ShadowPlaneStable(4,.01f,0) && !ShadowPlaneStable(4,10000,10000),"noncoplanar jump does not become a receiver plane");

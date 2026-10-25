@@ -82,8 +82,8 @@ inline int32_t Preflight(KichR4FrameSession& frame,KichR4LevelSession& level,
         for(unsigned i=0;i<2;++i)if(!input.lighting.env_textures[i].empty())demand.NeedTexture(input.lighting.env_textures[i],LIGHTING);
         if(kich_r4_visibility::SunEnabled(input.lighting)){
             if(input.lighting.sunmask_valid)demand.NeedTexture("sunmask",LIGHTING); // R2 cloud sun mask
-            add_shadow(kich_r4_lighting::SunShadow(input.position,input.lighting.sun_direction,128.f),UINT32_MAX,true);
-            add_shadow(kich_r4_lighting::SunShadow(input.position,input.lighting.sun_direction,512.f),UINT32_MAX,true);
+            add_shadow(kich_r4_lighting::SunCascade(input.lighting,input.position,128.f),UINT32_MAX,true);
+            add_shadow(kich_r4_lighting::SunCascade(input.lighting,input.position,512.f),UINT32_MAX,true);
             kich_r4_scene::Matrix contact;if(kich_r4_lighting::SunContactShadow(input.lighting,contact))add_shadow(contact,UINT32_MAX,true);}
         std::vector<uint8_t> selected;kich_r4_visibility::SelectShadowLights(input.lighting,true,selected);
         uint32_t faces=0;for(size_t i=0;i<selected.size() && i<input.lighting.lights.size();++i)if(selected[i])faces+=input.lighting.lights[i].type==2?1:6;

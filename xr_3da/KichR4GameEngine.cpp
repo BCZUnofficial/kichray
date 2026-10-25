@@ -33,6 +33,9 @@ static void KichR4_GameTreeFrame(KichR4GameFrame& input)
 
 extern ENGINE_API BOOL r2_sun_static;
 extern float ps_r2_gloss_factor;
+extern int ps_r2_sun_shadow_cull;
+extern ENGINE_API int ps_r4_sun_shafts;
+extern ENGINE_API float ps_r4_sun_shafts_intensity;
 
 /* R2 accum_direct clouds xform, without its view->world prefix: the R4 sun
  * shader passes world positions. R2 advances w_shift by 0.003*dt in each of
@@ -66,11 +69,12 @@ void KichR4_CopyEngineEnvironment(KichR4LightingFrame& frame)
     if(!g_pGamePersistent)return;
     CEnvDescriptorMixer& env=g_pGamePersistent->Environment().CurrentEnv;
     KichR4CopyEnvironment(frame,env);
-    // Shading and every shadow cascade share one held direction, so the lit
-    // terminator and the shadow edge cannot disagree. cos(0.25 deg).
-    static float held_sun[3]={0,0,0};
-    kich_r4_lighting::HoldSunDirection(held_sun,frame.sun_direction,.99999048f);
-    if(fabsf(held_sun[0])+fabsf(held_sun[1])+fabsf(held_sun[2])>0)memcpy(frame.sun_direction,held_sun,sizeof(held_sun));
+    // P0-S4: the sun moves continuously; only the shadow texel basis is held
+    // (re-based past 3 deg) and the cascades shear onto the true direction.
+    static float held_basis[3]={0,0,0};
+    kich_r4_lighting::HoldSunDirection(held_basis,frame.sun_direction,.99862953f);
+    memcpy(frame.sun_basis,held_basis,sizeof(held_basis));
+    frame.sun_basis_valid=fabsf(held_basis[0])+fabsf(held_basis[1])+fabsf(held_basis[2])>0?1u:0u;
     KichR4CopyR2Hemisphere(frame,env,ps_r2_sun_lumscale_amb,ps_r2_sun_lumscale_hemi);
     /* phase_combine binds sky_r_textures_env[0/1], not the sky textures. */
     for(unsigned i=0;i<2;++i){frame.env_textures[i].clear();
@@ -99,6 +103,11 @@ void KichR4_CopyEngineEnvironment(KichR4LightingFrame& frame)
         frame.sun_contact[0]=center.x;frame.sun_contact[1]=center.y;frame.sun_contact[2]=center.z;
         frame.sun_contact[3]=2*kich_sun::extent(radius,2048);
         frame.sun_contact_valid=_valid(center) && _valid(frame.sun_contact[3])?1u:0u;}
+    frame.sun_shadow_cull=ps_r2_sun_shadow_cull;
+    // P0-S5 R4's own r4_sun_shafts/_intensity; segments as R2 accum_direct_volumetric:
+    // 0..r2_sun_near and near..min(180, far_plane).
+    frame.sun_shafts[0]=float(ps_r4_sun_shafts);frame.sun_shafts[1]=ps_r4_sun_shafts_intensity;
+    frame.sun_shafts[2]=ps_r2_sun_near;frame.sun_shafts[3]=_min(180.f,env.far_plane);
 }
 
 static void KichR4_GameObservationFrame(KichR4GameFrame& input)

@@ -55,8 +55,14 @@ inline Matrix StableView(Vec3 eye,Vec3 forward){forward=Normalize(forward);
 }
 inline Matrix Projection(float fov,float near_z,float far_z){Matrix p={};const float y=1.f/tanf(fov*.5f);
     p.m[0]=p.m[5]=y;p.m[10]=far_z/(far_z-near_z);p.m[11]=1;p.m[14]=-near_z*p.m[10];return p;}
-inline Matrix SunShadow(const float* camera,const float* direction,float span=512.f,unsigned resolution=2048){
-    const Vec3 dir=Normalize(Vec3{direction[0],direction[1],direction[2]});
+// basis (optional, P0-S4): held light orientation. The texel grid, snapping and
+// depth axis stay fixed to it while an oblique shear about the snapped centre
+// depth projects along the true, continuously moving direction. Receivers near
+// the centre depth keep their texels; shadows still move smoothly with the sun.
+inline Matrix SunShadow(const float* camera,const float* direction,float span=512.f,unsigned resolution=2048,const float* basis=NULL){
+    const Vec3 sun=Normalize(Vec3{direction[0],direction[1],direction[2]});
+    const Vec3 held=basis?Normalize(Vec3{basis[0],basis[1],basis[2]}):sun;
+    const Vec3 dir=Dot(held,sun)>.5f?held:sun;
     const Vec3 center={camera[0],camera[1],camera[2]};
     Matrix view=StableView(Vec3{0,0,0},dir);const Vec3 light_center=Direction(center,view);
     if(!Finite(span) || span<=0)span=512.f;
@@ -71,6 +77,11 @@ inline Matrix SunShadow(const float* camera,const float* direction,float span=51
     // Keep identical depth quantization so choosing a cascade never changes Z.
     view.m[14]=512.f-floorf(light_center.z/depth_step+.5f)*depth_step;
     Matrix p=Identity();p.m[0]=p.m[5]=2.f/span;p.m[10]=1.f/1024.f;
+    // Oblique shear: x' = x - k.x*(z-512), y' = y - k.y*(z-512), k = true sun
+    // direction in the held basis over its depth component. Zero when equal.
+    const Vec3 local=Direction(sun,view);
+    if(basis && local.z>.5f){Matrix shear=Identity();const float kx=local.x/local.z,ky=local.y/local.z;
+        shear.m[8]=-kx;shear.m[9]=-ky;shear.m[12]=512.f*kx;shear.m[13]=512.f*ky;view=Multiply(view,shear);}
     return Multiply(view,p);
 }
 // P0-S3 shadow-stable sun. Every cascade basis rotates about the world origin,
@@ -86,11 +97,15 @@ inline bool HoldSunDirection(float* held,const float* current,float cos_step){
     if(Finite(kept.x) && Finite(kept.y) && Finite(kept.z) && fabsf(Dot(kept,kept)-1)<1e-3f && Dot(kept,now)>=cos_step)return false;
     held[0]=now.x;held[1]=now.y;held[2]=now.z;return true;
 }
+// Every sun cascade of a frame: its held basis when valid, else the sun itself.
+inline Matrix SunCascade(const KichR4LightingFrame& lighting,const float* camera,float span){
+    return SunShadow(camera,lighting.sun_direction,span,2048,lighting.sun_basis_valid?lighting.sun_basis:NULL);
+}
 // P0-S2 contact cascade: same texel-snapped, fixed-depth construction as the
 // 128/512 m cascades, centred on the frame's stable r2_sun_near sphere.
 inline bool SunContactShadow(const KichR4LightingFrame& lighting,Matrix& out){
     if(!lighting.sun_contact_valid || !Finite(lighting.sun_contact[3]) || lighting.sun_contact[3]<=0)return false;
-    out=SunShadow(lighting.sun_contact,lighting.sun_direction,lighting.sun_contact[3]);return true;
+    out=SunCascade(lighting,lighting.sun_contact,lighting.sun_contact[3]);return true;
 }
 inline float LocalShadowNear(float range){return range<.4f?range*.25f:.1f;}
 inline Matrix LocalShadow(const KichR4LocalLight& l,unsigned face,unsigned resolution=512){

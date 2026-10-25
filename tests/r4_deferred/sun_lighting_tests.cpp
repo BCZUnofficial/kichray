@@ -39,6 +39,7 @@ float3 operator*(float3 a,float b){return float3(a.x*b,a.y*b,a.z*b);}
 float3 operator*(float3 a,float3 b){return float3(a.x*b.x,a.y*b.y,a.z*b.z);}
 float4 operator+(float4 a,float4 b){return float4(a.x+b.x,a.y+b.y,a.z+b.z,a.w+b.w);}
 float4 operator*(float4 a,float b){return float4(a.x*b,a.y*b,a.z*b,a.w*b);}
+float lerp(float a,float b,float t){return a+(b-a)*t;}
 float2 lerp(float2 a,float2 b,float t){return float2(a.x+(b.x-a.x)*t,a.y+(b.y-a.y)*t);}
 float3 lerp(float3 a,float3 b,float t){return a+(b-a)*t;}
 float dot(float3 a,float3 b){return a.x*b.x+a.y*b.y+a.z*b.z;}
@@ -76,6 +77,8 @@ float3 surface_normal(0,1,0);
 float3 WorldPosition(float2,float){return float3(0,0,0);}
 float3 LoadReceiverPosition(float2,float){return -xyz(camera);}
 bool screen_plane=true;float3 last_dx,last_dy;
+// P0-S4: camera forward stub; its scale sets the receiver's view depth.
+float3 forward(0,0,1);float3 CameraForward(){return forward;}
 void ShadowDerivatives(float3,float3& dx,float3& dy){dx=screen_plane?float3(.01f,0,0):float3();dy=screen_plane?float3(0,0,.01f):float3();}
 // Same gate as production SunVisibility: only sun_color.w==1 uses shadow maps.
 float SunVisibility(float3,float3 dx,float3 dy){last_dx=dx;last_dy=dy;return sun_color.w<=0 || sun_color.w>1.5f?0:visibility;}
@@ -146,6 +149,17 @@ int main(){try{
     screen.z=0;PSSun(receiver);Near(dot(last_dx,last_dx)>0 && dot(last_dy,last_dy)>0?1.f:0.f,1,"lighting fallback uses the normal plane");
     PSForwardSun(receiver,true);Near(dot(last_dx,last_dx)>0?1.f:0.f,1,"forward fallback uses the normal plane");
     screen_plane=true;PSSun(receiver);Near(last_dx.x,.01f,"a valid screen plane is passed through unchanged");
+    // P0-S4 R2 SUN_FARPLANE: the receiver is 3 m below the camera, so forward
+    // (0,-60,0) puts it at 180 m view depth and (0,-30,0) at 90 m.
+    surface_normal=float3(0,1,0);visibility=1;sun_color.w=1;image0.value=float4(0,0,.37f,PackMaterial(1,2));
+    const float4 near_light=PSSun(receiver);
+    forward=float3(0,-60,0);const float4 far_light=PSSun(receiver);
+    Near(far_light.x,near_light.x*.333f,"dynamic sun fades to 1/3 at 180 m");Near(far_light.w,near_light.w*.333f,"specular fades with it");
+    forward=float3(0,-30,0);Near(PSSun(receiver).x,near_light.x*(1-.667f*.25f),"fade is quadratic in view depth");
+    forward=float3(0,-120,0);Near(PSSun(receiver).x,near_light.x*.333f,"fade saturates beyond 180 m");
+    screen.z=8;Near(PSSun(receiver).x,1,"shadow diagnostic stays raw visibility");screen.z=0;
+    sun_color.w=2;shadow2.value.a=.5f;forward=float3(0,0,1);const float4 static_near=PSSun(receiver);forward=float3(0,-60,0);
+    Near(PSSun(receiver).x,static_near.x,"R2 static sun has no far fade");forward=float3(0,0,1);sun_color.w=1;
     std::printf("P0-S1 production sun lighting: %u checks passed (baked/ROS mask independence, current shadows, cloud sunmask, static/disabled sun, forward hemi, sky)\n",checks);
     return 0;
 }catch(const std::exception& e){std::fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}
