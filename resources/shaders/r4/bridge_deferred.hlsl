@@ -1,7 +1,7 @@
 // G3c native deferred materials. DDS channels remain UNORM; no implicit sRGB decode.
 cbuffer Frame : register(b0) {
     row_major float4x4 world,mvp,normal_matrix,inverse_vp,shadow[6];
-    float4 camera,screen,sun_direction,sun_color,ambient,hemi,fog;
+    float4 camera,screen,sun_direction,sun_color,ambient,hemi,fog; // fog.w: P0-S10 shadow options (ShadowOptions)
     float4 light_position,light_direction,light_color,alpha;
     float4 material,color_scale,color_bias,sun_scale_bias,tree_wave,tree_wind;
     float4 fog_params,fog_plane; // radial offset/scale, per-draw mode, valid plane
@@ -363,10 +363,10 @@ float PCF(Texture2D map,float4 projected,float4 dx,float4 dy){if(projected.w<=0)
 }
 // P0-S6: one PCFWide texel, the plane-corrected point comparison at its
 // centre against the depth Gather returned (LESS_EQUAL, as shadow_surface).
-void ShadowWideTexel(float stored,float2 centre,float2 texel,float size,float depth,float2 gradient,float2 slack,inout float result,inout float weight){
+void ShadowWideTexel(float stored,float2 centre,float2 texel,float size,float depth,float2 gradient,float2 slack,float floor_depth,inout float result,inout float weight){
     float2 offset=centre-texel;float w=ShadowTent(offset.x*.5)*ShadowTent(offset.y*.5);
     if(w<=0 || any(centre<0) || any(centre>size))return;
-    result+=w*(saturate(depth+dot(gradient,offset/size)-abs(dot(slack,offset)))<=stored?1:0);weight+=w;
+    result+=w*(max(saturate(depth+dot(gradient,offset/size)-abs(dot(slack,offset))),floor_depth)<=stored?1:0);weight+=w;
 }
 // P0-S8 crease allowance. The receiver plane is exact for one facet, but the
 // filter footprint crosses mesh edges: beyond a concave edge the next facet
@@ -442,15 +442,66 @@ float PCFWide(uint map,float4 projected,float4 dx,float4 dy,float2 crease){if(pr
     }
     float2 texel=uv*size,first=floor(texel-2.5)+.5;float result=0,weight=0;
     gradient*=crease.y;float2 slack=crease.x*gradient/size;
+    // P0-S9 occluder floor. When even the farthest of the four texels around
+    // the receiver holds something nearer the light than the receiver point,
+    // the receiver lies under it: a ceiling, a roof. (Its own surface never
+    // does: the 2x2 always has a texel down its slope, deeper than the point,
+    // which sits 1 cm toward the light.) The plane extended along the
+    // footprint must not rise past that occluder. A wall under a basement
+    // ceiling ran through it into the sky above and read lit texels, showing
+    // the tree canopy's shadow pattern in an underground room (worse on the
+    // coarser 128 m map, which takes those pixels when the camera turns the
+    // contact cascade away). Lit receivers, creases and shadow edges are
+    // unchanged: the floor only binds where the plane would pass the occluder.
+    float4 around=ShadowGather(map,(floor(texel-.5)+1)/size);
+    float farthest=max(max(around.x,around.y),max(around.z,around.w));
+    float floor_depth=farthest<saturate(q.z)-1e-5?farthest+1e-6:0;
     [unroll]for(int y=0;y<6;y+=2)[unroll]for(int x=0;x<6;x+=2){
         float2 corner=first+float2(x,y);float4 stored=ShadowGather(map,(corner+.5)/size);
-        ShadowWideTexel(stored.x,corner+float2(0,1),texel,size,q.z,gradient,slack,result,weight);
-        ShadowWideTexel(stored.y,corner+float2(1,1),texel,size,q.z,gradient,slack,result,weight);
-        ShadowWideTexel(stored.z,corner+float2(1,0),texel,size,q.z,gradient,slack,result,weight);
-        ShadowWideTexel(stored.w,corner,texel,size,q.z,gradient,slack,result,weight);
+        ShadowWideTexel(stored.x,corner+float2(0,1),texel,size,q.z,gradient,slack,floor_depth,result,weight);
+        ShadowWideTexel(stored.y,corner+float2(1,1),texel,size,q.z,gradient,slack,floor_depth,result,weight);
+        ShadowWideTexel(stored.z,corner+float2(1,0),texel,size,q.z,gradient,slack,floor_depth,result,weight);
+        ShadowWideTexel(stored.w,corner,texel,size,q.z,gradient,slack,floor_depth,result,weight);
     }
     return weight>0?result/weight:0;
 }
+// P0-S10 shadow options, fog.w = flags + 4 * normal offset in quarter texels:
+// bit 0 wide filter (r4_shadow_filter 1), bit 1 sun reach mask off
+// (r4_sun_mask 0); r4_shadow_normal_bias. Zero (test/direct producers):
+// compact filter, mask on, no normal offset.
+bool ShadowWide(){return ((uint)fog.w&1)!=0;}
+bool SunReachMasked(){return ((uint)fog.w&2)==0;}
+float ShadowNormalBias(){return float((uint)fog.w>>2)*.25;}
+// P0-S10 compact filter (default): four bilinear comparisons at +-0.6 texel,
+// each the 2x2 Gather around the tap weighted by its fractions. The support is
+// +-1.6 texels (PCFWide: +-3) and nothing is extrapolated along a receiver
+// plane, so concave creases (ruts, kerbs) do not shadow their own surface and
+// no pixel falls back to one unfiltered comparison (texel squares). The
+// receiver is lifted off its surface by ShadowLean instead.
+float ShadowBilinearTap(uint map,float2 tap,float size,float depth){
+    tap=clamp(tap,1,size-1); // the 2x2 stays inside the map
+    float2 corner=floor(tap-.5),f=tap-.5-corner;float4 stored=ShadowGather(map,(corner+1)/size);
+    // Gather x,y,z,w: (0,1),(1,1),(1,0),(0,0) of the quad (LESS_EQUAL lit).
+    float lower=lerp(depth<=stored.w?1:0,depth<=stored.z?1:0,f.x),upper=lerp(depth<=stored.x?1:0,depth<=stored.y?1:0,f.x);
+    return lerp(lower,upper,f.y);}
+float PCFCompact(uint map,float4 projected){if(projected.w<=0)return 0;
+    float3 q=projected.xyz/projected.w;float2 uv=float2(q.x*.5+.5,.5-q.y*.5);
+    if(any(uv<0) || any(uv>1))return 0;
+    float size=ShadowMapSize(map),depth=saturate(q.z);float2 texel=uv*size;
+    return .25*(ShadowBilinearTap(map,texel+float2(-.6,-.6),size,depth)+ShadowBilinearTap(map,texel+float2(.6,-.6),size,depth)+
+        ShadowBilinearTap(map,texel+float2(-.6,.6),size,depth)+ShadowBilinearTap(map,texel+float2(.6,.6),size,depth));}
+// Geometric facet normal of the receiver plane, the shading normal without one.
+float3 ShadowFacet(float3 dx,float3 dy,float3 n){float3 f=cross(dx,dy);float s=dot(f,f);return s>1e-20?f*rsqrt(s):n;}
+// P0-S10 receiver lift for the compact filter, per texel of the map read: the
+// facet normal turned toward the light times bias*sin(angle to the light).
+// A facet at angle T changes depth by texel*tan T per texel; the lifted point
+// lies bias*texel*tan T in front of its own surface along the light, which
+// covers taps `bias` texels away at any angle. Unlike a depth bias along the
+// light it never exceeds `bias` texels off the surface, so a wall under a
+// roof does not reach through it at grazing incidence.
+float3 ShadowLean(float3 facet,float3 towards){
+    float c=dot(facet,towards);if(c<0){facet=-facet;c=-c;}
+    return facet*(ShadowNormalBias()*sqrt(saturate(1-c*c)));}
 float3 ShadowNumericalOffset(float3 p,float3 dx,float3 dy,float3 towards){
     // Receiver-plane extrapolation magnifies floating point error near grazing
     // incidence. Use the geometric plane, never the mapped shading normal.
@@ -481,8 +532,16 @@ float ShadowCascadeWeight(float edge){return 1-saturate((edge-.9)*10);}
 // same weights summed, so each map is filtered at most once per pixel and
 // appears once in the program (nested calls inlined PCFWide ten times and
 // made the startup compile of PSSun take over a minute).
-float SunVisibility(float3 p,float3 dx,float3 dy){
+// One sun cascade through the selected filter. P0-S10: the compact filter
+// lifts the receiver by ShadowLean in this map's own texels; the wide one
+// keeps the P0-S8/S9 plane, crease allowance and rise limit.
+float SunCascade(uint map,uint cascade,float3 p,float3 lean,float3 dx,float3 dy,float rise){float texel=SunTexel(cascade,map),lit=0;
+    [branch] if(!ShadowWide())lit=PCFCompact(map,mul(float4(p+lean*texel,1),shadow[cascade]));
+    else lit=PCFWide(map,mul(float4(p,1),shadow[cascade]),mul(float4(dx,0),shadow[cascade]),mul(float4(dy,0),shadow[cascade]),ShadowCrease(dx,dy,-sun_direction.xyz,ShadowRiseLimit(rise,texel)));
+    return lit;}
+float SunVisibility(float3 p,float3 n,float3 dx,float3 dy){
     if(sun_color.w<=0 || sun_color.w>1.5)return 0;
+    float3 lean=ShadowLean(ShadowFacet(dx,dy,n),-sun_direction.xyz);
     // Precision allowance only: plane correction handles the filter footprint.
     p=ShadowNumericalOffset(p,dx,dy,-sun_direction.xyz)-sun_direction.xyz*.01;
     float4 contact_position=mul(float4(p,1),shadow[2]),near_position=mul(float4(p,1),shadow[0]),far_position=mul(float4(p,1),shadow[1]);
@@ -501,9 +560,9 @@ float SunVisibility(float3 p,float3 dx,float3 dy){
     {float3 q=far_position.xyz/far_position.w;float edge=max(max(abs(q.x),abs(q.y)),abs(q.z*2-1));
         if(edge<1)far_weight=rest*ShadowCascadeWeight(edge);}
     float result=rest-far_weight;
-    [branch] if(contact_weight>0)result+=contact_weight*PCFWide(5,contact_position,mul(float4(dx,0),shadow[2]),mul(float4(dy,0),shadow[2]),ShadowCrease(dx,dy,-sun_direction.xyz,ShadowRiseLimit(.6,SunTexel(2,5))));
-    [branch] if(near_weight>0)result+=near_weight*PCFWide(0,near_position,mul(float4(dx,0),shadow[0]),mul(float4(dy,0),shadow[0]),ShadowCrease(dx,dy,-sun_direction.xyz,ShadowRiseLimit(.6,SunTexel(0,0))));
-    [branch] if(far_weight>0)result+=far_weight*PCFWide(1,far_position,mul(float4(dx,0),shadow[1]),mul(float4(dy,0),shadow[1]),ShadowCrease(dx,dy,-sun_direction.xyz,ShadowRiseLimit(2,SunTexel(1,1))));
+    [branch] if(contact_weight>0)result+=contact_weight*SunCascade(5,2,p,lean,dx,dy,.6);
+    [branch] if(near_weight>0)result+=near_weight*SunCascade(0,0,p,lean,dx,dy,.6);
+    [branch] if(far_weight>0)result+=far_weight*SunCascade(1,1,p,lean,dx,dy,2);
     return result;
 }
 // P0-S1 R2 shadow.h sunmask(): sunmask.dds alpha through m_sunmask, 1/500 m
@@ -519,8 +578,8 @@ float SunMask(float3 p,float3 dx,float3 dy){
 }
 // sun_color.w 2: R2 USE_R2_STATIC_SUN, baked occlusion*2 instead of sun maps
 // (no sunmask there, as in R2 combine).
-float SunDirect(float3 p,float3 dx,float3 dy,float static_sun){float result=static_sun*2;
-    [branch] if(sun_color.w<=1.5)result=SunVisibility(p,dx,dy)*SunMask(p,dx,dy);
+float SunDirect(float3 p,float3 n,float3 dx,float3 dy,float static_sun){float result=static_sun*2;
+    [branch] if(sun_color.w<=1.5)result=SunVisibility(p,n,dx,dy)*SunMask(p,dx,dy);
     return result;
 }
 // P0-L3: SoC r2_rendertarget.cpp s_material, generated on the CPU by the same
@@ -568,7 +627,7 @@ void ShadowNormalPlane(float3 n,float3 towards,inout float3 p,inout float3 dx,in
         dx=t*.01;dy=cross(n,t)*.01;p+=towards*.01;}
 }
 float SunShadowing(float3 p,float3 n,float3 dx,float3 dy,float static_sun){
-    ShadowNormalPlane(n,-sun_direction.xyz,p,dx,dy);return SunDirect(p,dx,dy,static_sun);}
+    ShadowNormalPlane(n,-sun_direction.xyz,p,dx,dy);return SunDirect(p,n,dx,dy,static_sun);}
 float4 SunLighting(float3 p,float3 n,float gloss,float m,float3 dx,float3 dy,float static_sun){
     // R2/1.6 use baked/ROS sun occlusion only in static-sun mode, where the
     // dynamic sun pass is disabled. Here the current shadow maps own visibility;
@@ -591,18 +650,20 @@ void Hemisphere(out float3 diffuse,out float3 specular,float m,float h,float s,f
 }
 uint CubeFace(float3 d){float3 a=abs(d);if(a.x>=a.y && a.x>=a.z)return d.x>=0?0:1;
     if(a.y>=a.z)return d.y>=0?2:3;return d.z>=0?4:5;}
-float LocalVisibility(float3 p,float3 dx,float3 dy){if(alpha.w<.5)return 1;uint face=light_color.w>1.5?0:CubeFace(p-light_position.xyz);
+float LocalVisibility(float3 p,float3 n,float3 dx,float3 dy){if(alpha.w<.5)return 1;uint face=light_color.w>1.5?0:CubeFace(p-light_position.xyz);
     // A fixed projected-depth subtraction scales to meters near the far plane.
     // Move the receiver by only 3 mm instead, preserving nearby blockers.
     // A 90-degree cube face (or a narrower spot) spans 2*distance over its size.
-    float3 towards=light_position.xyz-p;float2 crease=ShadowCrease(dx,dy,towards/max(length(towards),.003),ShadowRiseLimit(.6,2*length(towards)/ShadowMapSize(face)));
-    p=ShadowNumericalOffset(p,dx,dy,towards/max(length(towards),.003));
-    p+=towards*(.003/max(length(towards),.003));
-    float4 projected=mul(float4(p,1),shadow[face]);
-    float4 sx=mul(float4(dx,0),shadow[face]),sy=mul(float4(dy,0),shadow[face]);
-    // P0-S7: lamps use the sun's wide plane-corrected filter (each face map's
-    // own size; culled faces bind a 16x16 lit map).
-    return PCFWide(face,projected,sx,sy,crease);}
+    float3 towards=light_position.xyz-p;float distance=max(length(towards),.003),texel=2*distance/ShadowMapSize(face);
+    float3 direction=towards/distance;
+    p=ShadowNumericalOffset(p,dx,dy,direction)+direction*.003;
+    // P0-S10: the compact filter, lifted in this face's texels at the receiver.
+    // P0-S7: lamps share the sun's filters (each face map's own size; culled
+    // faces bind a 16x16 lit map).
+    float lit=0;
+    [branch] if(!ShadowWide())lit=PCFCompact(face,mul(float4(p+ShadowLean(ShadowFacet(dx,dy,n),direction)*texel,1),shadow[face]));
+    else lit=PCFWide(face,mul(float4(p,1),shadow[face]),mul(float4(dx,0),shadow[face]),mul(float4(dy,0),shadow[face]),ShadowCrease(dx,dy,direction,ShadowRiseLimit(.6,texel)));
+    return lit;}
 // R2 accum_point uses 1/(range*range); only accum_spot shortens to range*.95.
 float LocalAttenuation(float distance_squared,float range,bool spot){float radius=max(spot?range*.95:range,.0001);
     return saturate(1-distance_squared/(radius*radius));}
@@ -621,7 +682,7 @@ float4 LocalLight(float3 p,float3 n,float gloss,float m,float3 dx,float3 dy){flo
     if(attenuation<=0)return 0;
     // P0-S7: fence edges and thin boards get the G-buffer normal plane, as the sun.
     float3 shadow_p=p,shadow_dx=dx,shadow_dy=dy;ShadowNormalPlane(n,direction,shadow_p,shadow_dx,shadow_dy);
-    return DirectLight(p,n,direction,light_color.rgb,gloss,m)*(attenuation*LocalVisibility(shadow_p,shadow_dx,shadow_dy))*profile;}
+    return DirectLight(p,n,direction,light_color.rgb,gloss,m)*(attenuation*LocalVisibility(shadow_p,n,shadow_dx,shadow_dy))*profile;}
 float3 CameraForward(){float4 n=mul(float4(0,0,0,1),inverse_vp),f=mul(float4(0,0,.5,1),inverse_vp);
     float3 d=f.xyz/f.w-n.xyz/n.w;return d*rsqrt(max(dot(d,d),1e-12));}
 // P0-S4 KichRay R2 accum_sun_far SUN_FARPLANE: dynamic sunlight fades to 1/3
@@ -629,12 +690,23 @@ float3 CameraForward(){float4 n=mul(float4(0,0,0,1),inverse_vp),f=mul(float4(0,0
 // R2 applies it from r2_sun_near on (1.3% step there); here it is continuous.
 float SunFarFade(float3 relative){float f=saturate(dot(relative,CameraForward())/180);
     return sun_color.w>.5 && sun_color.w<1.5?lerp(1,.333,f*f):1;}
+// P0-S10 sun reach: G-buffer hemisphere visibility times the sun's strength
+// along the shading normal. An enclosed room has hemi ~0 and gets no dynamic
+// sun whatever the shadow maps resolve there (a roof too thin for the map, a
+// ceiling outside the caster set); receivers facing away lose nothing they
+// would have lit. Passes above 0.1/255 of sqrt luminance; static sun (baked
+// occlusion) and r4_sun_mask 0 skip it.
+float SunReach(float h,float3 n){
+    float strength=sqrt(max(dot(sun_color.rgb,float3(.3,.48,.22)),0));
+    return h*strength*dot(n,-sun_direction.xyz);}
+bool SunReaches(float h,float3 n){return !SunReachMasked() || sun_color.w>1.5 || SunReach(h,n)>.1/255;}
 float4 PSSun(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=image1.Load(int3(at,0)).r;
     float3 relative=LoadReceiverPosition(v.p.xy,depth),p=relative+camera.xyz,dx,dy;ShadowDerivatives(relative,dx,dy);
     if(depth>=1)return 0;float4 n=image0.Load(int3(at,0));ShadowDerivativesLoaded(v.p.xy,relative,dx,dy);
     // Albedo alpha (t4) is source sun occlusion: R2 static sun only, never dynamic.
     float static_sun=sun_color.w>1.5?shadow2.Load(int3(at,0)).a:0;
-    float3 normal=DecodeNormal(n.xy);float visibility=SunShadowing(p,normal,dx,dy,static_sun);
+    float3 normal=DecodeNormal(n.xy);float visibility=0;
+    [branch] if(SunReaches(n.z,normal))visibility=SunShadowing(p,normal,dx,dy,static_sun);
     if((int)screen.z==8)return float4(visibility.xxx,0);
     // Indirect light is R2 hmodel in combine, applied once per receiver.
     return DirectLight(p,normal,-sun_direction.xyz,sun_color.rgb,MaterialGloss(n.w),MaterialClass(n.w))*visibility*SunFarFade(relative);}

@@ -46,8 +46,19 @@ float dot(float3 a,float3 b){return a.x*b.x+a.y*b.y+a.z*b.z;}
 float3 cross(float3 a,float3 b){return float3(a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x);}
 float3 normalize(float3 a){return a*(1.f/std::sqrt(dot(a,a)));}
 float3 xyz(float4 v){return float3(v.x,v.y,v.z);}
+float4 operator+(float a,float4 b){return float4(a+b.x,a+b.y,a+b.z,a+b.w);}
+float4 operator+(float4 a,float b){return b+a;}
+float4 operator-(float4 a,float4 b){return float4(a.x-b.x,a.y-b.y,a.z-b.z,a.w-b.w);}
+float4 operator/(float4 a,float b){return float4(a.x/b,a.y/b,a.z/b,a.w/b);}
+float4 abs(float4 a){return float4(std::fabs(a.x),std::fabs(a.y),std::fabs(a.z),std::fabs(a.w));}
+struct bool4 {bool x,y,z,w;};
+bool4 operator<(float4 a,float4 b){return {a.x<b.x,a.y<b.y,a.z<b.z,a.w<b.w};}
+bool all(bool4 v){return v.x && v.y && v.z && v.w;}
 float lerp(float a,float b,float t){return a+(b-a)*t;}
-float4 screen,camera,sun_color,sun_direction;int shadow_surface=0,surface=0;
+float2 clamp(float2 v,float lo,float hi){return float2(std::max(lo,std::min(hi,v.x)),std::max(lo,std::min(hi,v.y)));}
+using std::sqrt;
+// fog.w: P0-S10 shadow options (bit 0 wide filter, 4 x quarter-texel lift).
+float4 screen,camera,sun_color,sun_direction,fog;int shadow_surface=0,surface=0;
 kich_r4_scene::Matrix shadow[6];
 kich_r4_scene::Matrix inverse_vp,receiver_inverse;
 float4 mul(float4 p,const kich_r4_scene::Matrix& m);
@@ -91,6 +102,7 @@ Texture2D shadow0,shadow1,shadow2,shadow3,shadow4,shadow5;
 // PRODUCTION_SHADOW_HELPERS
 // P0-S7 PCFWide takes a map index (t2..t7); bind a fixture map at shadow0.
 float Wide(const Texture2D& map,float4 projected,float4 dx,float4 dy,float2 crease=float2(0,1)){shadow0=map;return PCFWide(0,projected,dx,dy,crease);}
+float Compact(const Texture2D& map,float4 projected){shadow0=map;return PCFCompact(0,projected);}
 float4 Transform(float3 p,float w,const kich_r4_scene::Matrix& m){
     return float4(p.x*m.m[0]+p.y*m.m[4]+p.z*m.m[8]+w*m.m[12],
         p.x*m.m[1]+p.y*m.m[5]+p.z*m.m[9]+w*m.m[13],
@@ -253,37 +265,37 @@ void NormalPlaneFallback(){using namespace kich_r4_lighting;
 // P0-S5 production cascade selection and coverage: the finest map containing
 // the receiver is read, edge blends are continuous, and beyond the 512 m
 // cascade the receiver fades to lit instead of the PCF out-of-map shadow.
-void CascadeSelection(){using namespace kich_r4_lighting;
+void CascadeSelection(float options){using namespace kich_r4_lighting;fog=float4(0,0,0,options);const float3 up(0,1,0);
     const float origin[3]={0,0,0},direction[3]={-.3f,-.9f,-.3f};
     shadow[0]=SunShadow(origin,direction,128,2048);shadow[1]=SunShadow(origin,direction,512,2048);shadow[2]=SunShadow(origin,direction,40,2048);
     screen.w=2048;camera=float4(0,0,0,0);sun_color=float4(1,1,1,1);
     const Vec3 d=Normalize(Vec3{direction[0],direction[1],direction[2]});sun_direction=float4(d.x,d.y,d.z,0);
     shadow5={0,0,0,false};shadow0={0,0,1,false};shadow1={0,0,0,false}; // contact dark, near lit, far dark
     const float3 dx(.01f,0,0),dy(0,0,.01f);
-    auto at=[&](float x){texture_uses.clear();return SunVisibility(float3(x,-2,x*.37f),dx,dy);};
+    auto at=[&](float x){texture_uses.clear();return SunVisibility(float3(x,-2,x*.37f),up,dx,dy);};
     Require(at(1)<.0001f && texture_uses[&shadow5]>0 && !texture_uses[&shadow0] && !texture_uses[&shadow1],"contact cascade owns the first metres");
     Require(at(40)>.9999f && texture_uses[&shadow0]>0 && !texture_uses[&shadow5] && !texture_uses[&shadow1],"128 m cascade beyond the contact sphere");
     Require(at(120)<.0001f && texture_uses[&shadow1]>0 && !texture_uses[&shadow0],"512 m cascade beyond 128 m");
     Require(at(2000)>.9999f && texture_uses.empty(),"outside every map is lit, not the PCF border shadow");
     float previous=at(0),largest=0;
     for(float x=.05f;x<=400;x+=.05f){const float v=at(x);Require(v>=0 && v<=1,"visibility range");
-        for(const auto& use:texture_uses)Require(use.second<=9,"each cascade is filtered at most once per pixel");
+        for(const auto& use:texture_uses)Require(use.second<=10,"each cascade is filtered at most once per pixel (nine footprint Gathers + the P0-S9 occluder Gather)");
         largest=std::max(largest,std::fabs(v-previous));previous=v;}
     Require(largest<.05f,"contact, 128/512 m and far-coverage transitions are continuous");
     // Depth edge: walk a receiver along the sun ray out of the far map's +-512 m
     // depth range (beyond 128 m XY so the far map owns it); no step to lit.
     previous=-1;largest=0;
     for(float t=380;t<=560;t+=.05f){const float3 p(120+d.x*t,-2+d.y*t,44.4f+d.z*t);texture_uses.clear();
-        const float v=SunVisibility(p,dx,dy);Require(v>=0 && v<=1,"depth-edge visibility range");
+        const float v=SunVisibility(p,up,dx,dy);Require(v>=0 && v<=1,"depth-edge visibility range");
         if(previous>=0)largest=std::max(largest,std::fabs(v-previous));previous=v;}
     Require(previous>.9999f && largest<.05f,"far cascade depth edge fades continuously to lit");
     // P0-S9: inside the contact XY square the contact map is read at any depth
     // (matching the XY-only cascade hole): beyond its far bound the receiver is
     // behind the stored contact casters, before its near bound in front of them.
     for(float t:{600.f,900.f}){const float3 behind(1+d.x*t,-2+d.y*t,.37f+d.z*t);texture_uses.clear();
-        Require(SunVisibility(behind,dx,dy)<.0001f && texture_uses[&shadow5]>0 && !texture_uses[&shadow0] && !texture_uses[&shadow1],"contact XY owns receivers beyond its depth window");
+        Require(SunVisibility(behind,up,dx,dy)<.0001f && texture_uses[&shadow5]>0 && !texture_uses[&shadow0] && !texture_uses[&shadow1],"contact XY owns receivers beyond its depth window");
         const float3 ahead(1-d.x*t,-2-d.y*t,.37f-d.z*t);texture_uses.clear();
-        Require(SunVisibility(ahead,dx,dy)>.9999f && texture_uses[&shadow5]>0 && !texture_uses[&shadow0],"before the contact depth window nothing occludes");}
+        Require(SunVisibility(ahead,up,dx,dy)>.9999f && texture_uses[&shadow5]>0 && !texture_uses[&shadow0],"before the contact depth window nothing occludes");}
     shadow[2].m[15]=0;Require(at(1)>.9999f && texture_uses[&shadow0]>0 && !texture_uses[&shadow5],"invalid contact matrix falls back to the E1.9 pair");
     std::memset(shadow,0,sizeof(shadow));
 }
@@ -302,7 +314,7 @@ void WideCases(){using namespace kich_r4_lighting;
             position=ShadowNumericalOffset(position,tangent_x,tangent_y,float3(0,0,-1));position.z-=.01f;
             const float4 projected=Transform(position,1,projection);screen.w=float(size==8192?4096:size);comparisons=0;gathers=0;
             Require(Wide(surface,projected,dx,dy)>.9999f,"wide filter: inclined receiver never shadows itself");
-            Require(gathers==9 && comparisons==0,"wide filter reads the 6x6 support with nine Gathers");
+            Require(gathers==10 && comparisons==0,"wide filter reads the 6x6 support with nine Gathers plus one for the occluder floor");
             Texture2D blocker=surface;blocker.c+=-.02*std::sqrt(1+sx*sx+sy*sy)/1024.;
             Require(Wide(blocker,projected,dx,dy)<.0001f,"wide filter: 2 cm contact blocker still shadows");
         }
@@ -323,7 +335,7 @@ void WideCases(){using namespace kich_r4_lighting;
             {const float distance=std::sqrt(dot(position,position));position=position*(1-.003f/distance);} // LocalVisibility 3 mm
             const float4 projected=Transform(position,1,projection);screen.w=float(size);gathers=0;
             Require(Wide(surface,projected,dx,dy)>.9999f,"lamp wide filter: inclined receiver never shadows itself");
-            Require(gathers==9,"lamp wide filter reads nine Gathers");
+            Require(gathers==10,"lamp wide filter reads nine footprint Gathers plus the occluder floor");
             const double blocker_d=d-.02*std::sqrt(1+sx*sx+sy*sy);
             const Texture2D blocker={-2*B*sx/(s*blocker_d),2*B*sy/(s*blocker_d),A+B/blocker_d*(1+sx/s-sy/s),false};
             Require(Wide(blocker,projected,dx,dy)<.0001f,"lamp wide filter: 2 cm blocker still shadows");
@@ -414,9 +426,104 @@ void GrazingLeak(){using namespace kich_r4_lighting;
     }
     dimension_override=0;
 }
+// P0-S9 occluder floor: a wall or floor under a basement ceiling 5 cm - 2 m up
+// the light ray, at any incidence. The receiver plane extended along the
+// footprint used to pass the ceiling and read the open sky above it (sunlight
+// and a tree's shadow pattern in an underground room).
+void BasementCeiling(){using namespace kich_r4_lighting;
+    for(unsigned size:{2048u,4096u,8192u})for(float tilt:{0.f,30.f,60.f,75.f,80.f,84.f,86.f,88.f,89.5f}){
+        dimension_override=size;screen.w=4096;
+        const float sx=std::tan(tilt*3.14159265f/180),d=10;
+        const float origin[3]={0,0,0},direction[3]={0,0,1};const Matrix projection=SunShadow(origin,direction,128,size);
+        const float3 tangent_x(.01f,0,.01f*sx),tangent_y(0,.01f,0);
+        const float4 dx=Transform(tangent_x,0,projection),dy=Transform(tangent_y,0,projection);
+        const float2 crease=ShadowCrease(tangent_x,tangent_y,float3(0,0,-1),ShadowRiseLimit(.6f,128.f/size));
+        for(float x:{-.03f,.1f,.37f})for(float h:{.05f,.2f,.5f,1.f,2.f}){float3 position(x,.017f,d+sx*x);
+            position=ShadowNumericalOffset(position,tangent_x,tangent_y,float3(0,0,-1));position.z-=.01f;
+            const Texture2D ceiling={0,0,(512+d+sx*x-h)/1024.,false};gathers=0;
+            Require(Wide(ceiling,Transform(position,1,projection),dx,dy,crease)<.0001f,"a receiver under a ceiling never reads the sky past it");}
+    }
+    dimension_override=0;
+}
+// P0-S10 compact filter on a sun cascade (span metres over size texels): a
+// plane at `degrees` from the light in any azimuth, receiver at (x,y), lifted
+// as SunVisibility does (2 mm precision allowance, 1 cm toward the sun, then
+// ShadowLean in this map's texels). height>0 reads a parallel blocker that far
+// above the plane instead of the plane itself; ceiling>0 a flat ceiling that
+// far up the light ray.
+float CompactSun(unsigned size,float span,float degrees,float azimuth,unsigned quarters,float x,float y,float height=0,float ceiling=0){using namespace kich_r4_lighting;
+    dimension_override=size;fog=float4(0,0,0,float(4*quarters));
+    const float pi=3.14159265f,t=std::tan(degrees*pi/180),sx=t*std::cos(azimuth*pi/180),sy=t*std::sin(azimuth*pi/180),d=10;
+    const float origin[3]={0,0,0},direction[3]={0,0,1};const Matrix projection=SunShadow(origin,direction,span,size);
+    Texture2D map={sx*span/1024.,-sy*span/1024.,(512+d-sx*span/2+sy*span/2)/1024.,false};
+    if(height>0)map.c+=-height*std::sqrt(1+sx*sx+sy*sy)/1024.;
+    if(ceiling>0)map={0,0,(512+d+sx*x+sy*y-ceiling)/1024.,false};
+    const float3 tangent_x(.01f,0,.01f*sx),tangent_y(0,.01f,.01f*sy),towards(0,0,-1);
+    float3 position(x,y,d+sx*x+sy*y);
+    position=ShadowNumericalOffset(position,tangent_x,tangent_y,towards);position.z-=.01f;
+    position+=ShadowLean(ShadowFacet(tangent_x,tangent_y,towards),towards)*(span/size);
+    gathers=0;comparisons=0;const float lit=Compact(map,Transform(position,1,projection));
+    Require(gathers==4 && comparisons==0,"compact filter reads four Gathers and no single comparison");
+    dimension_override=0;return lit;
+}
+// Worst self-visibility over sub-texel receiver positions.
+float CompactSelf(unsigned size,float span,float degrees,float azimuth,unsigned quarters){
+    float worst=1;const float texel=span/size;
+    for(float a=0;a<1;a+=.0625f)for(float b=0;b<1;b+=.1875f)worst=std::min(worst,CompactSun(size,span,degrees,azimuth,quarters,(3.1f+a)*texel,(1.7f+b)*texel));
+    return worst;
+}
+void CompactCases(){
+    const unsigned quarters=8; // r4_shadow_normal_bias 2 (default)
+    // Measured worst self-visibility at 60/80 deg: lift 0 .34/.31, 1 texel
+    // .75/.74, 1.5 .94/.94, 2 .997/.996, 2.5 1/1. The default is 2 texels.
+    {float none=1,one=1;for(float azimuth:{0.f,27.f,45.f,90.f,135.f}){none=std::min(none,CompactSelf(2048,128,80,azimuth,0));one=std::min(one,CompactSelf(2048,128,80,azimuth,4));}
+        Require(none<.4f && one<.8f,"without the lift the compact support shadows its own slope");}
+    // Lamps: perspective cube faces at every planned size, lifted in the face's
+    // texels at the receiver (2*distance/size), as LocalVisibility.
+    for(unsigned size:{64u,128u,256u,512u,1024u})for(float degrees:{0.f,35.f,60.f,80.f}){using namespace kich_r4_lighting;
+        const float sx=std::tan(degrees*3.14159265f/180),sy=sx*.27f,d=10;fog=float4(0,0,0,float(4*quarters));
+        KichR4LocalLight light={};light.type=1;light.range=40;const Matrix projection=LocalShadow(light,4,size);
+        const double A=projection.m[10],B=projection.m[14],s=projection.m[0];
+        auto plane=[&](double depth){return Texture2D{-2*B*sx/(s*depth),2*B*sy/(s*depth),A+B/depth*(1+sx/s-sy/s),false};};
+        const float3 tangent_x(.01f,0,.01f*sx),tangent_y(0,.01f,.01f*sy);
+        for(float x:{-.01f,0.f,.012f,.023f}){float3 position(x,.017f,d+sx*x+sy*.017f);
+            const float distance=length(position);const float3 direction=-position/distance;const float texel=2*distance/size;
+            position=ShadowNumericalOffset(position,tangent_x,tangent_y,direction)+direction*.003f;
+            const float4 projected=Transform(position+ShadowLean(ShadowFacet(tangent_x,tangent_y,direction),direction)*texel,1,projection);
+            Require(Compact(plane(d),projected)>.99f,"lamp compact filter: an inclined receiver does not shadow itself");
+            const float full=(quarters*.25f+2.3f)*texel*std::sin(degrees*3.14159265f/180)+.01f;
+            Require(Compact(plane(d-full*std::sqrt(1+sx*sx+sy*sy)),projected)<.0001f,"lamp compact filter: a blocker above the lift keeps its shadow");}
+    }
+    for(unsigned size:{2048u,4096u,8192u})for(float span:{40.f,128.f,512.f})for(float degrees:{0.f,35.f,60.f,75.f,80.f,85.f,88.f})for(float azimuth:{0.f,27.f,45.f,90.f,135.f,200.f}){
+        Require(CompactSelf(size,span,degrees,azimuth,quarters)>.99f,"compact filter: an inclined receiver does not shadow itself");
+        const float texel=span/size,s=std::sin(degrees*3.14159265f/180);
+        // A parallel blocker past the lift and the +-1.6 texel support shadows fully.
+        const float full=(quarters*.25f+2.3f)*texel*s+.013f;
+        for(float x:{.3f,.31f})Require(CompactSun(size,span,degrees,azimuth,quarters,x,.2f,full)<.0001f,"compact filter: a blocker above the lift keeps its shadow");
+        // A ceiling over a wall: the lift along the light is at most bias*texel/2.
+        const float roof=quarters*.25f*texel*.5f+.013f;
+        for(float x:{.3f,.31f})Require(CompactSun(size,span,degrees,azimuth,quarters,x,.2f,0,roof)<.0001f,"compact filter: a receiver under a ceiling stays dark at any incidence");
+    }
+    // Continuity across texel boundaries and the map border (clamped taps).
+    {fog=float4();dimension_override=512;Texture2D edge={0,0,0,true};float previous=-1;
+        for(unsigned step=0;step<=2000;++step){const float u=.49f+.02f*step/2000;
+            const float current=Compact(edge,float4(u*2-1,0,.5f,1));Require(current>=0 && current<=1,"compact filter range");
+            if(previous>=0)Require(std::fabs(current-previous)<.004f,"compact filter is continuous across texel boundaries");
+            previous=current;}
+        for(float u:{0.f,.001f,.5f,.999f,1.f})for(float v:{0.f,.5f,1.f}){Texture2D shadow={0,0,.4,false},light={0,0,.6,false};
+            Require(Compact(shadow,float4(u*2-1,1-v*2,.5f,1))==0,"compact filter: map edges add no lit border");
+            Require(std::fabs(Compact(light,float4(u*2-1,1-v*2,.5f,1))-1)<1e-6,"compact filter: map edges add no dark border");}
+        dimension_override=16;const Texture2D lit={0,0,1,false};
+        Require(std::fabs(Compact(lit,float4(.3f,.2f,.7f,1))-1)<1e-6,"culled lamp face map reads lit");
+        dimension_override=0;}
+    // Options decode.
+    fog=float4(0,0,0,4*6+3);Require(ShadowWide() && !SunReachMasked() && ShadowNormalBias()==1.5f,"shadow options: wide, mask off, 1.5 texels");
+    fog=float4(0,0,0,4*6);Require(!ShadowWide() && SunReachMasked() && ShadowNormalBias()==1.5f,"shadow options: compact, mask on");
+    fog=float4();
+}
 #include "receiver_raster_tests.h"
 int main(){try{
-    CreaseCases();GrazingLeak();WideCases();CascadeSelection();NormalPlaneFallback();PlaneCases();Continuity();CubeGuard();GrazingReceiver();ReceiverReconstruction();ReceiverRasterization();
+    CreaseCases();GrazingLeak();BasementCeiling();WideCases();CascadeSelection(1);CascadeSelection(24);CompactCases();NormalPlaneFallback();PlaneCases();Continuity();CubeGuard();GrazingReceiver();ReceiverReconstruction();ReceiverRasterization();
     float2 gradient;Require(!ShadowGradient(float3(0,0,1),float3(0,0,2),gradient),"singular UV Jacobian requests bounded fallback");
     Require(!ShadowGradient(float3(1,0,std::numeric_limits<float>::infinity()),float3(0,1,1),gradient),"nonfinite slope requests bounded fallback");
     Require(ShadowPlaneStable(4,.01f,0) && !ShadowPlaneStable(4,10000,10000),"noncoplanar jump does not become a receiver plane");

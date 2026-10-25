@@ -88,6 +88,13 @@ struct KichR4LightingFrame {
     // P0-S7 r4_lamp_grass_shadows: grass in local light maps (R2 never draws
     // details there). Direct/test producers keep the E1 default (on).
     uint32_t local_detail_shadows;
+    // P0-S9 r4_lamp_shadows 0: the plan renders no lamp face (every face reads
+    // the lit 16x16 map). Direct/test producers keep shadows (on).
+    uint32_t local_shadows;
+    // P0-S10 r4_shadow_filter / r4_sun_mask / r4_shadow_normal_bias packed as
+    // HLSL fog.w (KichR4ShadowOptions). Direct/test producers: compact filter,
+    // sun reach mask on, 2 texel lift.
+    float shadow_options;
     bool ShadowPlanned()const{return count && shadow_faces.size()>=count && shadow_sizes.size()>=count;}
     uint32_t ShadowFaceMask(unsigned index)const{
         if(index>=count || index>=lights.size())return 0;
@@ -97,7 +104,7 @@ struct KichR4LightingFrame {
     // entries. Captured frames resize to every visible registry source.
     KichR4LightingFrame():valid(0),count(0),shadow_mask(0),sun_direction(),sun_color(),ambient(),hemi(),fog(),fog_near(0),fog_far(0),fog_valid(0),
         env_ambient(),env_color(),gloss_factor(1),env_valid(0),sun_mode(KICH_R4_SUN_DEFAULT),sunmask(),sunmask_valid(0),sun_contact(),sun_contact_valid(0),sun_basis(),sun_basis_valid(0),sun_shadow_cull(0),sun_shafts(),sun_map_size(2048),sun_far_size(0),lights(8),sources(8),projectors(8),visibility_vp(),visibility_valid(0),r1_lights_requested(0),r1_lights_applied(0),occlusion_enabled(0),occlusion_tested(0),
-        selection_frame(0),local_shadow_size(0),shadow_plan_faces(0),shadow_resolution_changes(0),shadow_resolution_reason(0),local_shadow_quality(1),local_detail_shadows(1){
+        selection_frame(0),local_shadow_size(0),shadow_plan_faces(0),shadow_resolution_changes(0),shadow_resolution_reason(0),local_shadow_quality(1),local_detail_shadows(1),local_shadows(1),shadow_options(32){
         const float defaults[8]={.3f,3.3f,.7f,1.f,0.f,.75f,.5f,0.f};memcpy(bloom,defaults,sizeof(bloom));
         const float tonemap[5]={0.f,.25f,.001f,5.f,0.f};memcpy(exposure,tonemap,sizeof(exposure));}
     bool CastsShadow(unsigned index)const {
@@ -130,6 +137,12 @@ inline uint32_t KichR4SunMode(const float* sun_color,float gloss_factor,bool sun
     const float v=(sun_color[0]+sun_color[1]+sun_color[2])/3.f;
     const float specular=v>0?gloss_factor*(v<1?powf(v,2.f/3.f):v):0;
     return sun_flag && specular>.00001f?KICH_R4_SUN_DYNAMIC:KICH_R4_SUN_DISABLED;
+}
+// P0-S10 HLSL fog.w shadow options: bit 0 wide filter, bit 1 sun reach mask
+// off, plus 4 x the receiver lift in quarter texels (0..4 texels).
+inline float KichR4ShadowOptions(bool wide,bool sun_mask,float normal_bias){
+    const float bias=normal_bias>0?(normal_bias<4?normal_bias:4.f):0.f;
+    return float((wide?1u:0u)|(sun_mask?0u:2u)|(unsigned(bias*4+.5f)<<2));
 }
 static_assert(sizeof(KichR4LocalLight)==48,"CPU light layout");
 static_assert(sizeof(KichR4LightIdentity)==32,"CPU light provenance layout");

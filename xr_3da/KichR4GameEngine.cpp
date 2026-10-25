@@ -39,6 +39,10 @@ extern ENGINE_API float ps_r4_sun_shafts_intensity;
 extern ENGINE_API int ps_r4_sun_shadow_size;
 extern ENGINE_API int ps_r4_sun_far_size;
 extern ENGINE_API int ps_r4_lamp_grass_shadows;
+extern ENGINE_API int ps_r4_lamp_shadows;
+extern ENGINE_API int ps_r4_shadow_filter;
+extern ENGINE_API int ps_r4_sun_mask;
+extern ENGINE_API float ps_r4_shadow_normal_bias;
 
 /* R2 accum_direct clouds xform, without its view->world prefix: the R4 sun
  * shader passes world positions. R2 advances w_shift by 0.003*dt in each of
@@ -119,6 +123,9 @@ void KichR4_CopyEngineEnvironment(KichR4LightingFrame& frame)
     // and R4 r4_lamp_grass_shadows (off: R2 never draws grass into those maps).
     frame.local_shadow_quality=ps_r2_ls_squality;
     frame.local_detail_shadows=ps_r4_lamp_grass_shadows?1u:0u;
+    frame.local_shadows=ps_r4_lamp_shadows?1u:0u; // P0-S9 r4_lamp_shadows
+    // P0-S10 R4 shadow filter, sun reach mask and receiver lift (sun and lamps).
+    frame.shadow_options=KichR4ShadowOptions(ps_r4_shadow_filter!=0,ps_r4_sun_mask!=0,ps_r4_shadow_normal_bias);
 }
 
 static void KichR4_GameObservationFrame(KichR4GameFrame& input)

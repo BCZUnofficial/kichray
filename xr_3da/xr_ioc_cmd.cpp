@@ -695,6 +695,13 @@ ENGINE_API int ps_r4_sun_shadow_size = 4096;
 ENGINE_API int ps_r4_sun_far_size = 8192;
 // P0-S7 R4 grass in lamp (local light) shadow maps; R2 never draws it there. Leaves stay out either way.
 ENGINE_API int ps_r4_lamp_grass_shadows = 0;
+// P0-S9: 0 disables lamp shadow maps (diagnostic, and a performance option).
+ENGINE_API int ps_r4_lamp_shadows = 1;
+// P0-S10 R4 shadow filter for the sun and lamps: 0 compact (four bilinear comparisons, receiver lifted
+// along its normal), 1 wide (P0-S5..S9 plane-extrapolated 6x6). Sun reach mask and the lift in texels.
+ENGINE_API int ps_r4_shadow_filter = 0;
+ENGINE_API int ps_r4_sun_mask = 1;
+ENGINE_API float ps_r4_shadow_normal_bias = 2.f;
 // P0-S5 R4 grass draw distance = r__detail_radius x this (cache: 192 m); grass shadows keep r__detail_radius.
 ENGINE_API float ps_r4_detail_radius_scale = 3.f;
 void CCC_Register()
@@ -710,6 +717,10 @@ void CCC_Register()
     CMD4(CCC_Integer, "r4_sun_shadow_size", &ps_r4_sun_shadow_size, 1024, 4096);
     CMD4(CCC_Integer, "r4_sun_far_size", &ps_r4_sun_far_size, 2048, 8192);
     CMD4(CCC_Integer, "r4_lamp_grass_shadows", &ps_r4_lamp_grass_shadows, 0, 1);
+    CMD4(CCC_Integer, "r4_lamp_shadows", &ps_r4_lamp_shadows, 0, 1);
+    CMD4(CCC_Integer, "r4_shadow_filter", &ps_r4_shadow_filter, 0, 1);
+    CMD4(CCC_Integer, "r4_sun_mask", &ps_r4_sun_mask, 0, 1);
+    CMD4(CCC_Float, "r4_shadow_normal_bias", &ps_r4_shadow_normal_bias, 0.f, 4.f);
     CMD4(CCC_Float, "r4_detail_radius_scale", &ps_r4_detail_radius_scale, 1.f, 3.f);
 #endif
 	CMD1(CCC_Help, "help");

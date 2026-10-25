@@ -11,7 +11,7 @@ function Extract([string]$signature) {
 }
 $helpers = (('float PackMaterial(', 'float MaterialGloss(', 'float MaterialClass(', 'float2 MaterialLutSlice(', 'float2 MaterialResponse(',
     'float SpecularIntensity(', 'float FogTransmittance(', 'float3 ForwardFog(', 'float SunMask(', 'float SunDirect(', 'float4 DirectLight(',
-    'float3 ForwardIndirect(', 'void ShadowNormalPlane(', 'float SunShadowing(', 'float4 SunLighting(', 'float SunFarFade(', 'float4 PSSun(', 'float4 PSForwardSun(') | ForEach-Object { Extract $_ }) -join "`n"
+    'float3 ForwardIndirect(', 'void ShadowNormalPlane(', 'float SunShadowing(', 'float4 SunLighting(', 'float SunFarFade(', 'bool SunReachMasked(', 'float SunReach(', 'bool SunReaches(', 'float4 PSSun(', 'float4 PSForwardSun(') | ForEach-Object { Extract $_ }) -join "`n"
 # Syntax-only adapters: execute the production branches and numerical expressions.
 $helpers = $helpers.Replace(':SV_Target', '').Replace(':SV_IsFrontFace', '').Replace('[branch]', '').Replace('inout float3', 'float3&')
 $helpers = $helpers.Replace('visibility.xxx', 'splat3(visibility)')

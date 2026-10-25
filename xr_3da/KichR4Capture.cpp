@@ -72,7 +72,8 @@ void PlanLocalShadows(const float* camera,const float* camera_vp,KichR4LightingF
     float forward[3];const bool forward_valid=camera_vp && Forward(camera_vp,forward);
     std::vector<uint32_t> masks(frame.count,0),sizes(frame.count,0);
     std::unordered_map<uint64_t,uint32_t> next;
-    for(uint32_t i=0;i<frame.count;++i){if(!frame.CastsShadow(i))continue;const KichR4LocalLight& l=frame.lights[i];
+    // P0-S9 r4_lamp_shadows 0: no face is rendered; every face reads lit.
+    for(uint32_t i=0;i<frame.count;++i){if(!frame.CastsShadow(i) || !frame.local_shadows)continue;const KichR4LocalLight& l=frame.lights[i];
         masks[i]=FaceMask(l,camera,camera_vp,shadow_box_visibility);if(!masks[i])continue;
         const KichR4LightIdentity& id=frame.sources[i];const uint64_t key=id.serial?id.serial:id.process_handle^0x8000000000000000ull;
         const auto found=history.find(key);

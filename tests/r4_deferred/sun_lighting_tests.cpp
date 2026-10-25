@@ -9,7 +9,7 @@
 #include <initializer_list>
 #include <vector>
 #include "KichR4MaterialLut.h"
-using std::abs;using std::floor;using std::fmod;using std::pow;using std::sin;using std::cos;
+using std::abs;using std::floor;using std::fmod;using std::pow;using std::sin;using std::cos;using std::sqrt;typedef unsigned uint;
 float max(float a,float b){return std::max(a,b);}
 int min(int a,int b){return std::min(a,b);}
 float clamp(float a,float lo,float hi){return std::max(lo,std::min(hi,a));}
@@ -83,7 +83,7 @@ void ShadowDerivatives(float3,float3& dx,float3& dy){dx=screen_plane?float3(.01f
 // P0-S9 neighbour plane: covered by receiver_plane_tests; keeps the quad result here.
 void ShadowDerivativesLoaded(float2,float3,float3&,float3&){}
 // Same gate as production SunVisibility: only sun_color.w==1 uses shadow maps.
-float SunVisibility(float3,float3 dx,float3 dy){last_dx=dx;last_dy=dy;return sun_color.w<=0 || sun_color.w>1.5f?0:visibility;}
+float SunVisibility(float3,float3,float3 dx,float3 dy){last_dx=dx;last_dy=dy;return sun_color.w<=0 || sun_color.w>1.5f?0:visibility;}
 float3 DecodeNormal(float2){return surface_normal;}
 float3 Normal(Varying,bool){return surface_normal;}
 float4 Base(Varying v){return v.c;}
@@ -110,7 +110,9 @@ int main(){try{
         image0.value=float4(0,0,h,PackMaterial(gloss,2));receiver.n.w=h;
         // Forward hemi response is the R2 table's diffuse at (h,0) for the Phong slice.
         const float3 indirect=xyz(ambient)+xyz(hemi)*MaterialResponse(h,0,2).x;
-        Check(PSSun(receiver),splat3(shadow),gloss*shadow,
+        // P0-S10 sun reach: hemi 0 (an enclosed room) gets no dynamic sun.
+        const float reach=h>0?1.f:0.f;
+        Check(PSSun(receiver),splat3(shadow*reach),gloss*shadow*reach,
             "dynamic sun must follow current shadow visibility, independently of baked/ROS sun alpha; no indirect");
         // Forward keeps R2 forward L_ambient+hemi and the same direct sun.
         Check(PSForwardSun(receiver,true),xyz(receiver.c)*(indirect+splat3(shadow))+splat3(gloss*shadow),receiver.c.w,
@@ -125,7 +127,7 @@ int main(){try{
         Check(PSSun(receiver),float3(),0,"disabled sun adds no direct light");
         // R2 sunmask multiplies the dynamic sun only, never static sun or indirect.
         shadow4.value=.4f;sun_color.w=1;
-        Check(PSSun(receiver),splat3(shadow*.4f),gloss*shadow*.4f,"cloud mask must scale dynamic sun and its specular");
+        Check(PSSun(receiver),splat3(shadow*.4f*reach),gloss*shadow*.4f*reach,"cloud mask must scale dynamic sun and its specular");
         Check(PSForwardSun(receiver,true),xyz(receiver.c)*(indirect+splat3(shadow*.4f))+splat3(gloss*shadow*.4f),receiver.c.w,
             "forward dynamic sun shares the cloud mask; forward indirect stays unmasked");
         sun_color.w=2;
@@ -142,7 +144,7 @@ int main(){try{
     // Sky rejection and the raw shadow diagnostic must remain independent of
     // indirect illumination and the receiver's baked alpha.
     image1.value.r=1;Check(PSSun(receiver),float3(),0,"sky cannot receive surface lighting");
-    image1.value.r=.5f;screen.z=8;visibility=.25f;
+    image1.value.r=.5f;screen.z=8;visibility=.25f;surface_normal=float3(0,1,0);
     Check(PSSun(receiver),splat3(.25f),0,"shadow diagnostic must show current map visibility");
     // P0-S3: a non-coplanar quad (zero derivatives) reaches the shadow maps with
     // a plane from the shading normal, in lighting and in the diagnostic view.
@@ -162,6 +164,19 @@ int main(){try{
     screen.z=8;Near(PSSun(receiver).x,1,"shadow diagnostic stays raw visibility");screen.z=0;
     sun_color.w=2;shadow2.value.a=.5f;forward=float3(0,0,1);const float4 static_near=PSSun(receiver);forward=float3(0,-60,0);
     Near(PSSun(receiver).x,static_near.x,"R2 static sun has no far fade");forward=float3(0,0,1);sun_color.w=1;
+    // P0-S10 sun reach: hemi x sqrt(luminance) x N.L above 0.1/255.
+    image0.value=float4(0,0,.5f/255,PackMaterial(1,2));surface_normal=float3(0,1,0);visibility=1;forward=float3(0,0,1);
+    Near(PSSun(receiver).x>0?1.f:0.f,1,"hemi above the threshold receives the sun");
+    image0.value.z=.05f/255;Check(PSSun(receiver),float3(),0,"hemi below 0.1/255 receives no dynamic sun");
+    screen.z=8;Check(PSSun(receiver),float3(),0,"the shadow diagnostic shows the masked sun as dark");screen.z=0;
+    // A sun of luminance .01 (sqrt .1) needs ten times the hemi.
+    sun_color=float4(.01f,.01f,.01f,1);image0.value.z=.5f/255;Check(PSSun(receiver),float3(),0,"sqrt luminance scales the reach");
+    image0.value.z=1.5f/255;Near(PSSun(receiver).x>0?1.f:0.f,1,"a weak sun reaches a brighter hemi");
+    // Grazing or turned away: N.L scales the reach as well.
+    sun_color=float4(1,1,1,1);image0.value.z=.5f;surface_normal=float3(1,0,0);Check(PSSun(receiver),float3(),0,"a face parallel to the sun is not reached");
+    surface_normal=float3(0,1,0);image0.value.z=.05f/255;
+    fog.w=2;Near(PSSun(receiver).x>0?1.f:0.f,1,"r4_sun_mask 0 lights a dark-hemi receiver again");fog.w=0;
+    sun_color.w=2;shadow2.value.a=.5f;Near(PSSun(receiver).x,1,"static sun (baked occlusion) is never masked");sun_color.w=1;
     std::printf("P0-S1 production sun lighting: %u checks passed (baked/ROS mask independence, current shadows, cloud sunmask, static/disabled sun, forward hemi, sky)\n",checks);
     return 0;
 }catch(const std::exception& e){std::fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

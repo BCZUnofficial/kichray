@@ -255,7 +255,7 @@ struct KichR4DeferredSession {
         Float("SHADOW",id,"near",sun?0.f:kich_r4_lighting::LocalShadowNear(range));Float("SHADOW",id,"far",sun?1024.f:range);Vector("SHADOW",id,"view_projection_row_major",matrix.m,16);
         Float("SHADOW",id,"orthographic_span",sun?span:0);Text("SHADOW",id,"projection",sun?"TEXEL_SNAPPED_CAMERA_CENTERED":"PERSPECTIVE_SPOT_CONE_OR_POINT_90_DEG_PLUS_2_TEXEL_GUARD");
         Float("SHADOW",id,"comparison_depth_bias",0);Float("SHADOW",id,"receiver_bias_meters",sun?.01f:.003f);Text("SHADOW",id,"comparison_bias_source","WORLD_SPACE_RECEIVER_TOWARD_LIGHT; CAMERA_RELATIVE_QUAD_RECEIVER_PLANE; GEOMETRIC_NORMAL_PRECISION_ALLOWANCE_MAX_0.002_M; NO_FIXED_NONLINEAR_DEPTH_SUBTRACTION");
-        Text("SHADOW",id,"rasterizer_bias","DEFAULT_ZERO; NO_PER_LIGHT_OVERRIDE");Text("SHADOW",id,"filter","VALID_PLANE_3x3_POINT_COMPARISON_TEXEL_CENTRE_QUADRATIC_TENT; INVALID_PLANE_SINGLE_POINT; LESS_EQUAL");
+        Text("SHADOW",id,"rasterizer_bias","DEFAULT_ZERO; NO_PER_LIGHT_OVERRIDE");Text("SHADOW",id,"filter","SEE_ENVIRONMENT_shadow_filter; LESS_EQUAL");
         Text("SHADOW",id,"candidate_source","LEVEL_STATIC+DETAILS+MODEL_CAMERA_SHADOW_UNION; PASS_FRUSTUM_CULL");Text("SHADOW",id,"stencil_volumes","NOT_SUPPORTED");
         Text("SHADOW",id,"execution","PLANNED");
     }
@@ -908,6 +908,9 @@ struct KichR4DeferredSession {
             RenderSnapshot_U64("ENVIRONMENT","hmodel_inputs_valid",input.lighting.env_valid);RenderSnapshot_Value("ENVIRONMENT","r2_gloss_factor",input.lighting.gloss_factor);
             RenderSnapshot_Text("ENVIRONMENT","sun_mode",input.lighting.sun_mode==KICH_R4_SUN_STATIC?"R2_STATIC":input.lighting.sun_mode==KICH_R4_SUN_DISABLED?"DISABLED":
                 input.lighting.sun_mode==KICH_R4_SUN_DYNAMIC?"R2_DYNAMIC":"DEFAULT_DYNAMIC");
+            {const unsigned options=unsigned(input.lighting.shadow_options); // P0-S10
+                RenderSnapshot_Text("ENVIRONMENT","shadow_filter",options&1?"WIDE_6x6_PLANE_EXTRAPOLATED":"COMPACT_4x_BILINEAR_0.6_TEXEL; NORMAL_LIFT");
+                RenderSnapshot_U64("ENVIRONMENT","sun_reach_mask",options&2?0:1);RenderSnapshot_Value("ENVIRONMENT","shadow_normal_bias_texels",float(options>>2)*.25f);}
             RenderSnapshot_Text("ENVIRONMENT","sun_disk_direction_link","NOT_INSTRUMENTED; LIGHT_DIRECTION_AND_SHADOW_PROJECTION_RECORDED_SEPARATELY");
             RenderSnapshot_U64("TRANSPARENCY","debug_mode",debug);RenderSnapshot_Text("TRANSPARENCY","debug_view",kich_r4_optics::DebugView(debug));RenderSnapshot_Text("TRANSPARENCY","forward_requested",!debug?"ENABLED":"DISABLED_BY_DEBUG_VIEW");
             RenderSnapshot_Text("TRANSPARENCY","sorting","STABLE_BACK_TO_FRONT_DISTANCE; SHARED_STREAM_AND_NATIVE_MODEL_QUEUE");RenderSnapshot_Text("TRANSPARENCY","distortion_requested",native_mode && HasDistortion(captured)?"HAS_COMMANDS":"NO_COMMANDS_OR_UNSUPPORTED");}
@@ -943,6 +946,7 @@ struct KichR4DeferredSession {
         const kich_r4_scene::Vec3 dir=kich_r4_scene::Normalize(kich_r4_scene::Vec3{weather[0][0],weather[0][1],weather[0][2]});
         base.sun_direction[0]=dir.x;base.sun_direction[1]=dir.y;base.sun_direction[2]=dir.z;
         memcpy(base.sun_color,weather[1],12);memcpy(base.ambient,weather[2],12);memcpy(base.hemi,weather[3],12);memcpy(base.fog,weather[4],12);
+        base.fog[3]=input.lighting.shadow_options; // P0-S10 HLSL ShadowWide/SunReachMasked/ShadowNormalBias
         kich_r4_lighting::FogConstants(input.lighting,base.mvp,base);
         const bool sun=kich_r4_visibility::SunEnabled(input.lighting);
         // HLSL sun_color.w: 0 no sun, 1 dynamic shadow maps, 2 R2 static sun
