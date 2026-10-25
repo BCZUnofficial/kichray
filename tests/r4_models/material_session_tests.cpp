@@ -81,7 +81,8 @@ void MaterialFallbacks(const char* directory){for(unsigned mode=0;mode<3;++mode)
     kich_r4_capture::Batch batch;batch.Begin(640,480,43+mode);Capture(batch,mesh,material);Require(h.models.Prepare(h.frame,h.level,batch)==0,"fallback prepares native source model");
     BeginMaterialSnapshot(directory);RenderSnapshot_Pass("GBUFFER");Require(h.Draw(batch,KichR4ModelSession::Geometry)==0 && model_draws.size()==1,"missing optional material evidence retains geometry submission");
     const auto& draw=model_draws.back();const auto& constants=constants_drawn.back();
-    if(mode<2)Require(draw.surface.textures[1]==0 && draw.surface.textures[2]==0 && constants.material[0]==14,"invalid basis or missing auxiliary DDS disables both normal textures and bump flag");
+    // P0-S11: without normal mapping the bump stays bound for its gloss (bump.R^2).
+    if(mode<2)Require(draw.surface.textures[1]==h.level.textures.at(material.bump) && draw.surface.textures[2]==0 && constants.material[0]==14+kich_r4_material::SHADER_GLOSS_MAP,"invalid basis or missing auxiliary DDS withdraws normal mapping and keeps bump gloss");
     else Require(draw.surface.textures[3]==0 && draw.surface.textures[4]==0 && constants.material[0]==9,"missing UV1 disables lightmap and hemi while valid bump and detail survive");
     Require(draw.surface.textures[0]==h.level.textures.at(material.base) && constants.alpha[0]==material.alpha_ref,"optional fallback does not change cutout base or comparison");
     RenderSnapshot_End("COMPLETE");const char* reason=mode==0?"bump_missing_valid_source_basis":mode==1?"bump_dds_unavailable":"lightmap_missing_source_uv1";
@@ -123,16 +124,20 @@ void BasisFallbackTelemetry(const char* directory){
     const std::string record=report.substr(start,report.find("\n\n",start)-start);
     Require(record.find("basis_valid_index_references=2")!=std::string::npos && record.find("basis_missing_index_references=1")!=std::string::npos,"partial TBN counted only over actual referenced range");
     Require(record.find("basis_mesh_vertices=4")!=std::string::npos && record.find("basis_mesh_derived_vertices=1")!=std::string::npos && record.find("basis_resource=source_actor")!=std::string::npos,"whole-source derivation counts and source name are explicit");
-    Require(record.find("basis_scope=LAST_BOUND_COMMAND;")!=std::string::npos && record.find("bump_missing_valid_source_basis")!=std::string::npos,"shared material record describes last command without pretending to cover all meshes");
+    // P0-S11: a triangle with any basis vertex stays mapped; the pixel shader
+    // falls back only where the interpolated tangent vanishes.
+    Require(record.find("basis_scope=LAST_BOUND_COMMAND;")!=std::string::npos && record.find("bump_missing_valid_source_basis")==std::string::npos,"shared material record describes last command without pretending to cover all meshes");
 }
 void MixedBasis(){Harness h;Require(h.Start()==0,"mixed basis setup");auto mesh=MaterialMesh();const auto material=CutoutMaterial();SeedTextures(h,material);
     for(unsigned i=0;i<3;++i)mesh->vertices.push_back(mesh->vertices[i]);
-    mesh->vertices[4].attributes&=~kich_r4_material::ATTR_TANGENT;mesh->indices={0,1,2,3,4,5};
+    // P0-S11: the geometric subset holds triangles without any basis vertex.
+    for(unsigned i=3;i<6;++i)mesh->vertices[i].attributes&=~kich_r4_material::ATTR_TANGENT;mesh->indices={0,1,2,3,4,5};
     kich_r4_capture::Batch batch;batch.Begin(640,480,90);const auto identity=kich_r4_scene::Identity();const kich_r4_scene::Matrix bones[]={identity,identity};kich_r4_capture::Style style;
     batch.NativeModel(mesh.get(),mesh,identity,identity,bones,2,6,0,2,style,KICH_R4_SKIN_HARDWARE,"mixed_actor",NULL,NULL,NULL,0,0,0,mesh.get(),&material);
     Require(h.models.Prepare(h.frame,h.level,batch)==0 && h.Draw(batch,KichR4ModelSession::Geometry)==0,"mixed model prepares and draws");
     Require(model_draws.size()==2 && model_draws[0].surface.state.draw.index_count==3 && model_draws[1].surface.state.draw.index_count==3,"two index groups, no per-triangle draw explosion");
     Require((uint32_t(constants_drawn[0].material[0])&1) && !(uint32_t(constants_drawn[1].material[0])&1),"good triangle retains real normal maps while bad triangle uses geometric normal");
+    Require((uint32_t(constants_drawn[1].material[0])&kich_r4_material::SHADER_GLOSS_MAP) && model_draws[1].surface.textures[1]==model_draws[0].surface.textures[1] && !model_draws[1].surface.textures[2],"geometric subset keeps the same authored bump gloss");
     const auto& gpu=h.models.meshes.at(mesh.get());Require(gpu.index_bytes==24 && gpu.vertex_bytes==mesh->vertices.size()*sizeof(kich_r4_capture::SourceVertex),"partition indices accounted without CPU-expanded vertices");
     const size_t before=model_draws.size();Require(h.Draw(batch,KichR4ModelSession::Shadow)==0 && model_draws.size()==before+1 && model_draws.back().surface.state.draw.index_buffer==gpu.ib && model_draws.back().surface.state.draw.index_count==6,"shadow uses original range exactly once");
 }
@@ -189,7 +194,11 @@ void HUDMaterialFallbacks(){for(unsigned mode=0;mode<2;++mode){Harness h;Require
     else{h.level.textures[material.bump]=h.level.checker;h.level.texture_registry.entries[kich_r4_texture::Key(material.bump)].handle=h.level.checker;}
     kich_r4_capture::Batch batch;batch.Begin(640,480,180+mode);Capture(batch,mesh,material);batch.native_models[0].layer=1;
     Require(h.models.Prepare(h.frame,h.level,batch)==0 && h.Draw(batch,KichR4ModelSession::HUD)==0,"missing HUD optional basis/resource retains draw");
-    const auto& d=model_draws.back();Require(!d.material_textures[0] && !d.material_textures[1] && constants_drawn.back().material[0]==0,"HUD fallback clears both material slots and flags, never decodes checker as normal");
+    const auto& d=model_draws.back();
+    // P0-S11: an invalid basis keeps the bump at t8 for gloss only; a checker bump binds nothing.
+    if(mode==0)Require(d.material_textures[0]==h.level.textures.at(material.bump) && !d.material_textures[1] &&
+        constants_drawn.back().material[0]==float(kich_r4_material::SHADER_GLOSS_MAP|kich_r4_material::SHADER_MODEL_MAPS),"HUD without a basis keeps gloss, never normal mapping");
+    else Require(!d.material_textures[0] && !d.material_textures[1] && constants_drawn.back().material[0]==0,"HUD fallback clears both material slots and flags, never decodes checker as normal");
     Require(!h.models.hud_recorded_draws,"record off skips HUD numeric diagnostic collection");
 }}
 void WatchActualBindings(){Harness h;Require(h.Start()==0,"watch production model setup");auto mesh=MaterialMesh();const auto material=CutoutMaterial();SeedTextures(h,material);

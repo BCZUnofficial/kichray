@@ -44,11 +44,12 @@ void Ranges(){
         Require(SelectDrawRange(s,d,std::numeric_limits<float>::quiet_NaN()).count==6,"nonfinite LOD preserves maximum detail");}
     Require(SelectDrawRange(s,s.draws[0],0).count==3,"ordinary static geometry remains unchanged");
     Scene attributes;Materials(View(f.level),attributes);Vertices(View(f.geometry),attributes);
-    for(size_t i=0;i<attributes.vertices[0].vertices.size();++i)attributes.vertices[0].vertices[i].attributes=7;
-    attributes.vertices[0].vertices[6].attributes=1;
+    // P0-S11: N/T/B follow any vertex of the range; UV1 still intersects.
+    for(size_t i=0;i<attributes.vertices[0].vertices.size();++i)attributes.vertices[0].vertices[i].attributes=15;
+    attributes.vertices[0].vertices[6].attributes=7;
     Visuals(View(f.level),Indices(View(f.geometry)),TreeWindows(View(f.geometry)),attributes);
-    Require(SelectDrawRange(attributes,attributes.draws[1],1).available_attributes==1 &&
-        SelectDrawRange(attributes,attributes.draws[1],0).available_attributes==7,"attributes follow the selected range, not unrelated high-LOD vertices");
+    Require(SelectDrawRange(attributes,attributes.draws[1],1).available_attributes==7 &&
+        SelectDrawRange(attributes,attributes.draws[1],0).available_attributes==15,"attributes follow the selected range, not unrelated high-LOD vertices");
 
     fixture::Level bad=f;Span ib=Chunk(View(bad.geometry),10);const size_t offset=static_cast<size_t>(ib.p-bad.geometry.data())+8;
     bad.geometry[offset+9*2]=2;bool rejected=false;try{Scene out;Parse(View(bad.level),View(bad.geometry),out);}catch(const std::runtime_error&){rejected=true;}

@@ -77,6 +77,9 @@ void Frame(){
             Require(d.state.blend_enable && d.state.source_blend==2 && d.state.dest_blend==2,"ordinary glow retains authored additive blend");}}
     Require(sources==1 && glows==1 && lenses==1 && emissives==1 && folded[0]==1 && folded[1]==1,"optical and textured emissive sources draw once, without an extra E4 overlay or local-light replay");
     Require(sky_at<source_at && source_at<combine_at && combine_at<clouds_at && clouds_at<glow_at,"sky -> source -> combine -> clouds -> ordinary glow ordering");
+    // P0-S11: albedo overlays are withdrawn only where albedo carries a diagnostic.
+    for(unsigned view=0;view<kich_r4_optics::DebugViewCount;++view)
+        Require(kich_r4_optics::AlbedoOverlays(view)==(view!=6 && view!=9),"wallmarks stay in ALBEDO and lit views, never over BAKED_RGB/SOURCE_NORMAL");
     for(unsigned mode=6;mode<kich_r4_optics::DebugViewCount;++mode){
         draw_entries.clear();draw_descriptions.clear();draw_constants.clear();draw_passes.clear();
         const KichR4FrameColor clear={sizeof(clear),{0,0,0,1}};Require(game.frame.BeginClear(clear)==0,"begin diagnostic frame");

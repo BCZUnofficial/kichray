@@ -4,8 +4,10 @@
 #include "RenderSnapshot.h"
 #include "KichR4ShadowPoolPolicy.h"
 #include "KichR4LocalShadowPlan.h"
+#include "KichR4FaceAdmission.h"
 #include "KichR4LightTransitions.h"
 #include "KichR4RecordControl.h"
+#include "KichR4QueueProfile.h"
 #include <memory>
 #include <cstdio>
 #include <unordered_map>
@@ -20,6 +22,7 @@ struct FrozenLighting {
     std::unordered_map<uint64_t,uint32_t> shadow_size_history;
     std::unique_ptr<kich_r4_light_transitions::Tracker> transitions;
     std::unique_ptr<kich_r4_light_admission::Policy> admission;
+    std::unique_ptr<kich_r4_face_admission::Policy> faces; // P0-S11 per source and face
     uint64_t diagnostic_epoch;bool diagnostics,diagnostic_failed;
     float camera[3];uint32_t frame;bool ready;
     FrozenLighting():diagnostic_epoch(0),diagnostics(false),diagnostic_failed(false),camera(),frame(0),ready(false){}
@@ -33,6 +36,7 @@ void SyncLightingDiagnostics(){
     // Clear only report counters. Visibility admission and resolution history
     // remain live rendering policy with recording either on or off.
     if(frozen_lighting.admission)frozen_lighting.admission->Reported();
+    if(frozen_lighting.faces)frozen_lighting.faces->Reported();
 }
 template<class F>void GuardCapture(F action){if(!capture)return;try{action(*capture);}
     catch(const std::exception& e){try{capture->frame.Fail(e.what());}catch(...) {}}
@@ -59,28 +63,33 @@ void KichR4_CaptureLightProjector(const void* id,const KichR4LightProjector& sou
 void KichR4_CaptureLightForget(const void* id){if(!capture)return;
     if(frozen_lighting.admission){KichR4LightIdentity source={};const auto found=capture->light_sources.find(id);
         if(found!=capture->light_sources.end())source=found->second;else source.process_handle=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(id));
-        frozen_lighting.admission->Forget(source);}
+        frozen_lighting.admission->Forget(source);
+        if(frozen_lighting.faces)frozen_lighting.faces->Forget(kich_r4_face_admission::SourceKey(source));}
     capture->lights.erase(id);capture->light_sources.erase(id);capture->light_projectors.erase(id);capture->unshadowed_lights.erase(id);capture->light_observations.erase(id);}
 void KichR4_CaptureLightShadow(const void* id,bool shadow){if(!capture)return;if(shadow)capture->unshadowed_lights.erase(id);else capture->unshadowed_lights.insert(id);}
 void KichR4_SetLightVisibility(KichR4LightVisibility query){light_visibility=query;}
 void KichR4_SetShadowBoxVisibility(bool (*query)(const float*,const float*,const float*)){shadow_box_visibility=query;}
 namespace {
 // P0-S7: visible faces and own size of every shadowed light (KichR4LocalShadowPlan.h).
-void PlanLocalShadows(const float* camera,const float* camera_vp,KichR4LightingFrame& frame,std::unordered_map<uint64_t,uint32_t>& history){
+// P0-S11: faces pass the per-source/face admission history first (faces may be NULL).
+void PlanLocalShadows(const float* camera,const float* camera_vp,KichR4LightingFrame& frame,std::unordered_map<uint64_t,uint32_t>& history,kich_r4_face_admission::Policy* faces){
     using namespace kich_r4_local_shadow;
-    frame.shadow_faces.assign(frame.count,0);frame.shadow_sizes.assign(frame.count,0);
+    frame.shadow_faces.assign(frame.count,0);frame.shadow_sizes.assign(frame.count,0);frame.shadow_face_reasons.assign(size_t(frame.count)*6,FaceNone);
     float forward[3];const bool forward_valid=camera_vp && Forward(camera_vp,forward);
-    std::vector<uint32_t> masks(frame.count,0),sizes(frame.count,0);
+    std::vector<uint32_t> masks(frame.count,0),sizes(frame.count,0);std::vector<int32_t> tickets(frame.count,-1);
     std::unordered_map<uint64_t,uint32_t> next;
     // P0-S9 r4_lamp_shadows 0: no face is rendered; every face reads lit.
     for(uint32_t i=0;i<frame.count;++i){if(!frame.CastsShadow(i) || !frame.local_shadows)continue;const KichR4LocalLight& l=frame.lights[i];
-        masks[i]=FaceMask(l,camera,camera_vp,shadow_box_visibility);if(!masks[i])continue;
-        const KichR4LightIdentity& id=frame.sources[i];const uint64_t key=id.serial?id.serial:id.process_handle^0x8000000000000000ull;
+        const uint64_t key=kich_r4_face_admission::SourceKey(frame.sources[i]);uint8_t* reasons=&frame.shadow_face_reasons[size_t(i)*6];
+        masks[i]=FaceTest(l,camera,camera_vp,shadow_box_visibility,reasons);
+        if(faces)masks[i]=faces->Admit(key,l,reasons,tickets[i]);
+        if(!masks[i])continue;
         const auto found=history.find(key);
         sizes[i]=SizeClass(R2Size(l,camera,forward_valid?forward:NULL,frame.local_shadow_quality),found!=history.end()?found->second:0);
         next[key]=sizes[i];}
     FitBudget(sizes,masks);
-    for(uint32_t i=0;i<frame.count;++i){frame.shadow_faces[i]=static_cast<uint8_t>(masks[i]);frame.shadow_sizes[i]=sizes[i];}
+    for(uint32_t i=0;i<frame.count;++i){frame.shadow_faces[i]=static_cast<uint8_t>(masks[i]);frame.shadow_sizes[i]=sizes[i];
+        if(faces)faces->Final(tickets[i],masks[i],sizes[i],&frame.shadow_face_reasons[size_t(i)*6]);}
     // Unplanned sources (left the frame or the frustum) restart their class.
     history.swap(next);
 }
@@ -95,6 +104,7 @@ void KichR4_CaptureLighting(const float* camera,KichR4LightingFrame& frame,bool 
 void KichR4_ResetFrozenLighting(){frozen_lighting.ready=false;frozen_lighting.resolution.Reset();frozen_lighting.shadow_size_history.clear();
     frozen_lighting.diagnostic_failed=false;
     if(frozen_lighting.admission)frozen_lighting.admission->Reset();
+    if(frozen_lighting.faces)frozen_lighting.faces->Reset();
     if(frozen_lighting.transitions)frozen_lighting.transitions->Reset();}
 bool KichR4_CopyFrozenLighting(uint32_t engine_frame,const float* camera,const float* camera_vp,KichR4LightingFrame& out){
     if(!capture || !frozen_lighting.ready || frozen_lighting.frame!=engine_frame || !camera || !camera_vp ||
@@ -117,8 +127,10 @@ void KichR4_FreezeLighting(uint32_t engine_frame,uint32_t now_ms,const float* ca
         // an empty lighting frame. Legacy/AI snapshots retain their own policy.
         if(!frozen_lighting.admission)frozen_lighting.admission.reset(new kich_r4_light_admission::Policy());
         frozen_lighting.admission->Begin(engine_frame,now_ms);
+        if(!frozen_lighting.faces)frozen_lighting.faces.reset(new kich_r4_face_admission::Policy());
+        frozen_lighting.faces->Begin(engine_frame,now_ms,frame.face_hold_ms);
         c.SelectLights(camera,frame,r1_lights_enabled,camera_vp,light_visibility,frozen_lighting.admission.get());
-        PlanLocalShadows(camera,camera_vp,frame,frozen_lighting.shadow_size_history);
+        PlanLocalShadows(camera,camera_vp,frame,frozen_lighting.shadow_size_history,frozen_lighting.faces.get());
         uint32_t faces=0;
         for(uint32_t i=0;i<frame.count;++i)if(frame.CastsShadow(i))faces+=frame.lights[i].type==2?1:6;
         kich_r4_shadow_pool::ResolutionPolicy next=frozen_lighting.resolution;
@@ -135,7 +147,7 @@ void KichR4_FreezeLighting(uint32_t engine_frame,uint32_t now_ms,const float* ca
         if(frozen_lighting.diagnostics && !frozen_lighting.diagnostic_failed){
             try{frozen_lighting.transitions->Observe(frozen_lighting.value);}
             catch(...){frozen_lighting.diagnostic_failed=true;}}
-        frozen_lighting.admission->Commit();
+        frozen_lighting.admission->Commit();frozen_lighting.faces->Commit();
         frozen_lighting.resolution=next;memcpy(frozen_lighting.camera,camera,sizeof(frozen_lighting.camera));
         frozen_lighting.frame=engine_frame;frozen_lighting.ready=true;
     });
@@ -175,6 +187,21 @@ void KichR4_ReportLightingTransitions(uint32_t engine_frame,void (*log)(const ch
                 kich_r4_light_transitions::Name(event.from),kich_r4_light_transitions::Name(event.to));
             log(text);
         }
+        // P0-S11: reported only when a face was occluded, held, cut or changed.
+        if(frozen_lighting.faces && (frozen_lighting.faces->window.raw_occluded || frozen_lighting.faces->window.budget || frozen_lighting.faces->window.transitions ||
+            frozen_lighting.faces->window.size_changes || frozen_lighting.faces->window.restarts || frozen_lighting.faces->event_count)){
+            const kich_r4_face_admission::Policy& faces=*frozen_lighting.faces;const kich_r4_face_admission::Counts& w=faces.window;
+            snprintf(text,sizeof(text),"[R4 P0-S11 faces] frame=%u hold_ms=%u faces=%llu hom_occluded=%llu held=%llu hom_dropped=%llu outside_frustum=%llu budget_dropped=%llu admission_transitions=%llu size_changes=%llu history_restarts=%llu tracked_sources=%u events=%u events_omitted=%llu; window_since_last_report",
+                engine_frame,frame.face_hold_ms,static_cast<unsigned long long>(w.faces),static_cast<unsigned long long>(w.raw_occluded),static_cast<unsigned long long>(w.held),
+                static_cast<unsigned long long>(w.occluded),static_cast<unsigned long long>(w.frustum),static_cast<unsigned long long>(w.budget),static_cast<unsigned long long>(w.transitions),
+                static_cast<unsigned long long>(w.size_changes),static_cast<unsigned long long>(w.restarts),unsigned(faces.Tracked()),faces.event_count,static_cast<unsigned long long>(faces.events_omitted));
+            log(text);
+            for(unsigned i=0;i<faces.event_count;++i){const kich_r4_face_admission::Event& e=faces.events[i];
+                if(e.face==255)snprintf(text,sizeof(text),"[R4 P0-S11 face_size] frame=%u source=%llu size=%u->%u",e.frame,static_cast<unsigned long long>(e.source),e.size_from,e.size_to);
+                else snprintf(text,sizeof(text),"[R4 P0-S11 face_transition] frame=%u source=%llu face=%u from=%s to=%s size=%u->%u",e.frame,static_cast<unsigned long long>(e.source),unsigned(e.face),
+                    kich_r4_local_shadow::FaceReasonName(e.from),kich_r4_local_shadow::FaceReasonName(e.to),e.size_from,e.size_to);
+                log(text);}
+            frozen_lighting.faces->Reported();}
         tracker.Reported();
         frozen_lighting.admission->Reported();
     }catch(...){frozen_lighting.diagnostic_failed=true;}
@@ -182,6 +209,13 @@ void KichR4_ReportLightingTransitions(uint32_t engine_frame,void (*log)(const ch
 void KichR4_CaptureLightingDiagnostics(const float* camera,const KichR4LightingFrame& frame){
     if(!g_render_snapshot_active || !capture)return;
     try{capture->SnapshotLights(camera,frame);}catch(...){RenderSnapshot_Text("TELEMETRY_LOSS","light_registry","ALLOCATION_FAILED");}
+    if(frozen_lighting.faces){const kich_r4_face_admission::Counts& c=frozen_lighting.faces->last;
+        RenderSnapshot_U64("SHADOW_FACES","hold_ms",frame.face_hold_ms);RenderSnapshot_U64("SHADOW_FACES","faces",c.faces);
+        RenderSnapshot_U64("SHADOW_FACES","hom_occluded",c.raw_occluded);RenderSnapshot_U64("SHADOW_FACES","held",c.held);RenderSnapshot_U64("SHADOW_FACES","hom_dropped",c.occluded);
+        RenderSnapshot_U64("SHADOW_FACES","outside_frustum",c.frustum);RenderSnapshot_U64("SHADOW_FACES","budget_dropped",c.budget);
+        RenderSnapshot_U64("SHADOW_FACES","admission_transitions",c.transitions);RenderSnapshot_U64("SHADOW_FACES","size_changes",c.size_changes);
+        RenderSnapshot_U64("SHADOW_FACES","history_restarts",c.restarts);RenderSnapshot_U64("SHADOW_FACES","tracked_sources",frozen_lighting.faces->Tracked());
+        RenderSnapshot_Text("SHADOW_FACES","policy","PER_SOURCE_FACE; HOM_OCCLUDED_HELD_UNTIL_HOLD_MS_AND_2_FRAMES; COLD_OCCLUDED_DROPPED; FRUSTUM_AND_BUDGET_NOT_HELD; HELD_FACE_RENDERED_WITH_CURRENT_CASTERS");}
 }
 const kich_r4_capture::Batch* KichR4_CapturedFrame(){return capture?&capture->frame:NULL;}
 void KichR4_CaptureEnable(bool enabled,void (*log)(const char*)){if(enabled){if(!capture)try{capture=new kich_r4_capture::State();}catch(...) {}if(capture)capture->log=log;}
@@ -215,7 +249,12 @@ bool KichR4_CaptureModelNeeded(void* visual,uint32_t& bones){bool needed=false;b
             return;}
         if(found->second.mesh){bones=found->second.mesh->bones;needed=true;}});return needed;
 }
-void KichR4_CaptureSubmitModel(const kich_r4_capture::ModelInput& input){GuardCapture([&](kich_r4_capture::State& c){
+void KichR4_CaptureSubmitModel(const kich_r4_capture::ModelInput& input){
+    // P0-S11 PERF02 queue profile: model capture, calls, palette bones, duplicates.
+    kich_r4_queue::Scope scope(kich_r4_queue::ModelCapture);kich_r4_queue::Global().Count(kich_r4_queue::ModelCalls);kich_r4_queue::Global().Count(kich_r4_queue::ModelBones,input.bone_count);
+    const uint64_t duplicates=capture?capture->frame.native_model_duplicates:0;
+    struct Duplicates {uint64_t before;~Duplicates(){if(capture && capture->frame.native_model_duplicates>before)kich_r4_queue::Global().Count(kich_r4_queue::ModelDuplicates,capture->frame.native_model_duplicates-before);}} counted={duplicates};
+    GuardCapture([&](kich_r4_capture::State& c){
     using namespace kich_r4_capture;const std::map<const void*,Entry>::const_iterator found=c.models.find(input.visual);
     Check(found!=c.models.end() && found->second.mesh,"model registration changed during capture");
     Matrix world,vp;memcpy(world.m,input.world,sizeof(world));memcpy(vp.m,input.vp,sizeof(vp));

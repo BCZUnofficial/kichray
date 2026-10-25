@@ -8,6 +8,7 @@
 #include "KichR4FrameMetrics.h"
 #include "KichR4TexturePolicy.h"
 #include "KichR4MipGen.h"
+#include "KichR4TextureIO.h"
 #include <map>
 #include <set>
 #include <stdio.h>
@@ -41,6 +42,19 @@ struct KichR4LevelSession {
         return out.empty()?NULL:&out;
     }
     KichR4Handle white,checker,neutral_cube,material_lut=0;
+    // P0-S11 PERF01 background DDS reads (KichR4TextureIO.h): native only and
+    // r4_dds_async 1. World roles (EFFECT and below) are read off the frame;
+    // UI/HUD and precache/loading frames (texture_sync) stay synchronous. While
+    // bytes are in flight a draw gets Transitional(role), never a disk read.
+    kich_r4_texture_io::Loader* texture_io=NULL;bool texture_sync=false;
+    KichR4Handle transparent=0; // 1x1 (0,0,0,0): pending effects and shadow alpha
+    struct AsyncCounters {uint64_t requests=0,staged=0,staged_bytes=0,waiting=0,transitional=0,failures=0;
+        void Add(const AsyncCounters& o){requests+=o.requests;staged+=o.staged;staged_bytes+=o.staged_bytes;waiting+=o.waiting;transitional+=o.transitional;failures+=o.failures;}};
+    AsyncCounters async_window; // since the last recorder report
+    bool AsyncRole(uint32_t role)const{return texture_io && files.locate && !texture_sync && role>kich_r4_texture::HUD;}
+    KichR4Handle Transitional(uint32_t role)const{using namespace kich_r4_texture;
+        if(role==EFFECT || role==SHADOW_ALPHA)return transparent?transparent:checker;
+        return role==BASE?white:checker;} // optional maps: checker = "no map" for every consumer
     uint32_t textures_loaded,texture_fallbacks,budget_skips,frames,visible,culled,camera_steps,revision,cull,depth;
     uint64_t texture_bytes,submitted_triangles,submitted_draws;
     double texture_io_ms=0,texture_parse_ms=0,texture_create_ms=0;
@@ -52,6 +66,7 @@ struct KichR4LevelSession {
         double traversal_ms=0,planning_ms=0,commit_ms=0,io_ms=0,parse_ms=0,upload_ms=0;
         uint64_t opens=0,open_failures=0,source_bytes=0,prepared_hits=0,prepared_bytes=0;
         uint64_t metadata_hits=0,retry_skips=0,resident_hits=0,uploads=0,upload_bytes=0,upload_failures=0,evictions=0;
+        AsyncCounters async; // P0-S11, this frame
     } preflight_probe;
     PreflightProbe* texture_probe=NULL;
     bool texture_measure_snapshot=false;
@@ -78,7 +93,8 @@ struct KichR4LevelSession {
     void Continue(){if(keep_going && !keep_going(progress_context))throw Cancel();}
     uint64_t PreparedTextureLimit()const{return (std::min)(UINT64_C(32)*1024*1024,texture_registry.budget/8);}
     void ClearPreparedTextures(){prepared_textures.clear();prepared_texture_bytes=0;prepared_texture_epoch=texture_registry.epoch;}
-    void SyncPreparedTextures(){if(prepared_texture_epoch!=texture_registry.epoch || prepared_texture_bytes>PreparedTextureLimit())ClearPreparedTextures();}
+    // One staged background read may exceed the limit on its own (P0-S11).
+    void SyncPreparedTextures(){if(prepared_texture_epoch!=texture_registry.epoch || (prepared_texture_bytes>PreparedTextureLimit() && prepared_textures.size()>1))ClearPreparedTextures();}
     struct PreparedScope {
         KichR4LevelSession& level;
         explicit PreparedScope(KichR4LevelSession& owner):level(owner){level.SyncPreparedTextures();}
@@ -86,7 +102,7 @@ struct KichR4LevelSession {
     };
     void PrepareTexture(const std::string& key,const KichR4FileView& view){
         SyncPreparedTextures();
-        if(prepared_textures.size()>=128 || view.bytes>PreparedTextureLimit()-prepared_texture_bytes || prepared_textures.count(key))return;
+        if(prepared_textures.size()>=128 || prepared_texture_bytes>=PreparedTextureLimit() || view.bytes>PreparedTextureLimit()-prepared_texture_bytes || prepared_textures.count(key))return;
         // This cache is optional: allocation pressure keeps the established
         // reopen-at-upload path, rather than failing a valid texture request.
         try{std::vector<unsigned char> bytes(view.data,view.data+view.bytes);
@@ -157,6 +173,46 @@ struct KichR4LevelSession {
             if(opened)++texture_probe->open_failures;else texture_probe->source_bytes+=file.view.bytes;}
         return opened;
     }
+    // P0-S11: OpenTexture's alias order, as a lookup only (no read).
+    int32_t LocateTexture(const std::string& name,KichR4FileLocation& where){
+        std::string path=name;if(path.size()<4 || kich_r4_level::Lower(path.substr(path.size()-4))!=".dds")path+=".dds";
+        if(texture_override){const bool absolute=name.find(':')!=std::string::npos || name[0]=='\\' || name[0]=='/';
+            if(absolute)return files.locate("$r4_absolute$",path.c_str(),&where);
+            int32_t found=files.locate("$level$",path.c_str(),&where);if(found!=0)found=files.locate("$game_saves$",path.c_str(),&where);
+            return found!=0?files.locate("$game_textures$",path.c_str(),&where):found;}
+        return files.locate("$game_textures$",path.c_str(),&where);
+    }
+    enum AsyncStage {Staged,Waiting,Synchronous};
+    void CountAsync(uint64_t AsyncCounters::* field,uint64_t n=1){async_window.*field+=n;if(texture_probe)texture_probe->async.*field+=n;}
+    // Staged: the bytes are in prepared_textures for this epoch. Waiting: a
+    // background read is queued or in flight (entry pending). Synchronous: no
+    // location or a failed read; the established open path decides.
+    AsyncStage StageAsync(const std::string& key,kich_r4_texture::Entry& e){
+        if(prepared_textures.count(key))return Staged;
+        uint64_t size=0;const kich_r4_texture_io::Status status=texture_io->Query(key,&size);
+        if(status==kich_r4_texture_io::Failed){std::vector<unsigned char> bytes;int32_t hr=0;texture_io->Take(key,bytes,hr);CountAsync(&AsyncCounters::failures);
+            if(async_window.failures<=8)Write("[R4 P0-S11 dds_async] background read failed: %s HRESULT=0x%08X; synchronous read",e.source.c_str(),static_cast<uint32_t>(hr));
+            return Synchronous;}
+        if(status==kich_r4_texture_io::Ready){
+            // Bounded like the prepared cache, but one read always fits.
+            if(!prepared_textures.empty() && (prepared_textures.size()>=128 || prepared_texture_bytes>=PreparedTextureLimit() || size>PreparedTextureLimit()-prepared_texture_bytes)){
+                e.pending=texture_registry.epoch;CountAsync(&AsyncCounters::waiting);return Waiting;}
+            std::vector<unsigned char> bytes;int32_t hr=0;texture_io->Take(key,bytes,hr);
+            prepared_texture_bytes+=bytes.size();CountAsync(&AsyncCounters::staged);CountAsync(&AsyncCounters::staged_bytes,bytes.size());
+            prepared_textures[key].swap(bytes);return Staged;}
+        if(status==kich_r4_texture_io::Absent){KichR4FileLocation where;if(LocateTexture(e.source,where)!=0)return Synchronous;
+            texture_io->Request(key,where,e.role,texture_registry.epoch);CountAsync(&AsyncCounters::requests);}
+        e.pending=texture_registry.epoch;CountAsync(&AsyncCounters::waiting);return Waiting;
+    }
+    // Optional: without it pending effects fall back to the checker.
+    int32_t TransparentPlaceholder(KichR4FrameSession& s){
+        std::vector<unsigned char> d(128+4,0);
+        Put32(d,0,0x20534444);Put32(d,4,124);Put32(d,8,0x100f);Put32(d,12,1);Put32(d,16,1);Put32(d,20,4);
+        Put32(d,76,32);Put32(d,80,0x41);Put32(d,88,32);Put32(d,92,0xff);Put32(d,96,0xff00);Put32(d,100,0xff0000);Put32(d,104,0xff000000);Put32(d,108,0x1000);
+        const KichR4DdsDesc desc={sizeof(desc),1,0};KichR4Handle loaded=0;
+        const int32_t hr=api.create_texture_dds(s.device,&desc,d.data(),static_cast<uint32_t>(d.size()),&loaded);
+        if(hr==0 && loaded)transparent=loaded;else if(loaded)bridge.resources.release_resource(s.device,loaded);
+        return hr;}
     static void TextureLevels(kich_r4_texture::Entry& entry,const kich_r4_dds::Image& image){
         entry.faces=image.faces;entry.levels.clear();uint64_t remaining=kich_r4_dds::UploadBytes(image);
         uint32_t w=image.width,h=image.height;
@@ -176,8 +232,28 @@ struct KichR4LevelSession {
         kich_r4_texture::Entry& e=texture_registry.entries[key];
         if(e.source.empty())e.source=name;
         e.role=e.wanted==texture_registry.epoch?(std::min)(e.role,role):role;e.wanted=texture_registry.epoch;
+        // P0-S11: a non-resident world texture is read in the background. A
+        // later UI/HUD demand in the same epoch reverts it to the synchronous
+        // path; a budget-denied one keeps it (planned_denied is the rare case).
+        const bool async=AsyncRole(e.role) && !e.handle && e.retry<=texture_registry.epoch && e.reason!=kich_r4_texture::BudgetPressure;
+        if(!async)e.pending=0;
         if(!e.levels.empty() || e.retry>texture_registry.epoch){if(texture_probe){
-            if(!e.levels.empty())++texture_probe->metadata_hits;else ++texture_probe->retry_skips;}return;}
+            if(!e.levels.empty())++texture_probe->metadata_hits;else ++texture_probe->retry_skips;}
+            if(async && !e.levels.empty() && StageAsync(key,e)==Synchronous)e.pending=0; // bytes for the upload only
+            return;}
+        if(async){const AsyncStage stage=StageAsync(key,e);
+            if(stage==Waiting)return;
+            if(stage==Staged){const auto started=kich_r4_metrics::Start(texture_measure_snapshot);
+                const std::vector<unsigned char>& bytes=prepared_textures[key];kich_r4_dds::Image image={};
+                const bool parsed=kich_r4_dds::Parse(bytes.data(),static_cast<uint32_t>(bytes.size()),16384,image);
+                const std::vector<unsigned char>* mips=parsed?GeneratedMips(key,bytes.data(),static_cast<uint32_t>(bytes.size())):NULL;
+                if(mips && kich_r4_dds::Parse(mips->data(),static_cast<uint32_t>(mips->size()),16384,image))TextureLevels(e,image);
+                else if(parsed)TextureLevels(e,image);
+                else{e.reason=kich_r4_texture::InvalidLayout;e.failure=KICH_R4_E_UNSUPPORTED;e.retry=texture_registry.epoch+300;
+                    prepared_texture_bytes-=bytes.size();prepared_textures.erase(key);}
+                const double elapsed=kich_r4_metrics::Elapsed(started);texture_parse_ms+=elapsed;if(texture_probe)texture_probe->parse_ms+=elapsed;
+                return;}
+            e.pending=0;} // Synchronous
         kich_r4_level::File file(files);const int32_t opened=OpenTexture(file,e.source);
         const auto started=kich_r4_metrics::Start(texture_measure_snapshot);kich_r4_dds::Image image={};
         const bool parsed=opened==0 && kich_r4_dds::Parse(file.view.data,file.view.bytes,16384,image);
@@ -189,6 +265,7 @@ struct KichR4LevelSession {
     }
     int32_t CommitTexturePlan(KichR4FrameSession& s,bool pump_loading=false){
         PreparedScope prepared(*this);try{
+        if(texture_io)texture_io->Expire(texture_registry.epoch,600); // reads nobody took for ~10 s
         const auto planning_started=kich_r4_metrics::Start(texture_measure_snapshot);
         texture_registry.Plan();uint64_t required=0;
         auto release=[&](uint64_t h){const int32_t hr=bridge.resources.release_resource(s.device,h);if(hr<0)s.Record("E1.2 texture residency release",hr);return hr;};
@@ -224,6 +301,8 @@ struct KichR4LevelSession {
         // cooldown when this ordered admission explicitly requests a retry.
         if(retry_budget && entry.reason==kich_r4_texture::BudgetPressure)entry.retry=0;
         if(entry.retry>texture_registry.epoch){if(texture_probe)++texture_probe->retry_skips;return checker;}
+        // P0-S11: bytes still in flight: a stand-in this frame, never a disk read.
+        if(entry.pending==texture_registry.epoch && !prepared_textures.count(key)){CountAsync(&AsyncCounters::transitional);return Transitional(entry.role);}
         KichR4Handle result=checker;kich_r4_level::File file(files);std::vector<unsigned char> prepared;
         TakePreparedTexture(key,prepared);
         const int32_t opened=prepared.empty()?OpenTexture(file,name):KICH_R4_OK;auto measured=kich_r4_metrics::Start(texture_measure_snapshot);
@@ -267,6 +346,7 @@ struct KichR4LevelSession {
     }
     int32_t Start(KichR4FrameSession& s,const char* name){try{
         ClearPreparedTextures();mip_requests.clear();generated_mips.clear(); // build_details is per level
+        if(texture_io)texture_io->Clear(); // P0-S11: no read of the previous level survives
         const auto started=kich_r4_metrics::Start(texture_measure_snapshot);auto measured=started;double io_ms=0,parse_ms=0;
         Continue();kich_r4_level::Check(files.open && files.close,"engine filesystem adapter unavailable");
         kich_r4_level::Check(name && kich_r4_level::SafeName(name) && strlen(name)<64 && !strchr(name,'\\') && !strchr(name,'/'),"invalid level name");
@@ -280,6 +360,7 @@ struct KichR4LevelSession {
         }
         Write("[R4 bridge B4.2] level=%s; visuals=%u static_meshes=%u trees=%u skipped_nodes=%u triangles=%u; CPU geometry=%u MiB",
             name,scene.visuals,static_cast<uint32_t>(scene.draws.size()),scene.trees,scene.skipped,scene.triangles,static_cast<uint32_t>(scene.cpu_bytes/(1024u*1024u)));
+        Write("[R4 P0-S11 basis] level=%s; rejected_source_tbn=%u repaired=%u geometric_normal_vertices=%u",name,scene.basis_rejected,scene.basis_repaired,scene.basis_unrecoverable);
         camera.Reset(scene.low,scene.high);
         if(Compile(s,KICH_R4_VERTEX_SHADER,kich_r4_level::VertexShader(),&bridge.vs)<0 || Compile(s,KICH_R4_PIXEL_SHADER,kich_r4_level::PixelShader(),&bridge.ps)<0)return s.failure;
         kich_r4_scene::Constants initial={};initial.mvp=kich_r4_scene::Identity();initial.tint[0]=initial.tint[1]=initial.tint[2]=1;

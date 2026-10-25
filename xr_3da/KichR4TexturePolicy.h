@@ -26,7 +26,10 @@ struct Entry {
     uint32_t reason,width,height,mips,faces;
     std::string source;std::vector<Mip> levels;
     uint64_t wanted,planned;uint32_t role,choice,resident;
-    Entry():handle(0),bytes(0),touched(0),retry(0),failure(0),reason(Ready),width(0),height(0),mips(0),faces(0),wanted(0),planned(0),role(SHADOW_ALPHA),choice(0),resident(0){}
+    // P0-S11: epoch whose bytes are still being read in the background; such
+    // an entry is neither planned nor uploaded this epoch.
+    uint64_t pending;
+    Entry():handle(0),bytes(0),touched(0),retry(0),failure(0),reason(Ready),width(0),height(0),mips(0),faces(0),wanted(0),planned(0),role(SHADOW_ALPHA),choice(0),resident(0),pending(0){}
 };
 // Pins last for the complete submission epoch, including all material slots.
 // Consumers store source names, never these evictable handles.
@@ -40,7 +43,7 @@ struct Registry {
         planned_bytes=0;planned_sources=planned_downgrades=planned_denied=0;
         std::vector<Entry*> work;
         for(auto i=entries.begin();i!=entries.end();++i){Entry& e=i->second;
-            if(e.wanted!=epoch || e.levels.empty() || (e.retry>epoch && e.reason!=BudgetPressure))continue;
+            if(e.wanted!=epoch || e.levels.empty() || e.pending==epoch || (e.retry>epoch && e.reason!=BudgetPressure))continue;
             e.planned=epoch;e.choice=e.resident;
             // Do not oscillate between full-size and reduced uploads on a
             // stationary camera. A retained mip is the starting quality floor.

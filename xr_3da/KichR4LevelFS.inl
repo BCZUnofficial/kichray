@@ -21,5 +21,26 @@ void KichR4_CloseLevelFile(KichR4FileView* view)
     if(reader)FS.r_close(reader);
     view->data=0;view->bytes=0;view->owner=0;
 }
-const KichR4LevelFiles kich_r4_level_files={KichR4_OpenLevelFile,KichR4_CloseLevelFile};
+// P0-S11: the lookup r_open performs (lower-case name, alias path, file
+// record), without opening, mapping or decompressing anything.
+int32_t KichR4_LocateFile(const char* full,const CLocatorAPI::file* f,KichR4FileLocation* out)
+{
+    if(!f || !full)return static_cast<int32_t>(0x80070002u);
+    if(!f->size_real || f->size_real>256u*1024u*1024u)return static_cast<int32_t>(0x80070057u);
+    const char* path=f->vfs==0xffffffff?full:xr_fs_archive_path(FS,f->vfs);
+    if(!path || strlen(path)>=sizeof(out->path))return static_cast<int32_t>(0x80070002u);
+    strcpy_s(out->path,sizeof(out->path),path);
+    if(f->vfs==0xffffffff){out->offset=0;out->stored=out->size=f->size_real;out->compressed=0;}
+    else{out->offset=f->ptr;out->stored=f->size_compressed;out->size=f->size_real;out->compressed=f->size_real!=f->size_compressed?1u:0u;}
+    return 0;
+}
+int32_t KichR4_LocateLevelFile(const char* alias,const char* relative,KichR4FileLocation* out)
+{
+    if(!alias || !relative || !out)return static_cast<int32_t>(0x80070057u);
+    memset(out,0,sizeof(*out));
+    if(!FS.path_exist(alias))return static_cast<int32_t>(0x80070002u);
+    string_path name,full;strcpy_s(name,sizeof(name),relative);xr_strlwr(name);
+    return KichR4_LocateFile(full,FS.exist(full,alias,name),out);
+}
+const KichR4LevelFiles kich_r4_level_files={KichR4_OpenLevelFile,KichR4_CloseLevelFile,0,KichR4_LocateLevelFile};
 }

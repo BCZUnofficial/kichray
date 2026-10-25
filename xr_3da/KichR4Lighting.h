@@ -99,6 +99,15 @@ struct KichR4LightingFrame {
     // (direct/test producers) keeps every lamp at full colour. lamp_faded
     // counts shadowed lamps dropped below LOD 0.001 this selection.
     float lamp_fade[3];uint32_t lamp_faded;
+    // P0-S11 r4_hdr_probe: nonzero records this frame's HDR probe
+    // (KichR4HdrProbe.h) in the log; snapshot frames always record it.
+    uint32_t hdr_probe;
+    // P0-S11 r4_lamp_face_hold: ms an HOM-occluded shadow face stays admitted
+    // (KichR4FaceAdmission.h); 0 drops it at once. shadow_face_reasons holds
+    // count*6 kich_r4_local_shadow::FaceReason codes of the published plan.
+    uint32_t face_hold_ms;std::vector<uint8_t> shadow_face_reasons;
+    // P0-S11 r4_dds_async: world DDS reads leave the frame (KichR4TextureIO.h).
+    uint32_t dds_async;
     bool ShadowPlanned()const{return count && shadow_faces.size()>=count && shadow_sizes.size()>=count;}
     uint32_t ShadowFaceMask(unsigned index)const{
         if(index>=count || index>=lights.size())return 0;
@@ -108,7 +117,7 @@ struct KichR4LightingFrame {
     // entries. Captured frames resize to every visible registry source.
     KichR4LightingFrame():valid(0),count(0),shadow_mask(0),sun_direction(),sun_color(),ambient(),hemi(),fog(),fog_near(0),fog_far(0),fog_valid(0),
         env_ambient(),env_color(),gloss_factor(1),env_valid(0),sun_mode(KICH_R4_SUN_DEFAULT),sunmask(),sunmask_valid(0),sun_contact(),sun_contact_valid(0),sun_basis(),sun_basis_valid(0),sun_shadow_cull(0),sun_shafts(),sun_map_size(2048),sun_far_size(0),lights(8),sources(8),projectors(8),visibility_vp(),visibility_valid(0),r1_lights_requested(0),r1_lights_applied(0),occlusion_enabled(0),occlusion_tested(0),
-        selection_frame(0),local_shadow_size(0),shadow_plan_faces(0),shadow_resolution_changes(0),shadow_resolution_reason(0),local_shadow_quality(1),local_detail_shadows(1),local_shadows(1),shadow_options(32),lamp_fade(),lamp_faded(0){
+        selection_frame(0),local_shadow_size(0),shadow_plan_faces(0),shadow_resolution_changes(0),shadow_resolution_reason(0),local_shadow_quality(1),local_detail_shadows(1),local_shadows(1),shadow_options(32),lamp_fade(),lamp_faded(0),hdr_probe(0),face_hold_ms(100),dds_async(1){
         const float defaults[8]={.3f,3.3f,.7f,1.f,0.f,.75f,.5f,0.f};memcpy(bloom,defaults,sizeof(bloom));
         const float tonemap[5]={0.f,.25f,.001f,5.f,0.f};memcpy(exposure,tonemap,sizeof(exposure));}
     bool CastsShadow(unsigned index)const {

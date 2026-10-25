@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <limits>
 #include <cstdlib>
+#include <cstring>
 #include <new>
 static bool count_allocations=false;
 static size_t allocations=0;
@@ -55,6 +56,26 @@ void PortalsAndWind(){Scene s;s.materials.resize(1);s.vertices.resize(1);s.mater
     Require(plan.Select(kich_r4_scene::Identity(),UINT32_MAX).draws[0],"same topology refits wind bounds each frame");
     s.draws[1].low.x=std::numeric_limits<float>::quiet_NaN();plan.Begin(s,1,0,0);
     Require(plan.Select(kich_r4_scene::Identity(),UINT32_MAX).draws[1],"unknown bounds cannot be hidden by BVH ancestors");
+}
+// P0-S11 VIS01: the repeated decision of one draw names its rule and agrees
+// with the frame selection.
+void Explain(){Scene s;s.materials.resize(1);s.topology.valid=true;s.topology.sectors.resize(3);
+    s.draws={Box(0,0,.5f,.1f),Box(0,0,.5f,.1f),Box(0,0,.5f,.1f),Box(3,3,.5f,.1f),Box(-3,0,.5f,.1f)};s.sector_owned={1,1,1,0,1};
+    s.topology.sectors[0].draws={0,4};s.topology.sectors[1].draws={1};s.topology.sectors[2].draws={2};
+    Portal visible;visible.front=0;visible.back=1;visible.vertices={{-.1f,-.1f,.2f},{.1f,-.1f,.2f},{.1f,.1f,.2f},{-.1f,.1f,.2f}};
+    Portal hidden=visible;hidden.front=1;hidden.back=2;for(auto& v:hidden.vertices)v.x+=5;
+    s.topology.portals={visible,hidden};s.topology.sectors[0].portals={0};s.topology.sectors[1].portals={0,1};s.topology.sectors[2].portals={1};
+    const Matrix vp=kich_r4_scene::Identity();StaticFramePlan plan;plan.Begin(s,1,0,0);const StaticVisibility& frame=plan.Select(vp,0);
+    StaticVisibility traversal;StaticSectorScratch scratch;SelectStaticSectors(s,vp,0,traversal,&scratch);
+    const char* expected[]={"SELECTED","SELECTED","SECTOR_NOT_REACHED","CAMERA_FRUSTUM","CAMERA_FRUSTUM"};
+    for(uint32_t i=0;i<5;++i){const StaticExplanation e=ExplainStatic(s,vp,0,plan.bounds[i],i,scratch,traversal.portal_used);
+        Require(!strcmp(e.reason,expected[i]),"each draw names the rule that decided it");
+        Require((!strcmp(e.reason,"SELECTED"))==(frame.draws[i]!=0),"explanation agrees with the frame selection");}
+    const StaticExplanation far=ExplainStatic(s,vp,0,plan.bounds[2],2,scratch,true);
+    Require(far.owners=="2" && far.reached_owners.empty() && far.portals=="1:1:1:hidden;","unreached owner lists its portal: id, other sector, reached, hidden");
+    const StaticExplanation unowned=ExplainStatic(s,vp,0,plan.bounds[3],3,scratch,true);
+    Require(unowned.owners.empty() && !strcmp(unowned.reason,"CAMERA_FRUSTUM"),"unowned draws are allowed by sectors and fail only the frustum");
+    const StaticExplanation near=ExplainStatic(s,vp,0,plan.bounds[1],1,scratch,true);Require(near.owners=="1" && near.reached_owners=="1","owner reached through the visible portal");
 }
 void Sun(){Scene s;s.materials.resize(1);s.draws.push_back(Box(0,0,.5f,.1f));s.draws.push_back(Box(20,0,.5f,.1f));
     StaticFramePlan plan;plan.Begin(s,1,0,0);const float direction[3]={0,0,1};plan.sun_casters=kich_r4_visibility::BuildSunCasterVolume(kich_r4_scene::Identity(),direction);
@@ -130,4 +151,4 @@ void Reuse(){Scene s;s.materials.resize(1);s.topology.valid=true;s.topology.sect
     Require(plan.view_slots.empty() && plan.views.empty() && plan.allowed.empty(),"level revision releases prior level high-water scratch");
 }
 }
-int main(){try{Spatial();PortalsAndWind();Sun();Holes();Reuse();printf("E1.3/E1.6 shared static frame plan: %u checks passed\n",checks);return 0;}catch(const std::exception& e){count_allocations=false;fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}
+int main(){try{Spatial();PortalsAndWind();Explain();Sun();Holes();Reuse();printf("E1.3/E1.6 shared static frame plan: %u checks passed\n",checks);return 0;}catch(const std::exception& e){count_allocations=false;fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

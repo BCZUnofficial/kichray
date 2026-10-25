@@ -185,8 +185,13 @@ struct KichR4ModelSession {
                 const uint32_t alignment=c.first%3;BasisPartition& part=gpu.basis[alignment];
                 if(part.prefix.empty()){
                     part.prefix.push_back(0);
-                    for(size_t at=alignment;at+2<c.mesh->indices.size();at+=3){bool valid=true;
-                        for(unsigned j=0;j<3;++j)valid=valid && (c.mesh->vertices[c.mesh->indices[at+j]].attributes&basis)==basis;
+                    // P0-S11: a triangle is mapped when any of its vertices has
+                    // a basis. VSModelGPU passes zero T/B for the others and
+                    // the pixel shader falls back only where T or handedness
+                    // vanish; the geometric subset keeps the triangles
+                    // without any basis (dog body: 675 of 7158 indices before).
+                    for(size_t at=alignment;at+2<c.mesh->indices.size();at+=3){bool valid=false;
+                        for(unsigned j=0;j<3;++j)valid=valid || (c.mesh->vertices[c.mesh->indices[at+j]].attributes&basis)==basis;
                         part.prefix.push_back(part.prefix.back()+(valid?3u:0u));}
                     part.good=part.prefix.back();part.bad=static_cast<uint32_t>((part.prefix.size()-1)*3)-part.good;
                 }
@@ -355,13 +360,16 @@ struct KichR4ModelSession {
         const kich_r4_material::Descriptor& material=command.material;std::string fallback;bool dummy=false;
         const bool mapped=kich_r4_material::BindBump(s,level,material,command.available_attributes,
             draw.material_textures[0],draw.material_textures[1],fallback,dummy);
-        constants.material[0]=mapped?float(kich_r4_material::SHADER_BUMP|kich_r4_material::SHADER_MODEL_MAPS):0;
-        if(mapped){draw.material_samplers[0]=material.surface.samplers[1];draw.material_samplers[1]=material.surface.samplers[2];}
+        // P0-S11: without normal mapping the bump still supplies gloss (t8).
+        const bool gloss=!mapped && kich_r4_material::BindGloss(s,level,material,draw.material_textures[0],fallback);
+        constants.material[0]=mapped?float(kich_r4_material::SHADER_BUMP|kich_r4_material::SHADER_MODEL_MAPS):gloss?float(kich_r4_material::SHADER_GLOSS_MAP|kich_r4_material::SHADER_MODEL_MAPS):0;
+        if(mapped || gloss)draw.material_samplers[0]=material.surface.samplers[1];
+        if(mapped)draw.material_samplers[1]=material.surface.samplers[2];
         if(g_render_snapshot_active){char id[64];kich_r4_material::ExecutionID(material,command.available_attributes,uint32_t(constants.material[0]),false,id,sizeof(id));
             using namespace kich_r4_telemetry;Text("HUD_MATERIAL_EXECUTION",id,"resource",command.resource.c_str());
             Text("HUD_MATERIAL_EXECUTION",id,"normal_path",mapped?"SOC_R2_BUMP; WORLD_TBN; MODEL_T8_T9":"GEOMETRIC_NORMAL");
-            Text("HUD_MATERIAL_EXECUTION",id,"gloss_path",mapped?"BUMP_R_SQUARED":"FLAT_2_OVER_255");
-            Text("HUD_MATERIAL_EXECUTION",id,"bump",mapped?material.bump.c_str():"UNBOUND");
+            Text("HUD_MATERIAL_EXECUTION",id,"gloss_path",mapped || gloss?"BUMP_R_SQUARED":"FLAT_2_OVER_255");
+            Text("HUD_MATERIAL_EXECUTION",id,"bump",mapped || gloss?material.bump.c_str():"UNBOUND");
             Text("HUD_MATERIAL_EXECUTION",id,"bump_aux",mapped?(dummy?"ed\\ed_dummy_bump#":material.bump_aux.c_str()):"UNBOUND");
             U64("HUD_MATERIAL_EXECUTION",id,"texture8",draw.material_textures[0]);U64("HUD_MATERIAL_EXECUTION",id,"texture9",draw.material_textures[1]);
             Text("HUD_MATERIAL_EXECUTION",id,"fallback_reason",fallback.empty()?"NONE":fallback.c_str());
@@ -432,12 +440,14 @@ struct KichR4ModelSession {
             const auto partition=mesh.basis.find(c.first%3);
             uint32_t good_first=0,good_count=0,bad_first=0,bad_count=0;
             const uint32_t basis_attributes=kich_r4_material::ATTR_NORMAL|kich_r4_material::ATTR_TANGENT|kich_r4_material::ATTR_BINORMAL;
-            const BasisPartition* split=pass==Geometry && c.has_material && kich_r4_material::Geometry(c.material) && !c.material.bump.empty() &&
-                (c.available_attributes&basis_attributes)!=basis_attributes && partition!=mesh.basis.end() && partition->second.ib &&
-                partition->second.Range(c.first,c.count,good_first,good_count,bad_first,bad_count) && good_count && bad_count?&partition->second:NULL;
+            const bool partitioned=pass==Geometry && c.has_material && kich_r4_material::Geometry(c.material) && !c.material.bump.empty() &&
+                (c.available_attributes&basis_attributes)!=basis_attributes && partition!=mesh.basis.end() &&
+                partition->second.Range(c.first,c.count,good_first,good_count,bad_first,bad_count) && good_count;
+            // Every triangle of the range has a basis vertex: draw it whole, mapped.
+            const BasisPartition* split=partitioned && bad_count && partition->second.ib?&partition->second:NULL;
             uint32_t attributes=c.available_attributes;
-            if(split){attributes|=kich_r4_material::ATTR_NORMAL|kich_r4_material::ATTR_TANGENT|kich_r4_material::ATTR_BINORMAL;
-                state.draw.index_buffer=split->ib;state.draw.start_index=good_first;state.draw.index_count=good_count;}
+            if(split || (partitioned && !bad_count))attributes|=basis_attributes;
+            if(split){state.draw.index_buffer=split->ib;state.draw.start_index=good_first;state.draw.index_count=good_count;}
             if(c.has_material && (pass==Geometry || pass==Shadow))kich_r4_material::Bind(s,l,c.material,attributes,constants,d.surface,pass==Shadow,false,c.object_light_valid && pass==Geometry?kich_r4_material::SHADER_SUN:0,"MODEL_MATERIAL_EXECUTION");
             if(c.has_material && (pass==HUD || pass==HUDAdd) && state.draw.pipeline!=plain_pipeline[command_classes[index]])BindHUDMaterial(s,l,c,constants,d);
             if(pass==Forward || pass==ForwardAdd || pass==HUD || pass==HUDAdd){const KichR4Handle lut=l.MaterialLut(s);if(!lut)return s.failure;kich_r4_material_lut::Bind(d.surface,lut);}
@@ -465,8 +475,13 @@ struct KichR4ModelSession {
             if(kich_r4_record::Enabled())kich_r4_watch::Global().ObserveModel(c,unsigned(pass),constants,d.surface,split!=NULL,state.draw.pipeline==plain_pipeline[command_classes[index]]);
             if(pass==Shadow)if(kich_r4_shadow_record::Pass* recorded=kich_r4_shadow_record::Active())recorded->Submitted(kich_r4_shadow_record::Model,recorded->signatures?c.visual_id^kich_r4_shadow_record::Mix(c.lifecycle_serial):0,c.first,c.count,c.identity_measured && c.visual_id!=0);
             if(split){const bool mapped=(uint32_t(constants.material[0])&kich_r4_material::SHADER_BUMP)!=0;state.draw.start_index=bad_first;state.draw.index_count=bad_count;
-                constants.material[0]=float(uint32_t(constants.material[0])&~kich_r4_material::SHADER_BUMP);d.surface.textures[1]=d.surface.textures[2]=0;
-                if(g_render_snapshot_active){RenderSnapshot_Texture(1,"UNBOUND");RenderSnapshot_Texture(2,"UNBOUND");}
+                // P0-S11: the geometric subset keeps the authored gloss (bump R^2):
+                // only normal mapping is withdrawn, the bump stays bound at t1.
+                const uint32_t flags=uint32_t(constants.material[0]);
+                const bool gloss=(flags&(kich_r4_material::SHADER_BUMP|kich_r4_material::SHADER_GLOSS_MAP))!=0;
+                constants.material[0]=float((flags&~kich_r4_material::SHADER_BUMP)|(gloss?kich_r4_material::SHADER_GLOSS_MAP:0u));d.surface.textures[2]=0;
+                if(!gloss)d.surface.textures[1]=0;
+                if(g_render_snapshot_active){if(!gloss)RenderSnapshot_Texture(1,"UNBOUND");RenderSnapshot_Texture(2,"UNBOUND");}
                 if(l.Expect(s,"E1 geometric subset constants",l.bridge.api.update_buffer(s.device,cb,&constants,sizeof(constants)))<0 ||
                     l.Expect(s,"E1 geometric subset draw",api.draw(s.device,&d))<0)return s.failure;
                 RecordNormalSubmission(c,pass,constants,d,c.available_attributes,false);

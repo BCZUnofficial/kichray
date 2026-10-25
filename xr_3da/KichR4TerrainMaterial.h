@@ -29,11 +29,13 @@ inline void BindTerrain(KichR4FrameSession& frame,KichR4LevelSession& level,cons
         for(unsigned i=0;i<4;++i)diffuse=TerrainTexture(frame,level,material.terrain_layers[i],maps[i+1]) && diffuse;
         if(diffuse){
             flags|=SHADER_TERRAIN_LAYERS;for(unsigned i=0;i<5;++i){draw.textures[i+1]=maps[i];TerrainSampler(draw,i+1,TerrainSampler(i!=0,draw.state.surface.samplers[0].anisotropy));}
-            bool normal=(attributes&basis)==basis;
-            if(normal){for(unsigned i=0;i<4;++i)normal=TerrainTexture(frame,level,material.terrain_bumps[i],maps[i+5]) && normal;
-                if(!normal)failure="TERRAIN_LAYER_NORMAL_UNAVAILABLE";
-            }else failure="TERRAIN_SOURCE_BASIS_INVALID";
-            if(normal){flags|=SHADER_TERRAIN_NORMAL;for(unsigned i=0;i<4;++i){draw.textures[i+6]=maps[i+5];TerrainSampler(draw,i+6,TerrainSampler());}}
+            // P0-S11: the layer bumps carry gloss (R) independently of the
+            // basis; without a usable TBN they still bind for gloss only.
+            bool bumps=true;for(unsigned i=0;i<4;++i)bumps=TerrainTexture(frame,level,material.terrain_bumps[i],maps[i+5]) && bumps;
+            const bool basis_valid=(attributes&basis)==basis;
+            if(bumps){flags|=basis_valid?SHADER_TERRAIN_NORMAL:SHADER_TERRAIN_GLOSS;for(unsigned i=0;i<4;++i){draw.textures[i+6]=maps[i+5];TerrainSampler(draw,i+6,TerrainSampler());}
+                if(!basis_valid)failure="TERRAIN_SOURCE_BASIS_INVALID; LAYER_GLOSS_KEPT";}
+            else failure=basis_valid?"TERRAIN_LAYER_NORMAL_UNAVAILABLE":"TERRAIN_SOURCE_BASIS_INVALID";
         }else failure="TERRAIN_MASK_OR_DIFFUSE_LAYER_UNAVAILABLE";
     }
     if(TerrainTexture(frame,level,material.terrain_lmap,draw.textures[10])){flags|=SHADER_TERRAIN_SUN;TerrainSampler(draw,10,TerrainSampler());}
@@ -50,6 +52,7 @@ inline void BindTerrain(KichR4FrameSession& frame,KichR4LevelSession& level,cons
         Vector("TERRAIN_MATERIAL_EXECUTION",id,"detail_scale",material.detail_scale,2);
         const std::string* names[]={&material.base,&material.terrain_mask,&material.terrain_layers[0],&material.terrain_layers[1],&material.terrain_layers[2],&material.terrain_layers[3],
             &material.terrain_bumps[0],&material.terrain_bumps[1],&material.terrain_bumps[2],&material.terrain_bumps[3],&material.terrain_lmap};
+        Text("TERRAIN_MATERIAL_EXECUTION",id,"gloss_path",flags&(SHADER_TERRAIN_NORMAL|SHADER_TERRAIN_GLOSS)?"LAYER_BUMP_R_MASK_WEIGHTED":flags&(SHADER_BUMP|SHADER_GLOSS_MAP)?"BUMP_R_SQUARED":"FLAT_2_OVER_255");
         for(unsigned slot=0;slot<11;++slot){if(!layers && slot>0 && slot<10)continue;
             char key[24];snprintf(key,sizeof(key),"texture_%u",slot);Text("TERRAIN_MATERIAL_EXECUTION",id,key,draw.textures[slot]?names[slot]->c_str():"UNBOUND");
             if(slot<8)RenderSnapshot_Texture(slot,draw.textures[slot]?names[slot]->c_str():"UNBOUND");}

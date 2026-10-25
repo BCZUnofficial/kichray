@@ -94,7 +94,12 @@ struct Scene {
     std::vector<VisualNode> nodes;Topology topology;
     std::vector<unsigned char> sector_owned;bool hierarchy_valid,keep_lods;
     Vec3 low,high;uint32_t visuals,skipped,trees,triangles,lod_budget_fallbacks;uint64_t cpu_bytes,geometry_budget;
-    Scene():hierarchy_valid(true),keep_lods(true),visuals(0),skipped(0),trees(0),triangles(0),lod_budget_fallbacks(0),cpu_bytes(0),geometry_budget(192u*1024u*1024u){low={1.e20f,1.e20f,1.e20f};high={-1.e20f,-1.e20f,-1.e20f};}
+    // P0-S11 RepairBases: referenced vertices whose source TBN was rejected,
+    // how many were rebuilt, and how many stayed on the geometric normal
+    // (mirrored-UV conflict or no usable direction).
+    uint32_t basis_rejected,basis_repaired,basis_unrecoverable;
+    Scene():hierarchy_valid(true),keep_lods(true),visuals(0),skipped(0),trees(0),triangles(0),lod_budget_fallbacks(0),cpu_bytes(0),geometry_budget(192u*1024u*1024u),
+        basis_rejected(0),basis_repaired(0),basis_unrecoverable(0){low={1.e20f,1.e20f,1.e20f};high={-1.e20f,-1.e20f,-1.e20f};}
 };
 inline DrawRange SelectDrawRange(const Scene& scene,const Draw& draw,float detail){
     if(draw.lod && draw.lod<=scene.lods.size()){
@@ -160,9 +165,13 @@ inline void Vertices(Span file,Scene& out){Reader r(Chunk(file,9));const uint32_
             if(VectorElement(p,normal,v.normal))v.attributes|=ATTR_NORMAL;
             else for(unsigned a=0;a<3;++a)v.normal[a]=0;
             if(normal.found && normal.type==4){v.hemi=p[normal.offset+3]/255.f;v.attributes|=ATTR_HEMI;}
-            if(VectorElement(p,tangent,v.tangent) && VectorElement(p,binormal,v.binormal) && Basis(v.normal,v.tangent,v.binormal)){
-                v.attributes|=ATTR_TANGENT|ATTR_BINORMAL;++vb.basis_vertices;
-            }else for(unsigned a=0;a<3;++a)v.tangent[a]=v.binormal[a]=0;
+            // P0-S11: a rejected basis keeps its decoded unit vectors (zero when
+            // absent) for RepairBases, which rebuilds or clears them.
+            const bool has_t=VectorElement(p,tangent,v.tangent),has_b=VectorElement(p,binormal,v.binormal);
+            if(!has_t)for(unsigned a=0;a<3;++a)v.tangent[a]=0;
+            if(!has_b)for(unsigned a=0;a<3;++a)v.binormal[a]=0;
+            if(has_t && has_b && (v.attributes&ATTR_NORMAL)){float t[3],b[3];memcpy(t,v.tangent,12);memcpy(b,v.binormal,12);
+                if(Basis(v.normal,t,b)){memcpy(v.tangent,t,12);memcpy(v.binormal,b,12);v.attributes|=ATTR_TANGENT|ATTR_BINORMAL;++vb.basis_vertices;}}
             for(unsigned a=0;a<3;++a){v.position[a]=xyz.Float();Check(fabsf(v.position[a])<=1.e6f,"vertex position limit");}
             Check(UVElement(p,uv,v.uv,uv.type==7?2048.f:1024.f),"unsupported base UV declaration");
             if(uv.type==6 && tangent.found && binormal.found && tangent.type==4 && binormal.type==4){
@@ -201,6 +210,98 @@ inline void Materials(Span level,Scene& out){Reader r(Chunk(level,2));const uint
             m.descriptor.unsupported_reason="compiled_material_metadata_not_registered";}
         out.materials.push_back(m);
     }Check(!r.Left(),"unexpected shader table tail");
+}
+/* P0-S11 attributes of an index range: the intersection over its vertices,
+ * except N/T/B, which a range keeps when any of its vertices has a complete
+ * basis. The static/terrain pixel shader already falls back to the geometric
+ * normal wherever the interpolated tangent or handedness vanishes, so a
+ * vertex without a basis (zero T/B) degrades only its own neighbourhood; the
+ * strict intersection turned one rejected vertex into a whole draw without
+ * normal mapping (Rostok terrain_bar draw2529, 221 triangles). */
+inline uint32_t RangeAttributes(const Buffer& buffer,const std::vector<uint32_t>& indices,uint32_t first,uint32_t count){
+    const uint32_t basis=ATTR_NORMAL|ATTR_TANGENT|ATTR_BINORMAL;uint32_t all=~0u;bool any=false;
+    for(uint32_t i=0;i<count;++i){const uint32_t a=buffer.vertices[indices[first+i]].attributes;all&=a;any=any || (a&basis)==basis;}
+    return any?all|basis:all;
+}
+/* P0-S11 local basis repair for referenced vertices whose source TBN was
+ * rejected (collapsed onto N, binormal along the tangent). The normal stays
+ * authored. The tangent is the source tangent made orthogonal to N when it is
+ * not along N, else the area-weighted UV gradient dP/du of the adjacent
+ * triangles. The handedness is the source binormal's when it is not along
+ * N x T, else the UV orientation sign(N . (dP/du x dP/dv)) of the adjacent
+ * triangles, mapped through the level's own convention (authored T against
+ * dP/du and B against dP/dv, voted by triangles whose vertices kept their
+ * basis). A vertex whose triangles disagree in orientation (a mirrored-UV
+ * seam) or have no usable UV gradient keeps zero T/B: the pixel shader then
+ * uses the geometric normal there only. Indices of every LOD window count. */
+inline void RepairBases(Scene& s){
+    s.basis_rejected=s.basis_repaired=s.basis_unrecoverable=0;
+    const uint32_t basis=ATTR_NORMAL|ATTR_TANGENT|ATTR_BINORMAL;
+    struct Gradient {float du[3],dv[3];uint32_t positive,negative;};
+    for(uint32_t vb=0;vb<s.vertices.size();++vb){Buffer& buffer=s.vertices[vb];
+        std::vector<uint32_t> slot(buffer.vertices.size(),UINT32_MAX);std::vector<Gradient> gradients;
+        for(size_t i=0;i<buffer.vertices.size();++i){const Vertex& v=buffer.vertices[i];
+            if((v.attributes&ATTR_NORMAL) && !(v.attributes&ATTR_TANGENT)){slot[i]=static_cast<uint32_t>(gradients.size());gradients.push_back(Gradient());memset(&gradients.back(),0,sizeof(Gradient));}}
+        if(gradients.empty())continue;
+        double t_vote=0,b_vote=0;std::vector<unsigned char> referenced(gradients.size(),0);
+        for(size_t d=0;d<s.draws.size();++d){const Draw& draw=s.draws[d];if(draw.vb!=vb)continue;
+            std::vector<DrawRange> ranges(1,DrawRange{draw.first,draw.count,draw.available_attributes});
+            if(draw.lod && draw.lod<=s.lods.size())ranges=s.lods[draw.lod-1];
+            const std::vector<uint32_t>& ib=s.indices[draw.ib];
+            for(size_t r=0;r<ranges.size();++r)for(uint32_t at=ranges[r].first;at+2<ranges[r].first+ranges[r].count;at+=3){
+                const Vertex* v[3]={&buffer.vertices[ib[at]],&buffer.vertices[ib[at+1]],&buffer.vertices[ib[at+2]]};
+                for(unsigned k=0;k<3;++k){const uint32_t g=slot[ib[at+k]];if(g!=UINT32_MAX)referenced[g]=1;}
+                double e1[3],e2[3];for(unsigned a=0;a<3;++a){e1[a]=double(v[1]->position[a])-v[0]->position[a];e2[a]=double(v[2]->position[a])-v[0]->position[a];}
+                const double u1=double(v[1]->uv[0])-v[0]->uv[0],v1=double(v[1]->uv[1])-v[0]->uv[1],u2=double(v[2]->uv[0])-v[0]->uv[0],v2=double(v[2]->uv[1])-v[0]->uv[1];
+                const double det=u1*v2-u2*v1;if(!(fabs(det)>1.e-12))continue;
+                double du[3],dv[3],area[3];
+                for(unsigned a=0;a<3;++a){du[a]=(e1[a]*v2-e2[a]*v1)/det;dv[a]=(e2[a]*u1-e1[a]*u2)/det;}
+                area[0]=e1[1]*e2[2]-e1[2]*e2[1];area[1]=e1[2]*e2[0]-e1[0]*e2[2];area[2]=e1[0]*e2[1]-e1[1]*e2[0];
+                const double weight=sqrt(area[0]*area[0]+area[1]*area[1]+area[2]*area[2]);
+                const double ul=sqrt(du[0]*du[0]+du[1]*du[1]+du[2]*du[2]),vl=sqrt(dv[0]*dv[0]+dv[1]*dv[1]+dv[2]*dv[2]);
+                if(!(weight>1.e-12) || !(ul>1.e-12) || !(vl>1.e-12) || !Finite(float(ul)) || !Finite(float(vl)))continue;
+                for(unsigned a=0;a<3;++a){du[a]*=weight/ul;dv[a]*=weight/vl;}
+                // Convention vote: a triangle whose three vertices kept their basis.
+                if((v[0]->attributes&basis)==basis && (v[1]->attributes&basis)==basis && (v[2]->attributes&basis)==basis){
+                    for(unsigned k=0;k<3;++k)for(unsigned a=0;a<3;++a){t_vote+=v[k]->tangent[a]*du[a];b_vote+=v[k]->binormal[a]*dv[a];}}
+                for(unsigned k=0;k<3;++k){const uint32_t g=slot[ib[at+k]];if(g==UINT32_MAX)continue;Gradient& out=gradients[g];
+                    const float* n=v[k]->normal;
+                    const double cross[3]={du[1]*dv[2]-du[2]*dv[1],du[2]*dv[0]-du[0]*dv[2],du[0]*dv[1]-du[1]*dv[0]};
+                    const double orientation=n[0]*cross[0]+n[1]*cross[1]+n[2]*cross[2];
+                    if(orientation>0)++out.positive;else if(orientation<0)++out.negative;
+                    for(unsigned a=0;a<3;++a){out.du[a]+=float(du[a]);out.dv[a]+=float(dv[a]);}}
+            }}
+        const float ct=t_vote<0?-1.f:1.f,cb=b_vote<0?-1.f:1.f;
+        for(size_t i=0;i<buffer.vertices.size();++i){const uint32_t g=slot[i];if(g==UINT32_MAX)continue;Vertex& v=buffer.vertices[i];
+            if(referenced[g])++s.basis_rejected;
+            const float* n=v.normal;float t[3]={0,0,0};bool found=false;const Gradient& grad=gradients[g];
+            // Source tangent first, then the UV gradient.
+            for(unsigned pass=0;pass<2 && !found;++pass){float c[3];
+                for(unsigned a=0;a<3;++a)c[a]=pass?ct*grad.du[a]:v.tangent[a];
+                const float along=n[0]*c[0]+n[1]*c[1]+n[2]*c[2];for(unsigned a=0;a<3;++a)c[a]-=n[a]*along;
+                const float source=pass?1.f:sqrtf(v.tangent[0]*v.tangent[0]+v.tangent[1]*v.tangent[1]+v.tangent[2]*v.tangent[2]);
+                const float length=sqrtf(c[0]*c[0]+c[1]*c[1]+c[2]*c[2]);
+                if(source>.5f && length>(pass?1.e-6f:.1f) && Finite(length)){for(unsigned a=0;a<3;++a)t[a]=c[a]/length;found=true;}}
+            const float x[3]={n[1]*t[2]-n[2]*t[1],n[2]*t[0]-n[0]*t[2],n[0]*t[1]-n[1]*t[0]};
+            float hand=0;
+            if(found){const float h=x[0]*v.binormal[0]+x[1]*v.binormal[1]+x[2]*v.binormal[2];
+                if(fabsf(h)>.1f)hand=h<0?-1.f:1.f;
+                // B follows cb*dP/dv: the side of N x T it lies on is the
+                // handedness, for a source tangent and a UV tangent alike.
+                else if((grad.positive!=0)!=(grad.negative!=0)){const float side=cb*(x[0]*grad.dv[0]+x[1]*grad.dv[1]+x[2]*grad.dv[2]);
+                    const float dv=sqrtf(grad.dv[0]*grad.dv[0]+grad.dv[1]*grad.dv[1]+grad.dv[2]*grad.dv[2]);
+                    if(fabsf(side)>.1f*dv)hand=side<0?-1.f:1.f;}}
+            if(found && hand!=0){for(unsigned a=0;a<3;++a){v.tangent[a]=t[a];v.binormal[a]=x[a]*hand;}
+                v.attributes|=ATTR_TANGENT|ATTR_BINORMAL;++buffer.basis_vertices;if(referenced[g])++s.basis_repaired;}
+            else{for(unsigned a=0;a<3;++a)v.tangent[a]=v.binormal[a]=0;if(referenced[g])++s.basis_unrecoverable;}
+        }
+    }
+}
+// Recompute every draw/LOD range after RepairBases changed vertex attributes.
+inline void RefreshRangeAttributes(Scene& s){
+    for(size_t d=0;d<s.draws.size();++d){Draw& draw=s.draws[d];const Buffer& buffer=s.vertices[draw.vb];const std::vector<uint32_t>& ib=s.indices[draw.ib];
+        draw.available_attributes=RangeAttributes(buffer,ib,draw.first,draw.count);
+        if(draw.lod && draw.lod<=s.lods.size())for(DrawRange& r:s.lods[draw.lod-1])r.available_attributes=RangeAttributes(buffer,ib,r.first,r.count);}
 }
 inline void Visuals(Span level,const std::vector<Span>& ibs,const std::vector<std::vector<Window> >& swis,Scene& out){Reader table(Chunk(level,3));uint64_t hierarchy_links=0;
     while(table.Left()){const uint32_t id=table.U32(),size=table.U32();Check(id==out.visuals && id<100000,"non-sequential or excessive visual table");
@@ -252,7 +353,8 @@ inline void Visuals(Span level,const std::vector<Span>& ibs,const std::vector<st
         for(size_t range=0;range<windows.size();++range){const Window& w=windows[range];const uint32_t count=w.triangles*3;
             Reader source(Span(indices.p+(ibase+w.offset)*2,count*2));DrawRange selected={base+w.offset-first,count,~0u};
             for(uint32_t i=0;i<count;++i){const uint32_t vertex=source.U16();Check(vertex<w.vertices,"index addresses outside progressive vertex prefix");
-                target[selected.first+i]=vbase+vertex;selected.available_attributes&=out.vertices[vb].vertices[vbase+vertex].attributes;}
+                target[selected.first+i]=vbase+vertex;}
+            selected.available_attributes=RangeAttributes(out.vertices[vb],target,selected.first,count);
             ranges.push_back(selected);}
         draw.first=ranges[0].first;draw.count=ranges[0].count;draw.available_attributes=ranges[0].available_attributes;
         if(ranges.size()>1){out.lods.push_back(ranges);draw.lod=static_cast<uint32_t>(out.lods.size());}
@@ -315,6 +417,7 @@ inline void MapSectorDraws(Scene& scene){
 }
 inline void ParseContents(Span level,Span geometry,Scene& out){Header(level);Header(geometry);Materials(level,out);Vertices(geometry,out);
     const std::vector<Span> ibs=Indices(geometry);const std::vector<std::vector<Window> > swis=TreeWindows(geometry);Visuals(level,ibs,swis,out);
+    RepairBases(out);RefreshRangeAttributes(out);
     LoadTopology(level,out.topology);MapSectorDraws(out);}
 inline void Parse(Span level,Span geometry,Scene& out){
     try{ParseContents(level,geometry,out);}

@@ -16,8 +16,10 @@
 #include "KichR4RecordControl.h"
 #include "RenderSnapshot.h"
 #include <map>
+#include <unordered_map>
 #include <string>
 #include <chrono>
+#include "KichR4QueueProfile.h"
 #include <dxgi.h>
 
 namespace {
@@ -48,7 +50,8 @@ bool celestial_source=false;
 bool lens_effect=false,glow_scope=false,object_light_valid=false;float object_hemi=1,object_sun=1;
 std::chrono::steady_clock::time_point queue_begin;
 bool queue_measured=false;
-void BeginQueueClock(){queue_measured=kich_r4_record::Measure(g_render_snapshot_active);if(queue_measured)queue_begin=std::chrono::steady_clock::now();}
+void BeginQueueClock(){queue_measured=kich_r4_record::Measure(g_render_snapshot_active);if(queue_measured)queue_begin=std::chrono::steady_clock::now();
+    kich_r4_queue::Global().Begin(queue_measured);} // P0-S11 PERF02 stage split of the same span
 uint32_t states[256]={};
 uint32_t sampler_states[8][14]={};
 kich_r4_capture::Style style;
@@ -171,7 +174,8 @@ void KichR4_NativeModelMaterial(kich_r4_capture::ModelInput& input){
         input.material=active_material;if(active_material)kich_r4_material::Apply(*active_material,input.style);
     }catch(...){KichR4_CaptureFail("G3c model material snapshot failed");}
 }
-double KichR4_NativeQueueTime(){if(!queue_measured || !kich_r4_record::Measure(g_render_snapshot_active))return 0;return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-queue_begin).count();}
+double KichR4_NativeQueueTime(){kich_r4_queue::Global().Finish(); // P0-S11: the queue ends here
+    if(!queue_measured || !kich_r4_record::Measure(g_render_snapshot_active))return 0;return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-queue_begin).count();}
 void KichR4_NativeBegin(uint32_t width,uint32_t height,uint32_t frame){wallmark_scope=wallmark_color=0;celestial_source=lens_effect=glow_scope=object_light_valid=false;object_hemi=object_sun=1;menu_pp=menu_overlay=false;BeginQueueClock();memset(states,0,sizeof(states));style=kich_r4_capture::Style();states[D3DRS_ZENABLE]=states[D3DRS_ZWRITEENABLE]=1;
     KichR4_DetailFrame().ClearFrame(frame);active_material=NULL;
     states[23]=4;states[171]=states[209]=1;states[207]=2;states[208]=1;
@@ -229,6 +233,9 @@ void SnapshotGeneratedGeometry(const D3DVERTEXELEMENT9* decl,uint32_t dn,uint32_
         Field("GEOMETRY",id,"generated_check_scope",checked==batch.vertices.size()-vbase?"ALL_GENERATED_VERTICES":"FIRST_128_GENERATED_VERTICES");Number("GEOMETRY",id,"uv_nonfinite_samples",uv_nonfinite);Number("GEOMETRY",id,"uv_finite_samples",uv_finite);GeometryVector(id,"uv_sample_minmax",uv_range,4);Field("GEOMETRY",id,"uv_sample_scope",checked==batch.vertices.size()-vbase?"ALL_GENERATED_VERTICES":"FIRST_128_GENERATED_VERTICES_NOT_FULL_RANGE");
     }catch(...){RenderSnapshot_GeometrySource("METADATA_UNAVAILABLE");MaterialError();}
 }
+using kich_r4_capture::VertexRemap;
+VertexRemap& Remap(){static VertexRemap remap;return remap;} // capacity kept between draws
+std::vector<uint32_t>& References(){static std::vector<uint32_t> references;return references;}
 uint32_t CapturedSemantic(bool screen,uint32_t selected_effect){using namespace kich_r4_capture;if(screen)return CAPTURE_UI;if(selected_effect==2)return CAPTURE_SKY;if(selected_effect==3)return CAPTURE_CLOUDS;
     RenderSnapshotProvenance p={};RenderSnapshot_GetProvenance(&p);if(p.flags&RENDER_SNAPSHOT_PARTICLE)return CAPTURE_PARTICLE;if(p.flags&RENDER_SNAPSHOT_GLOW)return CAPTURE_GLOW;
     if(!strcmp(p.semantic_type,"STATIC_WALLMARK") || !strcmp(p.semantic_type,"DECAL_STATIC"))return CAPTURE_STATIC_WALLMARK;
@@ -237,6 +244,7 @@ uint32_t CapturedSemantic(bool screen,uint32_t selected_effect){using namespace 
 }
 void KichR4_NativeDraw(void* declaration,void* vb,void* ib,uint32_t stride,uint32_t topology,uint32_t base,uint32_t start,uint32_t vertex_count,uint32_t first,uint32_t primitives,bool indexed){
     using namespace kich_r4_capture;State* state=KichR4_CaptureState();if(!state || !primitives)return;
+    kich_r4_queue::Scope scope(kich_r4_queue::StreamCapture);kich_r4_queue::Global().Count(kich_r4_queue::StreamDraws);
     try{uint32_t vn=0,in=0,dn=0;const unsigned char* vertices=KichR4_CPUBuffer(vb,vn);const unsigned char* indices=indexed?KichR4_CPUBuffer(ib,in):NULL;
         const D3DVERTEXELEMENT9* decl=KichR4_CPUElements(declaration,dn);Check(vertices && decl && stride && dn,"native draw resources");
         Check(!indexed || indices,"native draw indices");const D3DVERTEXELEMENT9 *position=NULL,*uv=NULL,*color=NULL,*normal=NULL,*tangent=NULL,*binormal=NULL;
@@ -247,19 +255,23 @@ void KichR4_NativeDraw(void* declaration,void* vb,void* ib,uint32_t stride,uint3
         const bool screen=position->Usage==D3DDECLUSAGE_POSITIONT;
         const uint32_t n=topology==D3DPT_TRIANGLELIST?primitives*3:topology==D3DPT_TRIANGLESTRIP || topology==D3DPT_TRIANGLEFAN?primitives+2:
             topology==D3DPT_LINELIST?primitives*2:topology==D3DPT_LINESTRIP?primitives+1:topology==D3DPT_POINTLIST?primitives:0;
-        Check(n && n<4u*1024u*1024u,"native primitive count");Check(!indexed || uint64_t(first+n)*2<=in,"native index range");
+        Check(n && n<4u*1024u*1024u,"native primitive count");kich_r4_queue::Global().Count(kich_r4_queue::StreamIndices,n);Check(!indexed || uint64_t(first+n)*2<=in,"native index range");
         if(Has(active_shader.c_str(),"detail")){kich_r4_detail::Frame& details=KichR4_DetailFrame();++details.legacy_draws;details.legacy_vertices+=indexed?vertex_count:n;details.legacy_indices+=indexed?n:0;}
         Style draw;KichR4_NativeStyle(draw);if(screen){draw.depth=draw.write=0;draw.cull=KICH_R4_CULL_NONE;draw.min_z=0;draw.max_z=1;draw.clamp=1;}
         const uint32_t layer=screen?2:draw.max_z<.1f?1:0;
         const std::string texture=(uv || effect==2 || effect==3)?TextureName(0):std::string();const std::string secondary=(effect==2 || effect==3)?TextureName(1):std::string();
         Batch& batch=state->frame;batch.Reserve(indexed && vertex_count?std::min(n,vertex_count):n,topology>=D3DPT_TRIANGLELIST?primitives*3:primitives*6,
-            (active_shader+" / "+texture).c_str(),layer);const uint32_t vbase=static_cast<uint32_t>(batch.vertices.size());
+            active_shader.c_str(),layer,texture.c_str());const uint32_t vbase=static_cast<uint32_t>(batch.vertices.size());
         Matrix world,vp;memcpy(world.m,RCache.get_xform_world().m,64);Fmatrix native_vp;native_vp.mul(RCache.get_xform_project(),RCache.get_xform_view());memcpy(vp.m,native_vp.m,64);
         const Matrix mvp=kich_r4_scene::Multiply(world,vp),nm=kich_r4_lighting::NormalMatrix(world);
-        std::vector<uint32_t> references(n);std::map<uint32_t,uint32_t> reused;
+        std::vector<uint32_t>& references=References();references.resize(n);
+        // Source index of every reference, range-checked once.
+        uint32_t lowest=UINT32_MAX,highest=0;
         for(uint32_t i=0;i<n;++i){uint32_t at=start+i;if(indexed)at=base+uint32_t(indices[(first+i)*2])+(uint32_t(indices[(first+i)*2+1])<<8);
-            Check((uint64_t(at)+1)*stride<=vn,"native vertex range");
-            if(topology>=D3DPT_TRIANGLELIST){std::map<uint32_t,uint32_t>::const_iterator found=reused.find(at);if(found!=reused.end()){references[i]=found->second;continue;}references[i]=static_cast<uint32_t>(batch.vertices.size());reused[at]=references[i];}const unsigned char* p=vertices+at*stride;
+            Check((uint64_t(at)+1)*stride<=vn,"native vertex range");references[i]=at;if(at<lowest)lowest=at;if(at>highest)highest=at;}
+        const bool reuse=topology>=D3DPT_TRIANGLELIST;VertexRemap& remap=Remap();if(reuse)remap.Begin(lowest,highest,n);
+        for(uint32_t i=0;i<n;++i){const uint32_t at=references[i];
+            if(reuse){const uint32_t found=remap.Find(at);if(found!=UINT32_MAX){references[i]=found;continue;}references[i]=static_cast<uint32_t>(batch.vertices.size());remap.Set(at,references[i]);}const unsigned char* p=vertices+at*stride;
             Check(position->Offset+12u<=stride,"native position offset");float xyz[4]={Float(p+position->Offset),Float(p+position->Offset+4),Float(p+position->Offset+8),1};
             float u=0,v=0;if(uv){Check(uv->Offset+kich_r4_level::TypeBytes(uv->Type)<=stride,"native UV declaration");const unsigned char* tc=p+uv->Offset;
                 if(uv->Type==1 || uv->Type==2 || uv->Type==3){u=Float(tc);v=Float(tc+4);}
@@ -302,7 +314,8 @@ void KichR4_NativeDraw(void* declaration,void* vb,void* ib,uint32_t stride,uint3
         // R2 combine blends distant geometry onto a complete sky background.
         // Celestial source masking remains a separate opaque-depth predicate.
         if(effect==2){cmd.style.depth=0;cmd.style.write=0;cmd.style.cull=KICH_R4_CULL_NONE;}
-        SnapshotGeneratedGeometry(decl,dn,stride,topology,vertices,reused,normal,tangent,binormal,uv,batch,vbase,world,nm,screen,cmd);
+        if(RenderSnapshot_Detailed()){std::map<uint32_t,uint32_t> reused;if(reuse)remap.Ordered(reused);
+            SnapshotGeneratedGeometry(decl,dn,stride,topology,vertices,reused,normal,tangent,binormal,uv,batch,vbase,world,nm,screen,cmd);}
         SnapshotCommand(cmd,batch.vertices,batch.indices,celestial_source && !screen?"CELESTIAL_SOURCE":screen?"UI_GEOMETRY":"UNKNOWN",NULL,0,uv!=NULL);
         batch.commands.push_back(cmd);if(layer==2)++batch.ui;else if(layer==1)++batch.hands;else ++batch.models;
         (void)vertex_count;

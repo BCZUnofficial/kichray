@@ -13,10 +13,10 @@ def main():
     with tempfile.TemporaryDirectory(prefix="kich-b42-") as folder:
         jobs = [(os.environ.get("CC", "gcc"), "-std=c11", "abi_c_test.c", "abi")]
         jobs += [(os.environ.get("CXX", "g++"), "-std=c++11", source+".cpp", source)
-                 for source in ("data_tests", "basis_tests", "files_tests", "session_tests", "e1_tests", "residency_tests", "prepared_tests", "lod_tests")]
+                 for source in ("data_tests", "basis_tests", "files_tests", "session_tests", "e1_tests", "residency_tests", "prepared_tests", "lod_tests", "dds_async_tests")]
         for cc, standard, source, name in jobs:
             output = Path(folder)/name
-            snapshot = [str(HERE.parents[1]/"xr_3da/RenderSnapshot.cpp")] if name in ("residency_tests", "prepared_tests") else []
+            snapshot = [str(HERE.parents[1]/"xr_3da/RenderSnapshot.cpp")] if name in ("residency_tests", "prepared_tests", "dds_async_tests") else []
             subprocess.run([cc, standard, "-Wall", "-Wextra", "-Werror",
                             str(HERE/source), *snapshot, "-o", str(output)], check=True)
             subprocess.run([str(output)], check=True)

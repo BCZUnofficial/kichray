@@ -58,6 +58,9 @@ inline int32_t Preflight(KichR4FrameSession& frame,KichR4LevelSession& level,
                         const kich_r4_capture::Batch& batch,const KichR4GameFrame& input,
                         KichR4DetailSession& details,bool scene,kich_r4_level::StaticFramePlan* shared_plan=NULL,bool pump_loading=false){
     KichR4LevelSession::PreflightProbeScope probe(level,g_render_snapshot_active);
+    // P0-S11: precache/loading frames load what they see before gameplay.
+    struct SyncScope {KichR4LevelSession& level;bool before;~SyncScope(){level.texture_sync=before;}} sync_scope={level,level.texture_sync};
+    level.texture_sync=pump_loading;
     const auto traversal_started=kich_r4_metrics::Start(g_render_snapshot_active);
     KichR4LevelSession::PreparedScope prepared(level);
     FrameDemand demand(level);

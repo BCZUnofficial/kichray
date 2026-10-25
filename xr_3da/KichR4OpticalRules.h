@@ -31,6 +31,12 @@ inline const char* DebugView(unsigned view){
         "CELESTIAL_ONLY_MASKED","CELESTIAL_ONLY_UNMASKED","CELESTIAL_TRIANGLES"};
     return view<DebugViewCount?names[view]:"INVALID";
 }
+// P0-S11 debug pass mask. BAKED_RGB_RAW (6) and SOURCE_NORMAL (9) write their
+// diagnostic into the albedo target; passes that blend ordinary albedo over it
+// afterwards (static and dynamic wallmarks) would contaminate the channel
+// shown (a bar floor's wm_graz3 read as a "shadow" in SOURCE_NORMAL). ALBEDO
+// (1) and every lit view keep the overlays: they are real albedo there.
+inline bool AlbedoOverlays(unsigned view){return view!=6 && view!=9;}
 // X-Ray glow convention: zero direction is omnidirectional; otherwise the
 // emitter faces the camera only for a positive direction-to-observer cosine.
 inline float GlowFacing(const float* direction,const float* to_camera){

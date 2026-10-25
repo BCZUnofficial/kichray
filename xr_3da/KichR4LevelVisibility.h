@@ -70,6 +70,34 @@ inline void SelectStaticSectors(const Scene& scene,const Matrix& vp,uint32_t see
         }
     }
 }
+/* P0-S11 exact selection of one static draw, for snapshots (VIS01). Repeats
+ * the sector traversal of this view and names the first failing rule:
+ * SELECTED, SECTOR_NOT_REACHED (no owner sector reached through visible
+ * portals), CAMERA_FRUSTUM (owner reached, wind bounds outside the view), or
+ * INVALID_BOUNDS_KEPT. `portals` lists, for each unreached owner sector, its
+ * portals as id:other_sector:other_reached:visible|hidden|untested. */
+struct StaticExplanation {const char* reason;std::string owners,reached_owners,portals;bool portal_used;};
+inline bool StaticFrameBoundsValid(const Draw& d){
+    return Finite(d.low.x) && Finite(d.low.y) && Finite(d.low.z) && Finite(d.high.x) && Finite(d.high.y) && Finite(d.high.z) &&
+        d.low.x<=d.high.x && d.low.y<=d.high.y && d.low.z<=d.high.z;
+}
+inline StaticExplanation ExplainStatic(const Scene& scene,const Matrix& vp,uint32_t seed_sector,const Draw& bounds,uint32_t draw,const StaticSectorScratch& traversal,bool portal_used){
+    StaticExplanation e={"SELECTED","","","",portal_used};bool reached=!portal_used || draw>=scene.sector_owned.size() || !scene.sector_owned[draw];
+    const Topology& t=scene.topology;
+    if(portal_used)for(uint32_t s=0;s<t.sectors.size();++s){const Sector& sector=t.sectors[s];
+        if(std::find(sector.draws.begin(),sector.draws.end(),draw)==sector.draws.end())continue;
+        const bool hit=s<traversal.reached.size() && traversal.reached[s];reached=reached || hit;
+        e.owners+=(e.owners.empty()?"":",")+std::to_string(s);if(hit)e.reached_owners+=(e.reached_owners.empty()?"":",")+std::to_string(s);
+        if(!hit)for(size_t i=0;i<sector.portals.size() && i<8;++i){const uint32_t id=sector.portals[i];const Portal& p=t.portals[id];const uint32_t other=p.front==s?p.back:p.front;
+            const bool tested=id<traversal.tested.size() && traversal.tested[id];
+            e.portals+=std::to_string(id)+":"+std::to_string(other)+":"+(other<traversal.reached.size() && traversal.reached[other]?"1":"0")+":"+
+                (!tested?"untested":traversal.visible[id]?"visible":"hidden")+";";}}
+    (void)seed_sector;
+    if(!reached)e.reason="SECTOR_NOT_REACHED";
+    else if(!StaticFrameBoundsValid(bounds))e.reason="INVALID_BOUNDS_KEPT";
+    else if(!Visible(bounds,vp))e.reason="CAMERA_FRUSTUM";
+    return e;
+}
 inline void SelectStatic(const Scene& scene,const Matrix& vp,uint32_t seed_sector,float wind_x,float wind_z,StaticVisibility& result){
     SelectStaticSectors(scene,vp,seed_sector,result);
     for(size_t i=0;i<scene.draws.size();++i){if(!result.draws[i]){++result.sector_rejected;continue;}

@@ -93,6 +93,20 @@ int main(){
     assert(cache.conflicts==1 && cache.Find(&element,0)->semantic==UNKNOWN && !Geometry(*cache.Find(&element,0)));
     cache.Forget(&element);assert(!cache.Find(&element,0));cache.Register(&element,std::vector<Descriptor>(1,bump));
     assert(Geometry(*cache.Find(&element,0)));assert(!cache.Find(&element,1));
+    // P0-S11 Cordon asphalt: two source contracts share one compiled element.
+    {Cache shared;int asphalt=0;Descriptor layered=bump,plain=bump;plain.bump="other_bump";
+        const uint64_t a=Contract("levels\\escape_asfalt","terrain\\terrain_escape,lmap#1"),b=Contract("levels\\escape_asfalt_noblend","terrain\\terrain_escape,lmap#1");
+        assert(a!=b && a==Contract("LEVELS/escape_asfalt"," terrain/Terrain_Escape, lmap#1"));
+        shared.Register(&asphalt,a,std::vector<Descriptor>(1,layered));shared.Register(&asphalt,b,std::vector<Descriptor>(1,plain));
+        assert(shared.conflicts==1 && shared.Find(&asphalt,0)->semantic==UNKNOWN); // element-only consumers: unchanged rule
+        assert(shared.Find(&asphalt,a,0)->bump==layered.bump && Geometry(*shared.Find(&asphalt,a,0)));
+        assert(shared.Find(&asphalt,b,0)->bump=="other_bump" && shared.contract_hits==3);
+        assert(shared.Find(&asphalt,Contract("unregistered","x"),0)->semantic==UNKNOWN); // unknown contract falls back to the element
+        Descriptor reloaded=layered;reloaded.detail="reloaded_detail";shared.Register(&asphalt,a,std::vector<Descriptor>(1,reloaded));
+        assert(shared.Find(&asphalt,a,0)->detail=="reloaded_detail"); // latest registration of a contract wins
+        assert(!shared.Find(&asphalt,a,1));
+        int other=0;shared.Register(&other,a,std::vector<Descriptor>(1,plain));
+        shared.Forget(&asphalt);assert(!shared.Find(&asphalt,a,0) && !shared.Find(&asphalt,b,0) && shared.Find(&other,a,0));}
     // BMM source identity includes the authored layers and branch; two compiled
     // R1 elements must not silently share different native landscape metadata.
     Descriptor terrain;terrain.special=SPECIAL_TERRAIN;terrain.terrain_detail=true;terrain.terrain_mask="ground_mask";

@@ -46,7 +46,10 @@ void Terrain(unsigned mode){
         else{Require(flags&SHADER_TERRAIN_LAYERS,"four authored diffuse layers remain active");
             Require(bool(flags&SHADER_TERRAIN_NORMAL)==(mode==0),"normal mapping requires all four source maps and valid basis");
             for(unsigned slot=1;slot<6;++slot)Require(draw.textures[slot]!=0 && draw.textures[slot]!=game.level.checker,"no diffuse layer checker sampled");
-            for(unsigned slot=6;slot<10;++slot)Require((draw.textures[slot]!=0)==(mode==0),"invalid normal maps/basis produce explicit geometric fallback, not invented tangents");
+            // P0-S11: an invalid basis (mode 2) keeps the layer bumps for gloss only;
+            // a missing layer normal map (mode 1) binds none of them.
+            Require(bool(flags&SHADER_TERRAIN_GLOSS)==(mode==2),"layer gloss survives an invalid basis, without layer normal mapping");
+            for(unsigned slot=6;slot<10;++slot)Require((draw.textures[slot]!=0)==(mode==0 || mode==2),"invalid normal maps produce explicit geometric fallback, not invented tangents");
             Require(draw.state.surface.samplers[2].anisotropy==state.surface.samplers[0].anisotropy,"terrain diffuse preserves captured filtering budget");
             if(mode==0)Require(draw.extra_samplers[0].u==1 && draw.extra_samplers[0].min_filter==2 && draw.extra_samplers[0].anisotropy==1 && draw.state.surface.samplers[2].min_filter==3,"layer-normal and diffuse samplers preserve R2 contracts");}
     }

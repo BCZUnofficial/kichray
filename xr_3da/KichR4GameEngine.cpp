@@ -44,6 +44,9 @@ extern ENGINE_API int ps_r4_shadow_filter;
 extern ENGINE_API int ps_r4_sun_mask;
 extern ENGINE_API float ps_r4_shadow_normal_bias;
 extern ENGINE_API float ps_r4_lamp_fade;
+extern ENGINE_API int ps_r4_hdr_probe;
+extern ENGINE_API int ps_r4_lamp_face_hold;
+extern ENGINE_API int ps_r4_dds_async;
 
 /* R2 accum_direct clouds xform, without its view->world prefix: the R4 sun
  * shader passes world positions. R2 advances w_shift by 0.003*dt in each of
@@ -130,6 +133,13 @@ void KichR4_CopyEngineEnvironment(KichR4LightingFrame& frame)
     // P0-S10 r4_lamp_fade: shadowed lamps fade with screen size over the
     // r__geometry_lod window (KichR4LampLOD); 0 keeps them at full colour.
     KichR4LampFadeWindow(frame.lamp_fade,ps_r4_lamp_fade,Device.dwWidth,Device.dwHeight,Device.fFOV,ps_r__LOD,ps_r__GLOD_ssa_start,ps_r__GLOD_ssa_end);
+    // P0-S11 r4_lamp_face_hold: HOM-occluded shadow faces stay this long (KichR4FaceAdmission.h).
+    frame.face_hold_ms=ps_r4_lamp_face_hold>0?u32(ps_r4_lamp_face_hold):0u;
+    frame.dds_async=ps_r4_dds_async?1u:0u; // P0-S11 r4_dds_async
+    // P0-S11 r4_hdr_probe N: the next N engine frames are probed, one count each.
+    static u32 probe_frame=u32(-1);
+    if(ps_r4_hdr_probe>0 && probe_frame!=Device.dwFrame){probe_frame=Device.dwFrame;--ps_r4_hdr_probe;}
+    frame.hdr_probe=probe_frame==Device.dwFrame?1u:0u;
 }
 
 static void KichR4_GameObservationFrame(KichR4GameFrame& input)

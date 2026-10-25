@@ -171,18 +171,21 @@ float3 DecodeNormal(float2 e){float3 n=float3(e,1-abs(e.x)-abs(e.y));
 float PackMaterial(float gloss,float m){return floor(saturate(gloss)*127+.5)*16+floor(clamp(m,0,3)*5+.5);}
 float MaterialGloss(float packed){return floor(packed/16)/127;}
 float MaterialClass(float packed){return fmod(packed,16)*.2;}
+// P0-S11: gloss is its own material channel. 65536 binds the bump texture
+// for gloss only (geometric normal: basis unusable), 131072 the four terrain
+// layer bumps likewise; normal mapping stays on 1 / 8192.
 float GlossWithTerrain(Varying v,float4 channels,float total){
     // SoC sload.h: bump R is squared gloss, flat surfaces use def_gloss.
     float gloss=2.0/255;
-    if(((uint)material.x&8192)!=0)return total>0?saturate(channels.r):gloss;
-    if(((uint)material.x&1)!=0){float g;
+    if(((uint)material.x&(8192|131072))!=0)return total>0?saturate(channels.r):gloss;
+    if(((uint)material.x&(1|65536))!=0){float g;
         [branch] if(((uint)material.x&1024)!=0)g=model_bump.Sample(model_bump_surface,v.uv).r;
         else {g=image1.Sample(surface1,v.uv).r;}gloss=g*g;}
-    if(((uint)material.x&9)==9)gloss*=shadow3.Sample(surface5,v.uv*material.yz).a*2;
+    if(((uint)material.x&(1|65536))!=0 && ((uint)material.x&8)!=0)gloss*=shadow3.Sample(surface5,v.uv*material.yz).a*2;
     return saturate(gloss);
 }
 float Gloss(Varying v){float4 channels=0;float total=0;
-    [branch] if(((uint)material.x&8192)!=0){float4 weights=TerrainWeights(v);channels=TerrainChannels(v,weights);total=dot(weights,1);}
+    [branch] if(((uint)material.x&(8192|131072))!=0){float4 weights=TerrainWeights(v);channels=TerrainChannels(v,weights);total=dot(weights,1);}
     return GlossWithTerrain(v,channels,total);}
 struct GeometryOutput {float4 albedo:SV_Target0;float4 normal:SV_Target1;float4 baked:SV_Target2;float receiver_depth:SV_Target3;};
 GeometryOutput PSGeometry(Varying v,bool front:SV_IsFrontFace){GeometryOutput o;
@@ -197,7 +200,7 @@ GeometryOutput PSGeometry(Varying v,bool front:SV_IsFrontFace){GeometryOutput o;
     // gloss explicitly; do not depend on cross-branch compiler CSE.
     float4 terrain_weights=0,terrain_channels=0;
     [branch] if((flags&(4096|8192))!=0)terrain_weights=TerrainWeights(v);
-    [branch] if((flags&8192)!=0)terrain_channels=TerrainChannels(v,terrain_weights);
+    [branch] if((flags&(8192|131072))!=0)terrain_channels=TerrainChannels(v,terrain_weights);
     float terrain_total=dot(terrain_weights,1);
     float4 base_color=BaseWithTerrain(v,terrain_weights);
     if((flags&2048)!=0)h=base_color.a;
@@ -727,6 +730,12 @@ struct ToneOutput {float4 low:SV_Target0;float4 high:SV_Target1;};
 // set (native sky/combine/clouds); other producers keep scale 1.
 float Exposure(){return light_color.w>.5?shadow5.Load(int3(0,0,0)).r:1;}
 ToneOutput Tonemap(float4 c,float scale){ToneOutput o;c.rgb*=scale;o.low=c;o.high=float4(c.rgb/8,c.a);return o;}
+// combine_1's hmodel at one receiver (pixel centre), shared with PSHdrProbe;
+// returns the camera-relative position.
+float3 CombineIndirect(float2 pixel,float depth,float4 n,out float3 hdiffuse,out float3 hspecular){
+    float3 relative=LoadReceiverPosition(pixel,depth);
+    Hemisphere(hdiffuse,hspecular,MaterialClass(n.w),n.z,MaterialGloss(n.w),relative,DecodeNormal(n.xy));
+    return relative;}
 // combine: image0 albedo, image1 light; shadow0 normal; shadow1 depth.
 float4 CombineColor(Varying v){int2 at=int2(v.p.xy);float depth=shadow1.Load(int3(at,0)).r;
     if(depth>=1 && alpha.w>19.5)discard;
@@ -739,10 +748,9 @@ float4 CombineColor(Varying v){int2 at=int2(v.p.xy);float depth=shadow1.Load(int
         else if(mode==4 || mode==8)result=float4(light.rgb+light.aaa,1);
         else if(mode==5)result=float4(n.zzz,1);
         else if(mode==7)result=float4(a.aaa,1);
-        else{float3 relative=LoadReceiverPosition(v.p.xy,depth),hdiffuse,hspecular;
+        else{float3 hdiffuse,hspecular,relative=CombineIndirect(v.p.xy,depth,n,hdiffuse,hspecular);
             // combine_1.ps: D*(L.rgb+hdiffuse, L.w) + hspecular; RGB env specular is
             // never folded into the scalar accumulator alpha.
-            Hemisphere(hdiffuse,hspecular,MaterialClass(n.w),n.z,MaterialGloss(n.w),relative,DecodeNormal(n.xy));
             float amount=FogAmount(length(relative));
             result=float4(lerp(a.rgb*(light.rgb+hdiffuse)+light.aaa+hspecular,fog.rgb,amount),amount*amount);}}
     return result;}
@@ -755,6 +763,30 @@ float3 Dither(float3 c,float2 pixel){return c+(InterleavedNoise(pixel)+Interleav
 void PSCombine(Varying v,out float4 low:SV_Target0,out float4 high:SV_Target1){
     float4 c=CombineColor(v);ToneOutput o=Tonemap(c,Exposure());low=o.low;high=o.high;
     if((int)screen.z==0)low.rgb=Dither(low.rgb,v.p.xy);}
+// P0-S11 GLO01 HDR probe (KichR4HdrProbe.h). Each stage draws a scissored
+// strip of the swap-chain image: column = field, row = one of the 5x5 pixels
+// around light_direction.xy; stage light_direction.z, first column .w. A float
+// leaves as its four little-endian bytes at k/255, which R8G8B8A8_UNORM stores
+// exactly; the CPU reads the strip back before postprocess covers the image.
+// Stages: 0 accumulator (image0); 1 combine inputs as PSCombine binds them;
+// 2 stored low/high; 3 composite (image0), pre-bloom (shadow0), bloom (image1).
+float4 HdrProbeBytes(float value){uint u=asuint(value);return float4(u&255,(u>>8)&255,(u>>16)&255,u>>24)/255;}
+void HdrProbePut(inout float values[27],uint first,float4 c){values[first]=c.x;values[first+1]=c.y;values[first+2]=c.z;values[first+3]=c.w;}
+float4 PSHdrProbe(Varying v):SV_Target {
+    uint field=uint(v.p.x)-uint(light_direction.w),sample=uint(v.p.y),stage=uint(light_direction.z);
+    int2 at=int2(light_direction.xy)+int2(sample%5,sample/5)-2;int3 load=int3(at,0);
+    float values[27];[unroll]for(uint i=0;i<27;++i)values[i]=0;
+    [branch] if(stage==0)HdrProbePut(values,0,image0.Load(load));
+    else if(stage==1){float4 n=shadow0.Load(load);float2 pixel=float2(at)+.5;float depth=shadow1.Load(load).r;
+        float3 hdiffuse,hspecular,relative=CombineIndirect(pixel,depth,n,hdiffuse,hspecular);
+        HdrProbePut(values,0,image0.Load(load));HdrProbePut(values,4,n);HdrProbePut(values,8,float4(DecodeNormal(n.xy),0));
+        values[11]=MaterialGloss(n.w);values[12]=MaterialClass(n.w);values[13]=depth;values[14]=length(relative);
+        HdrProbePut(values,15,float4(hdiffuse,0));HdrProbePut(values,18,float4(hspecular,0));
+        values[21]=FogAmount(length(relative));values[22]=Exposure();HdrProbePut(values,23,image1.Load(load));}
+    else if(stage==2){HdrProbePut(values,0,image0.Load(load));HdrProbePut(values,4,image1.Load(load));}
+    else{HdrProbePut(values,0,image0.Load(load));HdrProbePut(values,4,shadow0.Load(load));
+        HdrProbePut(values,8,image1.SampleLevel(surface1,(float2(at)+.5)/screen.xy,0));}
+    return HdrProbeBytes(values[min(field,26u)]);}
 
 // Native environment entries use the engine's two weather cubemaps.
 TextureCube sky0:register(t0);TextureCube sky1:register(t1);

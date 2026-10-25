@@ -6,12 +6,14 @@
 #include "KichR4LightingMath.h"
 #include "KichR4Visibility.h"
 #include "KichR4LightAdmission.h"
+#include "KichR4LocalShadowPlan.h"
 #include "RenderSnapshot.h"
 #include "KichR4TelemetryText.h"
 #include "KichR4Material.h"
 #include <memory>
 #include <set>
 #include <map>
+#include <unordered_map>
 #include <stdio.h>
 namespace kich_r4_capture {
 using kich_r4_level::Span;using kich_r4_level::Reader;using kich_r4_level::Check;
@@ -229,15 +231,29 @@ struct NativeModelCommand {
     std::shared_ptr<RenderSnapshotProvenance> provenance;
     Bounds bounds;bool bounds_known;
     uint64_t visual_id,skeleton_id,pose_hash,lifecycle_serial;uint32_t source_frame;bool identity_measured,pose_hash_valid;
+    // P0-S11 PERF02 deduplication identity (Batch::NativeModel): the style as submitted.
+    Style source_style;
     NativeModelCommand():vertex_count(0),first(0),count(0),layer(0),skin_mode(KICH_R4_SKIN_UNKNOWN),effect(0),shader_element(UINT32_MAX),shader_pass(UINT32_MAX),has_material(false),bounds_known(false),visual_id(0),skeleton_id(0),pose_hash(0),lifecycle_serial(0),source_frame(0),identity_measured(false),pose_hash_valid(false){}
 };
-inline void ValidateModelMatrix(const Matrix& matrix){for(unsigned i=0;i<16;++i)Check(Finite(matrix.m[i]),"nonfinite native model matrix");}
+// One branch per matrix instead of sixteen.
+inline void ValidateModelMatrix(const Matrix& matrix){bool finite=true;for(unsigned i=0;i<16;++i)finite&=Finite(matrix.m[i]);Check(finite,"nonfinite native model matrix");}
+// P0-S11 PERF02: the image of a box under an affine map is bounded by the
+// image of its centre and the half-extent through |M| (Arvo 1990): two
+// transforms instead of eight corners, the same box in exact arithmetic. The
+// pad, ~16 float ulps of the summed term magnitudes (the bound on the rounding
+// of a four-term sum, cancellation included), keeps it conservative.
 inline bool AddTransformedBounds(Bounds& out,const Bounds& source,const Matrix& matrix){
     if(!source.valid)return true;
-    if(matrix.m[3]!=0 || matrix.m[7]!=0 || matrix.m[11]!=0 || matrix.m[15]!=1)return false;
-    for(unsigned corner=0;corner<8;++corner){float p[3],q[4];for(unsigned i=0;i<3;++i)p[i]=(corner&(1u<<i))?source.max[i]:source.min[i];
-        Transform(p,matrix,q);for(unsigned i=0;i<3;++i)if(!Finite(q[i]))return false;out.Add(q);}
-    return true;
+    const float* m=matrix.m;
+    if(m[3]!=0 || m[7]!=0 || m[11]!=0 || m[15]!=1)return false;
+    float c[3],e[3],low[3],high[3];
+    for(unsigned i=0;i<3;++i){c[i]=(source.min[i]+source.max[i])*.5f;e[i]=fabsf(source.max[i]-source.min[i])*.5f;}
+    for(unsigned j=0;j<3;++j){const float center=c[0]*m[j]+c[1]*m[4+j]+c[2]*m[8+j]+m[12+j];
+        const float extent=e[0]*fabsf(m[j])+e[1]*fabsf(m[4+j])+e[2]*fabsf(m[8+j]);
+        const float pad=(fabsf(c[0]*m[j])+fabsf(c[1]*m[4+j])+fabsf(c[2]*m[8+j])+fabsf(m[12+j])+extent)*1.e-6f;
+        low[j]=center-extent-pad;high[j]=center+extent+pad;
+        if(!Finite(low[j]) || !Finite(high[j]) || !(extent>=0))return false;}
+    out.Add(low);out.Add(high);return true;
 }
 inline bool NativeModelBounds(NativeModelCommand& cmd){
     const Mesh& mesh=*cmd.mesh;
@@ -295,17 +311,50 @@ inline void SnapshotCommand(Command& cmd,const std::vector<Vertex>& vertices,con
         cmd.provenance=p;
     }catch(...){RenderSnapshot_Text("TELEMETRY_LOSS","capture_provenance","ALLOCATION_FAILED; per-command provenance unavailable");}
 }
+// P0-S11 PERF02: per-draw reuse of generated stream vertices. A dense table
+// over the referenced source range (the usual, compact case) or a hash map
+// replaces the former std::map node per index.
+struct VertexRemap {
+    std::vector<uint32_t> dense;std::unordered_map<uint32_t,uint32_t> sparse;uint32_t low=0;bool use_dense=true;
+    void Begin(uint32_t lowest,uint32_t highest,uint32_t n){low=lowest;const uint64_t span=uint64_t(highest)-lowest+1;use_dense=span<=uint64_t(n)*4+4096;
+        if(use_dense)dense.assign(static_cast<size_t>(span),UINT32_MAX);else{sparse.clear();sparse.reserve(n);}}
+    uint32_t Find(uint32_t at)const{if(use_dense)return dense[at-low];const auto f=sparse.find(at);return f==sparse.end()?UINT32_MAX:f->second;}
+    void Set(uint32_t at,uint32_t generated){if(use_dense)dense[at-low]=generated;else sparse[at]=generated;}
+    // Snapshot geometry checks walk the reused sources in ascending order.
+    void Ordered(std::map<uint32_t,uint32_t>& out)const{out.clear();
+        if(use_dense){for(size_t i=0;i<dense.size();++i)if(dense[i]!=UINT32_MAX)out[low+static_cast<uint32_t>(i)]=dense[i];}
+        else out.insert(sparse.begin(),sparse.end());}
+};
+// P0-S11 PERF02 native model deduplication. A word-wise FNV-1a bucket hash
+// (the hash never decides equality) and the submitted style fields the former
+// key string held, compared by their bytes exactly as that string compared.
+inline uint64_t NativeModelHash(uint64_t h,const void* data,size_t bytes){
+    const unsigned char* p=static_cast<const unsigned char*>(data);
+    for(size_t i=0;i+4<=bytes;i+=4){uint32_t w;memcpy(&w,p+i,4);h^=w;h*=UINT64_C(1099511628211);}
+    for(size_t i=bytes&~size_t(3);i<bytes;++i){h^=p[i];h*=UINT64_C(1099511628211);}
+    return h;}
+inline bool SameSubmittedStyle(const Style& a,const Style& b){
+    const uint32_t wa[]={a.blend,a.src,a.dst,a.clamp,a.cull,a.depth,a.write,a.alpha_func,a.shadow_alpha_func},wb[]={b.blend,b.src,b.dst,b.clamp,b.cull,b.depth,b.write,b.alpha_func,b.shadow_alpha_func};
+    const float fa[]={a.alpha_ref,a.shadow_alpha_ref,a.emissive_gain,a.emissive_specular,a.min_z,a.max_z},fb[]={b.alpha_ref,b.shadow_alpha_ref,b.emissive_gain,b.emissive_specular,b.min_z,b.max_z};
+    return !memcmp(wa,wb,sizeof(wa)) && !memcmp(fa,fb,sizeof(fa)) && !memcmp(&a.surface,&b.surface,sizeof(a.surface)) &&
+        a.scissor==b.scissor && (!a.scissor || !memcmp(a.rect,b.rect,sizeof(a.rect)));}
 struct Batch {
     uint32_t width,height,engine_frame,models,hands,ui;bool renderer_seen,ui_seen;unsigned ui_scope;
     std::vector<Vertex> vertices;std::vector<uint32_t> indices;std::vector<Command> commands;std::string error;
     std::vector<NativeModelCommand> native_models;uint64_t pose_bytes;
     std::set<std::string> model_keys;
+    // P0-S11 PERF02: native model deduplication by hash bucket (first index,
+    // chained through native_model_next) with an exact field comparison.
+    std::unordered_map<uint64_t,uint32_t> native_model_heads;std::vector<uint32_t> native_model_next;
+    uint64_t native_model_duplicates=0;
     Batch():width(0),height(0),engine_frame(0),models(0),hands(0),ui(0),renderer_seen(false),ui_seen(false),ui_scope(0),pose_bytes(0){}
     void Begin(uint32_t w,uint32_t h,uint32_t f){width=w;height=h;engine_frame=f;models=hands=ui=0;renderer_seen=ui_seen=false;ui_scope=0;
-        vertices.clear();indices.clear();commands.clear();native_models.clear();pose_bytes=0;error.clear();model_keys.clear();}
+        vertices.clear();indices.clear();commands.clear();native_models.clear();pose_bytes=0;error.clear();model_keys.clear();
+        native_model_heads.clear();native_model_next.clear();native_model_duplicates=0;}
     bool Ready()const{return width && height && renderer_seen && ui_seen && !ui_scope && error.empty();}
     void Fail(const char* why){if(error.empty())error=why;}
-    void Reserve(uint32_t v,uint32_t i,const char* source="<unspecified>",uint32_t layer=UINT32_MAX){
+    // source/detail name the request only in the failure text (no per-draw string).
+    void Reserve(uint32_t v,uint32_t i,const char* source="<unspecified>",uint32_t layer=UINT32_MAX,const char* detail_name=NULL){
         const uint64_t used=uint64_t(vertices.size())*sizeof(Vertex)+uint64_t(indices.size())*4;
         const uint64_t requested=uint64_t(v)*sizeof(Vertex)+uint64_t(i)*4;
         const uint64_t limit=32u*1024u*1024u;
@@ -313,11 +362,11 @@ struct Batch {
         if(!why)return;
         char detail[768];snprintf(detail,sizeof(detail),
             "%s; frame=%u used_bytes=%llu request_bytes=%llu total_bytes=%llu limit_bytes=%llu "
-            "vertices=%llu indices=%llu request_vertices=%u request_indices=%u commands=%llu models=%u hands=%u UI=%u layer=%u source=%.180s",
+            "vertices=%llu indices=%llu request_vertices=%u request_indices=%u commands=%llu models=%u hands=%u UI=%u layer=%u source=%.180s%s%.180s",
             why,engine_frame,static_cast<unsigned long long>(used),static_cast<unsigned long long>(requested),
             static_cast<unsigned long long>(used+requested),static_cast<unsigned long long>(limit),
             static_cast<unsigned long long>(vertices.size()),static_cast<unsigned long long>(indices.size()),v,i,
-            static_cast<unsigned long long>(commands.size()),models,hands,ui,layer,source?source:"<unnamed>");
+            static_cast<unsigned long long>(commands.size()),models,hands,ui,layer,source?source:"<unnamed>",detail_name?" / ":"",detail_name?detail_name:"");
         throw std::runtime_error(detail);
     }
     void Model(const void* identity,const Mesh& mesh,const Matrix& world,const Matrix& vp,const Matrix* bones,uint32_t bone_count,
@@ -372,27 +421,36 @@ struct Batch {
         Mesh::RangeInfo range;
         Check(mesh->Range(first,tris*3,count,range),"native progressive model vertex range");
         Check(!mesh->two_weights || skin_mode!=KICH_R4_SKIN_HARDWARE || mesh->hardware_weights_safe,"2W hardware weight exceeds safe quantization range");
-        NativeModelCommand cmd;cmd.mesh=mesh;cmd.world=world;cmd.vp=vp;cmd.vertex_count=count;cmd.first=first;cmd.count=tris*3;
         Check(!light_valid || (Finite(object_hemi) && Finite(object_sun) && object_hemi>=0 && object_hemi<=1 && object_sun>=0 && object_sun<=1),"object exposure range");
+        const uint32_t layer=style.max_z<.1f?1:0;
+        const char* shader_name=shader?shader:mesh->shader.c_str();const char* texture_name=texture?texture:mesh->texture.c_str();const char* secondary_name=secondary?secondary:"";
+        // P0-S11 PERF02: the former key string (every field below, floats by
+        // their bytes, the palette included) is compared field by field
+        // against the commands in its hash bucket, before anything is built.
+        uint64_t hash=UINT64_C(14695981039346656037);
+        {const uintptr_t pointers[2]={reinterpret_cast<uintptr_t>(identity),reinterpret_cast<uintptr_t>(mesh.get())};
+            const uint32_t words[]={first,tris,count,skin_mode,layer,effect,shader_element,shader_pass};
+            hash=NativeModelHash(hash,pointers,sizeof(pointers));hash=NativeModelHash(hash,words,sizeof(words));hash=NativeModelHash(hash,world.m,sizeof(world.m));}
+        auto same=[&](const NativeModelCommand& o)->bool{
+            if(o.visual_id!=uint64_t(reinterpret_cast<uintptr_t>(identity)) || o.mesh.get()!=mesh.get() || o.first!=first || o.count!=tris*3 || o.vertex_count!=count ||
+                o.skin_mode!=skin_mode || o.layer!=layer || o.effect!=effect || o.shader_element!=shader_element || o.shader_pass!=shader_pass)return false;
+            if(memcmp(o.world.m,world.m,sizeof(world.m)) || memcmp(o.vp.m,vp.m,sizeof(vp.m)) || !SameSubmittedStyle(o.source_style,style))return false;
+            const float exposure[]={light_valid?1.f:0.f,object_hemi,object_sun},stored[]={o.object_light_valid?1.f:0.f,o.object_hemi,o.object_sun};
+            if(memcmp(exposure,stored,sizeof(exposure)))return false;
+            if(mesh->skinned && (o.bones.size()!=mesh->bones || memcmp(o.bones.data(),bones,mesh->bones*sizeof(Matrix))))return false;
+            if(o.shader!=shader_name || o.texture!=texture_name || o.secondary!=secondary_name || o.has_material!=(material!=NULL))return false;
+            return !material || kich_r4_material::SameKeyFields(o.material,*material);}; // the descriptor as copied, never its address
+        const auto bucket=native_model_heads.find(hash);
+        if(bucket!=native_model_heads.end())for(uint32_t at=bucket->second;at!=UINT32_MAX;at=native_model_next[at])
+            if(same(native_models[at])){++native_model_duplicates;return;}
+        NativeModelCommand cmd;cmd.mesh=mesh;cmd.world=world;cmd.vp=vp;cmd.vertex_count=count;cmd.first=first;cmd.count=tris*3;
         cmd.available_attributes=range.attributes;cmd.object_light_valid=light_valid;cmd.object_hemi=object_hemi;cmd.object_sun=object_sun;
-        cmd.layer=style.max_z<.1f?1:0;cmd.style=style;cmd.skin_mode=skin_mode;cmd.effect=effect;
+        cmd.layer=layer;cmd.style=style;cmd.source_style=style;cmd.skin_mode=skin_mode;cmd.effect=effect;
         if(material){cmd.material=*material;cmd.has_material=true;kich_r4_material::Apply(cmd.material,cmd.style);}
         cmd.shader_element=shader_element;cmd.shader_pass=shader_pass;
-        cmd.resource=name?name:"<unnamed model>";cmd.shader=shader?shader:mesh->shader;cmd.texture=texture?texture:mesh->texture;cmd.secondary=secondary?secondary:"";
-        std::string key(reinterpret_cast<const char*>(&identity),sizeof(identity));const Mesh* source=mesh.get();key.append(reinterpret_cast<const char*>(&source),sizeof(source));
-        key.append(reinterpret_cast<const char*>(&world),sizeof(world));key.append(reinterpret_cast<const char*>(&vp),sizeof(vp));
+        cmd.resource=name?name:"<unnamed model>";cmd.shader=shader_name;cmd.texture=texture_name;cmd.secondary=secondary_name;
         const uint32_t words[]={first,tris,count,skin_mode,cmd.layer,effect,shader_element,shader_pass,style.blend,style.src,style.dst,style.clamp,style.cull,style.depth,style.write,style.alpha_func,style.shadow_alpha_func};
-        key.append(reinterpret_cast<const char*>(words),sizeof(words));key.append(reinterpret_cast<const char*>(&style.alpha_ref),sizeof(style.alpha_ref));
-        key.append(reinterpret_cast<const char*>(&style.shadow_alpha_ref),sizeof(style.shadow_alpha_ref));
-        const float emission[]={style.emissive_gain,style.emissive_specular};key.append(reinterpret_cast<const char*>(emission),sizeof(emission));
-        key.append(reinterpret_cast<const char*>(&style.surface),sizeof(style.surface));
-        const float exposure[]={light_valid?1.f:0.f,object_hemi,object_sun};key.append(reinterpret_cast<const char*>(exposure),sizeof(exposure));
-        const float depth_range[]={style.min_z,style.max_z};key.append(reinterpret_cast<const char*>(depth_range),sizeof(depth_range));
-        key.append(reinterpret_cast<const char*>(&style.scissor),sizeof(style.scissor));if(style.scissor)key.append(reinterpret_cast<const char*>(style.rect),sizeof(style.rect));
-        if(mesh->skinned)key.append(reinterpret_cast<const char*>(bones),mesh->bones*sizeof(Matrix));
-        key.append(cmd.shader);key.push_back('\0');key.append(cmd.texture);key.push_back('\0');key.append(cmd.secondary);
-        if(cmd.has_material){const uint64_t material_key=kich_r4_material::Key(cmd.material);key.push_back('\0');key.append(reinterpret_cast<const char*>(&material_key),sizeof(material_key));}
-        if(model_keys.find(key)!=model_keys.end())return;
+        const float emission[]={style.emissive_gain,style.emissive_specular};
         const uint64_t bytes=mesh->skinned?uint64_t(mesh->bones)*sizeof(Matrix):0;
         Check(native_models.size()+commands.size()<16384,"native model frame draw limit");Check(pose_bytes+bytes<=16u*1024u*1024u,"native model frame palette budget");
         if(mesh->skinned)cmd.bones.assign(bones,bones+mesh->bones);
@@ -412,7 +470,9 @@ struct Batch {
                 sample[p.uv_count]=at;p.uv[p.uv_count*2]=mesh->vertices[at].uv[0];p.uv[p.uv_count*2+1]=mesh->vertices[at].uv[1];++p.uv_count;}
             snprintf(p.uv_source,sizeof(p.uv_source),"OGF_SOURCE_BASE_UV");
         }catch(...){RenderSnapshot_Text("TELEMETRY_LOSS","native_model_provenance","ALLOCATION_FAILED");}}
-        native_models.push_back(cmd);model_keys.insert(key);pose_bytes+=bytes;if(cmd.layer)++hands;else ++models;
+        const uint32_t index=static_cast<uint32_t>(native_models.size());const uint32_t chained=bucket!=native_model_heads.end()?bucket->second:UINT32_MAX;
+        native_models.push_back(std::move(cmd));native_model_next.push_back(chained);native_model_heads[hash]=index;
+        pose_bytes+=bytes;if(native_models.back().layer)++hands;else ++models;
     }
     Vertex Screen(float x,float y,float z,float rhw,float u,float v,uint32_t argb)const{
         Check(Finite(x) && Finite(y) && Finite(z) && Finite(rhw) && rhw>0 && Finite(u) && Finite(v),"HUD vertex coordinates");
@@ -471,7 +531,7 @@ struct State {
     }
     void SelectLights(const float* camera,KichR4LightingFrame& out,bool r1_lights_enabled=false,const float* camera_vp=NULL,KichR4LightVisibility occlusion=NULL,kich_r4_light_admission::Policy* admission=NULL)const {
         struct Choice {float score;KichR4LocalLight light;bool shadow;const void* source;};std::vector<Choice> choices;
-        out.count=0;out.shadow_mask=0;out.shadows.clear();out.shadow_faces.clear();out.shadow_sizes.clear();out.sources.clear();out.projectors.clear();out.lights.clear();out.visibility_valid=camera_vp?1u:0u;
+        out.count=0;out.shadow_mask=0;out.shadows.clear();out.shadow_faces.clear();out.shadow_sizes.clear();out.shadow_face_reasons.clear();out.sources.clear();out.projectors.clear();out.lights.clear();out.visibility_valid=camera_vp?1u:0u;
         if(camera_vp)memcpy(out.visibility_vp,camera_vp,sizeof(out.visibility_vp));
         else memset(out.visibility_vp,0,sizeof(out.visibility_vp));
         out.r1_lights_requested=out.r1_lights_applied=r1_lights_enabled?1u:0u;out.lamp_faded=0;
@@ -562,6 +622,13 @@ struct State {
             Text("LIGHT",id,"selection_reason",reason);
             Text("LIGHT",id,"policy","BSTATIC_REQUIRES_R2FLAG_R1LIGHTS; ALL_VISIBLE_POSITIVE_SOURCES; NO_NUMERIC_DEDUP");
             U64("LIGHT",id,"shadow_requested",unshadowed_lights.count(it->first)==0);U64("LIGHT",id,"last_update_frame",o.frame);
+            // P0-S11: the published plan of each shadow face and why.
+            if(chosen && size_t(slot)*6+6<=selected.shadow_face_reasons.size() && selected.CastsShadow(slot)){char faces[160];size_t used=0;faces[0]=0;
+                for(unsigned f=0;f<(l.type==2?1u:6u);++f){const int n=snprintf(faces+used,sizeof(faces)-used,"%s%u:%s",f?",":"",f,kich_r4_local_shadow::FaceReasonName(selected.shadow_face_reasons[size_t(slot)*6+f]));
+                    if(n<0 || size_t(n)>=sizeof(faces)-used)break;used+=size_t(n);}
+                Text("LIGHT",id,"shadow_faces",faces);
+                if(slot<selected.shadow_faces.size())U64("LIGHT",id,"shadow_face_mask",selected.shadow_faces[slot]);
+                if(slot<selected.shadow_sizes.size())U64("LIGHT",id,"shadow_size",selected.shadow_sizes[slot]);}
         }
         RenderSnapshot_U64("LIGHT_REGISTRY","registered_observed",light_observations.size());RenderSnapshot_U64("LIGHT_REGISTRY","identity_records",light_sources.size());
         RenderSnapshot_U64("LIGHT_POLICY","R2FLAG_R1LIGHTS_requested",selected.r1_lights_requested);RenderSnapshot_U64("LIGHT_POLICY","R2FLAG_R1LIGHTS_applied",selected.r1_lights_applied);

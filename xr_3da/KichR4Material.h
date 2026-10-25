@@ -82,6 +82,23 @@ inline uint64_t Key(const Descriptor& d){
     bytes=reinterpret_cast<const unsigned char*>(&d.surface);
     for(unsigned b=0;b<sizeof(d.surface);++b){key^=bytes[b];key*=UINT64_C(1099511628211);}return key;
 }
+// P0-S11 PERF02: equality over exactly the inputs of Key (strings, integers,
+// float and surface bytes): Key equality without hashing, and without its
+// collisions. It exits at the first differing field.
+inline bool SameKeyFields(const Descriptor& a,const Descriptor& b){
+    if(a.semantic!=b.semantic || a.special!=b.special || a.source_family!=b.source_family || a.class_id!=b.class_id || a.alpha_func!=b.alpha_func || a.shadow_alpha_func!=b.shadow_alpha_func ||
+        a.cull!=b.cull || a.src_blend!=b.src_blend || a.dst_blend!=b.dst_blend || a.required_attributes!=b.required_attributes || a.passes!=b.passes || a.detail_usage!=b.detail_usage ||
+        a.source_flags!=b.source_flags || a.source_alpha_reference!=b.source_alpha_reference || a.base_uv!=b.base_uv || a.bump_uv!=b.bump_uv || a.detail_uv!=b.detail_uv ||
+        a.lightmap_uv!=b.lightmap_uv || a.hemi_uv!=b.hemi_uv || a.depth_test!=b.depth_test || a.depth_write!=b.depth_write || a.tree_wave!=b.tree_wave || a.fog_enabled!=b.fog_enabled ||
+        a.terrain_detail!=b.terrain_detail)return false;
+    const float fa[]={a.detail_scale[0],a.detail_scale[1],a.material,a.alpha_ref,a.shadow_alpha_ref,a.emissive_gain,a.emissive_specular};
+    const float fb[]={b.detail_scale[0],b.detail_scale[1],b.material,b.alpha_ref,b.shadow_alpha_ref,b.emissive_gain,b.emissive_specular};
+    if(memcmp(fa,fb,sizeof(fa)) || memcmp(&a.surface,&b.surface,sizeof(a.surface)))return false;
+    if(a.shader!=b.shader || a.source!=b.source || a.base!=b.base || a.bump!=b.bump || a.bump_aux!=b.bump_aux || a.detail!=b.detail || a.lightmap!=b.lightmap || a.hemi!=b.hemi ||
+        a.unsupported_reason!=b.unsupported_reason || a.terrain_mask!=b.terrain_mask || a.terrain_lmap!=b.terrain_lmap)return false;
+    for(unsigned i=0;i<4;++i)if(a.terrain_layers[i]!=b.terrain_layers[i] || a.terrain_bumps[i]!=b.terrain_bumps[i])return false;
+    return true;
+}
 inline Descriptor Build(const Source& source,const PassState& state) {
     Descriptor d=source.descriptor;
     d.surface=state.surface;
@@ -170,9 +187,27 @@ template<class Style> inline void Apply(const Descriptor& d,Style& s) {
     s.shadow_alpha_func=d.shadow_alpha_func;s.shadow_alpha_ref=d.shadow_alpha_ref;
     s.depth=d.depth_test;s.write=d.depth_write;s.cull=d.cull;s.surface=d.surface;s.fog_enabled=d.fog_enabled;
 }
+// P0-S11 native material contract: the source shader name and texture list the
+// shader was created with. ResourceManager deduplicates elements by compiled
+// R1 passes, so two sources (Cordon escape_asfalt / escape_asfalt_noblend) can
+// share one element while their R4 descriptors differ (BmmD terrain layers).
+// Case and path separators are normalized as ResourceManager::_ParseList does.
+inline uint64_t Contract(const char* shader,const char* textures){
+    uint64_t key=UINT64_C(14695981039346656037);
+    const char* parts[]={shader?shader:"",textures?textures:""};
+    for(unsigned s=0;s<2;++s){for(const char* c=parts[s];*c;++c){char v=*c;if(v==' ' || v=='\t')continue;
+            if(v>='A' && v<='Z')v=char(v-'A'+'a');if(v=='/')v='\\';key^=static_cast<unsigned char>(v);key*=UINT64_C(1099511628211);}
+        key^=255;key*=UINT64_C(1099511628211);}
+    return key;
+}
 class Cache {
     std::map<const void*,std::vector<Descriptor> > entries;
     std::map<const void*,bool> ambiguous;
+    // P0-S11: descriptors per (element, contract). A consumer that still knows
+    // its source shader/textures gets its own descriptor even when the shared
+    // element is ambiguous; the latest registration of a contract wins (reload,
+    // changed blender settings). Element-only consumers keep the rule above.
+    std::map<std::pair<const void*,uint64_t>,std::vector<Descriptor> > contracts;
     static bool Equivalent(Descriptor a,Descriptor b){
         // A deduplicated compiled element may legitimately have several source
         // names; only differences that change native execution are conflicts.
@@ -180,8 +215,18 @@ class Cache {
         a.class_id=b.class_id=0;return Key(a)==Key(b);
     }
 public:
-    uint64_t registrations,lookups,misses,conflicts;
-    Cache():registrations(0),lookups(0),misses(0),conflicts(0){}
+    uint64_t registrations,lookups,misses,conflicts,contract_hits;
+    Cache():registrations(0),lookups(0),misses(0),conflicts(0),contract_hits(0){}
+    void Register(const void* element,uint64_t contract,const std::vector<Descriptor>& passes){
+        if(element)contracts[std::make_pair(element,contract)]=passes;
+        Register(element,passes);
+    }
+    // The contract's own descriptor, else the element-level one.
+    const Descriptor* Find(const void* element,uint64_t contract,uint32_t pass){
+        const auto i=contracts.find(std::make_pair(element,contract));
+        if(i!=contracts.end() && pass<i->second.size()){++lookups;++contract_hits;return &i->second[pass];}
+        return Find(element,pass);
+    }
     void Register(const void* element,const std::vector<Descriptor>& passes){
         if(!element)return;
         ++registrations;if(ambiguous.find(element)!=ambiguous.end())return;
@@ -197,7 +242,8 @@ public:
         ++lookups;const auto i=entries.find(element);if(i==entries.end() || pass>=i->second.size()){++misses;return NULL;}
         return &i->second[pass];
     }
-    void Forget(const void* element){entries.erase(element);ambiguous.erase(element);}
+    void Forget(const void* element){entries.erase(element);ambiguous.erase(element);
+        contracts.erase(contracts.lower_bound(std::make_pair(element,uint64_t(0))),contracts.upper_bound(std::make_pair(element,UINT64_MAX)));}
 };
 }
 #endif

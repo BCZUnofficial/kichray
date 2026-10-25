@@ -1,4 +1,5 @@
 #include "KichR4NativePrelude.h"
+#include "KichR4QueueProfile.h"
 #include "xrRender/WallmarkSnapshot.h"
 #include "KichR4Native.h"
 #include "KichR4NativeCPU.h"
@@ -312,7 +313,7 @@ void CRender::add_Visual(IRender_Visual* v){if(!v || invisible)return;NativePrep
         if(item)light_object=item->H_Root();
         if(!light_object && g_pGameLevel)light_object=g_pGameLevel->CurrentViewEntity();}
     if(light_object && (q.hud || camera_needed)){R4ROS* ros=dynamic_cast<R4ROS*>(light_object->renderable_ROS());if(ros){ros->Exposure(q.hemi,q.sun);q.light_valid=true;}}
-    queue.push_back(q);}
+    queue.push_back(q);kich_r4_queue::Global().Count(kich_r4_queue::Visuals);}
 void CRender::add_Geometry(IRender_Visual* v){if(v && occ_visible(v->vis))add_Visual(v);}
 void CRender::Submit(IRender_Visual* v,CKinematics* parent){if(!v)return;CKinematics* k=v->dcast_PKinematics();if(k){k->CalculateBones(TRUE);k->CalculateWallmarks();parent=k;}
     const Fmatrix original=RCache.get_xform_world();
@@ -382,9 +383,10 @@ void CRender::Calculate(){queue.clear();shadow_views.clear();native_lod_shadow_v
     // native path gathers their conservative union, then culls immutable model
     // commands against the actual pass matrix in the backend.
     KichR4LightingFrame lighting={};lighting.valid=1;
+    {kich_r4_queue::Scope stage(kich_r4_queue::Lights); // P0-S11 PERF02: light selection, HOM, shadow plan
     KichR4_CopyEngineEnvironment(lighting);
     KichR4_FreezeLighting(Device.dwFrame,Device.dwTimeGlobal,&Device.vCameraPosition.x,lighting,ps_r2_ls_flags.test(R2FLAG_R1LIGHTS)!=0,&Device.mFullTransform._11);
-    KichR4_CaptureLightingDiagnostics(&Device.vCameraPosition.x,lighting);
+    KichR4_CaptureLightingDiagnostics(&Device.vCameraPosition.x,lighting);}
     if(g_render_snapshot_active){RenderSnapshot_U64("LIGHT_POLICY","R2FLAG_R1LIGHTS_requested",ps_r2_ls_flags.test(R2FLAG_R1LIGHTS)?1:0);
         RenderSnapshot_U64("LIGHT_POLICY","R2FLAG_R1LIGHTS_applied",lighting.r1_lights_applied);
         RenderSnapshot_U64("LIGHT_POLICY","level_file_records",native_level_light_records);RenderSnapshot_U64("LIGHT_POLICY","level_directional_records_skipped",native_level_directional_skips);
@@ -409,8 +411,8 @@ void CRender::Calculate(){queue.clear();shadow_views.clear();native_lod_shadow_v
             const kich_r4_scene::Matrix vp=kich_r4_lighting::LocalShadow(lighting.lights[i],face,size);
             const NativeLodView lod_view={vp,size};native_lod_shadow_views.push_back(lod_view);
             Fmatrix matrix;CopyMemory(&matrix,vp.m,sizeof(matrix));CFrustum view;view.CreateFromMatrix(matrix,FRUSTUM_P_ALL);shadow_views.push_back(view);}}
-    if(g_pGameLevel->pHUD){g_pGameLevel->pHUD->Render_First();g_pGameLevel->pHUD->Render_Last();}
-    if(psDeviceFlags.test(rsDrawDynamic)){candidate_seen.Begin();u32 camera_sources=0,shadow_sources=0;
+    if(g_pGameLevel->pHUD){kich_r4_queue::Scope stage(kich_r4_queue::HudFirst);g_pGameLevel->pHUD->Render_First();g_pGameLevel->pHUD->Render_Last();}
+    if(psDeviceFlags.test(rsDrawDynamic)){kich_r4_queue::Scope stage(kich_r4_queue::Renderables);candidate_seen.Begin();u32 camera_sources=0,shadow_sources=0;
         xr_vector<ISpatial*>& objects=candidate_objects;
         for(u32 pass=0;pass<=shadow_views.size();++pass){objects.clear_not_free();
             g_SpatialSpace->q_frustum(objects,ISpatial_DB::O_ORDERED,STYPE_RENDERABLE,pass?shadow_views[pass-1]:ViewBase);
@@ -428,12 +430,17 @@ void CRender::Render(){if(!g_pGamePersistent)return;
     // The main menu asks the renderer to invoke its PP-UI callback even without a level.
     if(g_pGamePersistent->OnRenderPPUI_query()){queue.clear();g_pGamePersistent->OnRenderPPUI_main();
         KichR4_NativeMenuPP(true);g_pGamePersistent->OnRenderPPUI_PP();KichR4_NativeMenuPP(false);return;}
-    if(!loaded)return;flush();if(Details)Details->Render();g_pGamePersistent->Environment().RenderSky();g_pGamePersistent->Environment().RenderClouds();
-    if(Wallmarks)Wallmarks->Render();ZeroMemory(&glow_stats,sizeof(glow_stats));for(u32 i=0;i<glows.size();++i)glows[i]->Draw();
+    if(!loaded)return;
+    // P0-S11 PERF02 queue stages (KichR4QueueProfile.h); nothing is timed unless recording.
+    {kich_r4_queue::Scope stage(kich_r4_queue::Submit);flush();}
+    {kich_r4_queue::Scope stage(kich_r4_queue::Details);if(Details)Details->Render();}
+    {kich_r4_queue::Scope stage(kich_r4_queue::Environment);g_pGamePersistent->Environment().RenderSky();g_pGamePersistent->Environment().RenderClouds();}
+    {kich_r4_queue::Scope stage(kich_r4_queue::Wallmarks);if(Wallmarks)Wallmarks->Render();}
+    {kich_r4_queue::Scope stage(kich_r4_queue::Glows);ZeroMemory(&glow_stats,sizeof(glow_stats));for(u32 i=0;i<glows.size();++i)glows[i]->Draw();}
     if(g_render_snapshot_active){RenderSnapshot_U64("GLOW_POLICY","active",glow_stats.active);RenderSnapshot_U64("GLOW_POLICY","frustum_rejected",glow_stats.frustum_rejected);
         RenderSnapshot_U64("GLOW_POLICY","facing_rejected",glow_stats.facing_rejected);RenderSnapshot_U64("GLOW_POLICY","queued",glow_stats.queued);
         RenderSnapshot_U64("GLOW_POLICY","representative_records",glow_stats.recorded);RenderSnapshot_Text("GLOW_POLICY","detail_budget","32_QUEUED_SOURCES; DRAW_SUBMISSION_UNLIMITED; PIXEL_VISIBILITY_NOT_MEASURED");}
-    g_pGamePersistent->Environment().RenderFlares();g_pGamePersistent->Environment().RenderLast();
+    {kich_r4_queue::Scope stage(kich_r4_queue::Environment);g_pGamePersistent->Environment().RenderFlares();g_pGamePersistent->Environment().RenderLast();}
 }
 BOOL CRender::occ_visible(vis_data& v){if(ViewBase.testSphere_dirty(v.sphere.P,v.sphere.R))return TRUE;
     for(u32 i=0;i<shadow_views.size();++i)if(shadow_views[i].testSphere_dirty(v.sphere.P,v.sphere.R))return TRUE;return FALSE;}

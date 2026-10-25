@@ -21,15 +21,16 @@
 #include "KichR4LocalShadowCache.h"
 #include "KichR4ShadowRecord.h"
 #include "KichR4Bloom.h"
+#include "KichR4HdrProbe.h"
 #include <set>
 #include <map>
 /* EXE-side pass planner. Native resources remain owned by the R4 device;
  * destroying that device releases partial construction and all cached maps. */
 struct KichR4DeferredSession {
     enum Pipeline {StaticGeometry,ModelGeometry,StaticShadow,ModelShadow,Sun,Local,ForwardSun,ForwardLocal,Plain,Combine,Sky,Clouds,Water,Distortion,StaticForward,StaticWater,Copy,Postprocess,StaticPlain,DistortionMask,DistortionComposite,CelestialPipeline,WallmarkPipeline,StaticWallmarkPipeline,
-        BloomBuild,BloomFilter,BloomFilterFast,BloomComposite,Luminance1,Luminance2,Luminance3,SunShafts,SunShaftsComposite,HudBloomSource,SunShaftsBlur,DepthCopy,PipelineCount};
+        BloomBuild,BloomFilter,BloomFilterFast,BloomComposite,Luminance1,Luminance2,Luminance3,SunShafts,SunShaftsComposite,HudBloomSource,SunShaftsBlur,DepthCopy,HdrProbe,PipelineCount};
     KichR4DeferredAPI api;
-    enum {ShaderCount=33};
+    enum {ShaderCount=34};
     KichR4Handle pipelines[PipelineCount],shaders[ShaderCount],cb,screen_vb,screen_ib,white;
     // P0-C2: R2 generic1 (high = colour/8, RGBA8) and the 256^2 bloom1/bloom2.
     KichR4Handle high_color=0,bloom1=0,bloom2=0;
@@ -307,7 +308,8 @@ struct KichR4DeferredSession {
     // P0-S7: the five lighting shaders (PSSun, PSLocal, PSForwardSun/Local,
     // PSWater) take most of the compile time and no menu frame needs them. They
     // compile with the first scene frame, under the level loading screen.
-    static bool SceneShader(unsigned i){return i==6 || i==7 || i==8 || i==9 || i==14;}
+    // P0-S11 PSHdrProbe (33) likewise.
+    static bool SceneShader(unsigned i){return i==6 || i==7 || i==8 || i==9 || i==14 || i==33;}
     bool scene_shaders_ready=false;
     int32_t StartScene(KichR4FrameSession& s,KichR4LevelSession& level){
         if(scene_shaders_ready)return 0;
@@ -323,14 +325,14 @@ struct KichR4DeferredSession {
     // creates every pipeline whose two shaders exist.
     int32_t CompileShaders(KichR4FrameSession& s,KichR4LevelSession& level,bool scene){
         const char* entries[]={"VSStatic","VSModel","VSModelShadow","VSScreen","PSGeometry","PSShadow","PSSun","PSLocal","PSForwardSun","PSForwardLocal","PSPlain","PSCombine","PSSky","PSClouds","PSWater","PSDistortion","PSPostprocess","PSParticleDistortionMask","PSDistortionComposite","PSCelestial","PSWallmark",
-            "PSBloomBuild","PSBloomFilter","PSBloomFilterFast","PSBloomComposite","PSLuminance1","PSLuminance2","PSLuminance3","PSSunShafts","PSSunShaftsComposite","PSHudBloomSource","PSSunShaftsBlur","PSDepthCopy"};
+            "PSBloomBuild","PSBloomFilter","PSBloomFilterFast","PSBloomComposite","PSLuminance1","PSLuminance2","PSLuminance3","PSSunShafts","PSSunShaftsComposite","PSHudBloomSource","PSSunShaftsBlur","PSDepthCopy","PSHdrProbe"};
         static_assert(sizeof(entries)/sizeof(entries[0])==ShaderCount,"deferred shader entries");
         const char* source=KichR4DeferredShaderSource();
         for(unsigned i=0;i<ShaderCount;++i){if(shaders[i] || (!scene && SceneShader(i)))continue;
             level.Continue();KichR4ShaderDesc d={};d.struct_size=sizeof(d);d.kind=i<4?KICH_R4_VERTEX_SHADER:KICH_R4_PIXEL_SHADER;
             memcpy(d.entry,entries[i],strlen(entries[i])+1);memcpy(d.name,"kich_b44_deferred",18);
             if(level.Expect(s,entries[i],level.bridge.resources.compile_shader(s.device,&d,source,static_cast<uint32_t>(strlen(source)),&shaders[i],level.bridge.shader_error,sizeof(level.bridge.shader_error)))<0)return s.failure;}
-        const unsigned vs[]={0,1,0,2,3,3,1,1,1,3,1,1,1,1,0,0,3,3,0,1,3,1,1,0,3,3,3,3,3,3,3,3,3,3,3,3},ps[]={4,4,5,5,6,7,8,9,10,11,12,13,14,15,8,14,10,16,10,17,18,19,20,20,21,22,23,24,25,26,27,28,29,30,31,32};
+        const unsigned vs[]={0,1,0,2,3,3,1,1,1,3,1,1,1,1,0,0,3,3,0,1,3,1,1,0,3,3,3,3,3,3,3,3,3,3,3,3,3},ps[]={4,4,5,5,6,7,8,9,10,11,12,13,14,15,8,14,10,16,10,17,18,19,20,20,21,22,23,24,25,26,27,28,29,30,31,32,33};
         static_assert(sizeof(vs)/sizeof(vs[0])==PipelineCount && sizeof(ps)/sizeof(ps[0])==PipelineCount,"deferred pipeline table");
         for(unsigned i=0;i<PipelineCount;++i){if(pipelines[i] || !shaders[vs[i]] || !shaders[ps[i]])continue;
             KichR4PipelineDesc d={};d.struct_size=sizeof(d);d.vertex_shader=shaders[vs[i]];d.pixel_shader=shaders[ps[i]];
@@ -454,13 +456,15 @@ struct KichR4DeferredSession {
             const uint64_t omitted=static_candidates[shadow?1:0]>=selected?static_candidates[shadow?1:0]-selected:0;
             RenderSnapshot_VisibilityTotals(omitted,omitted,0);}
         if(!shadow)l.culled=static_candidates[0];
+        // P0-S11: the label names portal sector selection when it took part.
+        const char* rule=visibility.portal_used?(shadow?"PORTAL_SECTORS_AND_SHADOW_FRUSTUM":"PORTAL_SECTORS_AND_CAMERA_FRUSTUM"):shadow?"SHADOW_FRUSTUM":"CAMERA_FRUSTUM";
         for(size_t n=0;n<visibility.selected.size();++n){const size_t i=visibility.selected[n];kich_r4_level::Draw mesh;
             if(!StaticDraw(l,i,vp,shadow,subset,mesh))continue;
             const kich_r4_level::Material& m=l.scene.materials[mesh.material];const kich_r4_material::Descriptor& material=m.descriptor;
             const bool described=native_mode && material.semantic!=kich_r4_material::UNKNOWN;
-            if(g_render_snapshot_active){SnapshotStatic(l,i,"R4_STATIC_OPAQUE",&mesh);SnapshotVisibility("CANDIDATE_CLASSIFIED",shadow?"SHADOW_FRUSTUM":"CAMERA_FRUSTUM");}
+            if(g_render_snapshot_active){SnapshotStatic(l,i,"R4_STATIC_OPAQUE",&mesh);SnapshotVisibility("CANDIDATE_CLASSIFIED",rule);}
             if(!shadow && l.culled)--l.culled;
-            if(g_render_snapshot_active)SnapshotVisibility("SELECTED",shadow?"SHADOW_FRUSTUM":"CAMERA_FRUSTUM");
+            if(g_render_snapshot_active)SnapshotVisibility("SELECTED",rule);
             kich_r4_lighting::Constants c=base;c.world=mesh.world;c.mvp=vp;
             c.normal_matrix=static_normals[i];
             const float cutoff=native_mode?m.alpha_ref:m.cutout?200.f/255:0;c.alpha[0]=cutoff;c.alpha[1]=native_mode?float(m.alpha_func):cutoff>0?7.f:8.f;
@@ -495,9 +499,40 @@ struct KichR4DeferredSession {
             if(!shadow){++l.visible;++l.submitted_draws;l.submitted_triangles+=mesh.count/3;}
         }if(!shadow)++l.frames;return 0;
     }
+    // P0-S11 VIS01: every authored wallmark of the level, selected or not,
+    // with the rule that decided it (sector owners, the portals of unreached
+    // owners, wind bounds against the view) and a check that the repeated
+    // decision matches this frame's selection.
+    void SnapshotWallmarkVisibility(KichR4LevelSession& l,const kich_r4_scene::Matrix& vp,uint32_t seed,const kich_r4_level::StaticVisibility& visibility){
+        using namespace kich_r4_telemetry;
+        kich_r4_level::StaticVisibility traversal;kich_r4_level::StaticSectorScratch scratch;
+        kich_r4_level::SelectStaticSectors(l.scene,vp,seed,traversal,&scratch);
+        std::string reached;for(size_t sector=0;sector<scratch.reached.size();++sector)if(scratch.reached[sector]){
+            if(reached.size()>480){reached+=",...";break;}reached+=(reached.empty()?"":",")+std::to_string(sector);}
+        U64("WALLMARK_VISIBILITY","camera","seed_sector",seed);U64("WALLMARK_VISIBILITY","camera","portal_used",traversal.portal_used?1:0);
+        Text("WALLMARK_VISIBILITY","camera","reached_sectors",reached.c_str());Vector("WALLMARK_VISIBILITY","camera","position",base.camera,3);
+        uint32_t total=0,recorded=0;
+        for(size_t i=0;i<l.scene.draws.size();++i){const kich_r4_level::Material& m=l.scene.materials[l.scene.draws[i].material];
+            if(!kich_r4_material::AuthoredWallmark(m.descriptor))continue;++total;if(recorded>=64)continue;++recorded;
+            const kich_r4_level::Draw& bounds=i<visibility_plan.bounds.size()?visibility_plan.bounds[i]:l.scene.draws[i];
+            const kich_r4_level::StaticExplanation e=kich_r4_level::ExplainStatic(l.scene,vp,seed,bounds,static_cast<uint32_t>(i),scratch,traversal.portal_used);
+            const bool selected=std::binary_search(visibility.selected.begin(),visibility.selected.end(),static_cast<uint32_t>(i));
+            const bool expected=!strcmp(e.reason,"SELECTED") || !strcmp(e.reason,"INVALID_BOUNDS_KEPT");
+            char id[32];snprintf(id,sizeof(id),"draw%u",static_cast<unsigned>(i));
+            Text("WALLMARK_VISIBILITY",id,"reason",e.reason);U64("WALLMARK_VISIBILITY",id,"selected_this_frame",selected?1:0);
+            Text("WALLMARK_VISIBILITY",id,"decision_check",expected==selected?"CONSISTENT":"MISMATCH_WITH_FRAME_SELECTION");
+            Text("WALLMARK_VISIBILITY",id,"shader",m.shader.c_str());Text("WALLMARK_VISIBILITY",id,"texture",m.texture.c_str());
+            Text("WALLMARK_VISIBILITY",id,"owner_sectors",e.owners.empty()?"NONE_UNOWNED_ALWAYS_ALLOWED":e.owners.c_str());
+            Text("WALLMARK_VISIBILITY",id,"reached_owner_sectors",e.reached_owners.empty()?"NONE":e.reached_owners.c_str());
+            if(!e.portals.empty())Text("WALLMARK_VISIBILITY",id,"unreached_owner_portals",e.portals.c_str());
+            Vector("WALLMARK_VISIBILITY",id,"wind_bounds_low",&bounds.low.x,3);Vector("WALLMARK_VISIBILITY",id,"wind_bounds_high",&bounds.high.x,3);}
+        U64("WALLMARK_VISIBILITY","camera","authored_wallmark_draws",total);U64("WALLMARK_VISIBILITY","camera","recorded",recorded);
+    }
     int32_t StaticWallmarks(KichR4FrameSession& s,KichR4LevelSession& l,const kich_r4_scene::Matrix& vp){
         EnsureStaticPlan(l);
-        const kich_r4_level::StaticVisibility& visibility=visibility_plan.Select(vp,l.files.sector?l.files.sector(base.camera):UINT32_MAX);
+        const uint32_t seed=l.files.sector?l.files.sector(base.camera):UINT32_MAX;
+        const kich_r4_level::StaticVisibility& visibility=visibility_plan.Select(vp,seed);
+        if(g_render_snapshot_active)SnapshotWallmarkVisibility(l,vp,seed,visibility);
         static_wallmark_order.clear();
         for(size_t n=0;n<visibility.selected.size();++n){const size_t i=visibility.selected[n];
             if(kich_r4_material::AuthoredWallmark(l.scene.materials[l.scene.draws[i].material].descriptor))static_wallmark_order.push_back(i);}
@@ -751,6 +786,8 @@ struct KichR4DeferredSession {
             style.surface.samplers[0]=style.surface.samplers[1]={3,3,3,2,2,0,1,0,0,0};
         if(add){style.blend=1;style.src=style.dst=2;}
         if(p==Combine && native_mode && c.screen[2]==0){style.blend=1;style.src=6;style.dst=5;}
+        // P0-S11 probe: only its strip; bloom1 sampled as PSBloomComposite does.
+        if(p==HdrProbe){style.scissor=true;memcpy(style.rect,hdr_rect,sizeof(hdr_rect));style.surface.samplers[1]={3,3,3,2,2,0,1,0,0,0};}
         if(p==Local){KichR4LocalLight source={};memcpy(source.position,c.light_position,12);source.range=c.light_position[3];
             const kich_r4_visibility::ScreenRect rect=kich_r4_visibility::LightScreenRect(source,base.mvp);
             style.scissor=true;style.rect[0]=int32_t(floorf(rect.left*width));style.rect[1]=int32_t(floorf(rect.top*height));
@@ -761,7 +798,7 @@ struct KichR4DeferredSession {
         if(p==Local && kich_r4_projector::Enabled(c))kich_r4_projector::Sampler(d.state.surface);
         if(maps)for(unsigned i=0;i<6;++i)d.textures[i+2]=maps[i];
         if(p==SunShafts)d.textures[11]=receiver_depth;
-        if(p==Sun || p==Local || p==Combine){d.textures[11]=receiver_depth;
+        if(p==Sun || p==Local || p==Combine || p==HdrProbe){d.textures[11]=receiver_depth;
             const KichR4Handle lut=l.MaterialLut(s);if(!lut)return s.failure;kich_r4_material_lut::Bind(d,lut);}
         const int32_t result=l.Expect(s,"B4.4 fullscreen draw",api.draw(s.device,&d));
         if(g_render_snapshot_active){using namespace kich_r4_telemetry;char id[96];snprintf(id,sizeof(id),"%s_pipeline_%u",snapshot_phase,static_cast<unsigned>(p));
@@ -889,9 +926,80 @@ struct KichR4DeferredSession {
             kich_r4_telemetry::Text("LIGHT",id,"projector_contract","SPOT_T3; SHADOW_1_MATRIX; CLAMP_LINEAR_NO_MIP; RGBA; INDEPENDENT_OF_SHADOW_SELECTION");}
     }
     double model_prepare_ms=0;
+    // P0-S11 GLO01 HDR probe (KichR4HdrProbe.h): snapshot frames and
+    // r4_hdr_probe frames, lit scene views only. One read_pixels per probed
+    // frame (a GPU wait and a full swap-chain copy); a failed probe is reported
+    // and never fails the frame.
+    bool hdr_probing=false;int32_t hdr_rect[4]={0,0,0,0};uint32_t hdr_probe_failures=0;
+    kich_r4_hdr_probe::Frame hdr_probe;
+    // Draws one stage's strip; resume re-binds the target the frame was drawing into.
+    int32_t Probe(KichR4FrameSession& s,KichR4LevelSession& l,const kich_r4_lighting::Constants& frame,kich_r4_hdr_probe::Stage stage,unsigned column,unsigned fields,
+        KichR4Handle t0,KichR4Handle t1,const KichR4Handle* maps,KichR4Handle resume=0){
+        if(!hdr_probing)return 0;
+        kich_r4_lighting::Constants c=frame;
+        c.light_direction[0]=float(hdr_probe.center[0]);c.light_direction[1]=float(hdr_probe.center[1]);c.light_direction[2]=float(stage);c.light_direction[3]=float(column);
+        hdr_rect[0]=int32_t(column);hdr_rect[1]=0;hdr_rect[2]=int32_t(column+fields);hdr_rect[3]=kich_r4_hdr_probe::Height;
+        if(Pass(s,l,width,height,1,0,0,0,0)<0 || Fullscreen(s,l,HdrProbe,c,t0,t1,maps)<0)return s.failure;
+        return resume?Pass(s,l,width,height,1,resume,0,0,0):0;}
+    // After the bloom composite, before postprocess covers the strip.
+    void ProbeReport(KichR4FrameSession& s,KichR4LevelSession& l,const KichR4GameFrame& input){
+        if(!hdr_probing)return;
+        using namespace kich_r4_hdr_probe;using kich_r4_telemetry::Vector;
+        uint32_t w=0,h=0;const char* failure=NULL;std::vector<unsigned char> pixels;
+        if(!tools.read_pixels)failure="NO_READ_PIXELS";
+        else if(tools.read_pixels(s.device,NULL,0,&w,&h)<0 || w!=width || h!=height)failure="SWAPCHAIN_SIZE_MISMATCH";
+        else{try{pixels.resize(size_t(w)*h*4);}catch(...){failure="ALLOCATION_FAILED";}
+            if(!failure && tools.read_pixels(s.device,pixels.data(),static_cast<uint32_t>(pixels.size()),&w,&h)!=0)failure="READ_PIXELS_FAILED";}
+        if(failure){if(hdr_probe_failures++<8)l.Write("[R4 P0-S11 hdr] frame=%u probe failed: %s",input.engine_frame,failure);
+            kich_r4_telemetry::Text("HDR_PROBE","frame","status",failure);return;}
+        hdr_probe.Decode(pixels.data());
+        const Summary m=Summarize(hdr_probe,base.fog);
+        char sources[MaxLights][40];
+        for(unsigned i=0;i<hdr_probe.lights;++i){const uint64_t serial=input.lighting.sources[i].serial;
+            if(serial)kich_r4_telemetry::Handle(sources[i],sizeof(sources[i]),"source",serial);else snprintf(sources[i],sizeof(sources[i]),"local_%u",i);}
+        const int dominant=m.DominantSource(hdr_probe.lights);
+        l.Write("[R4 P0-S11 hdr] frame=%u time=%.3f pixel=%d,%d geometry=%u/%u exposure=%.6g fog=%.4g; dd=%.5g ds=%.5g id=%.5g is=%.5g sum=%.5g scaled=%.5g peak=%.5g dominant=%s; low=%.4g high8=%.4g pre_bloom=%.4g bloom=%.4g final=%.4g",
+            input.engine_frame,input.time,hdr_probe.center[0],hdr_probe.center[1],m.geometry,unsigned(Samples),m.exposure,m.fog_amount,
+            m.direct_diffuse,m.direct_specular,m.indirect_diffuse,m.indirect_specular,m.sum,m.scaled,m.peak_scaled,m.Dominant(),m.low,m.high*8,m.pre_bloom,m.bloom,m.final_color);
+        {char text[700];int used=snprintf(text,sizeof(text),"sun=%.5g",m.sun);
+            for(unsigned i=0;i<hdr_probe.lights && used>0 && size_t(used)<sizeof(text);++i){const int n=snprintf(text+used,sizeof(text)-used," %s=%.5g",sources[i],m.lights[i]);if(n<0)break;used+=n;}
+            l.Write("[R4 P0-S11 hdr] frame=%u direct %s; dominant_source=%s; lights=%u probed=%u",input.engine_frame,text,dominant<0?"sun":sources[dominant],input.lighting.count,hdr_probe.lights);}
+        if(!g_render_snapshot_active)return;
+        using kich_r4_telemetry::Text;using kich_r4_telemetry::U64;using kich_r4_telemetry::Float;
+        Text("HDR_PROBE","frame","status","READ_BACK");
+        Text("HDR_PROBE","frame","method","PSHdrProbe FLOAT_BYTES_IN_SWAPCHAIN_STRIP_115x25; ONE_READ_PIXELS_AFTER_BLOOM_BEFORE_POSTPROCESS");
+        Text("HDR_PROBE","frame","stages","COMBINE_INPUTS_AS_PSCOMBINE; ACCUMULATOR_AFTER_PSSUN_AND_EACH_PSLOCAL; LOW_HIGH_AFTER_COMBINE; COMPOSITE_PRE_BLOOM_BLOOM1");
+        Text("HDR_PROBE","frame","terms","DD=ALBEDO*L.RGB DS=L.A ID=ALBEDO*HDIFFUSE IS=HSPECULAR; SUM BEFORE FOG; SCALED=LERP(SUM,FOG,AMOUNT)*EXPOSURE; LUMINANCE .3/.48/.22");
+        U64("HDR_PROBE","frame","engine_frame",input.engine_frame);Float("HDR_PROBE","frame","time",input.time);
+        const float center[2]={float(hdr_probe.center[0]),float(hdr_probe.center[1])};Vector("HDR_PROBE","frame","center_pixel",center,2);
+        U64("HDR_PROBE","frame","geometry_samples",m.geometry);U64("HDR_PROBE","frame","probed_lights",hdr_probe.lights);U64("HDR_PROBE","frame","submitted_lights",input.lighting.count);
+        const float terms[6]={m.direct_diffuse,m.direct_specular,m.indirect_diffuse,m.indirect_specular,m.sum,m.scaled};Vector("HDR_PROBE","frame","mean_dd_ds_id_is_sum_scaled",terms,6);
+        const float outputs[7]={m.exposure,m.fog_amount,m.low,m.high*8,m.pre_bloom,m.bloom,m.final_color};Vector("HDR_PROBE","frame","mean_exposure_fog_low_high8_prebloom_bloom_final",outputs,7);
+        Text("HDR_PROBE","frame","dominant_term",m.Dominant());Text("HDR_PROBE","frame","dominant_direct_source",dominant<0?"sun":sources[dominant]);
+        Float("HDR_PROBE","frame","peak_scaled",m.peak_scaled);U64("HDR_PROBE","frame","peak_sample",m.peak_sample);
+        Float("HDR_PROBE","sun","direct_luminance",m.sun);
+        for(unsigned i=0;i<hdr_probe.lights;++i){char id[48];snprintf(id,sizeof(id),"light_%u",i);const KichR4LocalLight& light=input.lighting.lights[i];
+            Text("HDR_PROBE",id,"source",sources[i]);U64("HDR_PROBE",id,"type",light.type);Float("HDR_PROBE",id,"direct_luminance",m.lights[i]);
+            Vector("HDR_PROBE",id,"color",light.color,3);Float("HDR_PROBE",id,"range",light.range);Vector("HDR_PROBE",id,"position",light.position,3);}
+        for(unsigned j=0;j<Samples;++j){const Sample& p=hdr_probe.samples[j];const Terms t=Split(p,base.fog);char id[32];snprintf(id,sizeof(id),"sample_%02u",j);
+            const float pixel[2]={float(p.x),float(p.y)};Vector("HDR_PROBE",id,"pixel",pixel,2);
+            if(!p.Geometry()){Text("HDR_PROBE",id,"surface","SKY_DEPTH_1");continue;}
+            Vector("HDR_PROBE",id,"albedo_rgba",p.albedo,4);Vector("HDR_PROBE",id,"gbuffer_normal_raw",p.gbuffer,4);Vector("HDR_PROBE",id,"normal",p.normal,3);
+            const float surface[5]={p.gbuffer[2],p.gloss,p.material,p.depth,p.distance};Vector("HDR_PROBE",id,"hemi_gloss_class_depth_distance",surface,5);
+            Vector("HDR_PROBE",id,"light_after_sun",p.sun,4);Vector("HDR_PROBE",id,"light_combined",p.light,4);
+            float locals[MaxLights];for(unsigned i=0;i<hdr_probe.lights;++i)locals[i]=DirectLuminance(p,hdr_probe.Before(p,i),p.after_local[i]);
+            if(hdr_probe.lights)Vector("HDR_PROBE",id,"local_direct_luminance",locals,hdr_probe.lights);
+            Vector("HDR_PROBE",id,"hdiffuse",p.hdiffuse,3);Vector("HDR_PROBE",id,"hspecular",p.hspecular,3);
+            Vector("HDR_PROBE",id,"direct_diffuse",t.direct_diffuse,3);Float("HDR_PROBE",id,"direct_specular",t.direct_specular);
+            Vector("HDR_PROBE",id,"indirect_diffuse",t.indirect_diffuse,3);Vector("HDR_PROBE",id,"indirect_specular",t.indirect_specular,3);
+            Vector("HDR_PROBE",id,"sum_before_fog",t.sum,3);const float fog_exposure[2]={p.fog_amount,p.exposure};Vector("HDR_PROBE",id,"fog_amount_exposure",fog_exposure,2);
+            Vector("HDR_PROBE",id,"scaled",t.scaled,3);Vector("HDR_PROBE",id,"stored_low",p.low,4);Vector("HDR_PROBE",id,"stored_high",p.high,4);
+            Vector("HDR_PROBE",id,"pre_bloom",p.pre_bloom,4);Vector("HDR_PROBE",id,"bloom1",p.bloom,4);Vector("HDR_PROBE",id,"bloom_term",t.bloom,3);Vector("HDR_PROBE",id,"final",p.final_color,4);}
+    }
     int32_t Draw(KichR4FrameSession& s,KichR4LevelSession& l,KichR4StreamSession& stream,const KichR4GameFrame& input,const kich_r4_capture::Batch* captured,uint32_t debug){
         frame_sun_cascades=frame_spot_shadow_lights=frame_point_shadow_lights=frame_local_shadow_faces=0;
         frame_projector_spots=frame_projector_named=frame_projector_ready=frame_projector_fallback=0;
+        hdr_probing=false;
         shadow_record.Begin(input.engine_frame);
         if(!native_mode)l.texture_registry.Begin(); // Native presenter owns its submission epoch.
         if(!native_mode || visibility_frame!=input.engine_frame || visibility_revision!=l.revision)BeginFramePlan(l,input);
@@ -1054,7 +1162,9 @@ struct KichR4DeferredSession {
         SnapshotPass("GBUFFER",RENDER_SNAPSHOT_PASS_GBUFFER,"camera_geometry");
         if(Pass(s,l,width,height,4,albedo,normal,depth,7,NULL,light,receiver_depth)<0 || Static(s,l,vp,false)<0 || Models(s,l,stream,captured,GeometryModels,base)<0 || details.Draw(s,l,cb,base,false,input.engine_frame,"camera_geometry",RENDER_SNAPSHOT_PASS_GBUFFER)<0)return s.failure;
         if(native_mode){SnapshotPass("GBUFFER",RENDER_SNAPSHOT_PASS_GBUFFER,"wallmarks_albedo_rgb");
-            if(Pass(s,l,width,height,1,albedo,0,depth,0)<0 || StaticWallmarks(s,l,vp)<0 || Models(s,l,stream,captured,Wallmarks,base)<0)return s.failure;}
+            if(g_render_snapshot_active)RenderSnapshot_Text("GBUFFER","wallmarks_albedo_rgb",kich_r4_optics::AlbedoOverlays(debug)?"DRAWN":"SKIPPED_DEBUG_VIEW_ALBEDO_CARRIES_DIAGNOSTIC");
+            if(kich_r4_optics::AlbedoOverlays(debug) &&
+                (Pass(s,l,width,height,1,albedo,0,depth,0)<0 || StaticWallmarks(s,l,vp)<0 || Models(s,l,stream,captured,Wallmarks,base)<0))return s.failure;}
         Mark(s,2);
         SnapshotPass("LIGHT_ACCUMULATION",RENDER_SNAPSHOT_PASS_LIGHT_ACCUMULATION,"sun_lighting");if(g_render_snapshot_active)RenderSnapshot_Light("sun","SCENE_ENVIRONMENT");
         sun_inputs[2]=albedo;
@@ -1067,12 +1177,16 @@ struct KichR4DeferredSession {
             if(g_render_snapshot_active){kich_r4_telemetry::Text("ENVIRONMENT","sunmask","texture",resident?"sunmask":"NEUTRAL_WHITE");
                 kich_r4_telemetry::U64("ENVIRONMENT","sunmask","frame_valid",input.lighting.sunmask_valid);
                 kich_r4_telemetry::Vector("ENVIRONMENT","sunmask","u",base.sunmask_u,4);kich_r4_telemetry::Vector("ENVIRONMENT","sunmask","v",base.sunmask_v,4);}}
-        if(Pass(s,l,width,height,1,light,0,0,0)<0 || Fullscreen(s,l,Sun,base,normal,depth,sun_inputs,true)<0)return s.failure;
+        hdr_probing=native_mode && !debug && (g_render_snapshot_active || input.lighting.hdr_probe) && pipelines[HdrProbe] && tools.read_pixels && kich_r4_hdr_probe::Frame::Fits(width,height);
+        if(hdr_probing)hdr_probe.Begin(width,height,input.lighting.count);
+        if(Pass(s,l,width,height,1,light,0,0,0)<0 || Fullscreen(s,l,Sun,base,normal,depth,sun_inputs,true)<0 ||
+            Probe(s,l,base,kich_r4_hdr_probe::LightStage,kich_r4_hdr_probe::SunColumn,kich_r4_hdr_probe::LightFields,light,0,NULL,light)<0)return s.failure;
         for(unsigned i=0;i<input.lighting.count && debug!=8;++i){kich_r4_lighting::Constants c=LocalConstants(input.lighting.lights[i],LocalSize(i));if(native_mode && !shadowed[i])c.alpha[3]=0;
             {char phase[48];snprintf(phase,sizeof(phase),"local_%u_lighting",i);SnapshotPhase(phase);SnapshotLocalLight(input.lighting.lights[i],input.lighting.sources[i],i,!native_mode || shadowed[i]);}
             KichR4Handle maps[6]={};for(unsigned face=0;face<(input.lighting.lights[i].type==2?1u:6u);++face)maps[face]=native_mode && !shadowed[i]?0:LocalMap(i,face);
             LocalInputs(l,input.lighting,i,c,maps,true);
             if(Fullscreen(s,l,Local,c,normal,depth,maps,true)<0)return s.failure;
+            if(i<kich_r4_hdr_probe::MaxLights && Probe(s,l,base,kich_r4_hdr_probe::LightStage,kich_r4_hdr_probe::LocalColumn+i*kich_r4_hdr_probe::LightFields,kich_r4_hdr_probe::LightFields,light,0,NULL,light)<0)return s.failure;
             SnapshotSubmittedLight(input.lighting.sources[i],i);++local_passes;}
         if(g_render_snapshot_active)RenderSnapshot_U64("LIGHT_REGISTRY","submitted_local_lights",input.lighting.count);
         // P0-S5 DX11 shafts (r4_sun_shafts 1/2/3 = 8/12/16 samples per segment):
@@ -1108,7 +1222,9 @@ struct KichR4DeferredSession {
             if(!debug && (Pass(s,l,width,height,1,scene_color,0,0,0)<0 || Models(s,l,stream,captured,Celestial,base)<0))return s.failure;
             SnapshotPass("ENVIRONMENT_COMBINE",RENDER_SNAPSHOT_PASS_ENVIRONMENT_COMBINE,"environment_combine");}
         kich_r4_lighting::Constants combination=base;if(native_mode)combination.alpha[3]=20;
-        if(Pass(s,l,width,height,native_mode?2:1,native_mode?scene_color:0,native_mode?high_color:0,0,0)<0 || Fullscreen(s,l,Combine,combination,albedo,light,combine_inputs)<0)return s.failure;
+        if(Pass(s,l,width,height,native_mode?2:1,native_mode?scene_color:0,native_mode?high_color:0,0,0)<0 || Fullscreen(s,l,Combine,combination,albedo,light,combine_inputs)<0 ||
+            Probe(s,l,combination,kich_r4_hdr_probe::CombineStage,kich_r4_hdr_probe::CombineColumn,kich_r4_hdr_probe::CombineFields,albedo,light,combine_inputs)<0 ||
+            Probe(s,l,base,kich_r4_hdr_probe::TargetStage,kich_r4_hdr_probe::TargetColumn,kich_r4_hdr_probe::TargetFields,scene_color,high_color,NULL)<0)return s.failure;
         // R2 phase_combine_sun_shafts: additive into generic0 (low only, not the
         // bloom source), after combine and before clouds/forward.
         if(shafts_on){SnapshotPhase("sun_shafts_composite");kich_r4_lighting::Constants c=base;c.alpha[1]=8;c.alpha[3]=0;
@@ -1148,7 +1264,12 @@ struct KichR4DeferredSession {
                 if(Pass(s,l,width,height,1,final_color,0,0,KICH_R4_CLEAR_COLOR)<0 || Models(s,l,stream,captured,Celestial,base)<0)return s.failure;}
             if(debug){kich_r4_lighting::Constants copy=base;copy.alpha[1]=8;copy.alpha[3]=0;copy.material[0]=0;
                 if(Pass(s,l,width,height,1,0,0,0,0)<0 || Fullscreen(s,l,Copy,copy,final_color,0,NULL)<0)return s.failure;}
-            else if(Bloom(s,l,input.lighting)<0 || Process(s,l,input)<0)return s.failure;
+            else{if(Bloom(s,l,input.lighting)<0)return s.failure;
+                // P0-S11: final_color is now the composite, scene_color its input.
+                const KichR4Handle pre_bloom[6]={scene_color,0,0,0,0,0};
+                if(Probe(s,l,base,kich_r4_hdr_probe::BloomStage,kich_r4_hdr_probe::BloomColumn,kich_r4_hdr_probe::BloomFields,final_color,bloom1,pre_bloom)<0)return s.failure;
+                ProbeReport(s,l,input);hdr_probing=false;
+                if(Process(s,l,input)<0)return s.failure;}
         }
         SnapshotPass("HUD_UI",RENDER_SNAPSHOT_PASS_HUD_UI,"hud_ui");
         if(Models(s,l,stream,captured,HUD,base)<0)return s.failure;

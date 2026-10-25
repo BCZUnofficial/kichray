@@ -27,6 +27,7 @@ Shader* source_shader=NULL;
 struct ref_shader:Ref<Shader>{void create(const char*,const char*){p=source_shader;}};
 kich_r4_material::Cache cache;
 const kich_r4_material::Descriptor* KichR4_NativeFindMaterial(const void* e,uint32_t pass){return cache.Find(e,pass);}
+const kich_r4_material::Descriptor* KichR4_NativeFindMaterialContract(const void* e,const char* s,const char* t,uint32_t pass){return cache.Find(e,kich_r4_material::Contract(s,t),pass);}
 '''
 adapter += source[start:end]
 adapter += r'''
@@ -59,6 +60,12 @@ int main(){
     assert(KichR4_NativeResolveMaterial("models_selflight","authored_base",out));
     assert(out.semantic==EMISSIVE && out.passes==PASS_FORWARD && out.emissive_gain==1 && out.emissive_specular==0);
     assert(out.depth_test && out.depth_write && out.alpha_ref==91.f/255 && out.base=="authored_base");
+    // P0-S11: two source contracts on one shared element resolve to their own descriptors.
+    {Descriptor first=Build(source,state),second=first;second.base="second_base";cache.Forget(&normal);
+        cache.Register(&normal,Contract("first_shader","shared_textures"),{first});cache.Register(&normal,Contract("second_shader","shared_textures"),{second});
+        assert(cache.conflicts>0 && cache.Find(&normal,0)->semantic==UNKNOWN);
+        assert(KichR4_NativeResolveMaterial("first_shader","shared_textures",out) && out.base=="authored_base" && out.semantic==EMISSIVE);
+        assert(KichR4_NativeResolveMaterial("second_shader","shared_textures",out) && out.base=="second_base" && out.semantic==EMISSIVE);}
     shader.E[1]=NULL;assert(!KichR4_NativeResolveMaterial("models_selflight","authored_base",out));
     assert(out.passes==0 && out.emissive_gain==0);
     std::cout<<"PASS: static E0/E1 base retained; samplerless E4 8/0.5 irradiance/specular folded once; source alpha/depth and absent stock shadow preserved\n";

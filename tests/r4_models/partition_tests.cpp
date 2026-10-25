@@ -9,7 +9,8 @@ void PartitionRanges(){
     const uint32_t basis=kich_r4_material::ATTR_NORMAL|kich_r4_material::ATTR_TANGENT|kich_r4_material::ATTR_BINORMAL;
     for(auto& v:mesh->vertices){v.attributes=basis;v.tangent=kich_r4_capture::PackNormal(1,0,0);v.binormal=kich_r4_capture::PackNormal(0,1,0);}
     for(unsigned i=0;i<3;++i)mesh->vertices.push_back(mesh->vertices[i]);
-    mesh->vertices[4].attributes&=~kich_r4_material::ATTR_TANGENT;
+    // P0-S11: a triangle is geometric only when none of its vertices has a basis.
+    for(unsigned i=3;i<6;++i)mesh->vertices[i].attributes&=~kich_r4_material::ATTR_TANGENT;
     mesh->indices={0,1,2,0,1,2,3,4,5,0,1,2,3,4,5,3,4,5,0,1,2,0,1,2};
     kich_r4_material::Descriptor material;material.semantic=kich_r4_material::MATERIAL_OPAQUE;
     material.passes=kich_r4_material::PASS_GEOMETRY|kich_r4_material::PASS_SHADOW;
@@ -29,8 +30,8 @@ void PartitionRanges(){
         if(repeat)Require(h.models.basis_creations==0,"second traversal creates no partition buffer");
         const size_t before=model_draws.size();Require(h.Draw(batch,KichR4ModelSession::Geometry)==0,"LOD range submits");
         std::vector<uint16_t> expected_good,expected_bad;
-        for(uint32_t at=first;at<first+count;at+=3){bool valid=true;
-            for(unsigned k=0;k<3;++k)valid=valid && (mesh->vertices[mesh->indices[at+k]].attributes&basis)==basis;
+        for(uint32_t at=first;at<first+count;at+=3){bool valid=false; // P0-S11: any basis vertex maps the triangle
+            for(unsigned k=0;k<3;++k)valid=valid || (mesh->vertices[mesh->indices[at+k]].attributes&basis)==basis;
             auto& out=valid?expected_good:expected_bad;out.insert(out.end(),mesh->indices.begin()+at,mesh->indices.begin()+at+3);}
         const bool mixed=!expected_good.empty() && !expected_bad.empty();
         Require(model_draws.size()-before==(mixed?2u:1u),"mixed range remains exactly two draws");
@@ -40,6 +41,7 @@ void PartitionRanges(){
             Require(actual==expected,"actual immutable index spans match independent source-triangle oracle");
             const bool mapped=mixed?d==before:!expected_good.empty();
             Require(bool(uint32_t(constants_drawn[d].material[0])&kich_r4_material::SHADER_BUMP)==mapped,"normal fallback follows the actual triangle subset");
+            Require(mapped || (uint32_t(constants_drawn[d].material[0])&kich_r4_material::SHADER_GLOSS_MAP),"geometric subset keeps the authored bump gloss");
             if(mixed){auto& known=handles[first%3];if(known)Require(known==draw.index_buffer,"overlapping LOD ranges reuse one source buffer");else known=draw.index_buffer;}}
         const size_t shadow_before=model_draws.size();Require(h.Draw(batch,KichR4ModelSession::Shadow)==0,"source shadow range submits");
         Require(model_draws.size()==shadow_before+1 && model_draws.back().surface.state.draw.start_index==first && model_draws.back().surface.state.draw.index_count==count &&

@@ -22,11 +22,20 @@
 #include "KichR4RecordTiming.h"
 #include "KichR4Watch.h"
 #include "KichR4NormalMapProbe.h"
+#include "KichR4QueueProfile.h"
 bool KichR4_NativeTerrain(const char* shader,char (*layers)[128]);
 bool KichR4_NativeMaterialState(const char*,const char*,kich_r4_capture::Style&);
 bool KichR4_NativeNeedScreenshot();
 void KichR4_NativeWriteScreenshot(const unsigned char*,uint32_t,uint32_t);
+__declspec(dllimport) unsigned int rtc_decompress(void* dst,unsigned int dst_len,const void* src,unsigned int src_len); // xrCore rt_compressor.h
 namespace {
+// P0-S11 PERF01 background DDS reader, shared by every level context. Owned
+// here, stopped in KichR4_NativeDestroy; never left to static destruction.
+kich_r4_texture_io::Loader* texture_io=NULL;bool texture_io_failed=false;
+kich_r4_texture_io::Loader* TextureIO(bool wanted){
+    if(!wanted || texture_io_failed)return NULL;
+    if(!texture_io)try{texture_io=new kich_r4_texture_io::Loader(rtc_decompress);}catch(...){texture_io_failed=true;texture_io=NULL;}
+    return texture_io;}
 struct Runtime {void* texture;std::string key;std::vector<unsigned char> pixels;uint32_t width,height;uint64_t revision;Runtime():texture(NULL),width(0),height(0),revision(0){};};
 std::mutex runtime_mutex;
 std::map<void*,Runtime> runtime;
@@ -218,7 +227,8 @@ void ConfigureContext(Context& c){c.frame.api=native.api.frame;c.level.bridge.re
     c.level.texture_override=OverrideTexture;c.level.texture_context=&c;
     c.level.texture_registry.budget=uint64_t(KichR4_NativeTextureBudgetMB())*1024*1024;
 }
-bool CreatePlaceholders(Context& c){return c.level.Placeholder(c.frame,false,&c.level.white)==0 && c.level.Placeholder(c.frame,true,&c.level.checker)==0;}
+bool CreatePlaceholders(Context& c){if(c.level.Placeholder(c.frame,false,&c.level.white)!=0 || c.level.Placeholder(c.frame,true,&c.level.checker)!=0)return false;
+    c.level.TransparentPlaceholder(c.frame);return true;} // P0-S11, optional
 bool CreateContext(){native.context.reset(new Context());Context& c=*native.context;ConfigureContext(c);
     if(c.frame.Start(native.window,native.width,native.height)<0)return false;
     ++native.device_generation;++native.level_generation;
@@ -310,6 +320,7 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
             if(native.record.active){KichR4ResourceStats baseline={};if(native.api.resources.get_stats(c.frame.device,&baseline,sizeof(baseline))==0){c.last_created=baseline.created;c.last_released=baseline.released;}}
         }
         c.level.texture_measure_snapshot=g_render_snapshot_active;
+        c.level.texture_io=TextureIO(input.lighting.dds_async!=0); // P0-S11 r4_dds_async
         c.level.texture_registry.Begin();BeginTelemetry(input,c.name.empty() || !(input.allowed || input.warmup),record_clock);TelemetryGuard telemetry_guard(c.frame.device);
         LARGE_INTEGER start={},end={},submitted={},frequency={};if(measure){QueryPerformanceCounter(&start);frequency.QuadPart=kich_r4_phases::Frequency();}
         const uint32_t shadows_before=c.deferred.shadow_passes;
@@ -345,6 +356,13 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
             RenderSnapshot_PresentID(native.successful_presents,false);RenderSnapshot_End("PRECACHE_CANCELLED");snapshot_guard.complete=true;return true;}
         if(preflight!=KICH_R4_OK)return false;
         const double preflight_ms=kich_r4_metrics::Elapsed(preflight_started);
+        if(g_render_snapshot_active){const KichR4LevelSession::AsyncCounters& a=c.level.preflight_probe.async;
+            RenderSnapshot_U64("DDS_ASYNC","enabled",c.level.texture_io?1:0);RenderSnapshot_U64("DDS_ASYNC","frame_requests",a.requests);
+            RenderSnapshot_U64("DDS_ASYNC","frame_staged",a.staged);RenderSnapshot_U64("DDS_ASYNC","frame_staged_bytes",a.staged_bytes);
+            RenderSnapshot_U64("DDS_ASYNC","frame_waiting",a.waiting);RenderSnapshot_U64("DDS_ASYNC","frame_sync_fallbacks",a.failures);
+            if(texture_io){const kich_r4_texture_io::Stats io=texture_io->Snapshot();RenderSnapshot_U64("DDS_ASYNC","queued",io.queued);
+                RenderSnapshot_U64("DDS_ASYNC","ready",io.ready);RenderSnapshot_U64("DDS_ASYNC","ready_bytes",io.ready_bytes);}
+            RenderSnapshot_Text("DDS_ASYNC","policy","WORLD_ROLES_BACKGROUND_READ; UI_HUD_AND_PRECACHE_SYNC; MAIN_THREAD_LOOKUP_ONLY; WORKER_WIN32_READ_AND_LZO; PENDING_BASE_WHITE_EFFECT_TRANSPARENT_OPTIONAL_CHECKER");}
         if(c.stream.PrepareUI(c.frame,c.level,*batch)<0)return false;
         if(input.debug_down && !native.debug_key){native.debug=(native.debug+1)%kich_r4_optics::DebugViewCount;
             Write("[R4 G3e] F9 view=%u %s; diagnostic views bypass postprocess",native.debug,kich_r4_optics::DebugView(native.debug));}native.debug_key=input.debug_down;
@@ -552,6 +570,19 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
                     static_cast<unsigned long long>(preflight.opens),static_cast<unsigned long long>(preflight.open_failures),static_cast<unsigned long long>(preflight.source_bytes),
                     static_cast<unsigned long long>(preflight.prepared_hits),static_cast<unsigned long long>(preflight.prepared_bytes),static_cast<unsigned long long>(preflight.metadata_hits),static_cast<unsigned long long>(preflight.retry_skips),static_cast<unsigned long long>(preflight.resident_hits),
                     static_cast<unsigned long long>(preflight.uploads),static_cast<unsigned long long>(preflight.upload_bytes),static_cast<unsigned long long>(preflight.upload_failures),static_cast<unsigned long long>(preflight.evictions));
+                {const KichR4LevelSession::AsyncCounters& a=c.level.async_window;const kich_r4_texture_io::Stats io=texture_io?texture_io->Snapshot():kich_r4_texture_io::Stats();
+                    native.record.Emit("[R4 P0-S11 dds_async] enabled=%u requests=%llu staged=%llu staged_bytes=%llu waiting=%llu transitional_draws=%llu sync_fallbacks=%llu worker_reads=%llu worker_failures=%llu worker_bytes=%llu worker_read_ms_total=%.3f queued=%u ready=%u ready_bytes=%llu expired=%llu; window_since_last_report; worker_time_off_frame",
+                        unsigned(c.level.texture_io!=NULL),static_cast<unsigned long long>(a.requests),static_cast<unsigned long long>(a.staged),static_cast<unsigned long long>(a.staged_bytes),
+                        static_cast<unsigned long long>(a.waiting),static_cast<unsigned long long>(a.transitional),static_cast<unsigned long long>(a.failures),
+                        static_cast<unsigned long long>(io.completed),static_cast<unsigned long long>(io.failed),static_cast<unsigned long long>(io.bytes),io.read_ms,
+                        unsigned(io.queued),unsigned(io.ready),static_cast<unsigned long long>(io.ready_bytes),static_cast<unsigned long long>(io.expired));
+                    c.level.async_window=KichR4LevelSession::AsyncCounters();}
+                {kich_r4_queue::Profile& q=kich_r4_queue::Global(); // P0-S11 PERF02 queue stages
+                    if(q.frames){char text[1200];int used=snprintf(text,sizeof(text),"[R4 P0-S11 queue] frames=%u",q.frames);
+                        for(unsigned s=0;s<kich_r4_queue::StageCount && used>0 && size_t(used)<sizeof(text);++s){const int n=snprintf(text+used,sizeof(text)-used," %s_ms=%.3f/%.3f",kich_r4_queue::StageName(s),q.sum[s]/q.frames,q.peak[s]);if(n<0)break;used+=n;}
+                        for(unsigned k=0;k<kich_r4_queue::CounterCount && used>0 && size_t(used)<sizeof(text);++k){const int n=snprintf(text+used,sizeof(text)-used," %s=%.1f",kich_r4_queue::CounterName(k),double(q.count_sum[k])/q.frames);if(n<0)break;used+=n;}
+                        native.record.Emit("%s; stage_ms=mean/max_per_frame; counters=mean_per_frame; model_capture_and_stream_capture_are_nested_in_the_other_stages_not_additive",text);}
+                    q.Reset();}
                 if(world_current){const auto& shadows=c.deferred.shadow_record;
                 for(unsigned cascade=0;cascade<3;++cascade){const auto& pass=shadows.sun[cascade]; // 2 = P0-S2 contact
                     native.record.Emit("[R4 E1.7 sun] frame=%u cascade=%u valid=%u begun=%u completed=%u map=%llu map_generation=%llu resolution=%u span_m=%.3f texel_m=%.5f; world_to_shadow; blend_near_clip_edge=0.9..1.0; point_comparison_valid_plane_9tap_invalid_plane_1tap_PCF",
@@ -581,4 +612,4 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
         snapshot_guard.complete=true;return true;
     }catch(const std::exception& e){Write("[R4 native B5] frame exception: %s",e.what());return false;}
 }
-void KichR4_NativeDestroy(){StopContext();if(native.module){FreeLibrary(native.module);native.module=NULL;}native.desired.clear();memset(&native.telemetry,0,sizeof(native.telemetry));}
+void KichR4_NativeDestroy(){StopContext();delete texture_io;texture_io=NULL;if(native.module){FreeLibrary(native.module);native.module=NULL;}native.desired.clear();memset(&native.telemetry,0,sizeof(native.telemetry));}

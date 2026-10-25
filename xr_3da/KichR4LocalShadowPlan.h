@@ -66,27 +66,40 @@ inline bool PointsVisible(const float points[5][3],const Matrix& vp){
 // HUD receivers (weapon, hands) lie within this box around the camera and may
 // sit outside the scene frustum (own FOV and near plane).
 static const float HudReach=2.f;
-inline uint32_t FaceMask(const KichR4LocalLight& l,const float* camera,const float* camera_vp,BoxVisibility occlusion){
-    const uint32_t all=AllFaces(l);
+// P0-S11 per-face decision. FaceTest yields the first five; the face
+// admission history (KichR4FaceAdmission.h) adds HELD and BUDGET; NONE is a
+// face the light does not have, or a light without a shadow this frame.
+enum FaceReason {FaceNone=0,FaceVisible,FaceHud,FaceUnbounded,FaceFrustum,FaceOccluded,FaceHeld,FaceBudget,FaceReasonCount};
+inline const char* FaceReasonName(unsigned r){
+    static const char* names[FaceReasonCount]={"NONE","VISIBLE","HUD_BOX","UNBOUNDED","OUTSIDE_FRUSTUM","HOM_OCCLUDED","HOM_OCCLUDED_HELD","BUDGET_DROPPED"};
+    return r<FaceReasonCount?names[r]:"INVALID";}
+inline bool FaceAdmitted(unsigned r){return r==FaceVisible || r==FaceHud || r==FaceUnbounded || r==FaceHeld;}
+// reasons (optional, 6 entries) receives each face's reason; unused faces NONE.
+inline uint32_t FaceTest(const KichR4LocalLight& l,const float* camera,const float* camera_vp,BoxVisibility occlusion,uint8_t* reasons){
+    const uint32_t all=AllFaces(l);const unsigned faces=l.type==2?1u:6u;
+    if(reasons)for(unsigned face=0;face<6;++face)reasons[face]=face<faces?FaceUnbounded:FaceNone;
     if(!camera || !camera_vp)return all;
     for(unsigned a=0;a<16;++a)if(!kich_r4_lighting::Finite(camera_vp[a]))return all;
     Matrix vp;memcpy(vp.m,camera_vp,sizeof(vp.m));
     const float hud_low[3]={camera[0]-HudReach,camera[1]-HudReach,camera[2]-HudReach},hud_high[3]={camera[0]+HudReach,camera[1]+HudReach,camera[2]+HudReach};
     uint32_t mask=0;
-    for(unsigned face=0;face<(l.type==2?1u:6u);++face){float points[5][3];
-        if(!FacePoints(l,face,points)){mask|=1u<<face;continue;}
-        if(FaceTouchesBox(l,face,hud_low,hud_high)){mask|=1u<<face;continue;}
-        if(!PointsVisible(points,vp))continue;
-        if(occlusion){float low[3],high[3];
+    for(unsigned face=0;face<faces;++face){float points[5][3];uint8_t reason=FaceVisible;
+        if(!FacePoints(l,face,points))reason=FaceUnbounded;
+        else if(FaceTouchesBox(l,face,hud_low,hud_high))reason=FaceHud;
+        else if(!PointsVisible(points,vp))reason=FaceFrustum;
+        else if(occlusion){float low[3],high[3];
             for(unsigned a=0;a<3;++a){low[a]=high[a]=points[0][a];
                 for(unsigned i=1;i<5;++i){low[a]=fminf(low[a],points[i][a]);high[a]=fmaxf(high[a],points[i][a]);}
                 // The lit region also lies inside the light sphere.
                 low[a]=fmaxf(low[a],l.position[a]-l.range);high[a]=fminf(high[a],l.position[a]+l.range);}
             bool visible=true;try{visible=occlusion(low,high,camera_vp);}catch(...){visible=true;}
-            if(!visible)continue;}
-        mask|=1u<<face;}
+            if(!visible)reason=FaceOccluded;}
+        if(reasons)reasons[face]=reason;
+        if(reason!=FaceFrustum && reason!=FaceOccluded)mask|=1u<<face;}
     return mask;
 }
+inline uint32_t FaceMask(const KichR4LocalLight& l,const float* camera,const float* camera_vp,BoxVisibility occlusion){
+    return FaceTest(l,camera,camera_vp,occlusion,NULL);}
 // R2 CLight_Compute_XFORM_and_VIS::compute_xf_spot before its own hysteresis:
 // SMAP_adapt_optimal 768 scaled by sqrt(ssa), intensity^(1/16), duel^(1/4),
 // (range/8)^(1/4) and sqrt(cone/90 deg), clamped to 32..1536. A point light

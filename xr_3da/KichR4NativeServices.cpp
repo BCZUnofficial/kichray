@@ -170,15 +170,18 @@ void KichR4_NativeRegisterMaterial(const void* pointer,uint32_t index,const char
         if(Bumped(material)){if(!material.unsupported_reason.empty())material.unsupported_reason+=';';material.unsupported_reason+="bump_height_parallax_not_implemented";}
         passes.push_back(material);
     }
-    NativeMaterials().Register(pointer,passes);
+    NativeMaterials().Register(pointer,Contract(shader,textures),passes);
 }
 void KichR4_NativeForgetMaterial(const void* element){NativeMaterials().Forget(element);}
 const kich_r4_material::Descriptor* KichR4_NativeFindMaterial(const void* element,uint32_t pass){return NativeMaterials().Find(element,pass);}
+// P0-S11: static level materials still know their source shader and textures.
+const kich_r4_material::Descriptor* KichR4_NativeFindMaterialContract(const void* element,const char* shader,const char* textures,uint32_t pass){
+    return NativeMaterials().Find(element,kich_r4_material::Contract(shader,textures),pass);}
 bool KichR4_NativeResolveMaterial(const char* name,const char* textures,kich_r4_material::Descriptor& out){
     // Only resource loading may compile a shader; Find is an in-memory lookup.
     ref_shader shader;shader.create(name,textures);if(!shader)return false;
     for(uint32_t i=0;i<2;++i)if(shader->E[i] && !shader->E[i]->passes.empty() && !shader->E[i]->flags.bDistort){
-        const kich_r4_material::Descriptor* material=KichR4_NativeFindMaterial(shader->E[i]._get(),0);
+        const kich_r4_material::Descriptor* material=KichR4_NativeFindMaterialContract(shader->E[i]._get(),name,textures,0);
         if(material){out=*material;
             // R2 dsgraph selects the independent E[4] accumulator because the
             // NORMAL element is emissive. The special element need not repeat

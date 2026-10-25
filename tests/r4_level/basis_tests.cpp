@@ -67,8 +67,46 @@ void DrawBasis(){fixture::Level source;Scene scene;Parse(View(source.level),View
     scene.vertices[0].available_attributes=0; // shared VB intersection is deliberately unusable
     Visuals(View(source.level),Indices(View(source.geometry)),TreeWindows(View(source.geometry)),scene);
     Require(scene.draws[0].available_attributes==127,"unreferenced bad vertex cannot disable material basis");
-    Require(scene.draws[1].available_attributes==(127u&~ATTR_TANGENT),"referenced bad SWI vertex disables bump only in its mesh");
+    // P0-S11: one bad vertex no longer disables the basis of its whole range;
+    // the pixel shader falls back around that vertex only.
+    Require(scene.draws[1].available_attributes==127,"referenced bad SWI vertex keeps the range basis (per-pixel fallback)");
     Require(scene.draws[2].available_attributes==127 && scene.draws[3].available_attributes==127,"tree and progressive tree use their own referenced basis");
+    for(auto& buffer:scene.vertices)for(auto& v:buffer.vertices)v.attributes&=~ATTR_TANGENT;
+    RefreshRangeAttributes(scene);Require(!(scene.draws[1].available_attributes&ATTR_TANGENT),"a range with no complete basis keeps the geometric normal");
+}
+// P0-S11 RepairBases on an analytic quad grid: plane z=0, N=+Z, UV=(x,y).
+Vertex GridVertex(float x,float y,float bsign){Vertex v={};v.position[0]=x;v.position[1]=y;v.uv[0]=x;v.uv[1]=y;v.normal[2]=1;
+    v.tangent[0]=1;v.binormal[1]=bsign;v.attributes=ATTR_NORMAL|ATTR_TANGENT|ATTR_BINORMAL|ATTR_UV1;return v;}
+// 5x5 vertices, 4x4 cells: cells away from the rejected vertices vote the convention.
+Scene Grid(float bsign,bool flip_right=false){Scene s;s.vertices.resize(1);Buffer& b=s.vertices[0];
+    for(unsigned y=0;y<5;++y)for(unsigned x=0;x<5;++x){b.vertices.push_back(GridVertex(float(x),float(y),bsign));
+        if(flip_right && x==4)b.vertices.back().uv[0]=2;} // mirrored UV column: x=4 folds back onto u=2
+    s.indices.resize(1);for(unsigned y=0;y<4;++y)for(unsigned x=0;x<4;++x){const uint32_t a=y*5+x,c=a+1,d=a+5,e=a+6;
+        const uint32_t tri[6]={a,c,e,a,e,d};s.indices[0].insert(s.indices[0].end(),tri,tri+6);}
+    Draw draw={};draw.vb=0;draw.ib=0;draw.first=0;draw.count=96;s.draws.push_back(draw);return s;}
+void Repair(){
+    for(float bsign:{1.f,-1.f}){
+        // Vertex 6: tangent collapsed onto N, binormal intact.
+        Scene s=Grid(bsign);Vertex& v=s.vertices[0].vertices[6];v.attributes&=~(ATTR_TANGENT|ATTR_BINORMAL);v.tangent[0]=0;v.tangent[2]=1;
+        // Vertex 2: tangent intact, binormal along the tangent (handedness lost).
+        Vertex& w=s.vertices[0].vertices[2];w.attributes&=~(ATTR_TANGENT|ATTR_BINORMAL);w.binormal[1]=0;w.binormal[0]=1;
+        // Vertex 12: both gone.
+        Vertex& z=s.vertices[0].vertices[12];z.attributes&=~(ATTR_TANGENT|ATTR_BINORMAL);z.tangent[0]=0;z.binormal[1]=0;
+        RepairBases(s);RefreshRangeAttributes(s);
+        Require(s.basis_rejected==3 && s.basis_repaired==3 && !s.basis_unrecoverable,"three rejected bases rebuilt");
+        for(unsigned i:{2u,6u,12u}){const Vertex& r=s.vertices[0].vertices[i];
+            Require((r.attributes&ATTR_TANGENT) && Near(r.tangent[0],1) && Near(r.tangent[2],0) && Near(r.binormal[1],bsign),"rebuilt T=dP/du and the level's own B convention (mirrored levels too)");}
+        Require((s.draws[0].available_attributes&7)==7,"repaired range keeps normal mapping");
+    }
+    // Mirrored UV seam: triangles around the shared column disagree in orientation.
+    {Scene s=Grid(1,true);Vertex& v=s.vertices[0].vertices[8];v.attributes&=~(ATTR_TANGENT|ATTR_BINORMAL);v.tangent[0]=0;v.tangent[2]=1;v.binormal[1]=0;v.binormal[2]=1;
+        Vertex& c=s.vertices[0].vertices[13];c.attributes&=~(ATTR_TANGENT|ATTR_BINORMAL);c.tangent[0]=0;c.tangent[2]=1;c.binormal[1]=0;c.binormal[2]=1;
+        RepairBases(s);
+        Require(s.basis_unrecoverable>=1 && !(s.vertices[0].vertices[8].attributes&ATTR_TANGENT) && s.vertices[0].vertices[8].tangent[2]==0,"conflicting orientation keeps zero T/B, never a guessed handedness");}
+    // Degenerate UV (all equal): no gradient, no source tangent: geometric normal.
+    {Scene s=Grid(1);for(auto& v:s.vertices[0].vertices){v.uv[0]=v.uv[1]=0;}
+        Vertex& v=s.vertices[0].vertices[12];v.attributes&=~(ATTR_TANGENT|ATTR_BINORMAL);v.tangent[0]=0;v.binormal[1]=0;
+        RepairBases(s);Require(s.basis_unrecoverable==1 && !(v.attributes&ATTR_TANGENT),"no UV gradient: no invented basis");}
 }
 void Metrics(){kich_r4_metrics::Window window;window.Add(1000,1000,true);window.Add(1010,1000,true);window.Add(1030,1000,true);
     Require(window.count==2 && Near(float(window.Low()),50),"1 percent low uses slowest ceil(samples/100) intervals");
@@ -87,5 +125,5 @@ void Metrics(){kich_r4_metrics::Window window;window.Add(1000,1000,true);window.
     window.Add(5000,0,true);Require(window.previous==0 && !window.ReportDue(),"invalid clock frequency does not poison logging cadence");
 }
 }
-int main(){try{Static();Math();TreeLighting();DrawBasis();Metrics();printf("G3e XRLC draw basis / baked channels / frame windows: %d checks passed\n",checks);return 0;}
+int main(){try{Static();Math();TreeLighting();DrawBasis();Repair();Metrics();printf("G3e XRLC draw basis / baked channels / frame windows: %d checks passed\n",checks);return 0;}
 catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

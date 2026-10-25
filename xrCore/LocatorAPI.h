@@ -143,6 +143,9 @@ class XRCORE_API CLocatorAPI
 	const file* exist(LPCSTR path, LPCSTR name);
 	const file* exist(string_path& fn, LPCSTR path, LPCSTR name);
 	const file* exist(string_path& fn, LPCSTR path, LPCSTR name, LPCSTR ext);
+	// KichRay R4: the archive holding a file (file::vfs). A free inline friend:
+	// members of this exported class would be imported from xrCore.dll.
+	friend LPCSTR xr_fs_archive_path(const CLocatorAPI& fs, u32 vfs);
 
 	BOOL can_write_to_folder(LPCSTR path);
 	BOOL can_write_to_alias(LPCSTR path);
@@ -189,6 +192,8 @@ class XRCORE_API CLocatorAPI
 	void lock_rescan();
 	void unlock_rescan();
 };
+
+IC LPCSTR xr_fs_archive_path(const CLocatorAPI& fs, u32 vfs) { return vfs < fs.archives.size() ? *fs.archives[vfs].path : 0; }
 
 extern XRCORE_API CLocatorAPI* xr_FS;
 #define FS (*xr_FS)

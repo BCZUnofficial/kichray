@@ -78,12 +78,17 @@ int main(){
     material.x=8;assert(abs(Gloss(sample)-2.f/255)<1e-6); // Flat deffer keeps def_gloss.
     material.x=9;image1.value.r=1;shadow3.value.a=1;assert(Gloss(sample)==1);
     model_bump.value={.6f,0,0,1};material.x=1025;assert(abs(Gloss(sample)-.36f)<1e-6); // HUD samples t8, not any shadow/legacy slot.
+    // P0-S11 gloss without normal mapping: same bump R^2 / detail / HUD slot.
+    image1.value={.4f,0,0,1};shadow3.value={1,0,0,.25f};
+    material.x=65536;assert(abs(Gloss(sample)-.16f)<1e-6);material.x=65536+8;assert(abs(Gloss(sample)-.08f)<1e-6);
+    material.x=65536+1024;assert(abs(Gloss(sample)-.36f)<1e-6);
     // Independent SoC BMM oracle: four authored mask weights, WZY normal
     // channels centered at .5, gloss linear (not the ordinary bump R squared).
     image1.value={1,2,3,4};shadow4.value={.1f,.2f,.3f,.4f};shadow5.value={.2f,.4f,.6f,.8f};
     model_bump.value={.3f,.6f,.9f,.2f};model_bump_aux.value={.4f,.8f,.2f,.6f};material.yz=float2(7,11);material.x=8192;
     const auto weights=TerrainWeights(sample);assert(abs(weights.a-.4f)<1e-6 && abs(dot(weights,1)-1)<1e-6);
     const auto mixed=TerrainBump(sample);assert(abs(mixed.r-.3f)<1e-6 && abs(Gloss(sample)-.3f)<1e-6);
+    material.x=131072;assert(abs(Gloss(sample)-.3f)<1e-6);material.x=8192; // P0-S11 layer gloss without layer normals
     const auto normal=TerrainNormalSample(mixed,1);assert(abs(normal.x-0.f)<1e-6 && abs(normal.y-0.f)<1e-6 && abs(normal.z-.1f)<1e-6);
     assert(abs(shadow4.last.x-1.4f)<1e-6 && abs(model_bump_aux.last.y-4.4f)<1e-6); // Authored scale, no fixed 50.
     image1.reads=shadow4.reads=shadow5.reads=model_bump.reads=model_bump_aux.reads=0;

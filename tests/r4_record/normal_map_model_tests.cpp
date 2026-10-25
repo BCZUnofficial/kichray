@@ -9,7 +9,8 @@ void ActualBindings(){
     for(unsigned mode=0;mode<10;++mode){Harness h;Require(h.Start()==0,"normal probe model setup");auto mesh=Source(false);
         const uint32_t basis=kich_r4_material::ATTR_NORMAL|kich_r4_material::ATTR_TANGENT|kich_r4_material::ATTR_BINORMAL;
         for(auto& vertex:mesh->vertices){vertex.attributes=basis;vertex.tangent=kich_r4_capture::PackNormal(1,0,0);vertex.binormal=kich_r4_capture::PackNormal(0,1,0);}
-        if(mode==1)mesh->vertices[1].attributes&=~kich_r4_material::ATTR_TANGENT;
+        // P0-S11: a triangle with any basis vertex stays mapped, so "missing basis" needs none at all.
+        if(mode==1)for(auto& v:mesh->vertices)v.attributes&=~kich_r4_material::ATTR_TANGENT;
         kich_r4_material::Descriptor material;material.semantic=kich_r4_material::MATERIAL_OPAQUE;
         material.passes=kich_r4_material::PASS_GEOMETRY|kich_r4_material::PASS_SHADOW;
         material.base="normal_probe_base";material.bump="normal_probe_bump";material.bump_aux="normal_probe_bump#";
@@ -19,7 +20,7 @@ void ActualBindings(){
         for(const auto* name:{&material.base,&material.bump,&material.bump_aux})if(!name->empty()){
             const KichR4Handle handle=mode==2 && name==&material.bump?h.level.checker:f->Add(KICH_R4_TEXTURE_2D);
             h.level.textures[*name]=handle;h.level.texture_registry.entries[kich_r4_texture::Key(*name)].handle=handle;}
-        if(mode==8){for(unsigned i=0;i<3;++i)mesh->vertices.push_back(mesh->vertices[i]);mesh->vertices[4].attributes&=~kich_r4_material::ATTR_TANGENT;mesh->indices={0,1,2,3,4,5};}
+        if(mode==8){for(unsigned i=0;i<3;++i)mesh->vertices.push_back(mesh->vertices[i]);for(unsigned i=3;i<6;++i)mesh->vertices[i].attributes&=~kich_r4_material::ATTR_TANGENT;mesh->indices={0,1,2,3,4,5};}
         const uint32_t number=100+mode;kich_r4_capture::Batch batch;batch.Begin(640,480,number);
         const auto identity=kich_r4_scene::Identity();kich_r4_capture::Style style;
         batch.NativeModel(mesh.get(),mesh,identity,identity,NULL,0,uint32_t(mesh->vertices.size()),0,mode==8?2:1,style,

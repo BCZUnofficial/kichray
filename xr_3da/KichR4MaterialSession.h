@@ -11,7 +11,9 @@ namespace kich_r4_material {
 enum ShaderFlag { SHADER_BUMP=1,SHADER_LIGHTMAP=2,SHADER_HEMI=4,SHADER_DETAIL=8,
     SHADER_VERTEX_LIGHT=16,SHADER_SUN=32,SHADER_TREE_LIGHT=64,SHADER_TREE_WIND=128,SHADER_EMISSIVE=256,SHADER_MODEL_MAPS=1024,
     SHADER_TERRAIN_HEMI=2048,SHADER_TERRAIN_LAYERS=4096,SHADER_TERRAIN_NORMAL=8192,SHADER_TERRAIN_SUN=16384,
-    SHADER_DETAIL_NORMAL=32768 };
+    SHADER_DETAIL_NORMAL=32768,
+    // P0-S11: gloss without normal mapping (bump.R^2 / terrain layer bump R).
+    SHADER_GLOSS_MAP=65536,SHADER_TERRAIN_GLOSS=131072 };
 inline void SnapshotMetadata(const Descriptor& m,const char* category,const char* id) {
     if(!g_render_snapshot_active)return;
     using namespace kich_r4_telemetry;
@@ -52,6 +54,13 @@ inline bool BindBump(KichR4FrameSession& s,KichR4LevelSession& level,const Descr
     if(bump && auxiliary && bump!=level.checker && auxiliary!=level.checker)return true;
     bump=auxiliary=0;fallback+=";bump_dds_unavailable";return false;
 }
+// P0-S11: authored gloss (bump R^2) does not depend on a usable TBN. When
+// normal mapping is refused, the bump texture still supplies gloss.
+inline bool BindGloss(KichR4FrameSession& s,KichR4LevelSession& level,const Descriptor& m,KichR4Handle& bump,std::string& fallback){
+    bump=m.bump.empty()?0:level.Texture(s,m.bump);
+    if(bump && bump!=level.checker){fallback+=";gloss_kept_geometric_normal";return true;}
+    bump=0;return false;
+}
 inline void Bind(KichR4FrameSession& s,KichR4LevelSession& level,const Descriptor& m,
     uint32_t attributes,kich_r4_lighting::Constants& c,KichR4DeferredDrawDesc& draw,
     bool shadow,bool vertex_baked=false,uint32_t extra_flags=0,const char* main_category="MATERIAL_EXECUTION") {
@@ -60,6 +69,7 @@ inline void Bind(KichR4FrameSession& s,KichR4LevelSession& level,const Descripto
     uint32_t flags=extra_flags;std::string fallback=m.unsupported_reason;bool auxiliary_dummy=false;
     if(!shadow){
         if(!m.bump.empty() && BindBump(s,level,m,attributes,draw.textures[1],draw.textures[2],fallback,auxiliary_dummy))flags|=SHADER_BUMP;
+        else if(!m.bump.empty() && BindGloss(s,level,m,draw.textures[1],fallback))flags|=SHADER_GLOSS_MAP;
         const std::string* names[]={&m.lightmap,&m.hemi};const unsigned bits[]={SHADER_LIGHTMAP,SHADER_HEMI};
         for(unsigned i=0;i<2;++i)if(!names[i]->empty()){
             if(!(attributes&ATTR_UV1))fallback+=";lightmap_missing_source_uv1";
@@ -90,6 +100,7 @@ inline void Bind(KichR4FrameSession& s,KichR4LevelSession& level,const Descripto
         kich_r4_telemetry::U64(category,id,"effective_alpha_func",AlphaFunction(m,shadow));kich_r4_telemetry::Float(category,id,"effective_alpha_ref",AlphaReference(m,shadow));
         kich_r4_telemetry::Text(category,id,"semantic",Name(m.semantic));
         kich_r4_telemetry::Text(category,id,"normal_path",flags&SHADER_BUMP?"SOC_R2_BUMP_WZY_PLUS_BUMP_AUX_RGB_MINUS_ONE; TBN; GBUFFER_NORMAL":"GEOMETRIC_NORMAL");
+        kich_r4_telemetry::Text(category,id,"gloss_path",flags&(SHADER_BUMP|SHADER_GLOSS_MAP)?"BUMP_R_SQUARED":"FLAT_2_OVER_255");
         kich_r4_telemetry::Text(category,id,"lightmap_path",flags&SHADER_LIGHTMAP?"UV1; RGB_DIAGNOSTIC_ONLY_R2_DEFERRED_PARITY; ALPHA_SUN_STATIC_SUN_ONLY":"NO_BAKED_LIGHTMAP");
         kich_r4_telemetry::Text(category,id,"lighting_model","SOC_R2_S_MATERIAL_8BIT_TABLE_T10; BUMP_R_SQUARED_GLOSS; LOCAL_Q_LINEAR_POINT_RANGE_SPOT_RANGE_0_95; R2_SUN_MODE_DYNAMIC_OR_STATIC; SOURCE_SUN_MASK_STATIC_SUN_ONLY; SOURCE_BAKED_RGB_DIAGNOSTIC_ONLY; DEFERRED_R2_HMODEL_TWO_ENV_CUBEMAPS");
         kich_r4_telemetry::Text(category,id,"lighting_limits","FORWARD_WEATHER_HEMI_RGB; GBUFFER_MATERIAL_CLASS_STEP_0_2");
