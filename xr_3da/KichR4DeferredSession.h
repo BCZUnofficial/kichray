@@ -410,6 +410,36 @@ struct KichR4DeferredSession {
     // P0-S8 subset: all statics, only those whose shadow never changes (the
     // lamp cache), or only wind-animated trees (drawn over the cached map).
     enum StaticSubset {AllStatics,FixedStatics,WindStatics};
+    // The draw a selected static entry submits in this pass (LOD range
+    // applied); false when the pass or subset skips it. Shared by Static and
+    // the lamp cache signature so both see exactly the same content.
+    bool StaticDraw(KichR4LevelSession& l,size_t i,const kich_r4_scene::Matrix& vp,bool shadow,StaticSubset subset,kich_r4_level::Draw& mesh){
+        mesh=l.scene.draws[i];
+        const kich_r4_level::Material& m=l.scene.materials[mesh.material];const kich_r4_material::Descriptor& material=m.descriptor;
+        const bool described=native_mode && material.semantic!=kich_r4_material::UNKNOWN;
+        if(native_mode && (described?!(shadow?kich_r4_material::Shadow(material):kich_r4_material::Geometry(material)):m.kind>=2))return false;
+        if(subset!=AllStatics){const bool wind=mesh.tree && described && material.tree_wave;if(wind!=(subset==WindStatics))return false;}
+        if(mesh.lod){float lod=i<static_lods.size()?static_lods[i]:1.f;
+            if(shadow){const uint32_t resolution=strncmp(snapshot_phase,"sun_",4)==0?sun_map_size:current_local_size;
+                const kich_r4_level::Draw& bounds=visibility_plan.bounds[i];lod=(std::max)(lod,kich_r4_lod::Projected(&bounds.low.x,&bounds.high.x,vp,resolution,resolution,lod_start,lod_end));}
+            const kich_r4_level::DrawRange range=kich_r4_level::SelectDrawRange(l.scene,mesh,lod);mesh.first=range.first;mesh.count=range.count;mesh.available_attributes=range.available_attributes;}
+        return true;
+    }
+    // Alpha-test texture of a static shadow draw (0 = opaque), as Static binds it.
+    KichR4Handle StaticShadowAlpha(KichR4FrameSession& s,KichR4LevelSession& l,const kich_r4_level::Material& m){
+        const kich_r4_material::Descriptor& material=m.descriptor;const bool described=native_mode && material.semantic!=kich_r4_material::UNKNOWN;
+        return (described?kich_r4_material::AlphaFunction(material,true):m.alpha_func)==8?0:l.Texture(s,m.texture);
+    }
+    // P0-S9 lamp cache signature: every fixed static this face would draw now,
+    // its LOD range and alpha texture. Equal signatures mean equal depth.
+    uint64_t FixedStaticSignature(KichR4FrameSession& s,KichR4LevelSession& l,const kich_r4_scene::Matrix& vp,uint32_t sector){
+        EnsureStaticPlan(l);const kich_r4_level::StaticVisibility& visibility=visibility_plan.Select(vp,sector,false);
+        kich_r4_local_cache::Signature signature;
+        for(size_t n=0;n<visibility.selected.size();++n){const size_t i=visibility.selected[n];kich_r4_level::Draw mesh;
+            if(!StaticDraw(l,i,vp,true,FixedStatics,mesh))continue;
+            signature.Add(i);signature.Add(mesh.first);signature.Add(mesh.count);signature.Add(StaticShadowAlpha(s,l,l.scene.materials[mesh.material]));}
+        return signature.value;
+    }
     int32_t Static(KichR4FrameSession& s,KichR4LevelSession& l,const kich_r4_scene::Matrix& vp,bool shadow,uint32_t sector=UINT32_MAX,StaticSubset subset=AllStatics){
         if(!shadow)l.visible=l.culled=0;
         if(!shadow && l.files.sector)sector=l.files.sector(base.camera);
@@ -424,15 +454,10 @@ struct KichR4DeferredSession {
             const uint64_t omitted=static_candidates[shadow?1:0]>=selected?static_candidates[shadow?1:0]-selected:0;
             RenderSnapshot_VisibilityTotals(omitted,omitted,0);}
         if(!shadow)l.culled=static_candidates[0];
-        for(size_t n=0;n<visibility.selected.size();++n){const size_t i=visibility.selected[n];kich_r4_level::Draw mesh=l.scene.draws[i];
+        for(size_t n=0;n<visibility.selected.size();++n){const size_t i=visibility.selected[n];kich_r4_level::Draw mesh;
+            if(!StaticDraw(l,i,vp,shadow,subset,mesh))continue;
             const kich_r4_level::Material& m=l.scene.materials[mesh.material];const kich_r4_material::Descriptor& material=m.descriptor;
             const bool described=native_mode && material.semantic!=kich_r4_material::UNKNOWN;
-            if(native_mode && (described?!(shadow?kich_r4_material::Shadow(material):kich_r4_material::Geometry(material)):m.kind>=2))continue;
-            if(subset!=AllStatics){const bool wind=mesh.tree && described && material.tree_wave;if(wind!=(subset==WindStatics))continue;}
-            if(mesh.lod){float lod=i<static_lods.size()?static_lods[i]:1.f;
-                if(shadow){const uint32_t resolution=strncmp(snapshot_phase,"sun_",4)==0?sun_map_size:current_local_size;
-                    const kich_r4_level::Draw& bounds=visibility_plan.bounds[i];lod=(std::max)(lod,kich_r4_lod::Projected(&bounds.low.x,&bounds.high.x,vp,resolution,resolution,lod_start,lod_end));}
-                const kich_r4_level::DrawRange range=kich_r4_level::SelectDrawRange(l.scene,mesh,lod);mesh.first=range.first;mesh.count=range.count;mesh.available_attributes=range.available_attributes;}
             if(g_render_snapshot_active){SnapshotStatic(l,i,"R4_STATIC_OPAQUE",&mesh);SnapshotVisibility("CANDIDATE_CLASSIFIED",shadow?"SHADOW_FRUSTUM":"CAMERA_FRUSTUM");}
             if(!shadow && l.culled)--l.culled;
             if(g_render_snapshot_active)SnapshotVisibility("SELECTED",shadow?"SHADOW_FRUSTUM":"CAMERA_FRUSTUM");
@@ -443,7 +468,7 @@ struct KichR4DeferredSession {
             if(described)kich_r4_material::Apply(material,style);
             if(shadow && strncmp(snapshot_phase,"sun_",4)==0)style.cull=KichR4SunShadowCull(style.cull,sun_shadow_cull);
             KichR4DeferredDrawDesc d=Description(pipelines[shadow?StaticShadow:StaticGeometry],l.vertex_buffers[mesh.vb],l.index_buffers[mesh.ib],cb,mesh.count,mesh.first,style);
-            d.textures[0]=shadow && (described?kich_r4_material::AlphaFunction(material,true):m.alpha_func)==8?0:l.Texture(s,m.texture);
+            d.textures[0]=shadow?StaticShadowAlpha(s,l,m):l.Texture(s,m.texture);
             if(described){kich_r4_material::Bind(s,l,material,mesh.available_attributes,c,d,shadow,!kich_r4_material::Terrain(material),mesh.tree?(!shadow?112u:0u)|(material.tree_wave?128u:0u):0u);
                 if(mesh.tree && !shadow){
                     for(unsigned a=0;a<4;++a){c.color_scale[a]=mesh.tree_scale[a]*base.tree_wind[3];c.color_bias[a]=mesh.tree_bias[a]*base.tree_wind[3];}
@@ -997,15 +1022,16 @@ struct KichR4DeferredSession {
                 SnapshotShadow(phase,source_id,face,local.shadow[face],map,false,light_source.range,local_size);
                 // P0-S8: a face whose matrix held since the last frame keeps its
                 // fixed statics in a cache map; copy it, then draw wind trees.
-                kich_r4_local_cache::Decision cached;
+                kich_r4_local_cache::Decision cached;uint64_t fixed_signature=0;
                 if(lamp_cache){const kich_r4_local_cache::Key key={cache_source,face};
-                    cached=local_cache.Use(key,local_size,local.shadow[face].m,static_cast<uint32_t>(l.revision),input.position,input.engine_frame);
+                    if(local_cache.Matches(key,local_size,local.shadow[face].m,static_cast<uint32_t>(l.revision)))fixed_signature=FixedStaticSignature(s,l,local.shadow[face],light_sector);
+                    cached=local_cache.Use(key,local_size,local.shadow[face].m,static_cast<uint32_t>(l.revision),fixed_signature,input.engine_frame);
                     if(ReleaseCached(s,l,cached.release)<0)return s.failure;
                     if(cached.allocate){KichR4Handle cache_map=0;if(Target(s,l,cache_map,local_size,local_size,KICH_R4_DEPTH32F,true)<0)return s.failure;local_cache.Allocated(*cached.entry,cache_map);}}
                 if(record)record->begun=true;
                 if(cached.action==kich_r4_local_cache::Build){
                     if(Pass(s,l,local_size,local_size,0,0,0,cached.entry->map,KICH_R4_CLEAR_DEPTH)<0 || Static(s,l,local.shadow[face],true,light_sector,FixedStatics)<0)return s.failure;
-                    local_cache.Built(*cached.entry,input.position);}
+                    local_cache.Built(*cached.entry,fixed_signature);}
                 if(cached.action!=kich_r4_local_cache::Uncached){
                     if(CopyDepth(s,l,cached.entry->map,map,local_size)<0 || Static(s,l,local.shadow[face],true,light_sector,WindStatics)<0)return s.failure;
                 }else if(Pass(s,l,local_size,local_size,0,0,0,map,KICH_R4_CLEAR_DEPTH)<0 || Static(s,l,local.shadow[face],true,light_sector)<0)return s.failure;

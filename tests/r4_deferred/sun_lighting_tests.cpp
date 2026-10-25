@@ -80,6 +80,8 @@ bool screen_plane=true;float3 last_dx,last_dy;
 // P0-S4: camera forward stub; its scale sets the receiver's view depth.
 float3 forward(0,0,1);float3 CameraForward(){return forward;}
 void ShadowDerivatives(float3,float3& dx,float3& dy){dx=screen_plane?float3(.01f,0,0):float3();dy=screen_plane?float3(0,0,.01f):float3();}
+// P0-S9 neighbour plane: covered by receiver_plane_tests; keeps the quad result here.
+void ShadowDerivativesLoaded(float2,float3,float3&,float3&){}
 // Same gate as production SunVisibility: only sun_color.w==1 uses shadow maps.
 float SunVisibility(float3,float3 dx,float3 dy){last_dx=dx;last_dy=dy;return sun_color.w<=0 || sun_color.w>1.5f?0:visibility;}
 float3 DecodeNormal(float2){return surface_normal;}

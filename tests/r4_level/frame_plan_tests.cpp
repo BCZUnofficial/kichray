@@ -87,6 +87,15 @@ void Holes(){Scene s;s.materials.resize(1);
     Require(far.hole_rejected==std::count(far.draws.begin(),far.draws.end(),0),"hole rejections are counted");
     Require(plan.Select(near_view,UINT32_MAX,true).selected.size()==near_without,"the 128 m view itself has no hole");
     Require(plan.Select(far_view,UINT32_MAX,false).selected.size()==s.draws.size(),"a local (non-sun) query with the same matrix ignores the hole");
+    // Contact hole with its own centre (r2_sun_near sphere, not the camera):
+    // the test is XY-only, also for a caster ~400 m along the sun ray, which
+    // lies outside the contact depth window. SunVisibility (P0-S9) gives the
+    // contact map every pixel of its XY square at any depth, so such casters'
+    // receivers never read the 128 m map (shadow_filter_tests CascadeSelection).
+    {Scene z;z.materials.resize(1);const float centre[3]={6,0,-4};const Matrix contact=kich_r4_lighting::SunShadow(centre,down,40,2048);
+        const float t=400;z.draws.push_back(Box(6+down[0]*t,down[1]*t,-4+down[2]*t,.5f));z.draws.push_back(Box(6,0,-4,.5f));
+        plan.Begin(z,3,0,0);plan.AddSunHole(near_view,contact);const StaticVisibility& v=plan.Select(near_view,UINT32_MAX,true);
+        Require(!v.draws[0] && !v.draws[1] && v.hole_rejected==2,"contact hole is XY-only, at any depth along the ray");}
     // Many casters: whole BVH branches inside the hole are skipped.
     Scene many;many.materials.resize(1);for(unsigned i=0;i<4096;++i)many.draws.push_back(Box(Random(-45,45),Random(-5,5),Random(-45,45),Random(.1f,2)));
     plan.Begin(many,2,0,0);plan.AddSunHole(far_view,near_view);

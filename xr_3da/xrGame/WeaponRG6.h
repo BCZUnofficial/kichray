@@ -1,3 +1,4 @@
+
 #pragma once
 
 #include "rocketlauncher.h"
@@ -10,17 +11,27 @@ class CWeaponRG6 : public CRocketLauncher, public CWeaponShotgun
 	typedef CWeaponShotgun inheritedSG;
 
   public:
+	CWeaponRG6();
 	virtual ~CWeaponRG6();
+
 	virtual BOOL net_Spawn(CSE_Abstract* DC);
 	virtual void Load(LPCSTR section);
 	virtual void OnEvent(NET_Packet& P, u16 type);
 
   protected:
 	virtual void FireStart();
+	virtual void OnShot();
 	virtual u8 AddCartridge(u8 cnt);
+
+	// Создаёт только недостающие внутренние гранаты.
+	void SpawnMissingRockets();
+
+	// Уже запрошенные, но ещё не прикреплённые гранаты.
+	u32 m_pendingRocketSpawns;
 
 	DECLARE_SCRIPT_REGISTER_FUNCTION
 };
+
 add_to_type_list(CWeaponRG6)
 #undef script_type_list
 #define script_type_list save_type_list(CWeaponRG6)

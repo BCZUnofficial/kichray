@@ -23,6 +23,7 @@ float2 operator-(float2 a,float2 b){return float2(a.x-b.x,a.y-b.y);}
 float2 operator-(float2 a,float b){return float2(a.x-b,a.y-b);}
 float2 operator*(float2 a,float b){return float2(a.x*b,a.y*b);}
 float2 operator*(float a,float2 b){return b*a;}
+float2& operator*=(float2& a,float b){a=a*b;return a;}
 float2 operator/(float2 a,float b){return a*(1.f/b);}
 float3 operator-(float3 a,float3 b){return float3(a.x-b.x,a.y-b.y,a.z-b.z);}
 float3 operator+(float3 a,float3 b){return float3(a.x+b.x,a.y+b.y,a.z+b.z);}
@@ -89,7 +90,7 @@ struct Texture2D {
 Texture2D shadow0,shadow1,shadow2,shadow3,shadow4,shadow5;
 // PRODUCTION_SHADOW_HELPERS
 // P0-S7 PCFWide takes a map index (t2..t7); bind a fixture map at shadow0.
-float Wide(const Texture2D& map,float4 projected,float4 dx,float4 dy,float crease=0){shadow0=map;return PCFWide(0,projected,dx,dy,crease);}
+float Wide(const Texture2D& map,float4 projected,float4 dx,float4 dy,float2 crease=float2(0,1)){shadow0=map;return PCFWide(0,projected,dx,dy,crease);}
 float4 Transform(float3 p,float w,const kich_r4_scene::Matrix& m){
     return float4(p.x*m.m[0]+p.y*m.m[4]+p.z*m.m[8]+w*m.m[12],
         p.x*m.m[1]+p.y*m.m[5]+p.z*m.m[9]+w*m.m[13],
@@ -276,6 +277,13 @@ void CascadeSelection(){using namespace kich_r4_lighting;
         const float v=SunVisibility(p,dx,dy);Require(v>=0 && v<=1,"depth-edge visibility range");
         if(previous>=0)largest=std::max(largest,std::fabs(v-previous));previous=v;}
     Require(previous>.9999f && largest<.05f,"far cascade depth edge fades continuously to lit");
+    // P0-S9: inside the contact XY square the contact map is read at any depth
+    // (matching the XY-only cascade hole): beyond its far bound the receiver is
+    // behind the stored contact casters, before its near bound in front of them.
+    for(float t:{600.f,900.f}){const float3 behind(1+d.x*t,-2+d.y*t,.37f+d.z*t);texture_uses.clear();
+        Require(SunVisibility(behind,dx,dy)<.0001f && texture_uses[&shadow5]>0 && !texture_uses[&shadow0] && !texture_uses[&shadow1],"contact XY owns receivers beyond its depth window");
+        const float3 ahead(1-d.x*t,-2-d.y*t,.37f-d.z*t);texture_uses.clear();
+        Require(SunVisibility(ahead,dx,dy)>.9999f && texture_uses[&shadow5]>0 && !texture_uses[&shadow0],"before the contact depth window nothing occludes");}
     shadow[2].m[15]=0;Require(at(1)>.9999f && texture_uses[&shadow0]>0 && !texture_uses[&shadow5],"invalid contact matrix falls back to the E1.9 pair");
     std::memset(shadow,0,sizeof(shadow));
 }
@@ -354,7 +362,7 @@ float CreaseMinimum(unsigned size,float elevation,float bend,bool allowance){usi
         const float slope=x>x0?sx2:sx;const float3 tangent_x(.01f,0,.01f*slope),tangent_y(0,.01f,0);
         const float4 dx=Transform(tangent_x,0,projection),dy=Transform(tangent_y,0,projection);
         float3 position(x,.017f,d+sx*x+(x>x0?(sx2-sx)*(x-x0):0));
-        const float crease=allowance?ShadowCrease(tangent_x,tangent_y,float3(0,0,-1)):0;
+        const float2 crease=allowance?ShadowCrease(tangent_x,tangent_y,float3(0,0,-1),ShadowRiseLimit(2,512.f/size)):float2(0,1);
         position=ShadowNumericalOffset(position,tangent_x,tangent_y,float3(0,0,-1));position.z-=.01f;
         worst=std::min(worst,Wide(surface,Transform(position,1,projection),dx,dy,crease));}
     dimension_override=0;return worst;
@@ -370,8 +378,8 @@ void CreaseCases(){using namespace kich_r4_lighting;
         const Texture2D surface={sx*512/1024.,0,(512+d-sx*256)/1024.,false};
         const float3 tangent_x(.01f,0,.01f*sx),tangent_y(0,.01f,0);
         const float4 dx=Transform(tangent_x,0,projection),dy=Transform(tangent_y,0,projection);
-        const float crease=ShadowCrease(tangent_x,tangent_y,float3(0,0,-1));
-        Require(crease>=0 && crease<=.5f,"crease allowance is bounded");
+        const float2 crease=ShadowCrease(tangent_x,tangent_y,float3(0,0,-1),ShadowRiseLimit(2,512.f/size));
+        Require(crease.x>=0 && crease.x<=.5f && crease.y==1,"crease allowance is bounded; no grazing clamp up to 80 degrees");
         for(float x:{-.01f,.1f,.37f}){float3 position(x,.017f,d+sx*x);
             position=ShadowNumericalOffset(position,tangent_x,tangent_y,float3(0,0,-1));position.z-=.01f;
             const float4 projected=Transform(position,1,projection);
@@ -383,9 +391,32 @@ void CreaseCases(){using namespace kich_r4_lighting;
     }
     dimension_override=0;
 }
+// P0-S9 grazing faces: a model triangle almost parallel to the sun under a
+// roof (2.5 m up the light ray) must not see past it. Before the 87 degree
+// plane limit the +-3 texel footprint rose metres and read ~40% lit at 89.5.
+void GrazingLeak(){using namespace kich_r4_lighting;
+    for(unsigned size:{2048u,4096u,8192u})for(float tilt:{80.f,85.f,87.f,88.f,89.f,89.5f,89.9f}){
+        dimension_override=size;screen.w=4096;
+        const float sx=std::tan(tilt*3.14159265f/180),d=10;
+        const float origin[3]={0,0,0},direction[3]={0,0,1};const Matrix projection=SunShadow(origin,direction,128,size);
+        const Texture2D surface={sx*128/1024.,0,(512+d-sx*64)/1024.,false};
+        const float3 tangent_x(.01f,0,.01f*sx),tangent_y(0,.01f,0);
+        const float4 dx=Transform(tangent_x,0,projection),dy=Transform(tangent_y,0,projection);
+        const float2 crease=ShadowCrease(tangent_x,tangent_y,float3(0,0,-1),ShadowRiseLimit(.6f,128.f/size));
+        const float limit_degrees=std::atan(ShadowRiseLimit(.6f,128.f/size))*180/3.14159265f;
+        Require(crease.y>0 && crease.y<=1 && (tilt>limit_degrees-.01f || crease.y==1),"plane limit applies past the rise limit only (0.6 m per texel, at most 87 degrees)");
+        for(float x:{-.03f,.1f,.37f}){float3 position(x,.017f,d+sx*x);
+            position=ShadowNumericalOffset(position,tangent_x,tangent_y,float3(0,0,-1));position.z-=.01f;
+            const float4 projected=Transform(position,1,projection);
+            const Texture2D roof={0,0,(512+d+sx*x-2.5f)/1024.,false};
+            Require(Wide(roof,projected,dx,dy,crease)<.05f,"a grazing face never sees past a roof 2.5 m above it");
+            if(crease.y==1)Require(Wide(surface,projected,dx,dy,crease)>.9999f,"faces within the rise limit keep their exact plane: no self-shadow");}
+    }
+    dimension_override=0;
+}
 #include "receiver_raster_tests.h"
 int main(){try{
-    CreaseCases();WideCases();CascadeSelection();NormalPlaneFallback();PlaneCases();Continuity();CubeGuard();GrazingReceiver();ReceiverReconstruction();ReceiverRasterization();
+    CreaseCases();GrazingLeak();WideCases();CascadeSelection();NormalPlaneFallback();PlaneCases();Continuity();CubeGuard();GrazingReceiver();ReceiverReconstruction();ReceiverRasterization();
     float2 gradient;Require(!ShadowGradient(float3(0,0,1),float3(0,0,2),gradient),"singular UV Jacobian requests bounded fallback");
     Require(!ShadowGradient(float3(1,0,std::numeric_limits<float>::infinity()),float3(0,1,1),gradient),"nonfinite slope requests bounded fallback");
     Require(ShadowPlaneStable(4,.01f,0) && !ShadowPlaneStable(4,10000,10000),"noncoplanar jump does not become a receiver plane");

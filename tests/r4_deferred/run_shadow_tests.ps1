@@ -11,14 +11,14 @@ function Extract([string]$signature) {
 }
 $helpers = (('float3 RelativePosition(', 'float3 WorldPosition(', 'float3 ReceiverPosition(', 'float3 ShadowNumericalOffset(',
     'bool ShadowPlaneStable(', 'float ShadowPlaneErrorSquared(', 'bool ShadowGradient(', 'float ShadowTent(',
-    'float3 ShadowDerivative(', 'float PCF(', 'void ShadowWideTexel(', 'float ShadowCrease(', 'float ShadowMapSize(', 'float4 ShadowGather(', 'float ShadowCompare(', 'float PCFWide(', 'void ShadowNormalPlane(') | ForEach-Object { Extract $_ }) -join "`n"
+    'float3 ShadowDerivative(', 'float PCF(', 'void ShadowWideTexel(', 'float ShadowRiseLimit(', 'float2 ShadowCrease(', 'float ShadowMapSize(', 'float4 ShadowGather(', 'float ShadowCompare(', 'float PCFWide(', 'void ShadowNormalPlane(') | ForEach-Object { Extract $_ }) -join "`n"
 $helpers = $helpers.Replace('float PCF(Texture2D map', 'float PCF(const Texture2D& map').Replace('float PCFWide(Texture2D map', 'float PCFWide(const Texture2D& map').Replace('[unroll]', '').Replace('[branch]', '').Replace('inout float3', 'float3&').Replace('inout float', 'float&')
 $helpers = $helpers.Replace('projected.xyz', 'xyz(projected)').Replace('derivative.xyz', 'xyz(derivative)')
 $helpers = $helpers.Replace('p.xyz', 'xyz(p)').Replace('camera.xyz', 'xyz(camera)')
 $helpers = $helpers.Replace('out float2 gradient', 'float2& gradient').Replace('receiver_inverse[3][3]', 'receiver_inverse.m[15]')
 $helpers = $helpers.Replace('return mul(float4(ndc*linear_depth,linear_depth,1),receiver_inverse).xyz;', 'return xyz(mul(float4(ndc*linear_depth,linear_depth,1),receiver_inverse));')
 # P0-S6 cascade selection: production ShadowCascadeWeight/SunVisibility.
-$cascades = (('float ShadowCascadeWeight(', 'float SunVisibility(') | ForEach-Object { Extract $_ }) -join "`n"
+$cascades = (('float ShadowCascadeWeight(', 'float SunTexel(', 'float SunVisibility(') | ForEach-Object { Extract $_ }) -join "`n"
 $cascades = $cascades.Replace('[branch]', '').Replace('shadow[2][3][3]', 'shadow[2].m[15]')
 $cascades = [regex]::Replace($cascades, '\b(\w+)\.xyz\b', 'xyz($1)')
 $helpers = $helpers + "`n" + $cascades

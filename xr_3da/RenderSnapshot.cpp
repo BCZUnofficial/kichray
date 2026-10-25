@@ -567,7 +567,9 @@ void RenderSnapshot_Text(const char* section,const char* key,const char* value){
     if(sec=="TELEMETRY_LOSS"){incomplete=true;++source_telemetry_losses;}
     Summary& store=summaries[index];const auto id=std::make_pair(sec,name);auto found=store.fields.find(id);
     const size_t old=found==store.fields.end()?0:sec.size()+name.size()+found->second.size();const size_t next=sec.size()+name.size()+text.size();
-    const size_t key_limit=index==3?1024:128,byte_limit=index==3?512u*1024u:128u*1024u;
+    // P0-S9: per-face STATIC_VISIBILITY/LIGHT sections of a night camp filled
+    // 1024 general keys and dropped later summaries (SHADOW_POOL cache counters).
+    const size_t key_limit=index==3?4096:128,byte_limit=index==3?512u*1024u:128u*1024u;
     if((found==store.fields.end() && store.fields.size()>=key_limit) || next>byte_limit-(store.bytes-old)){++summary_dropped;incomplete=summary_overflow=true;return;}
     store.fields[id]=text;store.bytes=store.bytes-old+next;++summary_retained;
 }catch(...){++summary_dropped;incomplete=summary_overflow=true;}}
