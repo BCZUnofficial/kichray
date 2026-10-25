@@ -330,6 +330,31 @@ float PCF(Texture2D map,float4 projected,float4 dx,float4 dy){if(projected.w<=0)
     }
     return weight>0?result/weight:0;
 }
+// P0-S5 sun PCF: the same plane-corrected point comparisons at texel centres,
+// with the quadratic B-spline (ShadowTent) stretched to two texels. The 6x6
+// centres cover its +-3 texel support exactly, so the result stays continuous.
+// At grazing sun the map's stair steps fall below the filter width; with the
+// 4096 maps the blur equals the old 2048 one while the stairs are halved.
+// Local lights keep PCF (3x3).
+float PCFWide(Texture2D map,float4 projected,float4 dx,float4 dy){if(projected.w<=0)return 0;
+    float3 q=projected.xyz/projected.w;float2 uv=float2(q.x*.5+.5,.5-q.y*.5);
+    if(any(uv<0) || any(uv>1) || q.z<0 || q.z>1)return 0;
+    float2 gradient;
+    if(!ShadowGradient(ShadowDerivative(projected,dx),ShadowDerivative(projected,dy),gradient)){
+        float2 fallback_uv=(floor(uv*screen.w)+.5)/screen.w;
+        fallback_uv.x=min(fallback_uv.x,1-.5/screen.w);fallback_uv.y=min(fallback_uv.y,1-.5/screen.w);
+        return map.SampleCmpLevelZero(shadow_surface,fallback_uv,q.z);
+    }
+    float2 texel=uv*screen.w,first=floor(texel-2.5)+.5;float result=0,weight=0;
+    [unroll]for(int y=0;y<6;++y)[unroll]for(int x=0;x<6;++x){
+        float2 centre=first+float2(x,y),offset=centre-texel,sample_uv=centre/screen.w;
+        float w=ShadowTent(offset.x*.5)*ShadowTent(offset.y*.5);
+        if(w<=0 || any(sample_uv<0) || any(sample_uv>1))continue;
+        float compare_depth=saturate(q.z+dot(gradient,offset/screen.w));
+        result+=w*map.SampleCmpLevelZero(shadow_surface,sample_uv,compare_depth);weight+=w;
+    }
+    return weight>0?result/weight:0;
+}
 float3 ShadowNumericalOffset(float3 p,float3 dx,float3 dy,float3 towards){
     // Receiver-plane extrapolation magnifies floating point error near grazing
     // incidence. Use the geometric plane, never the mapped shading normal.
@@ -344,28 +369,29 @@ float3 ShadowNumericalOffset(float3 p,float3 dx,float3 dy,float3 towards){
 }
 // P0-S5 coverage: beyond the 512 m cascade there is no caster information.
 // PCF() returns full shadow outside a map, which would black out distant
-// terrain; the last 10% of the far cascade fades to lit instead.
+// terrain; the last 10% of the far cascade fades to lit instead, across its
+// XY edges and both ends of its depth range alike (|2z-1| is the depth edge).
 float SunFarVisibility(float3 p,float3 dx,float3 dy){
     float4 far_position=mul(float4(p,1),shadow[1]);
     float3 q=far_position.xyz/far_position.w;
-    float edge=max(abs(q.x),abs(q.y)),result=1;
-    [branch] if(q.z>=0 && q.z<=1 && edge<1){result=PCF(shadow1,far_position,mul(float4(dx,0),shadow[1]),mul(float4(dy,0),shadow[1]));
+    float edge=max(max(abs(q.x),abs(q.y)),abs(q.z*2-1)),result=1;
+    [branch] if(edge<1){result=PCFWide(shadow1,far_position,mul(float4(dx,0),shadow[1]),mul(float4(dy,0),shadow[1]));
         [branch] if(edge>.9)result=lerp(result,1,saturate((edge-.9)*10));}
     return result;
 }
-// E1.9 128/512 m pair for an already offset receiver; unchanged selection and blend.
+// E1.9 128/512 m pair for an already offset receiver; unchanged selection and blend (P0-S5: PCFWide).
 float SunCascadeVisibility(float3 p,float3 dx,float3 dy){
     float4 near_position=mul(float4(p,1),shadow[0]);
     float3 q=near_position.xyz/near_position.w;
     float edge=max(abs(q.x),abs(q.y)),result;
     [branch] if(q.z<0 || q.z>1 || edge>=1)result=SunFarVisibility(p,dx,dy);
-    else{result=PCF(shadow0,near_position,mul(float4(dx,0),shadow[0]),mul(float4(dy,0),shadow[0]));
+    else{result=PCFWide(shadow0,near_position,mul(float4(dx,0),shadow[0]),mul(float4(dy,0),shadow[0]));
         [branch] if(edge>.9)result=lerp(result,SunFarVisibility(p,dx,dy),saturate((edge-.9)*10));}
     return result;
 }
 // P0-S2: shadow[2] (t7) is a texel-snapped contact cascade over the stable
 // r2_sun_near sphere; shadow[2][3][3]==1 marks it valid (ortho matrices), zero
-// keeps the 128/512 m pair only. Same offsets, same 3x3 plane-corrected PCF.
+// keeps the 128/512 m pair only. Same offsets; P0-S5 sun maps use PCFWide.
 float SunVisibility(float3 p,float3 dx,float3 dy){
     if(sun_color.w<=0 || sun_color.w>1.5)return 0;
     // Precision allowance only: plane correction handles the filter footprint.
@@ -375,7 +401,7 @@ float SunVisibility(float3 p,float3 dx,float3 dy){
         float4 contact_position=mul(float4(p,1),shadow[2]);
         float3 q=contact_position.xyz/contact_position.w;float edge=max(abs(q.x),abs(q.y));
         [branch] if(q.z>=0 && q.z<=1 && edge<1){
-            float contact=PCF(shadow5,contact_position,mul(float4(dx,0),shadow[2]),mul(float4(dy,0),shadow[2]));
+            float contact=PCFWide(shadow5,contact_position,mul(float4(dx,0),shadow[2]),mul(float4(dy,0),shadow[2]));
             [branch] if(edge>.9)contact=lerp(contact,SunCascadeVisibility(p,dx,dy),saturate((edge-.9)*10));
             result=contact;}
         else result=SunCascadeVisibility(p,dx,dy);}

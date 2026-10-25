@@ -191,6 +191,20 @@ void CDetailManager::Unload()
 }
 
 extern ECORE_API float r_ssaDISCARD;
+#ifdef KICH_R4_NATIVE_FRONTEND
+extern ENGINE_API float ps_r4_detail_radius_scale;
+#endif
+
+float CDetailManager::FadeRadius()
+{
+#ifdef _EDITOR
+	return dm_fade;
+#elif defined(KICH_R4_NATIVE_FRONTEND)
+	return clampr(ps_r__Detail_radius * clampr(ps_r4_detail_radius_scale, 1.f, 3.f), 20.f, dm_fade);
+#else
+	return clampr(ps_r__Detail_radius, 20.f, dm_fade);
+#endif
+}
 
 void CDetailManager::UpdateVisibleM()
 {
@@ -199,10 +213,7 @@ void CDetailManager::UpdateVisibleM()
 	CFrustum View;
 	View.CreateFromMatrix(Device.mFullTransform, FRUSTUM_P_LRTB + FRUSTUM_P_FAR);
 
-	float fade_limit = dm_fade;
-#ifndef _EDITOR
-    fade_limit = clampr(ps_r__Detail_radius, 20.f, dm_fade);
-#endif
+	float fade_limit = FadeRadius();
 	fade_limit = fade_limit * fade_limit;
 	float fade_start = 1.f;
 	fade_start = fade_start * fade_start;

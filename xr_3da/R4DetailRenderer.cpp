@@ -85,43 +85,54 @@ void KichR4_DetailPrepare(CDetailManager& manager){
      * camera-visible r_items. Gather ready cells without a camera-frustum test;
      * each shadow pass will subsequently cull these compact instances itself.
      * Coverage remains the loaded cache and configured detail radius. */
-    const float radius=std::max(20.f,std::min(dm_fade,ps_r__Detail_radius));
-    const float limit=radius*radius,fade_range=limit-1.f;
+    // P0-S5: grass is drawn to FadeRadius() (r__detail_radius x r4_detail_radius_scale);
+    // its shadows only to the R2 distance r__detail_radius, shrinking over the
+    // last 30% so casters never pop. Off-camera casters use the camera fade.
+    const float camera_radius=CDetailManager::FadeRadius();
+    const float radius=std::max(20.f,std::min(camera_radius,ps_r__Detail_radius));
+    const float limit=radius*radius,fade_range=camera_radius*camera_radius-1.f;
     std::sort(camera_parts.begin(),camera_parts.end(),std::less<const CDetailManager::SlotItemVec*>());
     std::vector<std::vector<ShadowDetailItem> > buckets(manager.objects.size()*3);
     frame.shadow_cells.resize(dm_cache_size);
     size_t candidates=0;
+    // Shadow topology covers the slot square around the camera slot that holds
+    // the shadow radius. It moves with the cache in whole slots, so the 192 m
+    // camera cache does not grow the shadow BVH or add rebuilds.
+    const int camera_sx=iFloor(Device.vCameraPosition.x/dm_slot_size+.5f),camera_sz=iFloor(Device.vCameraPosition.z/dm_slot_size+.5f);
+    const int shadow_slots=int(ceilf(radius/dm_slot_size))+1;
     for(unsigned slot=0;slot<dm_cache_size;++slot){const CDetailManager::Slot& cell=manager.cache_pool[slot];
         ShadowCell& provenance=frame.shadow_cells[slot];provenance.sx=cell.sx;provenance.sz=cell.sz;
-        provenance.ready=!cell.empty && cell.type==CDetailManager::stReady;
+        provenance.ready=!cell.empty && cell.type==CDetailManager::stReady && abs(cell.sx-camera_sx)<=shadow_slots && abs(cell.sz-camera_sz)<=shadow_slots;
         provenance.center[0]=cell.vis.sphere.P.x;provenance.center[1]=cell.vis.sphere.P.y;provenance.center[2]=cell.vis.sphere.P.z;
-        if(cell.empty || cell.type!=CDetailManager::stReady)continue;
+        if(!provenance.ready)continue;
         const float dx=cell.vis.sphere.P.x-Device.vCameraPosition.x,dy=cell.vis.sphere.P.y-Device.vCameraPosition.y,dz=cell.vis.sphere.P.z-Device.vCameraPosition.z;
         const float distance=dx*dx+dy*dy+dz*dz;
         const bool within_radius=Finite(distance) && distance<=limit;
         const float fade=within_radius?(distance<1.f?1.f:1.f-(distance-1.f)/fade_range):0;
+        const float edge=within_radius?std::min(1.f,(radius-sqrtf(distance))/(.3f*radius)):0;
         for(unsigned part=0;part<dm_obj_in_slot;++part){const CDetailManager::SlotPart& source=cell.G[part];
             if(source.id==DetailSlot::ID_Empty || source.id>=manager.objects.size())continue;
             bool camera_part=false;
             for(unsigned variant=0;variant<3;++variant){const CDetailManager::SlotItemVec& items=source.r_items[variant];
                 if(items.empty() || !std::binary_search(camera_parts.begin(),camera_parts.end(),&items,std::less<const CDetailManager::SlotItemVec*>()))continue;
                 camera_part=true;
+                if(edge<=.02f)continue; // visible far grass casts no shadow
                 for(size_t i=0;i<items.size();++i){
                     if(++candidates>KICH_R4_MAX_DETAIL_INSTANCES)throw std::runtime_error("detail shadow candidate safety limit");
-                    const ShadowDetailItem candidate={items[i],items[i]->scale_calculated,slot};
+                    const ShadowDetailItem candidate={items[i],items[i]->scale_calculated*edge,slot};
                     buckets[source.id*3+variant].push_back(candidate);}
             }
             // Preserve independent off-camera casters and their full configured
             // radius. Visible cached parts may straddle that radius until their
             // next update; their still-drawn geometry must retain its shadow.
-            if(camera_part || !within_radius)continue;
+            if(camera_part || edge<=.02f)continue;
             const float r=manager.objects[source.id]->bv_sphere.R;
             const float projected=r*r/std::max(distance,1.e-6f);
             for(size_t i=0;i<source.items.size();++i){const CDetailManager::SlotItem& item=*source.items[i];
                 const float scale=item.scale*fade,ssa=scale*scale*projected;if(ssa<r_ssaDISCARD)continue;
                 const unsigned variant=ssa>16*r_ssaDISCARD?std::min(2u,item.vis_ID):0u;
                 if(++candidates>KICH_R4_MAX_DETAIL_INSTANCES)throw std::runtime_error("detail shadow candidate safety limit");
-                const ShadowDetailItem candidate={&item,scale,slot};buckets[source.id*3+variant].push_back(candidate);}
+                const ShadowDetailItem candidate={&item,scale*edge,slot};buckets[source.id*3+variant].push_back(candidate);}
         }
     }
     for(size_t mesh=0;mesh<manager.objects.size();++mesh)for(unsigned variant=0;variant<3;++variant){const auto& items=buckets[mesh*3+variant];

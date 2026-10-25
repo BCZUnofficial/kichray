@@ -285,8 +285,12 @@ struct KichR4DetailSession {
     void EnsureVisibilityFrame(uint32_t frame,const kich_r4_visibility::SunCasterVolume& volume){
         if(visibility_frame!=frame || visibility_source!=source || visibility_generation!=(source?source->generation:UINT64_MAX))BeginVisibilityFrame(frame,volume);
     }
-    void AppendShadowHit(ShadowSelection& selected,uint32_t index,uint32_t& previous)const{
+    void AppendShadowHit(ShadowSelection& selected,uint32_t index,uint32_t& previous,bool sun)const{
         const ShadowCandidate& candidate=shadow_bounds[index];
+        // P0-S5: flat ground clutter never casts sun shadows; reject it here,
+        // before selection, upload and draw (local light maps keep it).
+        if(sun){const uint32_t mesh=source->shadow_groups[candidate.group].mesh;
+            if(mesh<source->meshes.size() && kich_r4_detail::FlatGroundClutter(source->meshes[mesh]))return;}
         if(candidate.group!=previous){const auto& source_group=source->shadow_groups[candidate.group];
             const kich_r4_detail::Group group={source_group.mesh,source_group.variant,static_cast<uint32_t>(selected.instances.size()),0};selected.groups.push_back(group);previous=candidate.group;}
         selected.instances.push_back(candidate.instance);++selected.groups.back().count;
@@ -306,7 +310,7 @@ struct KichR4DetailSession {
             if(selected.valid){uint32_t previous=UINT32_MAX;
                 if(!spatial){
                     for(size_t i=0;i<shadow_bounds.size();++i){const ShadowBounds& bounds=shadow_bounds[i].bounds;++shadow_visibility_tests;
-                        if(!bounds.known || (kich_r4_visibility::Visible(bounds.low,bounds.high,vp) && (!sun || sun_casters.Visible(bounds.low,bounds.high))))AppendShadowHit(selected,static_cast<uint32_t>(i),previous);}
+                        if(!bounds.known || (kich_r4_visibility::Visible(bounds.low,bounds.high,vp) && (!sun || sun_casters.Visible(bounds.low,bounds.high))))AppendShadowHit(selected,static_cast<uint32_t>(i),previous,sun);}
                 }else{
                     shadow_hits=shadow_unknown;shadow_visibility_tests+=shadow_unknown.size();if(!shadow_nodes.empty())VisitShadowNode(0,vp,sun);
                     selected.instances.reserve(shadow_hits.size());
@@ -314,8 +318,8 @@ struct KichR4DetailSession {
                         // Wide cascades may retain almost everything. A linear
                         // mark/scan avoids sorting all accepted leaf ordinals.
                         shadow_hit_marks.assign(shadow_bounds.size(),0);for(size_t i=0;i<shadow_hits.size();++i)shadow_hit_marks[shadow_hits[i]]=1;
-                        for(size_t i=0;i<shadow_hit_marks.size();++i)if(shadow_hit_marks[i])AppendShadowHit(selected,static_cast<uint32_t>(i),previous);
-                    }else{std::sort(shadow_hits.begin(),shadow_hits.end());for(size_t i=0;i<shadow_hits.size();++i)AppendShadowHit(selected,shadow_hits[i],previous);}
+                        for(size_t i=0;i<shadow_hit_marks.size();++i)if(shadow_hit_marks[i])AppendShadowHit(selected,static_cast<uint32_t>(i),previous,sun);
+                    }else{std::sort(shadow_hits.begin(),shadow_hits.end());for(size_t i=0;i<shadow_hits.size();++i)AppendShadowHit(selected,shadow_hits[i],previous,sun);}
                 }
             }
         }
@@ -419,7 +423,6 @@ struct KichR4DetailSession {
         static const float kDetailSunCasterPush=.06f;
         const bool sun_caster=shadow && strncmp(phase,"sun_",4)==0;
         for(size_t i=0;i<groups->size();++i){const kich_r4_detail::Group& g=(*groups)[i];
-            if(sun_caster && g.mesh<source->meshes.size() && kich_r4_detail::FlatGroundClutter(source->meshes[g.mesh]))continue;
             const size_t count=shadow?selected_instances.size():source->instances.size();
             if(g.mesh>=meshes.size() || g.variant>2 || g.first>count || g.count>count-g.first)return s.Record("G3a detail group range",KICH_R4_E_ARGUMENT);
             const Mesh& mesh=meshes[g.mesh];kich_r4_lighting::Constants c=base;

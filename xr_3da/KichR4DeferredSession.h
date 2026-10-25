@@ -276,6 +276,15 @@ struct KichR4DeferredSession {
         const KichR4DdsDesc dd={sizeof(dd),2048,0};
         return level.Expect(s,"B4.4 stream white",level.api.create_texture_dds(s.device,&dd,d.data(),static_cast<uint32_t>(d.size()),&white));
     }
+    // P0-S5: the two full-size RGBA16F shaft targets (~33 MB at 1080p) exist
+    // only while shafts are on; switching r4_sun_shafts to 0 releases them.
+    int32_t ShaftTargets(KichR4FrameSession& s,KichR4LevelSession& l,bool enabled){
+        if(enabled){if(!shafts && Target(s,l,shafts,width,height,KICH_R4_RGBA16F,false)<0)return s.failure;
+            if(!shafts_blur && Target(s,l,shafts_blur,width,height,KICH_R4_RGBA16F,false)<0)return s.failure;return 0;}
+        KichR4Handle* targets[2]={&shafts,&shafts_blur};
+        for(unsigned i=0;i<2;++i)if(*targets[i]){if(l.Expect(s,"P0-S5 release shaft target",l.bridge.resources.release_resource(s.device,*targets[i]))<0)return s.failure;*targets[i]=0;}
+        return 0;
+    }
     int32_t Target(KichR4FrameSession& s,KichR4LevelSession& l,KichR4Handle& h,uint32_t w,uint32_t n,uint32_t format,bool z){
         const KichR4TextureDesc d={sizeof(d),w,n,format,static_cast<uint32_t>(KICH_R4_SHADER_READ|(z?KICH_R4_DEPTH_TARGET:KICH_R4_COLOR_TARGET))};
         return l.Expect(s,"B4.4 target allocation",l.bridge.resources.create_texture(s.device,&d,&h));}
@@ -294,8 +303,8 @@ struct KichR4DeferredSession {
         if(native_mode && (Target(s,l,high_color,w,h,KICH_R4_RGBA8,false)<0 || Target(s,l,bloom1,kich_r4_bloom::Size,kich_r4_bloom::Size,KICH_R4_RGBA8,false)<0 ||
             Target(s,l,bloom2,kich_r4_bloom::Size,kich_r4_bloom::Size,KICH_R4_RGBA8,false)<0 ||
             Target(s,l,lum64,64,64,KICH_R4_RGBA16F,false)<0 || Target(s,l,lum8,8,8,KICH_R4_RGBA16F,false)<0 ||
-            Target(s,l,lum_pool[0],1,1,KICH_R4_R32F,false)<0 || Target(s,l,lum_pool[1],1,1,KICH_R4_R32F,false)<0 ||
-            Target(s,l,shafts,w,h,KICH_R4_RGBA16F,false)<0 || Target(s,l,shafts_blur,w,h,KICH_R4_RGBA16F,false)<0))return s.failure; // P0-S5 shafts + blur
+            Target(s,l,lum_pool[0],1,1,KICH_R4_R32F,false)<0 || Target(s,l,lum_pool[1],1,1,KICH_R4_R32F,false)<0))return s.failure;
+        // P0-S5 shafts targets are created on first use (ShaftTargets), never while r4_sun_shafts is 0.
         width=w;height=h;return 0;
     }
     int32_t Pass(KichR4FrameSession& s,KichR4LevelSession& l,uint32_t w,uint32_t h,uint32_t count,KichR4Handle c0,KichR4Handle c1,KichR4Handle z,uint32_t clear,const float* color=NULL,KichR4Handle c2=0,KichR4Handle c3=0){
@@ -910,6 +919,10 @@ struct KichR4DeferredSession {
         // P0-S5 DX11 shafts (r4_sun_shafts 1/2/3 = 8/12/16 samples per segment):
         // full-size march, then a depth-aware X/Y blur; every pixel is written.
         const bool shafts_on=native_mode && !debug && sun && input.lighting.sun_shafts[0]>.5f && input.lighting.sun_shafts[1]>=.0001f;
+        // Created on first use; kept through debug views and sunless frames;
+        // released only when r4_sun_shafts/_intensity switch the effect off.
+        const bool shafts_wanted=native_mode && input.lighting.sun_shafts[0]>.5f && input.lighting.sun_shafts[1]>=.0001f;
+        if((shafts_on || !shafts_wanted) && ShaftTargets(s,l,shafts_on)<0)return s.failure;
         if(shafts_on){SnapshotPhase("sun_shafts");kich_r4_lighting::Constants c=base;c.alpha[1]=8;c.alpha[3]=0;
             memcpy(c.light_position,input.lighting.sun_shafts,sizeof(c.light_position));
             c.light_position[0]=input.lighting.sun_shafts[0]<1.5f?8.f:input.lighting.sun_shafts[0]<2.5f?12.f:16.f;

@@ -20,6 +20,7 @@ struct float4 {float x,y,z,w;float4(float a=0,float b=0,float c=0,float d=0):x(a
 float2 operator+(float2 a,float2 b){return float2(a.x+b.x,a.y+b.y);}
 float2 operator+(float2 a,float b){return a+float2(b,b);}
 float2 operator-(float2 a,float2 b){return float2(a.x-b.x,a.y-b.y);}
+float2 operator-(float2 a,float b){return float2(a.x-b,a.y-b);}
 float2 operator*(float2 a,float b){return float2(a.x*b,a.y*b);}
 float2 operator/(float2 a,float b){return a*(1.f/b);}
 float3 operator-(float3 a,float3 b){return float3(a.x-b.x,a.y-b.y,a.z-b.z);}
@@ -240,12 +241,44 @@ void CascadeSelection(){using namespace kich_r4_lighting;
     for(float x=.05f;x<=400;x+=.05f){const float v=at(x);Require(v>=0 && v<=1,"visibility range");
         largest=std::max(largest,std::fabs(v-previous));previous=v;}
     Require(largest<.05f,"contact, 128/512 m and far-coverage transitions are continuous");
+    // Depth edge: walk a receiver along the sun ray out of the far map's +-512 m
+    // depth range (beyond 128 m XY so the far map owns it); no step to lit.
+    previous=-1;largest=0;
+    for(float t=380;t<=560;t+=.05f){const float3 p(120+d.x*t,-2+d.y*t,44.4f+d.z*t);texture_uses.clear();
+        const float v=SunVisibility(p,dx,dy);Require(v>=0 && v<=1,"depth-edge visibility range");
+        if(previous>=0)largest=std::max(largest,std::fabs(v-previous));previous=v;}
+    Require(previous>.9999f && largest<.05f,"far cascade depth edge fades continuously to lit");
     shadow[2].m[15]=0;Require(at(1)>.9999f && texture_uses[&shadow0]>0 && !texture_uses[&shadow5],"invalid contact matrix falls back to the E1.9 pair");
     std::memset(shadow,0,sizeof(shadow));
 }
+// P0-S5 PCFWide (sun maps): the stretched B-spline keeps the E1.9 contracts.
+void WideCases(){using namespace kich_r4_lighting;
+    for(unsigned size:{256u,2048u,4096u})for(float degrees:{0.f,35.f,60.f,80.f}){
+        const float sx=std::tan(degrees*3.14159265f/180),sy=sx*.27f,d=10;
+        const float origin[3]={0,0,0},direction[3]={0,0,1};const Matrix projection=SunShadow(origin,direction,512,size);
+        const Texture2D surface={sx*512/1024.,-sy*512/1024.,(512+d-sx*256+sy*256)/1024.,false};
+        const float3 tangent_x(.01f,0,.01f*sx),tangent_y(0,.01f,.01f*sy);
+        const float4 dx=Transform(tangent_x,0,projection),dy=Transform(tangent_y,0,projection);
+        for(float x:{-.01f,0.f,.012f,.37f}){
+            float3 position(x,.017f,d+sx*x+sy*.017f);
+            position=ShadowNumericalOffset(position,tangent_x,tangent_y,float3(0,0,-1));position.z-=.01f;
+            const float4 projected=Transform(position,1,projection);screen.w=float(size);comparisons=0;
+            Require(PCFWide(surface,projected,dx,dy)>.9999f,"wide filter: inclined receiver never shadows itself");
+            Require(comparisons>=16 && comparisons<=36,"wide filter reads the 6x6 support");
+            Texture2D blocker=surface;blocker.c+=-.02*std::sqrt(1+sx*sx+sy*sy)/1024.;
+            Require(PCFWide(blocker,projected,dx,dy)<.0001f,"wide filter: 2 cm contact blocker still shadows");
+        }
+    }
+    screen.w=512;Texture2D edge={0,0,0,true};float previous=-1;
+    for(unsigned step=0;step<=2000;++step){const float u=.49f+.02f*step/2000;
+        const float current=PCFWide(edge,float4(u*2-1,0,.5f,1),float4(.01f,0,0,0),float4(0,.01f,0,0));
+        Require(current>=0 && current<=1,"wide filter range");
+        if(previous>=0)Require(std::fabs(current-previous)<.004f,"wide filter is continuous across texel boundaries");
+        previous=current;}
+}
 #include "receiver_raster_tests.h"
 int main(){try{
-    CascadeSelection();NormalPlaneFallback();PlaneCases();Continuity();CubeGuard();GrazingReceiver();ReceiverReconstruction();ReceiverRasterization();
+    WideCases();CascadeSelection();NormalPlaneFallback();PlaneCases();Continuity();CubeGuard();GrazingReceiver();ReceiverReconstruction();ReceiverRasterization();
     float2 gradient;Require(!ShadowGradient(float3(0,0,1),float3(0,0,2),gradient),"singular UV Jacobian requests bounded fallback");
     Require(!ShadowGradient(float3(1,0,std::numeric_limits<float>::infinity()),float3(0,1,1),gradient),"nonfinite slope requests bounded fallback");
     Require(ShadowPlaneStable(4,.01f,0) && !ShadowPlaneStable(4,10000,10000),"noncoplanar jump does not become a receiver plane");

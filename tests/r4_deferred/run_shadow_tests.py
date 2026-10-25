@@ -13,8 +13,8 @@ def function(signature):
     while depth:
         depth+=(source[at]=='{')-(source[at]=='}');at+=1
     return source[start:at]
-helpers='\n'.join(function(x) for x in ('float3 RelativePosition(', 'float3 WorldPosition(', 'float3 ReceiverPosition(', 'float3 ShadowNumericalOffset(', 'bool ShadowPlaneStable(', 'float ShadowPlaneErrorSquared(', 'bool ShadowGradient(', 'float ShadowTent(', 'float3 ShadowDerivative(', 'float PCF(', 'void ShadowNormalPlane('))
-helpers=helpers.replace('float PCF(Texture2D map','float PCF(const Texture2D& map').replace('[unroll]','').replace('[branch]','').replace('inout float3','float3&').replace('projected.xyz','xyz(projected)').replace('derivative.xyz','xyz(derivative)')
+helpers='\n'.join(function(x) for x in ('float3 RelativePosition(', 'float3 WorldPosition(', 'float3 ReceiverPosition(', 'float3 ShadowNumericalOffset(', 'bool ShadowPlaneStable(', 'float ShadowPlaneErrorSquared(', 'bool ShadowGradient(', 'float ShadowTent(', 'float3 ShadowDerivative(', 'float PCF(', 'float PCFWide(', 'void ShadowNormalPlane('))
+helpers=helpers.replace('float PCF(Texture2D map','float PCF(const Texture2D& map').replace('float PCFWide(Texture2D map','float PCFWide(const Texture2D& map').replace('[unroll]','').replace('[branch]','').replace('inout float3','float3&').replace('projected.xyz','xyz(projected)').replace('derivative.xyz','xyz(derivative)')
 helpers=helpers.replace('p.xyz','xyz(p)').replace('camera.xyz','xyz(camera)')
 helpers=helpers.replace('out float2 gradient','float2& gradient')
 helpers=helpers.replace('receiver_inverse[3][3]', 'receiver_inverse.m[15]')
@@ -38,7 +38,7 @@ for entry in ('PSSun','PSLocal'):
 for entry in ('PSForwardSun','PSForwardLocal'):
     body=function('float4 '+entry+'(')
     assert body.index('ShadowDerivatives(')<body.index('Base(v)')
-for entry in ('PCF','SunFarVisibility','SunCascadeVisibility','SunVisibility','SunMask','LocalVisibility','LocalLight','ShadowNormalPlane','SunLighting'):
+for entry in ('PCF','PCFWide','SunFarVisibility','SunCascadeVisibility','SunVisibility','SunMask','LocalVisibility','LocalLight','ShadowNormalPlane','SunLighting'):
     body=function(('float4 ' if entry in ('LocalLight','SunLighting') else 'void ' if entry=='ShadowNormalPlane' else 'float ')+entry+'(')
     assert 'ddx(' not in body and 'ddy(' not in body
 backend=(root/'xr_3da/xrRender_R4/R4PipelineDX11.cpp').read_text()

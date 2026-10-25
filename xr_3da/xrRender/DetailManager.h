@@ -13,10 +13,20 @@
 #ifdef _EDITOR
 #include "ESceneClassList.h"
 const int dm_max_decompress = 14;
+#elif defined(KICH_R4_NATIVE_FRONTEND)
+// P0-S5 native R4: a 192 m cache sheds a 193-slot line per 2 m of travel;
+// nearest-first unpacking keeps up at a sprint (R2 DLL keeps 7).
+const int dm_max_decompress = 32;
 #else
 const int dm_max_decompress = 7;
 #endif
+#ifdef KICH_R4_NATIVE_FRONTEND
+// P0-S5 native R4: 96 slots (192 m) so r4_detail_radius_scale can triple
+// r__detail_radius; the R2/R1 DLLs keep 32 slots (64 m).
+const int dm_size = 96;
+#else
 const int dm_size = 32;									  //!
+#endif
 const int dm_cache1_count = 4;							  //
 const int dm_cache1_line = dm_size * 2 / dm_cache1_count; //! dm_size*2 must be div dm_cache1_count
 const int dm_max_objects = 64;
@@ -204,6 +214,9 @@ class CDetailManager
 	void Load();
 	void Unload();
 	void Render();
+	// Camera fade radius in metres: r__detail_radius (x r4_detail_radius_scale
+	// in native R4), clamped to the cache. Shared by UpdateVisibleM and R4 shadows.
+	static float FadeRadius();
 
 	/// MT stuff
 	xrCriticalSection MT;
