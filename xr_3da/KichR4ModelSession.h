@@ -16,6 +16,9 @@
  * source ownership lets visual deletion retire GPU storage without retaining
  * the decoded mesh; an expired pointer key is removed before it can be reused. */
 struct KichR4ModelSession {
+    // P0-S10: GPU model VB/IB (and basis partitions) keep their 64 MiB margin
+    // over the CPU registry (192/256 before); every registered mesh can upload.
+    static const uint64_t ModelGpuBudgetBytes=kich_r4_capture::ModelRegistryBudgetBytes+64u*1024u*1024u;
     typedef kich_r4_capture::NativeModelCommand Command;
     typedef kich_r4_capture::Mesh Source;
     enum Pass {Geometry,Shadow,Forward,ForwardAdd,HUD,Distortion,HUDAdd,PassCount};
@@ -170,7 +173,7 @@ struct KichR4ModelSession {
             Mesh& gpu=meshes[c.mesh.get()];
             if(!gpu.vb || !gpu.ib){if(!ValidSource(*c.mesh))return s.Record("G3b invalid immutable model",KICH_R4_E_ARGUMENT);
                 const uint64_t vb_bytes=c.mesh->vertices.size()*sizeof(kich_r4_capture::SourceVertex),ib_bytes=c.mesh->indices.size()*sizeof(uint16_t);
-                if(vertex_bytes+index_bytes+vb_bytes+ib_bytes>256u*1024u*1024u)return s.Record("G3b GPU model mesh budget",KICH_R4_E_MEMORY);
+                if(vertex_bytes+index_bytes+vb_bytes+ib_bytes>ModelGpuBudgetBytes)return s.Record("G3b GPU model mesh budget",KICH_R4_E_MEMORY);
                 gpu.source=c.mesh;
                 const KichR4BufferDesc vb={sizeof(vb),KICH_R4_VERTEX_BUFFER,static_cast<uint32_t>(vb_bytes),sizeof(KichR4ModelVertex)};
                 const KichR4BufferDesc ib={sizeof(ib),KICH_R4_INDEX_BUFFER,static_cast<uint32_t>(ib_bytes),sizeof(uint16_t)};
@@ -195,7 +198,7 @@ struct KichR4ModelSession {
                         auto& target=part.prefix[triangle+1]!=part.prefix[triangle]?good:bad;
                         target.insert(target.end(),c.mesh->indices.begin()+at,c.mesh->indices.begin()+at+3);}
                     good.insert(good.end(),bad.begin(),bad.end());const uint32_t bytes=static_cast<uint32_t>(good.size()*2);
-                        if(vertex_bytes+index_bytes+bytes>256u*1024u*1024u)return s.Record("E1 model partition memory",KICH_R4_E_MEMORY);
+                        if(vertex_bytes+index_bytes+bytes>ModelGpuBudgetBytes)return s.Record("E1 model partition memory",KICH_R4_E_MEMORY);
                         const KichR4BufferDesc desc={sizeof(desc),KICH_R4_INDEX_BUFFER,bytes,2};
                         if(l.Expect(s,"E1 immutable basis partition",l.bridge.resources.create_buffer(s.device,&desc,good.data(),bytes,&part.ib))<0)return s.failure;
                     gpu.index_bytes+=bytes;index_bytes+=bytes;++basis_buffers;basis_bytes+=bytes;++basis_creations;

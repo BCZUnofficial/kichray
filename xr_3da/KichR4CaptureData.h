@@ -26,8 +26,11 @@ static_assert(sizeof(SourceVertex)==64,"G3c source model GPU vertex");
 /* G3c retains twice the vertex payload (32 -> 64 bytes). Preserve the model
  * population accepted by G3b's 96 MiB registry without dropping TBN/UV1 data:
  * 32V + 2I <= 96 MiB implies 64V + 2I <= 192 MiB. A single mesh can gain at
- * most 65536 * 32 bytes over its former 8 MiB limit. Both caps count payload. */
-static const uint64_t ModelRegistryBudgetBytes=192u*1024u*1024u;
+ * most 65536 * 32 bytes over its former 8 MiB limit. Both caps count payload.
+ * P0-S10: modded Cordon preloads 201 MB of models at start; past 192 MiB new
+ * NPC bodies were rejected and drawn as weapons only (tungus_1/2/4). The EXE
+ * is large-address-aware (4 GB on x64), so the registry holds 384 MiB. */
+static const uint64_t ModelRegistryBudgetBytes=384u*1024u*1024u;
 static const uint64_t ModelMeshBudgetBytes=10u*1024u*1024u;
 struct Bounds {
     float min[3],max[3];bool valid;
