@@ -389,9 +389,10 @@ void CRender::Calculate(){queue.clear();shadow_views.clear();native_lod_shadow_v
     kich_r4_scene::Matrix camera_vp;CopyMemory(camera_vp.m,Device.mFullTransform.m,sizeof(camera_vp.m));
     const kich_r4_visibility::SunCasterVolume sun_casters=kich_r4_visibility::BuildSunCasterVolume(camera_vp,lighting.sun_direction);
     if(sun_enabled){const kich_r4_scene::Matrix vp=kich_r4_lighting::SunCascade(lighting,&Device.vCameraPosition.x,512.f);
-        const NativeLodView near_view={kich_r4_lighting::SunCascade(lighting,&Device.vCameraPosition.x,128.f),2048};native_lod_shadow_views.push_back(near_view);
-        kich_r4_scene::Matrix contact;if(kich_r4_lighting::SunContactShadow(lighting,contact)){const NativeLodView contact_view={contact,2048};native_lod_shadow_views.push_back(contact_view);}
-        const NativeLodView far_view={vp,2048};native_lod_shadow_views.push_back(far_view);
+        const unsigned sun_size=kich_r4_lighting::SunMapSize(lighting);
+        const NativeLodView near_view={kich_r4_lighting::SunCascade(lighting,&Device.vCameraPosition.x,128.f),sun_size};native_lod_shadow_views.push_back(near_view);
+        kich_r4_scene::Matrix contact;if(kich_r4_lighting::SunContactShadow(lighting,contact)){const NativeLodView contact_view={contact,sun_size};native_lod_shadow_views.push_back(contact_view);}
+        const NativeLodView far_view={vp,sun_size};native_lod_shadow_views.push_back(far_view);
         Fmatrix matrix;CopyMemory(&matrix,vp.m,sizeof(matrix));CFrustum view;view.CreateFromMatrix(matrix,FRUSTUM_P_ALL);shadow_views.push_back(view);}
     kich_r4_visibility::SelectShadowLights(lighting,true,selected_shadow_lights);
     for(u32 i=0;i<lighting.count;++i)if(selected_shadow_lights[i]){const u32 faces=lighting.lights[i].type==2?1:6;

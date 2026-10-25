@@ -46,6 +46,7 @@ struct KichR4DeferredSession {
     uint64_t sun_map_generation[3]={0,0,0},local_pool_generation=0;
     KichR4Handle sun_contact_map=0; // P0-S2 contact cascade, bound at t7 when shadow[2] is valid
     int32_t sun_shadow_cull=0; // this frame's KichRay r2_sun_shadow_cull
+    uint32_t sun_map_size=2048; // P0-S5 resolution of the allocated sun maps
     KichR4Handle shafts=0,shafts_blur=0; // P0-S5 full-size RGBA16F volume light and its blur ping-pong
     // One bounded pool, shared by deferred, forward and HUD lighting. A point
     // source keeps all six faces; pressure reduces resolution, never drops it.
@@ -185,7 +186,7 @@ struct KichR4DeferredSession {
         if(!g_render_snapshot_active)return;
         using namespace kich_r4_telemetry;
         Text("SHADOW",id,"source_light_id",parent);U64("SHADOW",id,"face_or_cascade",face);Text("SHADOW",id,"unit",sun?"STABILIZED_NEAR_FAR_SUN_MAP": "ONE_LIGHT_FACE; NOT_ONE_LAMP");
-        Text("SHADOW",id,"format","DEPTH32F/D32_FLOAT");U64("SHADOW",id,"width",sun?2048:resolution);U64("SHADOW",id,"height",sun?2048:resolution);U64("SHADOW",id,"target_handle",target);
+        Text("SHADOW",id,"format","DEPTH32F/D32_FLOAT");U64("SHADOW",id,"width",resolution);U64("SHADOW",id,"height",resolution);U64("SHADOW",id,"target_handle",target);
         Float("SHADOW",id,"near",sun?0.f:kich_r4_lighting::LocalShadowNear(range));Float("SHADOW",id,"far",sun?1024.f:range);Vector("SHADOW",id,"view_projection_row_major",matrix.m,16);
         Float("SHADOW",id,"orthographic_span",sun?span:0);Text("SHADOW",id,"projection",sun?"TEXEL_SNAPPED_CAMERA_CENTERED":"PERSPECTIVE_SPOT_CONE_OR_POINT_90_DEG_PLUS_2_TEXEL_GUARD");
         Float("SHADOW",id,"comparison_depth_bias",0);Float("SHADOW",id,"receiver_bias_meters",sun?.01f:.003f);Text("SHADOW",id,"comparison_bias_source","WORLD_SPACE_RECEIVER_TOWARD_LIGHT; CAMERA_RELATIVE_QUAD_RECEIVER_PLANE; GEOMETRIC_NORMAL_PRECISION_ALLOWANCE_MAX_0.002_M; NO_FIXED_NONLINEAR_DEPTH_SUBTRACTION");
@@ -330,7 +331,7 @@ struct KichR4DeferredSession {
             const bool described=native_mode && material.semantic!=kich_r4_material::UNKNOWN;
             if(native_mode && (described?!(shadow?kich_r4_material::Shadow(material):kich_r4_material::Geometry(material)):m.kind>=2))continue;
             if(mesh.lod){float lod=i<static_lods.size()?static_lods[i]:1.f;
-                if(shadow){const uint32_t resolution=strncmp(snapshot_phase,"sun_",4)==0?2048u:local_shadow_size;
+                if(shadow){const uint32_t resolution=strncmp(snapshot_phase,"sun_",4)==0?sun_map_size:local_shadow_size;
                     const kich_r4_level::Draw& bounds=visibility_plan.bounds[i];lod=(std::max)(lod,kich_r4_lod::Projected(&bounds.low.x,&bounds.high.x,vp,resolution,resolution,lod_start,lod_end));}
                 const kich_r4_level::DrawRange range=kich_r4_level::SelectDrawRange(l.scene,mesh,lod);mesh.first=range.first;mesh.count=range.count;mesh.available_attributes=range.available_attributes;}
             if(g_render_snapshot_active){SnapshotStatic(l,i,"R4_STATIC_OPAQUE",&mesh);SnapshotVisibility("CANDIDATE_CLASSIFIED",shadow?"SHADOW_FRUSTUM":"CAMERA_FRUSTUM");}
@@ -800,7 +801,12 @@ struct KichR4DeferredSession {
         if(!kich_r4_lighting::Inverse(base.mvp,base.inverse_vp,input.position))return s.Record("B4.4 relative inverse camera",KICH_R4_E_ARGUMENT);
         kich_r4_lighting::ReceiverInverse(base.mvp,base.receiver_inverse,input.position);
         memcpy(base.tree_wave,input.tree_wave,16);memcpy(base.tree_wind,input.tree_wind,16);base.tree_wind[3]=input.tree_sbc;
-        memcpy(base.camera,input.position,12);base.camera[3]=150;base.light_position[3]=input.time;base.screen[0]=static_cast<float>(width);base.screen[1]=static_cast<float>(height);base.screen[2]=static_cast<float>(debug);base.screen[3]=2048;
+        memcpy(base.camera,input.position,12);base.camera[3]=150;base.light_position[3]=input.time;base.screen[0]=static_cast<float>(width);base.screen[1]=static_cast<float>(height);base.screen[2]=static_cast<float>(debug);
+        // P0-S5 r4_sun_shadow_size: every sun cascade shares it; PCF reads screen.w.
+        const uint32_t sun_size=kich_r4_lighting::SunMapSize(input.lighting);base.screen[3]=static_cast<float>(sun_size);
+        if(sun_size!=sun_map_size){KichR4Handle* maps[3]={&sun_map,&sun_far_map,&sun_contact_map};
+            for(unsigned i=0;i<3;++i)if(*maps[i]){if(l.Expect(s,"P0-S5 sun map resize",l.bridge.resources.release_resource(s.device,*maps[i]))<0)return s.failure;*maps[i]=0;}
+            sun_map_size=sun_size;}
         const kich_r4_scene::Vec3 dir=kich_r4_scene::Normalize(kich_r4_scene::Vec3{weather[0][0],weather[0][1],weather[0][2]});
         base.sun_direction[0]=dir.x;base.sun_direction[1]=dir.y;base.sun_direction[2]=dir.z;
         memcpy(base.sun_color,weather[1],12);memcpy(base.ambient,weather[2],12);memcpy(base.hemi,weather[3],12);memcpy(base.fog,weather[4],12);
@@ -836,14 +842,14 @@ struct KichR4DeferredSession {
             const float spans[3]={native_mode?128.f:512.f,512.f,contact_cascade?input.lighting.sun_contact[3]:0.f};
             KichR4Handle* targets[3]={&sun_map,&sun_far_map,&sun_contact_map};const unsigned slots[3]={0,1,5}; // t2, t3, t7
             for(unsigned cascade=0;cascade<cascades;++cascade){KichR4Handle& map=*targets[cascade];
-                if(!map){if(Target(s,l,map,2048,2048,KICH_R4_DEPTH32F,true)<0)return s.failure;++sun_map_generation[cascade];}
-                kich_r4_shadow_record::Pass* record=shadow_record.Sun(cascade,map,sun_map_generation[cascade],2048,spans[cascade],base.shadow[cascade].m);
+                if(!map){if(Target(s,l,map,sun_size,sun_size,KICH_R4_DEPTH32F,true)<0)return s.failure;++sun_map_generation[cascade];}
+                kich_r4_shadow_record::Pass* record=shadow_record.Sun(cascade,map,sun_map_generation[cascade],sun_size,spans[cascade],base.shadow[cascade].m);
                 kich_r4_shadow_record::Scope record_scope(record);
                 char phase[24];snprintf(phase,sizeof(phase),"sun_%u",cascade);SnapshotPass("SUN_SHADOW",RENDER_SNAPSHOT_PASS_SUN_SHADOW,phase);
                 if(g_render_snapshot_active){RenderSnapshot_Light("sun","SCENE_ENVIRONMENT");RenderSnapshot_U64("LIGHT sun","shadow_map_count",cascades);}
                 sun_inputs[slots[cascade]]=map;
-                SnapshotShadow(phase,"sun",cascade,base.shadow[cascade],map,true,1024,2048,spans[cascade]);
-                if(Pass(s,l,2048,2048,0,0,0,map,KICH_R4_CLEAR_DEPTH)<0)return s.failure;
+                SnapshotShadow(phase,"sun",cascade,base.shadow[cascade],map,true,1024,sun_size,spans[cascade]);
+                if(Pass(s,l,sun_size,sun_size,0,0,0,map,KICH_R4_CLEAR_DEPTH)<0)return s.failure;
                 if(record)record->begun=true;
                 if(Static(s,l,base.shadow[cascade],true)<0)return s.failure;
                 kich_r4_lighting::Constants c=base;c.mvp=base.shadow[cascade];

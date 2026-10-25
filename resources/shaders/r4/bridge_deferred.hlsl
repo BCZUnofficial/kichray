@@ -546,17 +546,47 @@ float4 CombineColor(Varying v){int2 at=int2(v.p.xy);float depth=shadow1.Load(int
             float amount=FogAmount(length(relative));
             result=float4(lerp(a.rgb*(light.rgb+hdiffuse)+light.aaa+hspecular,fog.rgb,amount),amount*amount);}}
     return result;}
+// P0-S5: triangular +-1 LSB dither (two interleaved-gradient-noise terms)
+// before 8-bit targets, so smooth dark gradients do not quantize into bands.
+float InterleavedNoise(float2 p){return frac(52.9829189*frac(dot(p,float2(.06711056,.00583715))));}
+float3 Dither(float3 c,float2 pixel){return c+(InterleavedNoise(pixel)+InterleavedNoise(pixel+float2(47,17))-1)/255;}
 // Both targets share combine_1's fog alpha blend over the sky (R2 MRT).
 // Out parameters: FXC cannot return a struct from a shader that discards.
 void PSCombine(Varying v,out float4 low:SV_Target0,out float4 high:SV_Target1){
-    float4 c=CombineColor(v);ToneOutput o=Tonemap(c,Exposure());low=o.low;high=o.high;}
+    float4 c=CombineColor(v);ToneOutput o=Tonemap(c,Exposure());low=o.low;high=o.high;
+    if((int)screen.z==0)low.rgb=Dither(low.rgb,v.p.xy);}
 
 // Native environment entries use the engine's two weather cubemaps.
 TextureCube sky0:register(t0);TextureCube sky1:register(t1);
+// P0-S5 DX11 debanding. Weather sky/cloud art is DXT (5:6:5 endpoints per 4x4
+// block); a dark night sky multiplied by the adapted exposure turns those
+// steps into visible terraces. Smooth regions (every tap within 0.04 of the
+// centre) average 9 taps over ~1.5 blocks; cloud edges keep the centre. The
+// 8-bit targets then receive triangular +-1 LSB dither (Dither()).
+float3 SkyTexel(float3 d,float w){return lerp(sky0.Sample(surface,d).rgb,sky1.Sample(surface1,d).rgb,w);}
+float3 SkyDebanded(float3 d,float w,float2 pixel){
+    d*=rsqrt(max(dot(d,d),1e-12));float3 center=SkyTexel(d,w),sum=center;
+    uint size,height;sky0.GetDimensions(size,height);float radius=6*1.5707963/max(float(size),1);
+    float3 t=normalize(cross(abs(d.y)<.99?float3(0,1,0):float3(1,0,0),d)),b=cross(d,t);
+    float angle=InterleavedNoise(pixel)*6.2831853,difference=0;
+    [unroll]for(int i=0;i<8;++i){float r=radius*sqrt((i+.5)/8),a=angle+i*2.3999632;
+        float3 s=SkyTexel(d+(t*cos(a)+b*sin(a))*r,w),e=abs(s-center);
+        difference=max(difference,max(e.r,max(e.g,e.b)));sum+=s;}
+    return difference<=.04?sum/9:center;}
+float3 TextureDebanded(Texture2D map,SamplerState state,float2 uv,float2 pixel){
+    float3 center=map.Sample(state,uv).rgb,sum=center;uint w,h;map.GetDimensions(w,h);
+    float2 radius=6/max(float2(w,h),1);float angle=InterleavedNoise(pixel)*6.2831853,difference=0;
+    [unroll]for(int i=0;i<8;++i){float r=sqrt((i+.5)/8),a=angle+i*2.3999632;
+        float3 s=map.Sample(state,uv+float2(cos(a),sin(a))*radius*r).rgb,e=abs(s-center);
+        difference=max(difference,max(e.r,max(e.g,e.b)));sum+=s;}
+    return difference<=.04?sum/9:center;}
 // R2 sky2.ps: tonemap(low, high, sky, scale*2) into generic0/generic1.
-ToneOutput PSSky(Varying v){float3 d=v.n.xyz;return Tonemap(float4(lerp(sky0.Sample(surface,d).rgb,sky1.Sample(surface1,d).rgb,v.c.a)*v.c.rgb*2,1),Exposure());}
+ToneOutput PSSky(Varying v){ToneOutput o=Tonemap(float4(SkyDebanded(v.n.xyz,v.c.a,v.p.xy)*v.c.rgb*2,1),Exposure());
+    o.low.rgb=Dither(o.low.rgb,v.p.xy);o.high.rgb=Dither(o.high.rgb,v.p.xy+float2(13,29));return o;}
 // R2 clouds.ps: tonemap(rgb, hi, mix, scale) into generic0 only.
-float4 PSClouds(Varying v):SV_Target {return float4((image0.Sample(surface,v.uv).rgb+image1.Sample(surface1,v.n.xy).rgb)*v.c.rgb*Exposure(),v.c.a);}
+float4 PSClouds(Varying v):SV_Target {
+    float3 c=(TextureDebanded(image0,surface,v.uv,v.p.xy)+TextureDebanded(image1,surface1,v.n.xy,v.p.xy+float2(31,7)))*v.c.rgb*Exposure();
+    return float4(Dither(c,v.p.xy),v.c.a);}
 float4 PSWater(Varying v,bool front:SV_IsFrontFace):SV_Target {
     float3 dx,dy;ShadowDerivatives(v.w-camera.xyz,dx,dy);
     float t=light_position.w;float2 flow=v.uv+float2(t*.015,t*.01);
@@ -676,7 +706,7 @@ float4 PSPostprocess(Varying v):SV_Target {
     c=c*sun_color.rgb*2+ambient.rgb;
     float gamma=max(.01,alpha.x),brightness=alpha.y*.5,contrast=alpha.z*.5;
     c=((contrast+.5)*pow(saturate(c),1/gamma)+(brightness-.5)*.5-contrast*.5+.25)*fog.rgb;
-    return float4(saturate(c),1);
+    return float4(saturate(Dither(c,v.p.xy)),1);
 }
 
 // P0-S5 DX11 volumetric sun shafts (r4_sun_shafts 0..3, r4_sun_shafts_intensity).

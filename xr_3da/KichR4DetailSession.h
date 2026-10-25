@@ -452,6 +452,9 @@ struct KichR4DetailSession {
             KichR4StreamDrawDesc& state=d.surface.state;state.struct_size=sizeof(state);
             state.draw={sizeof(state.draw),pipelines[shadow?1:0],mesh.vb,mesh.ib,cb,mesh.indices,0,KICH_R4_CULL_NONE,KICH_R4_DEPTH_ON};
             state.source_blend=2;state.dest_blend=1;state.depth_write=1;state.max_depth=1;
+            // P0-S5: anisotropic x8 on the generated mip chain keeps distant grass
+            // crisp at grazing angles without shimmer (otherwise the default surface).
+            if(!shadow){state.surface=KichR4DefaultSurface();state.surface.samplers[0]={1,1,1,3,3,2,8,0,0,0};}
             d.surface.textures[0]=l.Texture(s,source->meshes[g.mesh].texture);d.instance_buffer=shadow?shadow_instance_buffer:instance_buffer;d.first_instance=g.first;d.instance_count=g.count;
             if(l.Expect(s,shadow?"G3a detail shadow DrawIndexedInstanced":"G3a detail G-buffer DrawIndexedInstanced",api.draw(s.device,&d))<0)return s.failure;
             if(record)record->work[kich_r4_shadow_record::Detail].Draw(mesh.indices,g.count);

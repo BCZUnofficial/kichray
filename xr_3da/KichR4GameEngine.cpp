@@ -36,6 +36,7 @@ extern float ps_r2_gloss_factor;
 extern int ps_r2_sun_shadow_cull;
 extern ENGINE_API int ps_r4_sun_shafts;
 extern ENGINE_API float ps_r4_sun_shafts_intensity;
+extern ENGINE_API int ps_r4_sun_shadow_size;
 
 /* R2 accum_direct clouds xform, without its view->world prefix: the R4 sun
  * shader passes world positions. R2 advances w_shift by 0.003*dt in each of
@@ -96,12 +97,14 @@ void KichR4_CopyEngineEnvironment(KichR4LightingFrame& frame)
     memcpy(frame.exposure,exposure,sizeof(exposure));
     // Contact cascade: the r2_sun_near slice of the camera frustum enclosed in
     // a rotation-invariant sphere, so turning the camera never rescales it.
+    // P0-S5 r4_sun_shadow_size, rounded to 1024/2048/4096.
+    frame.sun_map_size=ps_r4_sun_shadow_size>=3072?4096u:ps_r4_sun_shadow_size>=1536?2048u:1024u;
     frame.sun_contact_valid=0;
     if(ps_r2_sun_near>0 && Device.mProject._11>0 && Device.mProject._22>0){
         const float radius=kich_sun::radius(0.f,ps_r2_sun_near,Device.mProject._11,Device.mProject._22);
         Fvector center;center.mad(Device.vCameraPosition,Device.vCameraDirection,ps_r2_sun_near*.5f);
         frame.sun_contact[0]=center.x;frame.sun_contact[1]=center.y;frame.sun_contact[2]=center.z;
-        frame.sun_contact[3]=2*kich_sun::extent(radius,2048);
+        frame.sun_contact[3]=2*kich_sun::extent(radius,frame.sun_map_size);
         frame.sun_contact_valid=_valid(center) && _valid(frame.sun_contact[3])?1u:0u;}
     frame.sun_shadow_cull=ps_r2_sun_shadow_cull;
     // P0-S5 R4's own r4_sun_shafts/_intensity; segments as R2 accum_direct_volumetric:

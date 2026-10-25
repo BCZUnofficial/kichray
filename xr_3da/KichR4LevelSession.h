@@ -7,7 +7,9 @@
 #include "KichR4LevelCamera.h"
 #include "KichR4FrameMetrics.h"
 #include "KichR4TexturePolicy.h"
+#include "KichR4MipGen.h"
 #include <map>
+#include <set>
 #include <stdio.h>
 #include <stdarg.h>
 struct KichR4LevelSession {
@@ -20,6 +22,24 @@ struct KichR4LevelSession {
     // Readers still close in NeedTexture; no filesystem lease crosses a draw.
     std::map<std::string,std::vector<unsigned char> > prepared_textures;
     uint64_t prepared_texture_bytes=0,prepared_texture_epoch=0;
+    // P0-S5: single-level detail atlases receive a generated, coverage-preserving
+    // mip chain (KichR4MipGen.h), kept per level so eviction/reload reuses it.
+    // An empty entry marks a source that cannot be expanded.
+    std::set<std::string> mip_requests;
+    std::map<std::string,std::vector<unsigned char> > generated_mips;
+    void RequestMips(const std::string& name){if(!name.empty())mip_requests.insert(kich_r4_texture::Key(name));}
+    const std::vector<unsigned char>* GeneratedMips(const std::string& key,const unsigned char* data,uint32_t bytes){
+        if(!mip_requests.count(key))return NULL;
+        const auto found=generated_mips.find(key);
+        if(found!=generated_mips.end())return found->second.empty()?NULL:&found->second;
+        std::vector<unsigned char>& out=generated_mips[key];
+        try{if(!kich_r4_mipgen::Expand(data,bytes,200,out))out.clear();}catch(...){out.clear();}
+        kich_r4_dds::Image image={};
+        if(!out.empty() && kich_r4_dds::Parse(out.data(),static_cast<uint32_t>(out.size()),16384,image))
+            Write("[R4 P0-S5] %s: generated %u-level coverage-preserving mip chain (alpha ref 200/255)",key.c_str(),image.count);
+        else out.clear();
+        return out.empty()?NULL:&out;
+    }
     KichR4Handle white,checker,neutral_cube,material_lut=0;
     uint32_t textures_loaded,texture_fallbacks,budget_skips,frames,visible,culled,camera_steps,revision,cull,depth;
     uint64_t texture_bytes,submitted_triangles,submitted_draws;
@@ -161,7 +181,9 @@ struct KichR4LevelSession {
         kich_r4_level::File file(files);const int32_t opened=OpenTexture(file,e.source);
         const auto started=kich_r4_metrics::Start(texture_measure_snapshot);kich_r4_dds::Image image={};
         const bool parsed=opened==0 && kich_r4_dds::Parse(file.view.data,file.view.bytes,16384,image);
-        if(parsed){TextureLevels(e,image);PrepareTexture(key,file.view);}
+        const std::vector<unsigned char>* mips=parsed?GeneratedMips(key,file.view.data,file.view.bytes):NULL;
+        if(mips && kich_r4_dds::Parse(mips->data(),static_cast<uint32_t>(mips->size()),16384,image))TextureLevels(e,image);
+        else if(parsed){TextureLevels(e,image);PrepareTexture(key,file.view);}
         else{e.reason=opened?kich_r4_texture::SourceUnavailable:kich_r4_texture::InvalidLayout;e.failure=opened?opened:KICH_R4_E_UNSUPPORTED;e.retry=texture_registry.epoch+300;}
         const double elapsed=kich_r4_metrics::Elapsed(started);texture_parse_ms+=elapsed;if(texture_probe)texture_probe->parse_ms+=elapsed;
     }
@@ -206,7 +228,8 @@ struct KichR4LevelSession {
         TakePreparedTexture(key,prepared);
         const int32_t opened=prepared.empty()?OpenTexture(file,name):KICH_R4_OK;auto measured=kich_r4_metrics::Start(texture_measure_snapshot);
         const unsigned char* data=prepared.empty()?file.view.data:prepared.data();
-        const uint32_t bytes=prepared.empty()?file.view.bytes:static_cast<uint32_t>(prepared.size());
+        uint32_t bytes=prepared.empty()?file.view.bytes:static_cast<uint32_t>(prepared.size());
+        if(opened==0)if(const std::vector<unsigned char>* mips=GeneratedMips(key,data,bytes)){data=mips->data();bytes=static_cast<uint32_t>(mips->size());}
         kich_r4_dds::Image image={};int32_t hr=opened;
         const bool parsed=opened==0 && kich_r4_dds::Parse(data,bytes,16384,image);
         entry.reason=opened!=0?kich_r4_texture::SourceUnavailable:!parsed?kich_r4_texture::InvalidLayout:kich_r4_texture::UploadFailed;
@@ -243,7 +266,7 @@ struct KichR4LevelSession {
         textures[name]=result;return result;
     }
     int32_t Start(KichR4FrameSession& s,const char* name){try{
-        ClearPreparedTextures();
+        ClearPreparedTextures();mip_requests.clear();generated_mips.clear(); // build_details is per level
         const auto started=kich_r4_metrics::Start(texture_measure_snapshot);auto measured=started;double io_ms=0,parse_ms=0;
         Continue();kich_r4_level::Check(files.open && files.close,"engine filesystem adapter unavailable");
         kich_r4_level::Check(name && kich_r4_level::SafeName(name) && strlen(name)<64 && !strchr(name,'\\') && !strchr(name,'/'),"invalid level name");

@@ -126,6 +126,8 @@ inline int32_t Preflight(KichR4FrameSession& frame,KichR4LevelSession& level,
     }
     const kich_r4_detail::Frame* source=details.source;
     if(scene && source && source->source_frame_known && source->engine_frame==input.engine_frame){
+        // P0-S5: detail atlases ship with one level; request the generated chain first.
+        for(size_t i=0;i<source->meshes.size();++i)level.RequestMips(source->meshes[i].texture);
         for(size_t i=0;i<source->groups.size();++i){const kich_r4_detail::Group& g=source->groups[i];
             if(g.count && g.mesh<source->meshes.size())demand.NeedTexture(source->meshes[g.mesh].texture,BASE);}
         std::vector<unsigned char> needed(source->meshes.size(),0);

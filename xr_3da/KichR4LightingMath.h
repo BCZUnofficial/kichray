@@ -97,9 +97,12 @@ inline bool HoldSunDirection(float* held,const float* current,float cos_step){
     if(Finite(kept.x) && Finite(kept.y) && Finite(kept.z) && fabsf(Dot(kept,kept)-1)<1e-3f && Dot(kept,now)>=cos_step)return false;
     held[0]=now.x;held[1]=now.y;held[2]=now.z;return true;
 }
+// P0-S5: 1024, 2048 or 4096; anything else is the E1.9 2048.
+inline uint32_t SunMapSize(uint32_t requested){return requested==1024 || requested==4096?requested:2048u;}
+inline uint32_t SunMapSize(const KichR4LightingFrame& lighting){return SunMapSize(lighting.sun_map_size);}
 // Every sun cascade of a frame: its held basis when valid, else the sun itself.
 inline Matrix SunCascade(const KichR4LightingFrame& lighting,const float* camera,float span){
-    return SunShadow(camera,lighting.sun_direction,span,2048,lighting.sun_basis_valid?lighting.sun_basis:NULL);
+    return SunShadow(camera,lighting.sun_direction,span,SunMapSize(lighting),lighting.sun_basis_valid?lighting.sun_basis:NULL);
 }
 // P0-S2 contact cascade: same texel-snapped, fixed-depth construction as the
 // 128/512 m cascades, centred on the frame's stable r2_sun_near sphere.

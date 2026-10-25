@@ -689,6 +689,8 @@ ENGINE_API int ps_r__Supersample = 1;
 // P0-S5 R4 DX11 volumetric sun shafts; independent of the R2 module's r2_sun_shafts.
 ENGINE_API int ps_r4_sun_shafts = 2;
 ENGINE_API float ps_r4_sun_shafts_intensity = 1.f;
+// P0-S5 R4 sun shadow map resolution (rounded to 1024/2048/4096).
+ENGINE_API int ps_r4_sun_shadow_size = 4096;
 void CCC_Register()
 {
 	// General
@@ -699,6 +701,7 @@ void CCC_Register()
     CMD1(CCC_R4DebugView, "r4_debug_view");
     CMD4(CCC_Integer, "r4_sun_shafts", &ps_r4_sun_shafts, 0, 3);
     CMD4(CCC_Float, "r4_sun_shafts_intensity", &ps_r4_sun_shafts_intensity, 0.f, 2.f);
+    CMD4(CCC_Integer, "r4_sun_shadow_size", &ps_r4_sun_shadow_size, 1024, 4096);
 #endif
 	CMD1(CCC_Help, "help");
 	CMD1(CCC_Quit, "quit");
