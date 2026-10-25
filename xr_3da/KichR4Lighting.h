@@ -62,9 +62,10 @@ struct KichR4LightingFrame {
     // P0-S5 volumetric shafts: r4_sun_shafts mode (0 off), r4_sun_shafts_intensity,
     // r2_sun_near and min(180 m, far_plane).
     float sun_shafts[4];
-    // P0-S5 r4_sun_shadow_size: one resolution for every sun cascade (PCF reads
-    // it from screen.w). Direct/test producers keep the E1.9 2048.
-    uint32_t sun_map_size;
+    // P0-S5 r4_sun_shadow_size: resolution of the contact and 128 m cascades.
+    // Direct/test producers keep the E1.9 2048. P0-S7 r4_sun_far_size: the 512 m
+    // cascade's own (zero = sun_map_size); PCFWide reads each map's dimensions.
+    uint32_t sun_map_size,sun_far_size;
     std::vector<KichR4LocalLight> lights;
     std::vector<KichR4LightIdentity> sources;
     std::vector<KichR4LightProjector> projectors;
@@ -79,11 +80,24 @@ struct KichR4LightingFrame {
     // Zero size denotes an unplanned legacy/test producer, not a zero-sized map.
     uint32_t selection_frame,local_shadow_size,shadow_plan_faces;
     uint32_t shadow_resolution_changes,shadow_resolution_reason;
+    // P0-S7 native plan (KichR4LocalShadowPlan.h), one entry per light: visible
+    // face mask and own map size. Empty = legacy/test producer: every face at
+    // local_shadow_size. r2_ls_squality scales the R2 size factors.
+    std::vector<uint8_t> shadow_faces;std::vector<uint32_t> shadow_sizes;
+    float local_shadow_quality;
+    // P0-S7 r4_lamp_grass_shadows: grass in local light maps (R2 never draws
+    // details there). Direct/test producers keep the E1 default (on).
+    uint32_t local_detail_shadows;
+    bool ShadowPlanned()const{return count && shadow_faces.size()>=count && shadow_sizes.size()>=count;}
+    uint32_t ShadowFaceMask(unsigned index)const{
+        if(index>=count || index>=lights.size())return 0;
+        return ShadowPlanned()?shadow_faces[index]:lights[index].type==2?1u:63u;}
+    uint32_t ShadowSize(unsigned index)const{return ShadowPlanned() && index<count && shadow_sizes[index]?shadow_sizes[index]:local_shadow_size;}
     // Small direct/test producers can still fill the original first eight
     // entries. Captured frames resize to every visible registry source.
     KichR4LightingFrame():valid(0),count(0),shadow_mask(0),sun_direction(),sun_color(),ambient(),hemi(),fog(),fog_near(0),fog_far(0),fog_valid(0),
-        env_ambient(),env_color(),gloss_factor(1),env_valid(0),sun_mode(KICH_R4_SUN_DEFAULT),sunmask(),sunmask_valid(0),sun_contact(),sun_contact_valid(0),sun_basis(),sun_basis_valid(0),sun_shadow_cull(0),sun_shafts(),sun_map_size(2048),lights(8),sources(8),projectors(8),visibility_vp(),visibility_valid(0),r1_lights_requested(0),r1_lights_applied(0),occlusion_enabled(0),occlusion_tested(0),
-        selection_frame(0),local_shadow_size(0),shadow_plan_faces(0),shadow_resolution_changes(0),shadow_resolution_reason(0){
+        env_ambient(),env_color(),gloss_factor(1),env_valid(0),sun_mode(KICH_R4_SUN_DEFAULT),sunmask(),sunmask_valid(0),sun_contact(),sun_contact_valid(0),sun_basis(),sun_basis_valid(0),sun_shadow_cull(0),sun_shafts(),sun_map_size(2048),sun_far_size(0),lights(8),sources(8),projectors(8),visibility_vp(),visibility_valid(0),r1_lights_requested(0),r1_lights_applied(0),occlusion_enabled(0),occlusion_tested(0),
+        selection_frame(0),local_shadow_size(0),shadow_plan_faces(0),shadow_resolution_changes(0),shadow_resolution_reason(0),local_shadow_quality(1),local_detail_shadows(1){
         const float defaults[8]={.3f,3.3f,.7f,1.f,0.f,.75f,.5f,0.f};memcpy(bloom,defaults,sizeof(bloom));
         const float tonemap[5]={0.f,.25f,.001f,5.f,0.f};memcpy(exposure,tonemap,sizeof(exposure));}
     bool CastsShadow(unsigned index)const {
@@ -139,6 +153,8 @@ void KichR4_CaptureLightProjector(const void*,const KichR4LightProjector&);
 void KichR4_CopyEngineEnvironment(KichR4LightingFrame&);
 void KichR4_CaptureLightingDiagnostics(const float*,const KichR4LightingFrame&);
 void KichR4_SetLightVisibility(KichR4LightVisibility);
+/* P0-S7: current-frame occlusion of a local shadow face box (native: HOM). */
+void KichR4_SetShadowBoxVisibility(bool (*)(const float* low,const float* high,const float* camera_vp));
 void KichR4_FreezeLighting(uint32_t engine_frame,uint32_t now_ms,const float* camera,KichR4LightingFrame&,bool r1_lights_enabled,const float* camera_vp);
 bool KichR4_CopyFrozenLighting(uint32_t engine_frame,const float* camera,const float* camera_vp,KichR4LightingFrame&);
 void KichR4_ResetFrozenLighting();

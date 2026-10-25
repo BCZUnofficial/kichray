@@ -100,9 +100,18 @@ inline bool HoldSunDirection(float* held,const float* current,float cos_step){
 // P0-S5: 1024, 2048 or 4096; anything else is the E1.9 2048.
 inline uint32_t SunMapSize(uint32_t requested){return requested==1024 || requested==4096?requested:2048u;}
 inline uint32_t SunMapSize(const KichR4LightingFrame& lighting){return SunMapSize(lighting.sun_map_size);}
+// P0-S7 512 m cascade: 2048, 4096 or 8192; zero or anything else follows SunMapSize.
+inline uint32_t SunFarMapSize(const KichR4LightingFrame& lighting){
+    const uint32_t far_size=lighting.sun_far_size;
+    return far_size==2048 || far_size==4096 || far_size==8192?far_size:SunMapSize(lighting);}
 // Every sun cascade of a frame: its held basis when valid, else the sun itself.
-inline Matrix SunCascade(const KichR4LightingFrame& lighting,const float* camera,float span){
-    return SunShadow(camera,lighting.sun_direction,span,SunMapSize(lighting),lighting.sun_basis_valid?lighting.sun_basis:NULL);
+// resolution: the cascade's map size (texel snapping); zero = SunMapSize.
+inline Matrix SunCascade(const KichR4LightingFrame& lighting,const float* camera,float span,uint32_t resolution=0){
+    return SunShadow(camera,lighting.sun_direction,span,resolution?resolution:SunMapSize(lighting),lighting.sun_basis_valid?lighting.sun_basis:NULL);
+}
+// P0-S7: the 512 m cascade at its own resolution.
+inline Matrix SunFarCascade(const KichR4LightingFrame& lighting,const float* camera){
+    return SunCascade(lighting,camera,512.f,SunFarMapSize(lighting));
 }
 // P0-S2 contact cascade: same texel-snapped, fixed-depth construction as the
 // 128/512 m cascades, centred on the frame's stable r2_sun_near sphere.
@@ -117,11 +126,11 @@ inline Matrix LocalShadow(const KichR4LocalLight& l,unsigned face,unsigned resol
     const Vec3 dir=l.type==2?Vec3{l.direction[0],l.direction[1],l.direction[2]}:axes[face%6];
     Matrix projection=Projection(l.type==2?l.cone:1.57079632679f,LocalShadowNear(l.range),l.range);
     if(l.type!=2){
-        // Two rendered texels around each 90-degree face keep the complete
-        // three-tap footprint inside real geometry at cube-face transitions.
-        // Camera/caster collection and sampling must use the same resolution.
+        // Three rendered texels around each 90-degree face keep the complete
+        // PCFWide footprint (+-3 texels, P0-S7) inside real geometry at
+        // cube-face transitions. Collection and sampling share the resolution.
         const unsigned size=resolution<16?16:resolution;
-        projection.m[0]=projection.m[5]=float(size-4)/float(size);
+        projection.m[0]=projection.m[5]=float(size-6)/float(size);
     }
     return Multiply(StableView(eye,dir),projection);
 }

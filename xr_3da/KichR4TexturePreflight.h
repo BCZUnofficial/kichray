@@ -83,7 +83,7 @@ inline int32_t Preflight(KichR4FrameSession& frame,KichR4LevelSession& level,
         if(kich_r4_visibility::SunEnabled(input.lighting)){
             if(input.lighting.sunmask_valid)demand.NeedTexture("sunmask",LIGHTING); // R2 cloud sun mask
             add_shadow(kich_r4_lighting::SunCascade(input.lighting,input.position,128.f),UINT32_MAX,true);
-            add_shadow(kich_r4_lighting::SunCascade(input.lighting,input.position,512.f),UINT32_MAX,true);
+            add_shadow(kich_r4_lighting::SunFarCascade(input.lighting,input.position),UINT32_MAX,true);
             kich_r4_scene::Matrix contact;if(kich_r4_lighting::SunContactShadow(input.lighting,contact))add_shadow(contact,UINT32_MAX,true);}
         std::vector<uint8_t> selected;kich_r4_visibility::SelectShadowLights(input.lighting,true,selected);
         uint32_t faces=0;for(size_t i=0;i<selected.size() && i<input.lighting.lights.size();++i)if(selected[i])faces+=input.lighting.lights[i].type==2?1:6;
@@ -92,7 +92,10 @@ inline int32_t Preflight(KichR4FrameSession& frame,KichR4LevelSession& level,
         for(size_t i=0;i<selected.size() && i<input.lighting.lights.size();++i)if(selected[i]){
             const KichR4LocalLight& light=input.lighting.lights[i];
             const uint32_t seed=level.files.sector?level.files.sector(light.position):UINT32_MAX;
-            for(unsigned face=0;face<(light.type==2?1u:6u);++face)add_shadow(kich_r4_lighting::LocalShadow(light,face,shadow_size),seed,false);}
+            // P0-S7 native plan: visible faces at the light's own size.
+            const bool planned=input.lighting.ShadowPlanned();const uint32_t mask=input.lighting.ShadowFaceMask(static_cast<unsigned>(i));
+            const uint32_t size=planned?input.lighting.ShadowSize(static_cast<unsigned>(i)):shadow_size;
+            for(unsigned face=0;face<(light.type==2?1u:6u);++face)if(mask&(1u<<face))add_shadow(kich_r4_lighting::LocalShadow(light,face,size),seed,false);}
         const uint32_t camera_sector=level.files.sector?level.files.sector(input.position):UINT32_MAX;
         const kich_r4_level::StaticVisibility& camera_static=shared_plan->Select(camera,camera_sector);
         // Expand each static material once per role. Unknown camera materials
@@ -131,7 +134,9 @@ inline int32_t Preflight(KichR4FrameSession& frame,KichR4LevelSession& level,
         for(size_t i=0;i<source->groups.size();++i){const kich_r4_detail::Group& g=source->groups[i];
             if(g.count && g.mesh<source->meshes.size())demand.NeedTexture(source->meshes[g.mesh].texture,BASE);}
         std::vector<unsigned char> needed(source->meshes.size(),0);
-        for(size_t view=0;view<shadows.size();++view){const KichR4DetailSession::ShadowSelection& selection=details.SelectShadow(shadows[view],shadow_sun[view]!=0);
+        for(size_t view=0;view<shadows.size();++view){
+            if(!shadow_sun[view] && !input.lighting.local_detail_shadows)continue; // P0-S7: no grass in lamp maps
+            const KichR4DetailSession::ShadowSelection& selection=details.SelectShadow(shadows[view],shadow_sun[view]!=0);
             for(size_t i=0;i<selection.groups.size();++i)if(selection.groups[i].mesh<needed.size())needed[selection.groups[i].mesh]=1;}
         for(size_t i=0;i<needed.size();++i)if(needed[i])demand.NeedTexture(source->meshes[i].texture,SHADOW_ALPHA);
     }

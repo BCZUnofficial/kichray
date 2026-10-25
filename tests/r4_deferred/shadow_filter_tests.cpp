@@ -44,26 +44,48 @@ float3 cross(float3 a,float3 b){return float3(a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.
 float3 normalize(float3 a){return a*(1.f/std::sqrt(dot(a,a)));}
 float3 xyz(float4 v){return float3(v.x,v.y,v.z);}
 float lerp(float a,float b,float t){return a+(b-a)*t;}
-float4 screen,camera,sun_color,sun_direction;int shadow_surface=0;
+float4 screen,camera,sun_color,sun_direction;int shadow_surface=0,surface=0;
 kich_r4_scene::Matrix shadow[6];
 kich_r4_scene::Matrix inverse_vp,receiver_inverse;
 float4 mul(float4 p,const kich_r4_scene::Matrix& m);
-unsigned checks=0,comparisons=0;
+unsigned checks=0,comparisons=0,gathers=0;
+typedef unsigned uint;
+// P0-S7: a map's own size for GetDimensions; zero = the cbuffer screen.w.
+unsigned dimension_override=0;
+float Dim(){return dimension_override?float(dimension_override):screen.w;}
 void Require(bool v,const char* message){++checks;if(!v)throw std::runtime_error(message);}
 struct Texture2D;std::map<const Texture2D*,unsigned> texture_uses; // the runners pass maps to PCF by reference
 struct Texture2D {
     double a,b,c;bool edge;
+    void GetDimensions(uint& width,uint& height)const{width=height=uint(Dim());}
     float SampleCmpLevelZero(int,float2 uv,float compare)const{
         ++comparisons;++texture_uses[this];
-        Require(std::fabs(uv.x*screen.w-.5-std::round(uv.x*screen.w-.5))<1e-4,"point comparison must hit an exact texel centre");
+        Require(std::fabs(uv.x*Dim()-.5-std::round(uv.x*Dim()-.5))<1e-4,"point comparison must hit an exact texel centre");
         Require(uv.x>=0 && uv.x<=1 && uv.y>=0 && uv.y<=1,"comparison must not read the white border");
         const double stored=edge?(uv.x<.5?.4:.6):a*uv.x+b*uv.y+c;
         return double(compare)<=stored?1.f:0.f;
     }
+    // D3D11 Gather at a texel corner: x,y,z,w = lower-left, lower-right,
+    // upper-right, upper-left texel of the 2x2 quad (v grows downwards).
+    float4 Gather(int,float2 uv)const{
+        ++gathers;++texture_uses[this];
+        const double u=double(uv.x)*Dim(),v=double(uv.y)*Dim();
+        Require(std::fabs(u-std::round(u))<1e-4 && std::fabs(v-std::round(v))<1e-4,"Gather must sit on a texel corner");
+        const int i=int(std::lround(u))-1,j=int(std::lround(v))-1;
+        return float4(Stored(i,j+1),Stored(i+1,j+1),Stored(i+1,j),Stored(i,j));
+    }
+    // Outside the map a quad reads 0 (a blocker): the filter must give it no weight.
+    float Stored(int x,int y)const{
+        if(x<0 || y<0 || x>=int(Dim()) || y>=int(Dim()))return 0;
+        const double u=(x+.5)/Dim(),v=(y+.5)/Dim();
+        return float(edge?(u<.5?.4:.6):a*u+b*v+c);
+    }
 };
-// P0-S5 cascade maps: contact (t7), 128 m (t2), 512 m (t3).
-Texture2D shadow0,shadow1,shadow5;
+// P0-S5 cascade maps: contact (t7), 128 m (t2), 512 m (t3); P0-S7 lamp cube faces t2..t7.
+Texture2D shadow0,shadow1,shadow2,shadow3,shadow4,shadow5;
 // PRODUCTION_SHADOW_HELPERS
+// P0-S7 PCFWide takes a map index (t2..t7); bind a fixture map at shadow0.
+float Wide(const Texture2D& map,float4 projected,float4 dx,float4 dy){shadow0=map;return PCFWide(0,projected,dx,dy);}
 float4 Transform(float3 p,float w,const kich_r4_scene::Matrix& m){
     return float4(p.x*m.m[0]+p.y*m.m[4]+p.z*m.m[8]+w*m.m[12],
         p.x*m.m[1]+p.y*m.m[5]+p.z*m.m[9]+w*m.m[13],
@@ -165,7 +187,8 @@ void CubeGuard(){using namespace kich_r4_lighting;KichR4LocalLight light={};ligh
             if(axis==0){values[1]=5.f*first;values[2]=5.f*second;}if(axis==1){values[0]=5.f*first;values[2]=5.f*second;}
             p=float3(values[0],values[1],values[2]);const float4 q=Transform(p,1,m);
             const float u=(q.x/q.w*.5f+.5f)*size,v=(.5f-q.y/q.w*.5f)*size;
-            Require(std::floor(u)-.5f>=0 && std::floor(u)+1.5f<size && std::floor(v)-.5f>=0 && std::floor(v)+1.5f<size,"every cube corner has a complete rendered PCF guard at the actual resolution");
+            // P0-S7 PCFWide reads texels floor(u-2.5) .. +5 on both axes.
+            Require(std::floor(u-2.5f)>=0 && std::floor(u-2.5f)+5<size && std::floor(v-2.5f)>=0 && std::floor(v-2.5f)+5<size,"every cube corner has a complete rendered PCFWide guard at the actual resolution");
         }
     }
 }
@@ -239,6 +262,7 @@ void CascadeSelection(){using namespace kich_r4_lighting;
     Require(at(2000)>.9999f && texture_uses.empty(),"outside every map is lit, not the PCF border shadow");
     float previous=at(0),largest=0;
     for(float x=.05f;x<=400;x+=.05f){const float v=at(x);Require(v>=0 && v<=1,"visibility range");
+        for(const auto& use:texture_uses)Require(use.second<=9,"each cascade is filtered at most once per pixel");
         largest=std::max(largest,std::fabs(v-previous));previous=v;}
     Require(largest<.05f,"contact, 128/512 m and far-coverage transitions are continuous");
     // Depth edge: walk a receiver along the sun ray out of the far map's +-512 m
@@ -253,7 +277,9 @@ void CascadeSelection(){using namespace kich_r4_lighting;
 }
 // P0-S5 PCFWide (sun maps): the stretched B-spline keeps the E1.9 contracts.
 void WideCases(){using namespace kich_r4_lighting;
-    for(unsigned size:{256u,2048u,4096u})for(float degrees:{0.f,35.f,60.f,80.f}){
+    // 8192: the P0-S7 far map is larger than screen.w; PCFWide must use its own size.
+    for(unsigned size:{256u,2048u,4096u,8192u})for(float degrees:{0.f,35.f,60.f,80.f}){
+        dimension_override=size==8192?size:0;
         const float sx=std::tan(degrees*3.14159265f/180),sy=sx*.27f,d=10;
         const float origin[3]={0,0,0},direction[3]={0,0,1};const Matrix projection=SunShadow(origin,direction,512,size);
         const Texture2D surface={sx*512/1024.,-sy*512/1024.,(512+d-sx*256+sy*256)/1024.,false};
@@ -262,19 +288,52 @@ void WideCases(){using namespace kich_r4_lighting;
         for(float x:{-.01f,0.f,.012f,.37f}){
             float3 position(x,.017f,d+sx*x+sy*.017f);
             position=ShadowNumericalOffset(position,tangent_x,tangent_y,float3(0,0,-1));position.z-=.01f;
-            const float4 projected=Transform(position,1,projection);screen.w=float(size);comparisons=0;
-            Require(PCFWide(surface,projected,dx,dy)>.9999f,"wide filter: inclined receiver never shadows itself");
-            Require(comparisons>=16 && comparisons<=36,"wide filter reads the 6x6 support");
+            const float4 projected=Transform(position,1,projection);screen.w=float(size==8192?4096:size);comparisons=0;gathers=0;
+            Require(Wide(surface,projected,dx,dy)>.9999f,"wide filter: inclined receiver never shadows itself");
+            Require(gathers==9 && comparisons==0,"wide filter reads the 6x6 support with nine Gathers");
             Texture2D blocker=surface;blocker.c+=-.02*std::sqrt(1+sx*sx+sy*sy)/1024.;
-            Require(PCFWide(blocker,projected,dx,dy)<.0001f,"wide filter: 2 cm contact blocker still shadows");
+            Require(Wide(blocker,projected,dx,dy)<.0001f,"wide filter: 2 cm contact blocker still shadows");
         }
     }
+    dimension_override=0;
+    // P0-S7 lamps: perspective cube faces at every planned size (64..1024; the
+    // plan never goes below 64, where +-3 texels span metres) through the same filter.
+    for(unsigned size:{64u,128u,256u,512u,1024u})for(float degrees:{0.f,35.f,60.f,80.f}){
+        const float sx=std::tan(degrees*3.14159265f/180),sy=sx*.27f,d=10;
+        KichR4LocalLight light={};light.type=1;light.range=40;const Matrix projection=LocalShadow(light,4,size);
+        const double A=projection.m[10],B=projection.m[14],s=projection.m[0];
+        const Texture2D surface={-2*B*sx/(s*d),2*B*sy/(s*d),A+B/d*(1+sx/s-sy/s),false};
+        const float3 tangent_x(.01f,0,.01f*sx),tangent_y(0,.01f,.01f*sy);
+        const float4 dx=Transform(tangent_x,0,projection),dy=Transform(tangent_y,0,projection);
+        for(float x:{-.01f,0.f,.012f}){
+            float3 position(x,.017f,d+sx*x+sy*.017f);
+            position=ShadowNumericalOffset(position,tangent_x,tangent_y,-position/length(position));
+            {const float distance=std::sqrt(dot(position,position));position=position*(1-.003f/distance);} // LocalVisibility 3 mm
+            const float4 projected=Transform(position,1,projection);screen.w=float(size);gathers=0;
+            Require(Wide(surface,projected,dx,dy)>.9999f,"lamp wide filter: inclined receiver never shadows itself");
+            Require(gathers==9,"lamp wide filter reads nine Gathers");
+            const double blocker_d=d-.02*std::sqrt(1+sx*sx+sy*sy);
+            const Texture2D blocker={-2*B*sx/(s*blocker_d),2*B*sy/(s*blocker_d),A+B/blocker_d*(1+sx/s-sy/s),false};
+            Require(Wide(blocker,projected,dx,dy)<.0001f,"lamp wide filter: 2 cm blocker still shadows");
+        }
+    }
+    // A culled lamp face binds a 16x16 map at depth 1: every receiver reads lit.
+    {screen.w=512;dimension_override=16;const Texture2D lit={0,0,1,false};
+        for(float u:{.1f,.5f,.93f})Require(std::fabs(Wide(lit,float4(u*2-1,.2f,.7f,1),float4(.01f,0,0,0),float4(0,.01f,0,0))-1)<1e-6,"culled face map reads lit");
+        dimension_override=0;}
     screen.w=512;Texture2D edge={0,0,0,true};float previous=-1;
     for(unsigned step=0;step<=2000;++step){const float u=.49f+.02f*step/2000;
-        const float current=PCFWide(edge,float4(u*2-1,0,.5f,1),float4(.01f,0,0,0),float4(0,.01f,0,0));
+        const float current=Wide(edge,float4(u*2-1,0,.5f,1),float4(.01f,0,0,0),float4(0,.01f,0,0));
         Require(current>=0 && current<=1,"wide filter range");
         if(previous>=0)Require(std::fabs(current-previous)<.004f,"wide filter is continuous across texel boundaries");
         previous=current;}
+    // Map edges: Gather quads reaching outside the map carry no weight.
+    for(unsigned size:{16u,256u,4096u})for(float u:{0.f,.001f,.5f,.999f,1.f})for(float v:{0.f,.5f,1.f}){
+        screen.w=float(size);Texture2D shadow={0,0,.4,false},light={0,0,.6,false};
+        const float4 projected(u*2-1,1-v*2,.5f,1),dx(.01f,0,0,0),dy(0,.01f,0,0);
+        Require(Wide(shadow,projected,dx,dy)==0,"wide filter: map edges must not introduce a lit border");
+        Require(std::fabs(Wide(light,projected,dx,dy)-1)<1e-6,"wide filter: edge normalization preserves full light");
+    }
 }
 #include "receiver_raster_tests.h"
 int main(){try{

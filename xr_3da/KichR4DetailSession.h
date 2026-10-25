@@ -285,11 +285,11 @@ struct KichR4DetailSession {
     void EnsureVisibilityFrame(uint32_t frame,const kich_r4_visibility::SunCasterVolume& volume){
         if(visibility_frame!=frame || visibility_source!=source || visibility_generation!=(source?source->generation:UINT64_MAX))BeginVisibilityFrame(frame,volume);
     }
-    void AppendShadowHit(ShadowSelection& selected,uint32_t index,uint32_t& previous,bool sun)const{
+    void AppendShadowHit(ShadowSelection& selected,uint32_t index,uint32_t& previous)const{
         const ShadowCandidate& candidate=shadow_bounds[index];
-        // P0-S5: flat ground clutter never casts sun shadows; reject it here,
-        // before selection, upload and draw (local light maps keep it).
-        if(sun){const uint32_t mesh=source->shadow_groups[candidate.group].mesh;
+        // P0-S5/S7: flat ground clutter (leaves) never casts a shadow, sun or
+        // lamp; reject it here, before selection, upload and draw.
+        {const uint32_t mesh=source->shadow_groups[candidate.group].mesh;
             if(mesh<source->meshes.size() && kich_r4_detail::FlatGroundClutter(source->meshes[mesh]))return;}
         if(candidate.group!=previous){const auto& source_group=source->shadow_groups[candidate.group];
             const kich_r4_detail::Group group={source_group.mesh,source_group.variant,static_cast<uint32_t>(selected.instances.size()),0};selected.groups.push_back(group);previous=candidate.group;}
@@ -310,7 +310,7 @@ struct KichR4DetailSession {
             if(selected.valid){uint32_t previous=UINT32_MAX;
                 if(!spatial){
                     for(size_t i=0;i<shadow_bounds.size();++i){const ShadowBounds& bounds=shadow_bounds[i].bounds;++shadow_visibility_tests;
-                        if(!bounds.known || (kich_r4_visibility::Visible(bounds.low,bounds.high,vp) && (!sun || sun_casters.Visible(bounds.low,bounds.high))))AppendShadowHit(selected,static_cast<uint32_t>(i),previous,sun);}
+                        if(!bounds.known || (kich_r4_visibility::Visible(bounds.low,bounds.high,vp) && (!sun || sun_casters.Visible(bounds.low,bounds.high))))AppendShadowHit(selected,static_cast<uint32_t>(i),previous);}
                 }else{
                     shadow_hits=shadow_unknown;shadow_visibility_tests+=shadow_unknown.size();if(!shadow_nodes.empty())VisitShadowNode(0,vp,sun);
                     selected.instances.reserve(shadow_hits.size());
@@ -318,8 +318,8 @@ struct KichR4DetailSession {
                         // Wide cascades may retain almost everything. A linear
                         // mark/scan avoids sorting all accepted leaf ordinals.
                         shadow_hit_marks.assign(shadow_bounds.size(),0);for(size_t i=0;i<shadow_hits.size();++i)shadow_hit_marks[shadow_hits[i]]=1;
-                        for(size_t i=0;i<shadow_hit_marks.size();++i)if(shadow_hit_marks[i])AppendShadowHit(selected,static_cast<uint32_t>(i),previous,sun);
-                    }else{std::sort(shadow_hits.begin(),shadow_hits.end());for(size_t i=0;i<shadow_hits.size();++i)AppendShadowHit(selected,shadow_hits[i],previous,sun);}
+                        for(size_t i=0;i<shadow_hit_marks.size();++i)if(shadow_hit_marks[i])AppendShadowHit(selected,static_cast<uint32_t>(i),previous);
+                    }else{std::sort(shadow_hits.begin(),shadow_hits.end());for(size_t i=0;i<shadow_hits.size();++i)AppendShadowHit(selected,shadow_hits[i],previous);}
                 }
             }
         }

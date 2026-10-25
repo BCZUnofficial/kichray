@@ -23,6 +23,8 @@ public:
     BOOL visible(vis_data& value);
     BOOL visible(Fbox& box);
     BOOL LightVisible(const float* position,float range,const float* view);
+    // P0-S7: a local shadow face's lit box, same current-frame contract.
+    BOOL BoxVisible(const float* low,const float* high,const float* view);
     // Raster.test calls this in the legacy implementation. Prepare/Test hold
     // our lock already; rerendering from this callback would invalidate depth.
     void MT_SYNC(){}

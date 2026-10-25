@@ -17,9 +17,11 @@
 #include "KichR4LodPolicy.h"
 #include "KichR4PostprocessNoise.h"
 #include "KichR4ShadowPoolPolicy.h"
+#include "KichR4LocalShadowPlan.h"
 #include "KichR4ShadowRecord.h"
 #include "KichR4Bloom.h"
 #include <set>
+#include <map>
 /* EXE-side pass planner. Native resources remain owned by the R4 device;
  * destroying that device releases partial construction and all cached maps. */
 struct KichR4DeferredSession {
@@ -46,7 +48,8 @@ struct KichR4DeferredSession {
     uint64_t sun_map_generation[3]={0,0,0},local_pool_generation=0;
     KichR4Handle sun_contact_map=0; // P0-S2 contact cascade, bound at t7 when shadow[2] is valid
     int32_t sun_shadow_cull=0; // this frame's KichRay r2_sun_shadow_cull
-    uint32_t sun_map_size=2048; // P0-S5 resolution of the allocated sun maps
+    uint32_t sun_map_size=2048; // P0-S5 resolution of the allocated contact/128 m sun maps
+    uint32_t sun_far_map_size=2048; // P0-S7 resolution of the allocated 512 m sun map
     KichR4Handle shafts=0,shafts_blur=0; // P0-S5 full-size RGBA16F volume light and its blur ping-pong
     // One bounded pool, shared by deferred, forward and HUD lighting. A point
     // source keeps all six faces; pressure reduces resolution, never drops it.
@@ -54,11 +57,53 @@ struct KichR4DeferredSession {
     std::vector<uint32_t> local_offsets;
     uint32_t local_shadow_size=512;
     static const uint64_t LocalShadowBudget=kich_r4_shadow_pool::BudgetBytes;
+    // P0-S7 planned frames (KichR4LocalShadowPlan.h): each light has its own
+    // size and renders only its visible faces; a culled face binds a 16x16 map
+    // at depth 1 (lit). Maps are pooled per size and reused across frames.
+    bool local_planned=false;
+    std::vector<KichR4Handle> light_face_maps; // lighting.count*6
+    std::vector<uint32_t> light_sizes;
+    std::map<uint32_t,std::vector<KichR4Handle>> local_size_pool;
+    KichR4Handle lit_face_map=0;bool lit_face_ready=false;
+    uint32_t current_local_size=512; // the light whose faces are being rendered (caster LOD)
     KichR4Handle LocalMap(unsigned index,unsigned face)const {
+        if(local_planned)return size_t(index)*6+face<light_face_maps.size()?light_face_maps[size_t(index)*6+face]:0;
         return index<local_offsets.size() && local_offsets[index]!=UINT32_MAX?
             local_maps[local_offsets[index]+face]:0;
     }
+    uint32_t LocalSize(unsigned index)const{return local_planned && index<light_sizes.size() && light_sizes[index]?light_sizes[index]:local_shadow_size;}
+    bool LocalFaceRendered(unsigned index,unsigned face)const{const KichR4Handle map=LocalMap(index,face);return map && (!local_planned || map!=lit_face_map);}
+    int32_t PrepareLocalPlan(KichR4FrameSession& s,KichR4LevelSession& l,const KichR4LightingFrame& lighting,const std::vector<uint8_t>& selected){
+        // Entering the plan retires the uniform legacy pool.
+        for(size_t i=0;i<local_maps.size();++i)if(l.Expect(s,"P0-S7 retire uniform shadow pool",l.bridge.resources.release_resource(s.device,local_maps[i]))<0)return s.failure;
+        local_maps.clear();local_offsets.clear();
+        local_planned=true;light_face_maps.assign(size_t(lighting.count)*6,0);light_sizes.assign(lighting.count,0);
+        if(!lit_face_map){if(Target(s,l,lit_face_map,16,16,KICH_R4_DEPTH32F,true)<0)return s.failure;lit_face_ready=false;}
+        if(!lit_face_ready){if(Pass(s,l,16,16,0,0,0,lit_face_map,KICH_R4_CLEAR_DEPTH)<0)return s.failure;lit_face_ready=true;}
+        std::map<uint32_t,size_t> used;uint64_t payload=0;uint32_t faces=0,largest=0;
+        for(unsigned i=0;i<lighting.count;++i){if(!selected[i])continue;
+            const uint32_t mask=lighting.ShadowFaceMask(i),size=lighting.ShadowSize(i);
+            if(size<kich_r4_shadow_pool::MinimumSize || size>kich_r4_local_shadow::MaximumClass || (size&(size-1)))return s.Record("P0-S7 local shadow size",KICH_R4_E_ARGUMENT);
+            light_sizes[i]=size;largest=(std::max)(largest,size);
+            for(unsigned face=0;face<(lighting.lights[i].type==2?1u:6u);++face){
+                if(!(mask&(1u<<face))){light_face_maps[size_t(i)*6+face]=lit_face_map;continue;}
+                std::vector<KichR4Handle>& bucket=local_size_pool[size];size_t& n=used[size];
+                if(n==bucket.size()){KichR4Handle map=0;if(Target(s,l,map,size,size,KICH_R4_DEPTH32F,true)<0)return s.failure;bucket.push_back(map);++local_pool_generation;}
+                light_face_maps[size_t(i)*6+face]=bucket[n++];payload+=uint64_t(size)*size*4;++faces;}}
+        if(payload>LocalShadowBudget)return s.Record("P0-S7 local shadow plan budget",KICH_R4_E_ARGUMENT);
+        // Idle maps stay for reuse up to twice the budget; beyond that they go.
+        uint64_t allocated=0;for(const auto& b:local_size_pool)allocated+=uint64_t(b.first)*b.first*4*b.second.size();
+        if(allocated>2*LocalShadowBudget)for(auto& b:local_size_pool){const auto found=used.find(b.first);const size_t keep=found!=used.end()?found->second:0;
+            while(b.second.size()>keep){if(l.Expect(s,"P0-S7 local shadow pool trim",l.bridge.resources.release_resource(s.device,b.second.back()))<0)return s.failure;b.second.pop_back();allocated-=uint64_t(b.first)*b.first*4;}}
+        if(largest)local_shadow_size=largest;
+        if(g_render_snapshot_active){RenderSnapshot_U64("SHADOW_POOL","requested_faces",faces);RenderSnapshot_U64("SHADOW_POOL","resolution",largest);
+            RenderSnapshot_U64("SHADOW_POOL","budget_bytes",LocalShadowBudget);RenderSnapshot_U64("SHADOW_POOL","planned_bytes",payload);RenderSnapshot_U64("SHADOW_POOL","allocated_bytes",allocated);
+            RenderSnapshot_Text("SHADOW_POOL","policy","P0-S7 R2 PER-LIGHT SIZE (POW2 64..1024, HYSTERESIS); VISIBLE FACES ONLY (CAMERA FRUSTUM, HUD BOX, HOM); BUDGET HALVES LARGEST");}
+        return 0;
+    }
     int32_t PrepareLocalMaps(KichR4FrameSession& s,KichR4LevelSession& l,const KichR4LightingFrame& lighting,const std::vector<uint8_t>& selected){
+        if(lighting.ShadowPlanned())return PrepareLocalPlan(s,l,lighting,selected);
+        if(local_planned){local_planned=false;light_face_maps.clear();light_sizes.clear();}
         local_offsets.assign(lighting.count,UINT32_MAX);uint32_t faces=0;
         for(unsigned i=0;i<lighting.count;++i)if(selected[i]){local_offsets[i]=faces;faces+=lighting.lights[i].type==2?1:6;}
         // Gameplay freezes resolution with the source list before collecting
@@ -239,18 +284,36 @@ struct KichR4DeferredSession {
         memset(&api,0,sizeof(api));memset(pipelines,0,sizeof(pipelines));memset(shaders,0,sizeof(shaders));memset(&base,0,sizeof(base));}
     static bool ValidAPI(const KichR4DeferredAPI& a){return a.struct_size==sizeof(a) && a.abi_version==KICH_R4_DEFERRED_ABI &&
         a.pointer_size==sizeof(void*) && !a.flags && a.create_pipeline && a.begin_pass && a.draw;}
+    // P0-S7: the five lighting shaders (PSSun, PSLocal, PSForwardSun/Local,
+    // PSWater) take most of the compile time and no menu frame needs them. They
+    // compile with the first scene frame, under the level loading screen.
+    static bool SceneShader(unsigned i){return i==6 || i==7 || i==8 || i==9 || i==14;}
+    bool scene_shaders_ready=false;
+    int32_t StartScene(KichR4FrameSession& s,KichR4LevelSession& level){
+        if(scene_shaders_ready)return 0;
+        if(CompileShaders(s,level,true)<0)return s.failure;
+        scene_shaders_ready=true;return 0;
+    }
     int32_t Start(KichR4FrameSession& s,KichR4LevelSession& level){
         if(!ValidAPI(api))return s.Record("B4.4 deferred ABI",KICH_R4_E_ARGUMENT);
+        if(CompileShaders(s,level,false)<0)return s.failure;
+        return StartResources(s,level);
+    }
+    // Compiles the missing shaders (without scene: all but SceneShader) and
+    // creates every pipeline whose two shaders exist.
+    int32_t CompileShaders(KichR4FrameSession& s,KichR4LevelSession& level,bool scene){
         const char* entries[]={"VSStatic","VSModel","VSModelShadow","VSScreen","PSGeometry","PSShadow","PSSun","PSLocal","PSForwardSun","PSForwardLocal","PSPlain","PSCombine","PSSky","PSClouds","PSWater","PSDistortion","PSPostprocess","PSParticleDistortionMask","PSDistortionComposite","PSCelestial","PSWallmark",
             "PSBloomBuild","PSBloomFilter","PSBloomFilterFast","PSBloomComposite","PSLuminance1","PSLuminance2","PSLuminance3","PSSunShafts","PSSunShaftsComposite","PSHudBloomSource","PSSunShaftsBlur"};
         static_assert(sizeof(entries)/sizeof(entries[0])==ShaderCount,"deferred shader entries");
         const char* source=KichR4DeferredShaderSource();
-        for(unsigned i=0;i<ShaderCount;++i){level.Continue();KichR4ShaderDesc d={};d.struct_size=sizeof(d);d.kind=i<4?KICH_R4_VERTEX_SHADER:KICH_R4_PIXEL_SHADER;
+        for(unsigned i=0;i<ShaderCount;++i){if(shaders[i] || (!scene && SceneShader(i)))continue;
+            level.Continue();KichR4ShaderDesc d={};d.struct_size=sizeof(d);d.kind=i<4?KICH_R4_VERTEX_SHADER:KICH_R4_PIXEL_SHADER;
             memcpy(d.entry,entries[i],strlen(entries[i])+1);memcpy(d.name,"kich_b44_deferred",18);
             if(level.Expect(s,entries[i],level.bridge.resources.compile_shader(s.device,&d,source,static_cast<uint32_t>(strlen(source)),&shaders[i],level.bridge.shader_error,sizeof(level.bridge.shader_error)))<0)return s.failure;}
         const unsigned vs[]={0,1,0,2,3,3,1,1,1,3,1,1,1,1,0,0,3,3,0,1,3,1,1,0,3,3,3,3,3,3,3,3,3,3,3},ps[]={4,4,5,5,6,7,8,9,10,11,12,13,14,15,8,14,10,16,10,17,18,19,20,20,21,22,23,24,25,26,27,28,29,30,31};
         static_assert(sizeof(vs)/sizeof(vs[0])==PipelineCount && sizeof(ps)/sizeof(ps[0])==PipelineCount,"deferred pipeline table");
-        for(unsigned i=0;i<PipelineCount;++i){KichR4PipelineDesc d={};d.struct_size=sizeof(d);d.vertex_shader=shaders[vs[i]];d.pixel_shader=shaders[ps[i]];
+        for(unsigned i=0;i<PipelineCount;++i){if(pipelines[i] || !shaders[vs[i]] || !shaders[ps[i]])continue;
+            KichR4PipelineDesc d={};d.struct_size=sizeof(d);d.vertex_shader=shaders[vs[i]];d.pixel_shader=shaders[ps[i]];
             const bool model=vs[i]==1 || vs[i]==2,screen=vs[i]==3;
             d.vertex_stride=model?sizeof(kich_r4_capture::Vertex):screen?20:sizeof(kich_r4_level::Vertex);
             d.element_count=model?5:screen?2:8;
@@ -261,6 +324,9 @@ struct KichR4DeferredSession {
                 d.elements[3]={KICH_R4_TEXCOORD,1,KICH_R4_FLOAT3,36};d.elements[4]={KICH_R4_TEXCOORD,2,KICH_R4_FLOAT3,48};
                 d.elements[5]={KICH_R4_TEXCOORD,3,KICH_R4_FLOAT3,60};d.elements[6]={KICH_R4_COLOR,0,KICH_R4_UNORM8X4,72};d.elements[7]={KICH_R4_TEXCOORD,4,KICH_R4_FLOAT2,76};}
             if(level.Expect(s,"B4.4 deferred pipeline",api.create_pipeline(s.device,&d,&pipelines[i]))<0)return s.failure;}
+        return 0;
+    }
+    int32_t StartResources(KichR4FrameSession& s,KichR4LevelSession& level){
         KichR4BufferDesc b={sizeof(b),KICH_R4_CONSTANT_BUFFER,sizeof(base),0};
         if(level.Expect(s,"B4.4 constants",level.bridge.resources.create_buffer(s.device,&b,&base,sizeof(base),&cb))<0)return s.failure;
         const float vertices[15]={-1,-1,0,0,1,-1,3,0,0,-1,3,-1,0,2,1};const uint32_t indices[3]={0,1,2};
@@ -340,7 +406,7 @@ struct KichR4DeferredSession {
             const bool described=native_mode && material.semantic!=kich_r4_material::UNKNOWN;
             if(native_mode && (described?!(shadow?kich_r4_material::Shadow(material):kich_r4_material::Geometry(material)):m.kind>=2))continue;
             if(mesh.lod){float lod=i<static_lods.size()?static_lods[i]:1.f;
-                if(shadow){const uint32_t resolution=strncmp(snapshot_phase,"sun_",4)==0?sun_map_size:local_shadow_size;
+                if(shadow){const uint32_t resolution=strncmp(snapshot_phase,"sun_",4)==0?sun_map_size:current_local_size;
                     const kich_r4_level::Draw& bounds=visibility_plan.bounds[i];lod=(std::max)(lod,kich_r4_lod::Projected(&bounds.low.x,&bounds.high.x,vp,resolution,resolution,lod_start,lod_end));}
                 const kich_r4_level::DrawRange range=kich_r4_level::SelectDrawRange(l.scene,mesh,lod);mesh.first=range.first;mesh.count=range.count;mesh.available_attributes=range.available_attributes;}
             if(g_render_snapshot_active){SnapshotStatic(l,i,"R4_STATIC_OPAQUE",&mesh);SnapshotVisibility("CANDIDATE_CLASSIFIED",shadow?"SHADOW_FRUSTUM":"CAMERA_FRUSTUM");}
@@ -547,6 +613,8 @@ struct KichR4DeferredSession {
             if(pass==ShadowModels){style.depth=style.write=1;style.blend=style.clamp=0;style.scissor=false;style.min_z=0;style.max_z=1;
                 if(strncmp(snapshot_phase,"sun_",4)==0)style.cull=KichR4SunShadowCull(style.cull,sun_shadow_cull);}
             if(pass==ForwardAdd){style.blend=1;style.src=style.dst=2;style.write=0;}
+            // A menu batch with a scene-lit command (e.g. water) compiles the scene set now.
+            if(!pipelines[pipeline] && StartScene(s,l)<0)return s.failure;
             KichR4DeferredDrawDesc d=Description(pipelines[pipeline],stream.vb,stream.ib,cb,c.count,c.first,style);
             if(pass==ForwardAdd && kich_r4_projector::Enabled(constants))kich_r4_projector::Sampler(d.state.surface);
             if(pipeline==ForwardSun || pipeline==ForwardLocal || pipeline==Water){const KichR4Handle lut=l.MaterialLut(s);if(!lut)return s.failure;kich_r4_material_lut::Bind(d,lut);}
@@ -746,12 +814,14 @@ struct KichR4DeferredSession {
         const int32_t result=Fullscreen(s,l,Postprocess,c,final_color,noise,NULL);
         kich_r4_telemetry::Text("POSTPROCESS","native_postprocess","execution",result>=0?"DRAW_SUCCEEDED; PIXEL_CONTRIBUTION_NOT_MEASURED":"DRAW_FAILED");return result;
     }
-    kich_r4_lighting::Constants LocalConstants(const KichR4LocalLight& l)const {
+    kich_r4_lighting::Constants LocalConstants(const KichR4LocalLight& l)const {return LocalConstants(l,local_shadow_size);}
+    // size: this light's map resolution (P0-S7 plan), shared by all its faces.
+    kich_r4_lighting::Constants LocalConstants(const KichR4LocalLight& l,uint32_t size)const {
         kich_r4_lighting::Constants c=base;c.alpha[3]=1;c.sun_direction[3]=0;memcpy(c.light_position,l.position,12);c.light_position[3]=l.range;
         const kich_r4_scene::Vec3 direction=kich_r4_scene::Normalize(kich_r4_scene::Vec3{l.direction[0],l.direction[1],l.direction[2]});
         c.light_direction[0]=direction.x;c.light_direction[1]=direction.y;c.light_direction[2]=direction.z;c.light_direction[3]=cosf(l.cone*.5f);
-        memcpy(c.light_color,l.color,12);c.light_color[3]=static_cast<float>(l.type);c.screen[3]=static_cast<float>(local_shadow_size);
-        for(unsigned i=0;i<(l.type==2?1u:6u);++i)c.shadow[i]=kich_r4_lighting::LocalShadow(l,i,local_shadow_size);
+        memcpy(c.light_color,l.color,12);c.light_color[3]=static_cast<float>(l.type);c.screen[3]=static_cast<float>(size);
+        for(unsigned i=0;i<(l.type==2?1u:6u);++i)c.shadow[i]=kich_r4_lighting::LocalShadow(l,i,size);
         return c;
     }
     void LocalInputs(KichR4LevelSession& level,const KichR4LightingFrame& lighting,unsigned index,kich_r4_lighting::Constants& c,KichR4Handle* maps,bool count=false){
@@ -798,7 +868,7 @@ struct KichR4DeferredSession {
         for(unsigned i=0;i<5;++i)for(unsigned j=0;j<3;++j)if(!kich_r4_lighting::Finite(weather[i][j]))return s.Record("B4.4 weather values",KICH_R4_E_ARGUMENT);
         for(unsigned i=0;i<3;++i)if(!kich_r4_lighting::Finite(input.position[i]))return s.Record("B4.4 camera position",KICH_R4_E_ARGUMENT);
         for(unsigned i=0;i<input.lighting.count;++i)if(!kich_r4_lighting::ValidLight(input.lighting.lights[i]))return s.Record("B4.4 local light",KICH_R4_E_ARGUMENT);
-        if(!cb && Start(s,l)<0)return s.failure;
+        if((!cb && Start(s,l)<0) || StartScene(s,l)<0)return s.failure;
         if(ScreenTargets(s,l,input.width,input.height)<0)return s.failure;
         if(native_mode && details.source){
             if(details.Start(s,l,KichR4DeferredShaderSource(),shaders[4],shaders[5])<0 || details.Upload(s,l,input.engine_frame)<0)return s.failure;}
@@ -811,11 +881,16 @@ struct KichR4DeferredSession {
         kich_r4_lighting::ReceiverInverse(base.mvp,base.receiver_inverse,input.position);
         memcpy(base.tree_wave,input.tree_wave,16);memcpy(base.tree_wind,input.tree_wind,16);base.tree_wind[3]=input.tree_sbc;
         memcpy(base.camera,input.position,12);base.camera[3]=150;base.light_position[3]=input.time;base.screen[0]=static_cast<float>(width);base.screen[1]=static_cast<float>(height);base.screen[2]=static_cast<float>(debug);
-        // P0-S5 r4_sun_shadow_size: every sun cascade shares it; PCF reads screen.w.
+        // P0-S5 r4_sun_shadow_size: the contact and 128 m cascades. P0-S7
+        // r4_sun_far_size: the native 512 m cascade. PCFWide reads each map's size.
         const uint32_t sun_size=kich_r4_lighting::SunMapSize(input.lighting);base.screen[3]=static_cast<float>(sun_size);
-        if(sun_size!=sun_map_size){KichR4Handle* maps[3]={&sun_map,&sun_far_map,&sun_contact_map};
-            for(unsigned i=0;i<3;++i)if(*maps[i]){if(l.Expect(s,"P0-S5 sun map resize",l.bridge.resources.release_resource(s.device,*maps[i]))<0)return s.failure;*maps[i]=0;}
+        const uint32_t far_size=native_mode?kich_r4_lighting::SunFarMapSize(input.lighting):sun_size;
+        if(sun_size!=sun_map_size){KichR4Handle* maps[2]={&sun_map,&sun_contact_map};
+            for(unsigned i=0;i<2;++i)if(*maps[i]){if(l.Expect(s,"P0-S5 sun map resize",l.bridge.resources.release_resource(s.device,*maps[i]))<0)return s.failure;*maps[i]=0;}
             sun_map_size=sun_size;}
+        if(far_size!=sun_far_map_size){
+            if(sun_far_map){if(l.Expect(s,"P0-S7 far sun map resize",l.bridge.resources.release_resource(s.device,sun_far_map))<0)return s.failure;sun_far_map=0;}
+            sun_far_map_size=far_size;}
         const kich_r4_scene::Vec3 dir=kich_r4_scene::Normalize(kich_r4_scene::Vec3{weather[0][0],weather[0][1],weather[0][2]});
         base.sun_direction[0]=dir.x;base.sun_direction[1]=dir.y;base.sun_direction[2]=dir.z;
         memcpy(base.sun_color,weather[1],12);memcpy(base.ambient,weather[2],12);memcpy(base.hemi,weather[3],12);memcpy(base.fog,weather[4],12);
@@ -846,19 +921,20 @@ struct KichR4DeferredSession {
             const bool contact_cascade=native_mode && kich_r4_lighting::SunContactShadow(input.lighting,contact);
             const unsigned cascades=native_mode?(contact_cascade?3:2):1;
             base.shadow[0]=kich_r4_lighting::SunCascade(input.lighting,input.position,native_mode?128.f:512.f);
-            base.shadow[1]=kich_r4_lighting::SunCascade(input.lighting,input.position,512.f);
+            base.shadow[1]=kich_r4_lighting::SunCascade(input.lighting,input.position,512.f,far_size);
             if(contact_cascade)base.shadow[2]=contact;
             const float spans[3]={native_mode?128.f:512.f,512.f,contact_cascade?input.lighting.sun_contact[3]:0.f};
             KichR4Handle* targets[3]={&sun_map,&sun_far_map,&sun_contact_map};const unsigned slots[3]={0,1,5}; // t2, t3, t7
-            for(unsigned cascade=0;cascade<cascades;++cascade){KichR4Handle& map=*targets[cascade];
-                if(!map){if(Target(s,l,map,sun_size,sun_size,KICH_R4_DEPTH32F,true)<0)return s.failure;++sun_map_generation[cascade];}
-                kich_r4_shadow_record::Pass* record=shadow_record.Sun(cascade,map,sun_map_generation[cascade],sun_size,spans[cascade],base.shadow[cascade].m);
+            const uint32_t sizes[3]={sun_size,far_size,sun_size};
+            for(unsigned cascade=0;cascade<cascades;++cascade){KichR4Handle& map=*targets[cascade];const uint32_t size=sizes[cascade];
+                if(!map){if(Target(s,l,map,size,size,KICH_R4_DEPTH32F,true)<0)return s.failure;++sun_map_generation[cascade];}
+                kich_r4_shadow_record::Pass* record=shadow_record.Sun(cascade,map,sun_map_generation[cascade],size,spans[cascade],base.shadow[cascade].m);
                 kich_r4_shadow_record::Scope record_scope(record);
                 char phase[24];snprintf(phase,sizeof(phase),"sun_%u",cascade);SnapshotPass("SUN_SHADOW",RENDER_SNAPSHOT_PASS_SUN_SHADOW,phase);
                 if(g_render_snapshot_active){RenderSnapshot_Light("sun","SCENE_ENVIRONMENT");RenderSnapshot_U64("LIGHT sun","shadow_map_count",cascades);}
                 sun_inputs[slots[cascade]]=map;
-                SnapshotShadow(phase,"sun",cascade,base.shadow[cascade],map,true,1024,sun_size,spans[cascade]);
-                if(Pass(s,l,sun_size,sun_size,0,0,0,map,KICH_R4_CLEAR_DEPTH)<0)return s.failure;
+                SnapshotShadow(phase,"sun",cascade,base.shadow[cascade],map,true,1024,size,spans[cascade]);
+                if(Pass(s,l,size,size,0,0,0,map,KICH_R4_CLEAR_DEPTH)<0)return s.failure;
                 if(record)record->begun=true;
                 if(Static(s,l,base.shadow[cascade],true)<0)return s.failure;
                 kich_r4_lighting::Constants c=base;c.mvp=base.shadow[cascade];
@@ -873,20 +949,24 @@ struct KichR4DeferredSession {
         if(g_render_snapshot_active)for(unsigned i=0;i<input.lighting.count;++i){char id[64];if(input.lighting.sources[i].serial)kich_r4_telemetry::Handle(id,sizeof(id),"source",input.lighting.sources[i].serial);else snprintf(id,sizeof(id),"local_%u",i);
             kich_r4_telemetry::Text("LIGHT",id,"shadow_selection_reason",shadowed[i]?"SOURCE_REQUESTED; RETAINED_AT_POOL_RESOLUTION":"SOURCE_SHADOW_DISABLED");
             kich_r4_telemetry::U64("LIGHT",id,"shadow_maps_requested",shadowed[i]?(input.lighting.lights[i].type==2?1:6):0);}
-        for(unsigned i=0;i<input.lighting.count;++i){if(!shadowed[i])continue;const KichR4LocalLight& light_source=input.lighting.lights[i];const kich_r4_lighting::Constants local=LocalConstants(light_source);
+        for(unsigned i=0;i<input.lighting.count;++i){if(!shadowed[i])continue;const KichR4LocalLight& light_source=input.lighting.lights[i];
+            const uint32_t local_size=LocalSize(i);const kich_r4_lighting::Constants local=LocalConstants(light_source,local_size);current_local_size=local_size;
             const uint32_t light_sector=l.files.sector?l.files.sector(light_source.position):UINT32_MAX;
             for(unsigned face=0;face<(light_source.type==2?1u:6u);++face){
+                if(!LocalFaceRendered(i,face))continue; // P0-S7: no visible receiver in this face
                 char phase[48];snprintf(phase,sizeof(phase),"local_%u_face_%u",i,face);SnapshotPass("LOCAL_SHADOW",RENDER_SNAPSHOT_PASS_LOCAL_SHADOW,phase);SnapshotLocalLight(light_source,input.lighting.sources[i],i,true);
                 const KichR4Handle map=LocalMap(i,face);
-                kich_r4_shadow_record::Pass* record=shadow_record.Local(face,map,local_pool_generation,local_shadow_size,local.shadow[face].m,input.lighting.sources[i].serial);
+                kich_r4_shadow_record::Pass* record=shadow_record.Local(face,map,local_pool_generation,local_size,local.shadow[face].m,input.lighting.sources[i].serial);
                 kich_r4_shadow_record::Scope record_scope(record);
                 char source_id[64];if(input.lighting.sources[i].serial)kich_r4_telemetry::Handle(source_id,sizeof(source_id),"source",input.lighting.sources[i].serial);else snprintf(source_id,sizeof(source_id),"local_%u",i);
-                SnapshotShadow(phase,source_id,face,local.shadow[face],map,false,light_source.range,local_shadow_size);
-                if(Pass(s,l,local_shadow_size,local_shadow_size,0,0,0,map,KICH_R4_CLEAR_DEPTH)<0)return s.failure;
+                SnapshotShadow(phase,source_id,face,local.shadow[face],map,false,light_source.range,local_size);
+                if(Pass(s,l,local_size,local_size,0,0,0,map,KICH_R4_CLEAR_DEPTH)<0)return s.failure;
                 if(record)record->begun=true;
                 if(Static(s,l,local.shadow[face],true,light_sector)<0)return s.failure;
                 kich_r4_lighting::Constants c=local;c.mvp=local.shadow[face];
-                if(Models(s,l,stream,captured,ShadowModels,c)<0 || details.Draw(s,l,cb,c,true,input.engine_frame,phase,RENDER_SNAPSHOT_PASS_LOCAL_SHADOW)<0)return s.failure;
+                // P0-S7 r4_lamp_grass_shadows: R2 never draws grass into lamp maps.
+                if(Models(s,l,stream,captured,ShadowModels,c)<0 ||
+                    (input.lighting.local_detail_shadows && details.Draw(s,l,cb,c,true,input.engine_frame,phase,RENDER_SNAPSHOT_PASS_LOCAL_SHADOW)<0))return s.failure;
                 shadow_record.FinishLocal();
                 kich_r4_telemetry::Text("SHADOW",phase,"execution","PASS_COMPLETED");++shadow_passes;++frame_local_shadow_faces;}
             if(light_source.type==2)++frame_spot_shadow_lights;else ++frame_point_shadow_lights;}
@@ -909,7 +989,7 @@ struct KichR4DeferredSession {
                 kich_r4_telemetry::U64("ENVIRONMENT","sunmask","frame_valid",input.lighting.sunmask_valid);
                 kich_r4_telemetry::Vector("ENVIRONMENT","sunmask","u",base.sunmask_u,4);kich_r4_telemetry::Vector("ENVIRONMENT","sunmask","v",base.sunmask_v,4);}}
         if(Pass(s,l,width,height,1,light,0,0,0)<0 || Fullscreen(s,l,Sun,base,normal,depth,sun_inputs,true)<0)return s.failure;
-        for(unsigned i=0;i<input.lighting.count && debug!=8;++i){kich_r4_lighting::Constants c=LocalConstants(input.lighting.lights[i]);if(native_mode && !shadowed[i])c.alpha[3]=0;
+        for(unsigned i=0;i<input.lighting.count && debug!=8;++i){kich_r4_lighting::Constants c=LocalConstants(input.lighting.lights[i],LocalSize(i));if(native_mode && !shadowed[i])c.alpha[3]=0;
             {char phase[48];snprintf(phase,sizeof(phase),"local_%u_lighting",i);SnapshotPhase(phase);SnapshotLocalLight(input.lighting.lights[i],input.lighting.sources[i],i,!native_mode || shadowed[i]);}
             KichR4Handle maps[6]={};for(unsigned face=0;face<(input.lighting.lights[i].type==2?1u:6u);++face)maps[face]=native_mode && !shadowed[i]?0:LocalMap(i,face);
             LocalInputs(l,input.lighting,i,c,maps,true);
@@ -964,7 +1044,7 @@ struct KichR4DeferredSession {
         if(Pass(s,l,width,height,1,native_mode?final_color:0,0,depth,0)<0)return s.failure;
         if(!debug){if(native_mode && StaticTransparent(s,l,vp)<0)return s.failure;
             if(Models(s,l,stream,captured,ForwardBase,base,sun_inputs)<0)return s.failure;
-            for(unsigned i=0;i<input.lighting.count;++i){kich_r4_lighting::Constants c=LocalConstants(input.lighting.lights[i]);if(native_mode && !shadowed[i])c.alpha[3]=0;KichR4Handle maps[6]={};
+            for(unsigned i=0;i<input.lighting.count;++i){kich_r4_lighting::Constants c=LocalConstants(input.lighting.lights[i],LocalSize(i));if(native_mode && !shadowed[i])c.alpha[3]=0;KichR4Handle maps[6]={};
                 {char phase[48];snprintf(phase,sizeof(phase),"local_%u_forward_add",i);SnapshotPhase(phase);SnapshotLocalLight(input.lighting.lights[i],input.lighting.sources[i],i,!native_mode || shadowed[i]);}
                 for(unsigned face=0;face<(input.lighting.lights[i].type==2?1u:6u);++face)maps[face]=native_mode && !shadowed[i]?0:LocalMap(i,face);
                 LocalInputs(l,input.lighting,i,c,maps);
@@ -973,7 +1053,7 @@ struct KichR4DeferredSession {
         if(native_mode && !debug && captured && !captured->native_models.empty()){
             SnapshotPass("HUD_UI",RENDER_SNAPSHOT_PASS_HUD_UI,"hud_models");
             if(Pass(s,l,width,height,1,final_color,0,depth,KICH_R4_CLEAR_DEPTH)<0 || native_models.Draw(s,l,cb,base,*captured,KichR4ModelSession::HUD,snapshot_pass_mask,snapshot_phase,sun_inputs)<0)return s.failure;
-            for(unsigned i=0;i<input.lighting.count;++i){kich_r4_lighting::Constants c=LocalConstants(input.lighting.lights[i]);if(!shadowed[i])c.alpha[3]=0;KichR4Handle maps[6]={};
+            for(unsigned i=0;i<input.lighting.count;++i){kich_r4_lighting::Constants c=LocalConstants(input.lighting.lights[i],LocalSize(i));if(!shadowed[i])c.alpha[3]=0;KichR4Handle maps[6]={};
                 char phase[48];snprintf(phase,sizeof(phase),"local_%u_hud_add",i);SnapshotPhase(phase);SnapshotLocalLight(input.lighting.lights[i],input.lighting.sources[i],i,shadowed[i]);
                 for(unsigned face=0;face<(input.lighting.lights[i].type==2?1u:6u);++face)maps[face]=shadowed[i]?LocalMap(i,face):0;
                 LocalInputs(l,input.lighting,i,c,maps);

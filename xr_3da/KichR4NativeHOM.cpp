@@ -66,3 +66,4 @@ BOOL KichR4NativeHOM::LightVisible(const float* position,float range,const float
     float low[3],high[3];if(!kich_r4_occlusion::RangeBounds(position,range,low,high))return TRUE;
     HOMLock lock(guard);return Test(low,high,view);
 }
+BOOL KichR4NativeHOM::BoxVisible(const float* low,const float* high,const float* view){HOMLock lock(guard);return Test(low,high,view);}

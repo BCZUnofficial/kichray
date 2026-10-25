@@ -37,6 +37,8 @@ extern int ps_r2_sun_shadow_cull;
 extern ENGINE_API int ps_r4_sun_shafts;
 extern ENGINE_API float ps_r4_sun_shafts_intensity;
 extern ENGINE_API int ps_r4_sun_shadow_size;
+extern ENGINE_API int ps_r4_sun_far_size;
+extern ENGINE_API int ps_r4_lamp_grass_shadows;
 
 /* R2 accum_direct clouds xform, without its view->world prefix: the R4 sun
  * shader passes world positions. R2 advances w_shift by 0.003*dt in each of
@@ -99,6 +101,8 @@ void KichR4_CopyEngineEnvironment(KichR4LightingFrame& frame)
     // a rotation-invariant sphere, so turning the camera never rescales it.
     // P0-S5 r4_sun_shadow_size, rounded to 1024/2048/4096.
     frame.sun_map_size=ps_r4_sun_shadow_size>=3072?4096u:ps_r4_sun_shadow_size>=1536?2048u:1024u;
+    // P0-S7 r4_sun_far_size, rounded to 2048/4096/8192: the 512 m cascade only.
+    frame.sun_far_size=ps_r4_sun_far_size>=6144?8192u:ps_r4_sun_far_size>=3072?4096u:2048u;
     frame.sun_contact_valid=0;
     if(ps_r2_sun_near>0 && Device.mProject._11>0 && Device.mProject._22>0){
         const float radius=kich_sun::radius(0.f,ps_r2_sun_near,Device.mProject._11,Device.mProject._22);
@@ -111,6 +115,10 @@ void KichR4_CopyEngineEnvironment(KichR4LightingFrame& frame)
     // 0..r2_sun_near and near..min(180, far_plane).
     frame.sun_shafts[0]=float(ps_r4_sun_shafts);frame.sun_shafts[1]=ps_r4_sun_shafts_intensity;
     frame.sun_shafts[2]=ps_r2_sun_near;frame.sun_shafts[3]=_min(180.f,env.far_plane);
+    // P0-S7 local light shadows: R2 r2_ls_squality for the per-light map size,
+    // and R4 r4_lamp_grass_shadows (off: R2 never draws grass into those maps).
+    frame.local_shadow_quality=ps_r2_ls_squality;
+    frame.local_detail_shadows=ps_r4_lamp_grass_shadows?1u:0u;
 }
 
 static void KichR4_GameObservationFrame(KichR4GameFrame& input)

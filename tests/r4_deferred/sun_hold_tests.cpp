@@ -55,6 +55,18 @@ int main(){try{
     // No basis: the original E1.9 matrix, bit for bit.
     {Direction(1,sun);const Matrix a=SunShadow(camera,sun,128,2048),b=SunShadow(camera,sun,128,2048,NULL);
         Require(memcmp(a.m,b.m,sizeof(a.m))==0,"absent basis keeps the E1.9 cascade");}
+    // P0-S7 512 m cascade at its own resolution: r4_sun_far_size, snapped to its texels.
+    {KichR4LightingFrame f;f.sun_map_size=4096;Direction(1,sun);memcpy(f.sun_direction,sun,sizeof(sun));
+        Require(SunFarMapSize(f)==4096,"unset far size follows r4_sun_shadow_size");
+        f.sun_far_size=3000;Require(SunFarMapSize(f)==4096,"invalid far size follows r4_sun_shadow_size");
+        f.sun_far_size=8192;Require(SunFarMapSize(f)==8192,"far size 8192");
+        const Matrix base=SunFarCascade(f,camera);bool odd=false;
+        for(unsigned step=1;step<=40;++step){const float moved[3]={camera[0]+.005f*step,camera[1],camera[2]+.003f*step};
+            const Matrix m=SunFarCascade(f,moved);const float4v a=Project(base,0,0,0),b=Project(m,0,0,0);
+            const float texels=(a.x-b.x)*8192*.5f,whole=floorf(texels+.5f);
+            Require(fabsf(texels-whole)<1e-2f,"far cascade moves by whole 8192 texels");
+            if(fmodf(fabsf(whole),2)==1)odd=true;}
+        Require(odd,"far cascade snaps at 8192, not at the 4096 grid");}
     // P0-S4 flat ground clutter: leaves (3 cm) never cast sun shadows, grass (40 cm) does.
     {kich_r4_detail::Mesh leaf,grass,unknown;
         auto shape=[](kich_r4_detail::Mesh& m,float h){m.vertices.resize(2);for(unsigned i=0;i<2;++i){

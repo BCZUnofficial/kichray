@@ -462,7 +462,7 @@ struct State {
     }
     void SelectLights(const float* camera,KichR4LightingFrame& out,bool r1_lights_enabled=false,const float* camera_vp=NULL,KichR4LightVisibility occlusion=NULL,kich_r4_light_admission::Policy* admission=NULL)const {
         struct Choice {float score;KichR4LocalLight light;bool shadow;const void* source;};std::vector<Choice> choices;
-        out.count=0;out.shadow_mask=0;out.shadows.clear();out.sources.clear();out.projectors.clear();out.lights.clear();out.visibility_valid=camera_vp?1u:0u;
+        out.count=0;out.shadow_mask=0;out.shadows.clear();out.shadow_faces.clear();out.shadow_sizes.clear();out.sources.clear();out.projectors.clear();out.lights.clear();out.visibility_valid=camera_vp?1u:0u;
         if(camera_vp)memcpy(out.visibility_vp,camera_vp,sizeof(out.visibility_vp));
         else memset(out.visibility_vp,0,sizeof(out.visibility_vp));
         out.r1_lights_requested=out.r1_lights_applied=r1_lights_enabled?1u:0u;

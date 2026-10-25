@@ -3,16 +3,21 @@
 #include "KichR4CaptureData.h"
 #include "RenderSnapshot.h"
 #include "KichR4ShadowPoolPolicy.h"
+#include "KichR4LocalShadowPlan.h"
 #include "KichR4LightTransitions.h"
 #include "KichR4RecordControl.h"
 #include <memory>
 #include <cstdio>
+#include <unordered_map>
 namespace {
 kich_r4_capture::State* capture=NULL;
 KichR4LightVisibility light_visibility=NULL;
+kich_r4_local_shadow::BoxVisibility shadow_box_visibility=NULL;
 struct FrozenLighting {
     KichR4LightingFrame value;
     kich_r4_shadow_pool::ResolutionPolicy resolution;
+    // P0-S7 last planned map size per light source, for the class hysteresis.
+    std::unordered_map<uint64_t,uint32_t> shadow_size_history;
     std::unique_ptr<kich_r4_light_transitions::Tracker> transitions;
     std::unique_ptr<kich_r4_light_admission::Policy> admission;
     uint64_t diagnostic_epoch;bool diagnostics,diagnostic_failed;
@@ -58,6 +63,27 @@ void KichR4_CaptureLightForget(const void* id){if(!capture)return;
     capture->lights.erase(id);capture->light_sources.erase(id);capture->light_projectors.erase(id);capture->unshadowed_lights.erase(id);capture->light_observations.erase(id);}
 void KichR4_CaptureLightShadow(const void* id,bool shadow){if(!capture)return;if(shadow)capture->unshadowed_lights.erase(id);else capture->unshadowed_lights.insert(id);}
 void KichR4_SetLightVisibility(KichR4LightVisibility query){light_visibility=query;}
+void KichR4_SetShadowBoxVisibility(bool (*query)(const float*,const float*,const float*)){shadow_box_visibility=query;}
+namespace {
+// P0-S7: visible faces and own size of every shadowed light (KichR4LocalShadowPlan.h).
+void PlanLocalShadows(const float* camera,const float* camera_vp,KichR4LightingFrame& frame,std::unordered_map<uint64_t,uint32_t>& history){
+    using namespace kich_r4_local_shadow;
+    frame.shadow_faces.assign(frame.count,0);frame.shadow_sizes.assign(frame.count,0);
+    float forward[3];const bool forward_valid=camera_vp && Forward(camera_vp,forward);
+    std::vector<uint32_t> masks(frame.count,0),sizes(frame.count,0);
+    std::unordered_map<uint64_t,uint32_t> next;
+    for(uint32_t i=0;i<frame.count;++i){if(!frame.CastsShadow(i))continue;const KichR4LocalLight& l=frame.lights[i];
+        masks[i]=FaceMask(l,camera,camera_vp,shadow_box_visibility);if(!masks[i])continue;
+        const KichR4LightIdentity& id=frame.sources[i];const uint64_t key=id.serial?id.serial:id.process_handle^0x8000000000000000ull;
+        const auto found=history.find(key);
+        sizes[i]=SizeClass(R2Size(l,camera,forward_valid?forward:NULL,frame.local_shadow_quality),found!=history.end()?found->second:0);
+        next[key]=sizes[i];}
+    FitBudget(sizes,masks);
+    for(uint32_t i=0;i<frame.count;++i){frame.shadow_faces[i]=static_cast<uint8_t>(masks[i]);frame.shadow_sizes[i]=sizes[i];}
+    // Unplanned sources (left the frame or the frustum) restart their class.
+    history.swap(next);
+}
+}
 void KichR4_CaptureLighting(const float* camera,KichR4LightingFrame& frame,bool r1_lights_enabled,const float* camera_vp){
     frame.selection_frame=frame.local_shadow_size=frame.shadow_plan_faces=0;
     frame.shadow_resolution_changes=frame.shadow_resolution_reason=0;
@@ -65,7 +91,7 @@ void KichR4_CaptureLighting(const float* camera,KichR4LightingFrame& frame,bool 
     frame.r1_lights_requested=frame.r1_lights_applied=r1_lights_enabled?1u:0u;if(!capture || !camera)return;
     try{capture->SelectLights(camera,frame,r1_lights_enabled,camera_vp,light_visibility);}catch(...){frame.count=0;frame.shadow_mask=0;}
 }
-void KichR4_ResetFrozenLighting(){frozen_lighting.ready=false;frozen_lighting.resolution.Reset();
+void KichR4_ResetFrozenLighting(){frozen_lighting.ready=false;frozen_lighting.resolution.Reset();frozen_lighting.shadow_size_history.clear();
     frozen_lighting.diagnostic_failed=false;
     if(frozen_lighting.admission)frozen_lighting.admission->Reset();
     if(frozen_lighting.transitions)frozen_lighting.transitions->Reset();}
@@ -91,6 +117,7 @@ void KichR4_FreezeLighting(uint32_t engine_frame,uint32_t now_ms,const float* ca
         if(!frozen_lighting.admission)frozen_lighting.admission.reset(new kich_r4_light_admission::Policy());
         frozen_lighting.admission->Begin(engine_frame,now_ms);
         c.SelectLights(camera,frame,r1_lights_enabled,camera_vp,light_visibility,frozen_lighting.admission.get());
+        PlanLocalShadows(camera,camera_vp,frame,frozen_lighting.shadow_size_history);
         uint32_t faces=0;
         for(uint32_t i=0;i<frame.count;++i)if(frame.CastsShadow(i))faces+=frame.lights[i].type==2?1:6;
         kich_r4_shadow_pool::ResolutionPolicy next=frozen_lighting.resolution;

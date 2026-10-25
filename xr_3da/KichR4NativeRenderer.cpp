@@ -204,12 +204,17 @@ float r_ssaDISCARD=1.e-6f;
 CRender RImplementation;
 namespace {bool NativeLightVisible(const KichR4LocalLight& light,const float* camera_vp){
     return RImplementation.HOM.LightVisible(light.position,light.range,camera_vp)!=FALSE;
+}
+// P0-S7: R2 tests each omnipart volume with an occlusion query; R4 tests the
+// face's lit box against the same frame's HOM before rendering its map.
+bool NativeShadowBoxVisible(const float* low,const float* high,const float* camera_vp){
+    return RImplementation.HOM.BoxVisible(low,high,camera_vp)!=FALSE;
 }}
 IRender_interface* KichR4_CreateNativeRenderer(){xrRender_initconsole();return &RImplementation;}
 CRender::CRender():object(NULL),invisible(false),loaded(false),phase(PHASE_NORMAL),val_bHUD(FALSE),Models(NULL),Details(NULL),Wallmarks(NULL){transform.identity();View=&ViewBase;m_skinning=-1;}
 CRender::~CRender(){}
-void CRender::create(){KichR4_SetLightVisibility(NativeLightVisible);Device.seqFrame.Add(this,REG_PRIORITY_HIGH);Models=xr_new<CModelPool>();Wallmarks=xr_new<CWallmarksEngine>();PSLibrary.OnCreate();Msg("[R4 native B5] renderer queues/models/particles/wallmarks: DX11; no R1/R2 module, no DX9 device");}
-void CRender::destroy(){KichR4_SetLightVisibility(NULL);Device.seqFrame.Remove(this);level_Unload();xr_delete(Wallmarks);xr_delete(Models);PSLibrary.OnDestroy();}
+void CRender::create(){KichR4_SetLightVisibility(NativeLightVisible);KichR4_SetShadowBoxVisibility(NativeShadowBoxVisible);Device.seqFrame.Add(this,REG_PRIORITY_HIGH);Models=xr_new<CModelPool>();Wallmarks=xr_new<CWallmarksEngine>();PSLibrary.OnCreate();Msg("[R4 native B5] renderer queues/models/particles/wallmarks: DX11; no R1/R2 module, no DX9 device");}
+void CRender::destroy(){KichR4_SetLightVisibility(NULL);KichR4_SetShadowBoxVisibility(NULL);Device.seqFrame.Remove(this);level_Unload();xr_delete(Wallmarks);xr_delete(Models);PSLibrary.OnDestroy();}
 void CRender::reset_begin(){queue.clear();shadow_views.clear();native_lod_shadow_views.clear();HOM.Invalidate();KichR4_ResetFrozenLighting();}
 void CRender::reset_end(){}
 void CRender::LoadBuffers(){IReader* f=FS.r_open("$level$","level.geom");R_ASSERT2(f,"R4 level.geom");IReader* v=f->open_chunk(fsL_VB);R_ASSERT(v);
@@ -388,16 +393,21 @@ void CRender::Calculate(){queue.clear();shadow_views.clear();native_lod_shadow_v
     const bool sun_enabled=kich_r4_visibility::SunEnabled(lighting);
     kich_r4_scene::Matrix camera_vp;CopyMemory(camera_vp.m,Device.mFullTransform.m,sizeof(camera_vp.m));
     const kich_r4_visibility::SunCasterVolume sun_casters=kich_r4_visibility::BuildSunCasterVolume(camera_vp,lighting.sun_direction);
-    if(sun_enabled){const kich_r4_scene::Matrix vp=kich_r4_lighting::SunCascade(lighting,&Device.vCameraPosition.x,512.f);
+    // P0-S7: LOD views keep r4_sun_shadow_size for the 512 m map too, so a larger
+    // r4_sun_far_size sharpens its texels without selecting finer caster LODs.
+    if(sun_enabled){const kich_r4_scene::Matrix vp=kich_r4_lighting::SunFarCascade(lighting,&Device.vCameraPosition.x);
         const unsigned sun_size=kich_r4_lighting::SunMapSize(lighting);
         const NativeLodView near_view={kich_r4_lighting::SunCascade(lighting,&Device.vCameraPosition.x,128.f),sun_size};native_lod_shadow_views.push_back(near_view);
         kich_r4_scene::Matrix contact;if(kich_r4_lighting::SunContactShadow(lighting,contact)){const NativeLodView contact_view={contact,sun_size};native_lod_shadow_views.push_back(contact_view);}
         const NativeLodView far_view={vp,sun_size};native_lod_shadow_views.push_back(far_view);
         Fmatrix matrix;CopyMemory(&matrix,vp.m,sizeof(matrix));CFrustum view;view.CreateFromMatrix(matrix,FRUSTUM_P_ALL);shadow_views.push_back(view);}
     kich_r4_visibility::SelectShadowLights(lighting,true,selected_shadow_lights);
+    // P0-S7: only the planned visible faces, each at its light's own size.
     for(u32 i=0;i<lighting.count;++i)if(selected_shadow_lights[i]){const u32 faces=lighting.lights[i].type==2?1:6;
-        for(u32 face=0;face<faces;++face){const kich_r4_scene::Matrix vp=kich_r4_lighting::LocalShadow(lighting.lights[i],face,lighting.local_shadow_size);
-            const NativeLodView lod_view={vp,lighting.local_shadow_size};native_lod_shadow_views.push_back(lod_view);
+        const u32 mask=lighting.ShadowFaceMask(i),size=lighting.ShadowSize(i);
+        for(u32 face=0;face<faces;++face){if(!(mask&(1u<<face)))continue;
+            const kich_r4_scene::Matrix vp=kich_r4_lighting::LocalShadow(lighting.lights[i],face,size);
+            const NativeLodView lod_view={vp,size};native_lod_shadow_views.push_back(lod_view);
             Fmatrix matrix;CopyMemory(&matrix,vp.m,sizeof(matrix));CFrustum view;view.CreateFromMatrix(matrix,FRUSTUM_P_ALL);shadow_views.push_back(view);}}
     if(g_pGameLevel->pHUD){g_pGameLevel->pHUD->Render_First();g_pGameLevel->pHUD->Render_Last();}
     if(psDeviceFlags.test(rsDrawDynamic)){candidate_seen.Begin();u32 camera_sources=0,shadow_sources=0;
