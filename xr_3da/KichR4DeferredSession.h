@@ -18,6 +18,7 @@
 #include "KichR4PostprocessNoise.h"
 #include "KichR4ShadowPoolPolicy.h"
 #include "KichR4LocalShadowPlan.h"
+#include "KichR4LocalShadowCache.h"
 #include "KichR4ShadowRecord.h"
 #include "KichR4Bloom.h"
 #include <set>
@@ -26,9 +27,9 @@
  * destroying that device releases partial construction and all cached maps. */
 struct KichR4DeferredSession {
     enum Pipeline {StaticGeometry,ModelGeometry,StaticShadow,ModelShadow,Sun,Local,ForwardSun,ForwardLocal,Plain,Combine,Sky,Clouds,Water,Distortion,StaticForward,StaticWater,Copy,Postprocess,StaticPlain,DistortionMask,DistortionComposite,CelestialPipeline,WallmarkPipeline,StaticWallmarkPipeline,
-        BloomBuild,BloomFilter,BloomFilterFast,BloomComposite,Luminance1,Luminance2,Luminance3,SunShafts,SunShaftsComposite,HudBloomSource,SunShaftsBlur,PipelineCount};
+        BloomBuild,BloomFilter,BloomFilterFast,BloomComposite,Luminance1,Luminance2,Luminance3,SunShafts,SunShaftsComposite,HudBloomSource,SunShaftsBlur,DepthCopy,PipelineCount};
     KichR4DeferredAPI api;
-    enum {ShaderCount=32};
+    enum {ShaderCount=33};
     KichR4Handle pipelines[PipelineCount],shaders[ShaderCount],cb,screen_vb,screen_ib,white;
     // P0-C2: R2 generic1 (high = colour/8, RGBA8) and the 256^2 bloom1/bloom2.
     KichR4Handle high_color=0,bloom1=0,bloom2=0;
@@ -66,6 +67,19 @@ struct KichR4DeferredSession {
     std::map<uint32_t,std::vector<KichR4Handle>> local_size_pool;
     KichR4Handle lit_face_map=0;bool lit_face_ready=false;
     uint32_t current_local_size=512; // the light whose faces are being rendered (caster LOD)
+    // P0-S8 static lamp shadow cache (KichR4LocalShadowCache.h), planned frames only.
+    kich_r4_local_cache::Policy local_cache;
+    int32_t ReleaseCached(KichR4FrameSession& s,KichR4LevelSession& l,const std::vector<kich_r4_local_cache::Handle>& maps){
+        for(size_t i=0;i<maps.size();++i)if(l.Expect(s,"P0-S8 release lamp shadow cache",l.bridge.resources.release_resource(s.device,maps[i]))<0)return s.failure;
+        return 0;}
+    // Copies a cached map into a shadow map of the same size: a fullscreen
+    // triangle writes SV_Depth with depth func ALWAYS (no colour target).
+    int32_t CopyDepth(KichR4FrameSession& s,KichR4LevelSession& l,KichR4Handle source,KichR4Handle target,uint32_t size){
+        if(Pass(s,l,size,size,0,0,0,target,0)<0)return s.failure;
+        kich_r4_capture::Style style;style.depth=style.write=1;style.cull=KICH_R4_CULL_NONE;style.clamp=1;
+        style.surface.depth_func=8; // D3D11_COMPARISON_ALWAYS
+        KichR4DeferredDrawDesc d=Description(pipelines[DepthCopy],screen_vb,screen_ib,cb,3,0,style);d.textures[0]=source;
+        return l.Expect(s,"P0-S8 lamp shadow cache copy",api.draw(s.device,&d));}
     KichR4Handle LocalMap(unsigned index,unsigned face)const {
         if(local_planned)return size_t(index)*6+face<light_face_maps.size()?light_face_maps[size_t(index)*6+face]:0;
         return index<local_offsets.size() && local_offsets[index]!=UINT32_MAX?
@@ -309,14 +323,14 @@ struct KichR4DeferredSession {
     // creates every pipeline whose two shaders exist.
     int32_t CompileShaders(KichR4FrameSession& s,KichR4LevelSession& level,bool scene){
         const char* entries[]={"VSStatic","VSModel","VSModelShadow","VSScreen","PSGeometry","PSShadow","PSSun","PSLocal","PSForwardSun","PSForwardLocal","PSPlain","PSCombine","PSSky","PSClouds","PSWater","PSDistortion","PSPostprocess","PSParticleDistortionMask","PSDistortionComposite","PSCelestial","PSWallmark",
-            "PSBloomBuild","PSBloomFilter","PSBloomFilterFast","PSBloomComposite","PSLuminance1","PSLuminance2","PSLuminance3","PSSunShafts","PSSunShaftsComposite","PSHudBloomSource","PSSunShaftsBlur"};
+            "PSBloomBuild","PSBloomFilter","PSBloomFilterFast","PSBloomComposite","PSLuminance1","PSLuminance2","PSLuminance3","PSSunShafts","PSSunShaftsComposite","PSHudBloomSource","PSSunShaftsBlur","PSDepthCopy"};
         static_assert(sizeof(entries)/sizeof(entries[0])==ShaderCount,"deferred shader entries");
         const char* source=KichR4DeferredShaderSource();
         for(unsigned i=0;i<ShaderCount;++i){if(shaders[i] || (!scene && SceneShader(i)))continue;
             level.Continue();KichR4ShaderDesc d={};d.struct_size=sizeof(d);d.kind=i<4?KICH_R4_VERTEX_SHADER:KICH_R4_PIXEL_SHADER;
             memcpy(d.entry,entries[i],strlen(entries[i])+1);memcpy(d.name,"kich_b44_deferred",18);
             if(level.Expect(s,entries[i],level.bridge.resources.compile_shader(s.device,&d,source,static_cast<uint32_t>(strlen(source)),&shaders[i],level.bridge.shader_error,sizeof(level.bridge.shader_error)))<0)return s.failure;}
-        const unsigned vs[]={0,1,0,2,3,3,1,1,1,3,1,1,1,1,0,0,3,3,0,1,3,1,1,0,3,3,3,3,3,3,3,3,3,3,3},ps[]={4,4,5,5,6,7,8,9,10,11,12,13,14,15,8,14,10,16,10,17,18,19,20,20,21,22,23,24,25,26,27,28,29,30,31};
+        const unsigned vs[]={0,1,0,2,3,3,1,1,1,3,1,1,1,1,0,0,3,3,0,1,3,1,1,0,3,3,3,3,3,3,3,3,3,3,3,3},ps[]={4,4,5,5,6,7,8,9,10,11,12,13,14,15,8,14,10,16,10,17,18,19,20,20,21,22,23,24,25,26,27,28,29,30,31,32};
         static_assert(sizeof(vs)/sizeof(vs[0])==PipelineCount && sizeof(ps)/sizeof(ps[0])==PipelineCount,"deferred pipeline table");
         for(unsigned i=0;i<PipelineCount;++i){if(pipelines[i] || !shaders[vs[i]] || !shaders[ps[i]])continue;
             KichR4PipelineDesc d={};d.struct_size=sizeof(d);d.vertex_shader=shaders[vs[i]];d.pixel_shader=shaders[ps[i]];
@@ -393,7 +407,10 @@ struct KichR4DeferredSession {
         d.state.min_depth=style.min_z;d.state.max_depth=style.max_z;d.state.surface=style.surface;return d;
     }
     static bool Opaque(const kich_r4_capture::Command& c){return c.layer==0 && !c.style.blend && c.style.depth && c.style.write && (!c.effect || c.style.emissive_gain>0);}
-    int32_t Static(KichR4FrameSession& s,KichR4LevelSession& l,const kich_r4_scene::Matrix& vp,bool shadow,uint32_t sector=UINT32_MAX){
+    // P0-S8 subset: all statics, only those whose shadow never changes (the
+    // lamp cache), or only wind-animated trees (drawn over the cached map).
+    enum StaticSubset {AllStatics,FixedStatics,WindStatics};
+    int32_t Static(KichR4FrameSession& s,KichR4LevelSession& l,const kich_r4_scene::Matrix& vp,bool shadow,uint32_t sector=UINT32_MAX,StaticSubset subset=AllStatics){
         if(!shadow)l.visible=l.culled=0;
         if(!shadow && l.files.sector)sector=l.files.sector(base.camera);
         EnsureStaticPlan(l);
@@ -411,6 +428,7 @@ struct KichR4DeferredSession {
             const kich_r4_level::Material& m=l.scene.materials[mesh.material];const kich_r4_material::Descriptor& material=m.descriptor;
             const bool described=native_mode && material.semantic!=kich_r4_material::UNKNOWN;
             if(native_mode && (described?!(shadow?kich_r4_material::Shadow(material):kich_r4_material::Geometry(material)):m.kind>=2))continue;
+            if(subset!=AllStatics){const bool wind=mesh.tree && described && material.tree_wave;if(wind!=(subset==WindStatics))continue;}
             if(mesh.lod){float lod=i<static_lods.size()?static_lods[i]:1.f;
                 if(shadow){const uint32_t resolution=strncmp(snapshot_phase,"sun_",4)==0?sun_map_size:current_local_size;
                     const kich_r4_level::Draw& bounds=visibility_plan.bounds[i];lod=(std::max)(lod,kich_r4_lod::Projected(&bounds.low.x,&bounds.high.x,vp,resolution,resolution,lod_start,lod_end));}
@@ -962,9 +980,13 @@ struct KichR4DeferredSession {
         if(g_render_snapshot_active)for(unsigned i=0;i<input.lighting.count;++i){char id[64];if(input.lighting.sources[i].serial)kich_r4_telemetry::Handle(id,sizeof(id),"source",input.lighting.sources[i].serial);else snprintf(id,sizeof(id),"local_%u",i);
             kich_r4_telemetry::Text("LIGHT",id,"shadow_selection_reason",shadowed[i]?"SOURCE_REQUESTED; RETAINED_AT_POOL_RESOLUTION":"SOURCE_SHADOW_DISABLED");
             kich_r4_telemetry::U64("LIGHT",id,"shadow_maps_requested",shadowed[i]?(input.lighting.lights[i].type==2?1:6):0);}
+        const bool lamp_cache=native_mode && local_planned;
+        if(ReleaseCached(s,l,lamp_cache?local_cache.BeginFrame(input.engine_frame):local_cache.Clear())<0)return s.failure;
         for(unsigned i=0;i<input.lighting.count;++i){if(!shadowed[i])continue;const KichR4LocalLight& light_source=input.lighting.lights[i];
             const uint32_t local_size=LocalSize(i);const kich_r4_lighting::Constants local=LocalConstants(light_source,local_size);current_local_size=local_size;
             const uint32_t light_sector=l.files.sector?l.files.sector(light_source.position):UINT32_MAX;
+            const KichR4LightIdentity& identity=input.lighting.sources[i];
+            const uint64_t cache_source=identity.serial?identity.serial:identity.process_handle^0x8000000000000000ull;
             for(unsigned face=0;face<(light_source.type==2?1u:6u);++face){
                 if(!LocalFaceRendered(i,face))continue; // P0-S7: no visible receiver in this face
                 char phase[48];snprintf(phase,sizeof(phase),"local_%u_face_%u",i,face);SnapshotPass("LOCAL_SHADOW",RENDER_SNAPSHOT_PASS_LOCAL_SHADOW,phase);SnapshotLocalLight(light_source,input.lighting.sources[i],i,true);
@@ -973,9 +995,20 @@ struct KichR4DeferredSession {
                 kich_r4_shadow_record::Scope record_scope(record);
                 char source_id[64];if(input.lighting.sources[i].serial)kich_r4_telemetry::Handle(source_id,sizeof(source_id),"source",input.lighting.sources[i].serial);else snprintf(source_id,sizeof(source_id),"local_%u",i);
                 SnapshotShadow(phase,source_id,face,local.shadow[face],map,false,light_source.range,local_size);
-                if(Pass(s,l,local_size,local_size,0,0,0,map,KICH_R4_CLEAR_DEPTH)<0)return s.failure;
+                // P0-S8: a face whose matrix held since the last frame keeps its
+                // fixed statics in a cache map; copy it, then draw wind trees.
+                kich_r4_local_cache::Decision cached;
+                if(lamp_cache){const kich_r4_local_cache::Key key={cache_source,face};
+                    cached=local_cache.Use(key,local_size,local.shadow[face].m,static_cast<uint32_t>(l.revision),input.position,input.engine_frame);
+                    if(ReleaseCached(s,l,cached.release)<0)return s.failure;
+                    if(cached.allocate){KichR4Handle cache_map=0;if(Target(s,l,cache_map,local_size,local_size,KICH_R4_DEPTH32F,true)<0)return s.failure;local_cache.Allocated(*cached.entry,cache_map);}}
                 if(record)record->begun=true;
-                if(Static(s,l,local.shadow[face],true,light_sector)<0)return s.failure;
+                if(cached.action==kich_r4_local_cache::Build){
+                    if(Pass(s,l,local_size,local_size,0,0,0,cached.entry->map,KICH_R4_CLEAR_DEPTH)<0 || Static(s,l,local.shadow[face],true,light_sector,FixedStatics)<0)return s.failure;
+                    local_cache.Built(*cached.entry,input.position);}
+                if(cached.action!=kich_r4_local_cache::Uncached){
+                    if(CopyDepth(s,l,cached.entry->map,map,local_size)<0 || Static(s,l,local.shadow[face],true,light_sector,WindStatics)<0)return s.failure;
+                }else if(Pass(s,l,local_size,local_size,0,0,0,map,KICH_R4_CLEAR_DEPTH)<0 || Static(s,l,local.shadow[face],true,light_sector)<0)return s.failure;
                 kich_r4_lighting::Constants c=local;c.mvp=local.shadow[face];
                 // P0-S7 r4_lamp_grass_shadows: R2 never draws grass into lamp maps.
                 if(Models(s,l,stream,captured,ShadowModels,c)<0 ||
@@ -983,6 +1016,9 @@ struct KichR4DeferredSession {
                 shadow_record.FinishLocal();
                 kich_r4_telemetry::Text("SHADOW",phase,"execution","PASS_COMPLETED");++shadow_passes;++frame_local_shadow_faces;}
             if(light_source.type==2)++frame_spot_shadow_lights;else ++frame_point_shadow_lights;}
+        if(g_render_snapshot_active){RenderSnapshot_U64("SHADOW_POOL","static_cache_reused_faces",local_cache.reuses);
+            RenderSnapshot_U64("SHADOW_POOL","static_cache_built_faces",local_cache.builds);RenderSnapshot_U64("SHADOW_POOL","static_cache_uncached_faces",local_cache.uncached);
+            RenderSnapshot_U64("SHADOW_POOL","static_cache_bytes",local_cache.bytes);RenderSnapshot_U64("SHADOW_POOL","static_cache_entries",local_cache.entries.size());}
         Mark(s,1);
         const kich_r4_scene::Matrix vp=base.mvp;
         SnapshotPass("GBUFFER",RENDER_SNAPSHOT_PASS_GBUFFER,"camera_geometry");

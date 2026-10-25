@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 root=Path(__file__).resolve().parents[2]
 tool=os.environ.get('GLSLANG','glslangValidator')
-entries=('VSStatic','VSModel','VSModelShadow','VSModelGPU','VSScreen','VSDetail','PSGeometry','PSShadow','PSSun','PSLocal','PSForwardSun','PSForwardLocal','PSPlain','PSWallmark','PSCelestial','PSCombine','PSSky','PSClouds','PSWater','PSPostprocess','PSDistortion','PSParticleDistortionMask','PSDistortionComposite','PSBloomBuild','PSBloomFilter','PSBloomFilterFast','PSBloomComposite','PSLuminance1','PSLuminance2','PSLuminance3','PSSunShafts','PSSunShaftsComposite','PSHudBloomSource','PSSunShaftsBlur')
+entries=('VSStatic','VSModel','VSModelShadow','VSModelGPU','VSScreen','VSDetail','PSGeometry','PSShadow','PSSun','PSLocal','PSForwardSun','PSForwardLocal','PSPlain','PSWallmark','PSCelestial','PSCombine','PSSky','PSClouds','PSWater','PSPostprocess','PSDistortion','PSParticleDistortionMask','PSDistortionComposite','PSBloomBuild','PSBloomFilter','PSBloomFilterFast','PSBloomComposite','PSLuminance1','PSLuminance2','PSLuminance3','PSSunShafts','PSSunShaftsComposite','PSHudBloomSource','PSSunShaftsBlur','PSDepthCopy')
 source=root/'resources/shaders/r4/bridge_deferred.hlsl'
 with tempfile.TemporaryDirectory(prefix='kich-b44-hlsl-') as folder:
     reflection=''

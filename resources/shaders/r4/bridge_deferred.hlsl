@@ -223,6 +223,9 @@ float3 ForwardFog(float3 color,float transmittance){
     // Additive base effects attenuate without adding a fog-colored quad.
     return fog_params.z>1.5?color*transmittance:lerp(fog.rgb,color,transmittance);
 }
+// P0-S8 static lamp shadow cache: copies a cached depth map (t0) texel for
+// texel into the bound shadow map (depth func ALWAYS, no colour target).
+void PSDepthCopy(Varying v,out float depth:SV_Depth){depth=image0.Load(int3(int2(v.p.xy),0)).r;}
 float4 PSPlain(Varying v):SV_Target {float4 c=Base(v);
     // Non-emissive UI/copy/glow keeps the authored value. Blended self-light
     // folds its known R2 emissive response once; opaque emission uses GBuffer.
