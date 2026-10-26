@@ -46,12 +46,15 @@ void KichR4NativeHOM::Load(){
     Msg("[R4 E1.3 HOM] R2 CPU occlusion map loaded; current-frame light-volume tests enabled");
 }
 void KichR4NativeHOM::Prepare(CFrustum& view){
-    HOMLock lock(guard);ready=false;
+    HOMLock lock(guard);
+    if(ready && ready_frame==Device.dwFrame && !memcmp(&prepared_view,&Device.mFullTransform,sizeof(prepared_view)))return; // P0-S11: already built this frame
+    ready=false;
     if(!loaded || !core || !HOMGameReady())return;
     core->Enable();core->Render(view);
     prepared_view=Device.mFullTransform;prepared_camera=Device.vCameraPosition;
     ready_frame=Device.dwFrame;ready=true;
 }
+void __stdcall KichR4NativeHOM::MT_Prepare(){CFrustum view;view.CreateFromMatrix(Device.mFullTransform,FRUSTUM_P_ALL);Prepare(view);}
 BOOL KichR4NativeHOM::Test(const float* low,const float* high,const float* view){
     if(!ready || !loaded || ready_frame!=Device.dwFrame || !HOMGameReady() || !view ||
         memcmp(view,&prepared_view._11,sizeof(prepared_view)) ||

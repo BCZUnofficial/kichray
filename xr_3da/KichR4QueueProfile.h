@@ -9,8 +9,12 @@
 #include <stdint.h>
 #include <string.h>
 namespace kich_r4_queue {
-enum Stage {Lights,Renderables,HudFirst,Submit,Details,Environment,Wallmarks,Glows,ModelCapture,StreamCapture,StageCount};
-inline const char* StageName(unsigned s){static const char* names[StageCount]={"lights","renderables","hud_first","submit","details","environment","wallmarks","glows","model_capture","stream_capture"};return s<StageCount?names[s]:"?";}
+// DetailSync (the render thread inside MT_SYNC: waiting for the parallel
+// detail calculation, or doing it) and DetailPrepare (publishing the parallel
+// instance assembly, or assembling here) are nested in Details. DetailWorker
+// is the assembly's own time on the parallel thread: not render-thread time.
+enum Stage {Lights,Renderables,HudFirst,Submit,Details,Environment,Wallmarks,Glows,ModelCapture,StreamCapture,DetailSync,DetailPrepare,DetailWorker,StageCount};
+inline const char* StageName(unsigned s){static const char* names[StageCount]={"lights","renderables","hud_first","submit","details","environment","wallmarks","glows","model_capture","stream_capture","detail_sync","detail_prepare","detail_worker"};return s<StageCount?names[s]:"?";}
 enum Counter {Visuals,ModelCalls,ModelDuplicates,ModelBones,StreamDraws,StreamIndices,CounterCount};
 inline const char* CounterName(unsigned c){static const char* names[CounterCount]={"visuals","model_calls","model_duplicates","model_bones","stream_draws","stream_indices"};return c<CounterCount?names[c]:"?";}
 struct Profile {

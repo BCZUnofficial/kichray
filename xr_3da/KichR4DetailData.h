@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <utility>
 #include <algorithm>
+#include <cstring>
 namespace kich_r4_detail {
 inline bool Finite(float v){return std::isfinite(v) && std::fabs(v)<1.e20f;}
 inline float Quantized(float v){if(!Finite(v))throw std::runtime_error("nonfinite detail vertex");
@@ -65,9 +66,16 @@ struct Frame {
         engine_frame=frame;source_frame_known=true;groups.clear();instances.clear();shadow_groups.clear();shadow_instances.clear();shadow_cells.clear();shadow_instance_cells.clear();prepare_ms=0;shadow_radius=0;
         for(unsigned i=0;i<3;++i){variants[i]=0;for(unsigned j=0;j<4;++j)wave[i][j]=wind[i][j]=0;}}
     void Reset(){meshes.clear();ClearFrame(0);legacy_draws=0;legacy_vertices=legacy_indices=0;++generation;source_frame_known=false;}
+    // P0-S11 PERF02: Finite (finite and |v| < 1e20) as one integer compare of
+    // the IEEE magnitude bits per value; NaN and infinity have larger patterns.
+    // MSVC std::isfinite is a function call, sixteen of them per instance.
+    static bool FiniteBits(const float* values,unsigned count){uint32_t largest=0;
+        for(unsigned i=0;i<count;++i){uint32_t u;memcpy(&u,values+i,4);u&=0x7fffffffu;largest=u>largest?u:largest;}
+        return largest<FiniteLimitBits;}
+    static const uint32_t FiniteLimitBits=0x60AD78ECu; // the bits of 1.e20f
     static void Validate(const KichR4DetailInstance& v){
-        for(unsigned r=0;r<3;++r)for(unsigned c=0;c<4;++c)if(!Finite(v.row[r][c]))throw std::runtime_error("nonfinite detail transform");
-        for(unsigned c=0;c<4;++c)if(!Finite(v.lighting[c]))throw std::runtime_error("nonfinite detail lighting");}
+        if(!FiniteBits(&v.row[0][0],12))throw std::runtime_error("nonfinite detail transform");
+        if(!FiniteBits(v.lighting,4))throw std::runtime_error("nonfinite detail lighting");}
     void Append(const KichR4DetailInstance& v){if(instances.size()>=KICH_R4_MAX_DETAIL_INSTANCES)throw std::runtime_error("detail instance safety limit");Validate(v);instances.push_back(v);}
     void AppendShadow(const KichR4DetailInstance& v,uint32_t cell=UINT32_MAX){if(shadow_instances.size()>=KICH_R4_MAX_DETAIL_INSTANCES)throw std::runtime_error("detail shadow candidate safety limit");Validate(v);shadow_instances.push_back(v);shadow_instance_cells.push_back(cell);}
 };

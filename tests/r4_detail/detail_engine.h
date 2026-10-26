@@ -6,6 +6,8 @@
 #include <vector>
 #include <string>
 #include <utility>
+#include <mutex>
+#include <functional>
 #define PI_MUL_2 6.2831853071795864769f
 typedef uint32_t u32;
 template<size_t N,class... A>int sprintf_s(char (&out)[N],const char* format,A... args){return snprintf(out,N,format,args...);}
@@ -32,9 +34,22 @@ const unsigned dm_cache_size=dm_cache_line*dm_cache_line,dm_obj_in_slot=4;
 const float dm_fade=63.5f,dm_slot_size=2.f;
 inline int iFloor(float v){return int(std::floor(v));}
 struct DetailSlot {enum {ID_Empty=0xffff};};
+#ifndef _MSC_VER
+#define __stdcall
+#endif
+// P0-S11: the parallel instance assembly's engine services.
+struct xrCriticalSection {std::mutex m;void Enter(){m.lock();}void Leave(){m.unlock();}};
+namespace fastdelegate {template<class R=void> class FastDelegate0 {std::function<void()> f;
+public:template<class T,class M> FastDelegate0(T* object,M method):f([object,method]{(object->*method)();}){}
+    void operator()()const{f();}};}
+struct DetailEnvironment {float wind_strength_factor;};
+struct DetailPersistent {DetailEnvironment environment;DetailEnvironment& Environment(){return environment;}};
+extern DetailPersistent* g_pGamePersistent;
 class CDetailManager {
 public:
-    struct SSwingValue {float rot1,rot2,amp1,amp2,speed;}swing_current;
+    struct SSwingValue {float rot1,rot2,amp1,amp2,speed;
+        void lerp(const SSwingValue& a,const SSwingValue& b,float t){rot1=a.rot1+(b.rot1-a.rot1)*t;rot2=a.rot2+(b.rot2-a.rot2)*t;amp1=a.amp1+(b.amp1-a.amp1)*t;amp2=a.amp2+(b.amp2-a.amp2)*t;speed=a.speed+(b.speed-a.speed)*t;}}swing_current,swing_desc[2];
+    volatile u32 m_frame_calc=0,m_frame_rendered=0;
     struct SlotItem {float scale_calculated;Fmatrix mRotY;float c_sun,c_hemi;float scale;u32 vis_ID;};
     typedef Items<SlotItem*> SlotItemVec;
     struct SlotPart {u32 id;SlotItemVec items,r_items[3];SlotPart():id(DetailSlot::ID_Empty){}};

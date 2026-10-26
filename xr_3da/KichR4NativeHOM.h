@@ -19,7 +19,11 @@ public:
     void Load();
     void Unload();
     void Invalidate();
+    // Builds the map once per frame and camera; a second call is a no-op.
     void Prepare(CFrustum& view);
+    // P0-S11 PERF02 (R2 CHOM::MT_RENDER): the same preparation on the engine's
+    // parallel thread, from the frame's final mFullTransform.
+    void __stdcall MT_Prepare();
     BOOL visible(vis_data& value);
     BOOL visible(Fbox& box);
     BOOL LightVisible(const float* position,float range,const float* view);

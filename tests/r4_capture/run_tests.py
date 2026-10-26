@@ -50,7 +50,7 @@ def main():
         adapter.write_text(engine_source())
         (Path(folder)/"legacy_skin_reference.h").write_text(legacy_reference())
         flags = [cxx,"-std=c++11","-O2","-Wall","-Wextra","-Werror","-I"+str(HERE),"-I"+folder,"-I"+str(ROOT/"xr_3da")]
-        for name in ("data", "geometry", "engine", "session", "skin", "light_visibility", "lighting_frame", "projector"):
+        for name in ("data", "geometry", "engine", "session", "skin", "light_visibility", "lighting_frame", "projector", "capture_cost"):
             output = Path(folder)/name
             sources = [str(HERE/(name+"_tests.cpp")),str(ROOT/"xr_3da/KichR4Capture.cpp"),str(ROOT/"xr_3da/RenderSnapshot.cpp")]
             if name == "engine": sources.append(str(adapter))

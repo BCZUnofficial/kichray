@@ -710,6 +710,8 @@ ENGINE_API int ps_r4_hdr_probe = 0;
 ENGINE_API int ps_r4_lamp_face_hold = 100;
 // P0-S11 R4 background DDS reads for world textures (UI/HUD and precache stay synchronous); 0 = all synchronous.
 ENGINE_API int ps_r4_dds_async = 1;
+// P0-S11 R4 detail cache/visibility and HOM on the engine's parallel thread, as R2 r2_mt (0 = on the render thread).
+ENGINE_API int ps_r4_mt_details = 1;
 // P0-S5 R4 grass draw distance = r__detail_radius x this (cache: 192 m); grass shadows keep r__detail_radius.
 ENGINE_API float ps_r4_detail_radius_scale = 3.f;
 void CCC_Register()
@@ -733,6 +735,7 @@ void CCC_Register()
     CMD4(CCC_Integer, "r4_hdr_probe", &ps_r4_hdr_probe, 0, 600);
     CMD4(CCC_Integer, "r4_lamp_face_hold", &ps_r4_lamp_face_hold, 0, 1000);
     CMD4(CCC_Integer, "r4_dds_async", &ps_r4_dds_async, 0, 1);
+    CMD4(CCC_Integer, "r4_mt_details", &ps_r4_mt_details, 0, 1);
     CMD4(CCC_Float, "r4_detail_radius_scale", &ps_r4_detail_radius_scale, 1.f, 3.f);
 #endif
 	CMD1(CCC_Help, "help");

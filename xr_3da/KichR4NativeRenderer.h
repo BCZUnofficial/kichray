@@ -71,7 +71,7 @@ public:
     void model_Delete(IRender_DetailModel*&);void model_Logging(BOOL v){Models->Logging(v);}
     void models_Prefetch(){Models->Prefetch();}void models_Clear(BOOL v){Models->ClearPool(v);}
     BOOL occ_visible(vis_data&);BOOL occ_visible(Fbox&);BOOL occ_visible(sPoly&);
-    void OnFrame(){if(Models)Models->DeleteQueue();}
+    void OnFrame();
     void Calculate();void Render();void Screenshot(ScreenshotMode,LPCSTR=0);
     void rmNear();void rmFar();void rmNormal();u32 memory_usage(){return 0;}
     D3DVERTEXELEMENT9* getVB_Format(int);IDirect3DVertexBuffer9* getVB(int);

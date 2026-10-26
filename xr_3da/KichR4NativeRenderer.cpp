@@ -1,5 +1,12 @@
 #include "KichR4NativePrelude.h"
 #include "KichR4QueueProfile.h"
+extern ENGINE_API int ps_r4_mt_details; // P0-S11 r4_mt_details (CRender::OnFrame)
+fastdelegate::FastDelegate0<> KichR4_DetailParallel(CDetailManager*); // R4DetailRenderer.cpp
+void KichR4_DetailParallelStop();
+namespace {
+fastdelegate::FastDelegate0<> DetailDelegate(CDetailManager* details){return fastdelegate::FastDelegate0<>(details,&CDetailManager::MT_CALC);}
+fastdelegate::FastDelegate0<> HOMDelegate(KichR4NativeHOM* hom){return fastdelegate::FastDelegate0<>(hom,&KichR4NativeHOM::MT_Prepare);}
+}
 #include "xrRender/WallmarkSnapshot.h"
 #include "KichR4Native.h"
 #include "KichR4NativeCPU.h"
@@ -238,7 +245,8 @@ void CRender::level_Load(IReader* f){R_ASSERT(!loaded);
     c=f->open_chunk(fsL_GLOWS);if(c){while(c->elapsed()>=18){Fvector p;c->r(&p,sizeof(p));const float r=c->r_float();const u16 shader=c->r_u16();R4Glow* g=xr_new<R4Glow>();g->position=p;g->radius=r;if(shader<shaders.size())g->shader=shaders[shader];g->active=g->level_source=true;ref_glow owner=g;static_glows.push_back(owner);}c->close();}
     Details=xr_new<CDetailManager>();Details->m_frame_calc=Device.dwFrame-1;Details->m_frame_rendered=Device.dwFrame-1;Details->Load();HOM.Load();loaded=true;KichR4_NativeLevel(g_pGameLevel->name().c_str());
 }
-void CRender::level_Unload(){queue.clear();shadow_views.clear();native_lod_shadow_views.clear();HOM.Unload();KichR4_ResetFrozenLighting();KichR4_NativeLevel(NULL);static_glows.clear();static_lights.clear();if(Details){Details->Unload();xr_delete(Details);}if(Wallmarks)Wallmarks->clear();
+void CRender::level_Unload(){if(Details){Device.remove_from_seq_parallel(DetailDelegate(Details));Device.remove_from_seq_parallel(KichR4_DetailParallel(Details));}
+    Device.remove_from_seq_parallel(HOMDelegate(&HOM));KichR4_DetailParallelStop();queue.clear();shadow_views.clear();native_lod_shadow_views.clear();HOM.Unload();KichR4_ResetFrozenLighting();KichR4_NativeLevel(NULL);static_glows.clear();static_lights.clear();if(Details){Details->Unload();xr_delete(Details);}if(Wallmarks)Wallmarks->clear();
     native_topology=kich_r4_level::Topology();
     for(u32 i=0;i<visuals.size();++i){visuals[i]->Release();xr_delete(visuals[i]);}visuals.clear();shaders.clear();for(u32 i=0;i<sectors.size();++i)xr_delete(sectors[i]);sectors.clear();
     for(u32 i=0;i<vertices.size();++i)_RELEASE(vertices[i]);vertices.clear();for(u32 i=0;i<indices.size();++i)_RELEASE(indices[i]);indices.clear();declarations.clear();for(u32 i=0;i<windows.size();++i)xr_free(windows[i].sw);windows.clear();loaded=false;
@@ -378,6 +386,17 @@ void CRender::flush(){const Fmatrix original=Device.mProject;Fmatrix hands=origi
     KichR4_NativeObjectLight(false,1,1);
     queue.clear();val_bHUD=FALSE;rmNormal();RCache.set_xform_project(original);
 }
+// P0-S11 PERF02, R2 CRender::OnFrame with r2_mt (R4's own r4_mt_details): the
+// HOM map, then the detail cache and visibility (CDetailManager::MT_CALC), run
+// on the engine's parallel thread while this thread renders. Calculate's
+// HOM.Prepare and Details->Render (MT_SYNC) join them under their locks and
+// compute in place when the thread has not reached them yet.
+void CRender::OnFrame(){if(Models)Models->DeleteQueue();
+    if(!ps_r4_mt_details || !loaded || !Details || !g_pGameLevel)return;
+    // Inserted at the front in reverse: HOM, detail calculation, instance assembly.
+    Device.seqParallel.insert(Device.seqParallel.begin(),KichR4_DetailParallel(Details));
+    Device.seqParallel.insert(Device.seqParallel.begin(),DetailDelegate(Details));
+    Device.seqParallel.insert(Device.seqParallel.begin(),HOMDelegate(&HOM));}
 void CRender::Calculate(){queue.clear();shadow_views.clear();native_lod_shadow_views.clear();if(!loaded || !g_pGameLevel)return;ViewBase.CreateFromMatrix(Device.mFullTransform,FRUSTUM_P_ALL);View=&ViewBase;phase=PHASE_NORMAL;HOM.Prepare(ViewBase);
     // Camera and shadow subspaces are independent in the donor renderer. The
     // native path gathers their conservative union, then culls immutable model

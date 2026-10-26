@@ -9,6 +9,7 @@
 #include "../RenderSnapshot.h"
 #ifdef KICH_R4_NATIVE_FRONTEND
 #include "KichR4DetailData.h"
+#include "KichR4QueueProfile.h"
 #endif
 #ifndef _EDITOR
 #include "xrRender_console.h"
@@ -327,7 +328,11 @@ void CDetailManager::Render()
 #endif
 
 	// MT
+#ifdef KICH_R4_NATIVE_FRONTEND
+	{kich_r4_queue::Scope stage(kich_r4_queue::DetailSync);MT_SYNC();} // P0-S11 PERF02
+#else
 	MT_SYNC();
+#endif
 
 	Device.Statistic->RenderDUMP_DT_Render.Begin();
 
@@ -346,7 +351,7 @@ void CDetailManager::Render()
 	}
 
 #ifdef KICH_R4_NATIVE_FRONTEND
-	KichR4_DetailPrepare(*this);
+	{kich_r4_queue::Scope stage(kich_r4_queue::DetailPrepare);KichR4_DetailPrepare(*this);}
 #else
 	RCache.set_CullMode(CULL_NONE);
 	RCache.set_xform_world(Fidentity);

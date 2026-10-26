@@ -2,7 +2,10 @@
 #include "KichR4DetailData.h"
 #include "KichR4Native.h"
 #include "KichR4FrameMetrics.h"
+#include "KichR4QueueProfile.h"
 #include "RenderSnapshot.h"
+#include "IGame_Persistent.h"
+#include "Environment.h"
 #include <functional>
 extern float r_ssaDISCARD;
 
@@ -49,16 +52,19 @@ void KichR4_DetailLoad(CDetailManager& manager){
     for(size_t i=0;i<frame.meshes.size();++i){const Mesh& m=frame.meshes[i];
         Msg("[R4 P0-S4] %s height=%.3f m sun_caster=%u",m.name.c_str(),m.bounds_known?m.maximum[1]-m.minimum[1]:-1.f,FlatGroundClutter(m)?0u:1u);}
 }
-void KichR4_DetailPrepare(CDetailManager& manager){
+namespace {
+// Fills frame's per-frame arrays from the manager's visibility lists of this
+// frame (consumed) and its cache. meshes: the loaded, immutable mesh table.
+// The scratch below is shared by its two callers, which never overlap.
+void PrepareInto(CDetailManager& manager,const std::vector<kich_r4_detail::Mesh>& meshes,kich_r4_detail::Frame& frame,const CDetailManager::SSwingValue& swing){
     using namespace kich_r4_detail;
-    const auto start=kich_r4_metrics::Start(g_render_snapshot_active);Frame& frame=KichR4_DetailFrame();frame.ClearFrame(Device.dwFrame);
+    const auto start=kich_r4_metrics::Start(g_render_snapshot_active);frame.ClearFrame(Device.dwFrame);
     // UpdateVisibleM caches scale and wind/still admission for 15-30 frames.
     // Keep the same pose for camera-visible items in every shadow pass; a
     // second distance calculation would make their shadows shrink/stop early.
     // Index cache-part lists, not individual instances, and retain scratch space.
     static std::vector<const CDetailManager::SlotItemVec*> camera_parts;
     camera_parts.clear();
-    const CDetailManager::SSwingValue& swing=manager.swing_current;
     if(!Finite(swing.rot1) || !Finite(swing.rot2) || swing.rot1<=0 || swing.rot2<=0 || !Finite(swing.speed) || !Finite(swing.amp1) || !Finite(swing.amp2))
         throw std::runtime_error("invalid detail swing settings");
     /* Preserve KichRay R2's absolute-time phase, not CoP's accumulated timer. */
@@ -91,8 +97,23 @@ void KichR4_DetailPrepare(CDetailManager& manager){
     const float camera_radius=CDetailManager::FadeRadius();
     const float radius=std::max(20.f,std::min(camera_radius,ps_r__Detail_radius));
     const float limit=radius*radius,fade_range=camera_radius*camera_radius-1.f;
-    std::sort(camera_parts.begin(),camera_parts.end(),std::less<const CDetailManager::SlotItemVec*>());
-    std::vector<std::vector<ShadowDetailItem> > buckets(manager.objects.size()*3);
+    // P0-S11 PERF02: camera lists are r_items of cache_pool slots; mark them
+    // by slot/part/variant in O(1) instead of sorting and binary-searching
+    // the pointers. A list outside cache_pool keeps the sorted search.
+    static std::vector<uint8_t> camera_mark;static std::vector<uint32_t> marked;
+    camera_mark.resize(size_t(dm_cache_size)*dm_obj_in_slot*3,0);marked.clear();
+    static std::vector<const CDetailManager::SlotItemVec*> foreign;foreign.clear();
+    {const char* pool=reinterpret_cast<const char*>(&manager.cache_pool[0]);const size_t pool_bytes=sizeof(manager.cache_pool);
+        for(size_t i=0;i<camera_parts.size();++i){const char* at=reinterpret_cast<const char*>(camera_parts[i]);bool found=false;
+            if(at>=pool && at<pool+pool_bytes){const size_t slot=size_t(at-pool)/sizeof(CDetailManager::Slot);const CDetailManager::Slot& cell=manager.cache_pool[slot];
+                for(unsigned part=0;part<dm_obj_in_slot && !found;++part)for(unsigned variant=0;variant<3;++variant)if(&cell.G[part].r_items[variant]==camera_parts[i]){
+                    const uint32_t index=static_cast<uint32_t>((slot*dm_obj_in_slot+part)*3+variant);if(!camera_mark[index]){camera_mark[index]=1;marked.push_back(index);}found=true;break;}}
+            if(!found)foreign.push_back(camera_parts[i]);}}
+    std::sort(foreign.begin(),foreign.end(),std::less<const CDetailManager::SlotItemVec*>());
+    struct Unmark {~Unmark(){for(size_t i=0;i<marked.size();++i)camera_mark[marked[i]]=0;marked.clear();}} unmark; // also on a throw
+    // P0-S11 PERF02: per-mesh/variant buckets keep their capacity between frames.
+    static std::vector<std::vector<ShadowDetailItem> > buckets;buckets.resize(manager.objects.size()*3);
+    for(size_t i=0;i<buckets.size();++i)buckets[i].clear();
     frame.shadow_cells.resize(dm_cache_size);frame.shadow_radius=radius;
     size_t candidates=0;
     // Shadow topology covers the slot square around the camera slot that holds
@@ -122,10 +143,11 @@ void KichR4_DetailPrepare(CDetailManager& manager){
             if(source.id==DetailSlot::ID_Empty || source.id>=manager.objects.size())continue;
             // P0-S8: flat clutter (leaves) casts no shadow (P0-S5/S7); drop it
             // here instead of after bounds, BVH and selection for every view.
-            if(source.id<frame.meshes.size() && FlatGroundClutter(frame.meshes[source.id]))continue;
+            if(source.id<meshes.size() && FlatGroundClutter(meshes[source.id]))continue;
             bool camera_part=false;
             for(unsigned variant=0;variant<3;++variant){const CDetailManager::SlotItemVec& items=source.r_items[variant];
-                if(items.empty() || !std::binary_search(camera_parts.begin(),camera_parts.end(),&items,std::less<const CDetailManager::SlotItemVec*>()))continue;
+                if(items.empty() || !(camera_mark[(size_t(slot)*dm_obj_in_slot+part)*3+variant] ||
+                    (!foreign.empty() && std::binary_search(foreign.begin(),foreign.end(),&items,std::less<const CDetailManager::SlotItemVec*>()))))continue;
                 camera_part=true;
                 if(edge<=.02f)continue; // visible far grass casts no shadow
                 for(size_t i=0;i<items.size();++i){
@@ -152,4 +174,49 @@ void KichR4_DetailPrepare(CDetailManager& manager){
         for(size_t i=0;i<items.size();++i)frame.AppendShadow(DetailInstance(*items[i].item,items[i].scale,variant),items[i].cell);
         frame.shadow_groups.push_back(group);}
     frame.prepare_ms=kich_r4_metrics::Elapsed(start);
+}
+// Moves a prepared frame's per-frame arrays into the published frame; meshes,
+// generation and the legacy stream counters stay with the published one.
+void Publish(kich_r4_detail::Frame& published,kich_r4_detail::Frame& prepared){
+    published.groups.swap(prepared.groups);published.instances.swap(prepared.instances);
+    published.shadow_groups.swap(prepared.shadow_groups);published.shadow_instances.swap(prepared.shadow_instances);
+    published.shadow_cells.swap(prepared.shadow_cells);published.shadow_instance_cells.swap(prepared.shadow_instance_cells);
+    memcpy(published.wave,prepared.wave,sizeof(published.wave));memcpy(published.wind,prepared.wind,sizeof(published.wind));
+    memcpy(published.variants,prepared.variants,sizeof(published.variants));
+    published.shadow_radius=prepared.shadow_radius;published.prepare_ms=prepared.prepare_ms;
+}
+/* P0-S11 PERF02: the instance assembly joins MT_CALC on the engine's parallel
+ * thread (r4_mt_details), into a staging frame published by Details->Render.
+ * Exactly one of the two paths prepares a frame: the lock and done_frame
+ * decide; a frame whose detail calculation did not run here (MT_SYNC computed
+ * it on the render thread) is prepared there, as before. */
+struct ParallelPrepare {
+    xrCriticalSection lock;CDetailManager* manager;kich_r4_detail::Frame staging;
+    u32 done_frame;bool ready;std::string error;
+    ParallelPrepare():manager(NULL),done_frame(u32(-1)),ready(false){}
+    void __stdcall Run(){
+        lock.Enter();
+        CDetailManager* m=manager;
+        if(m && done_frame!=Device.dwFrame && m->m_frame_calc==Device.dwFrame && m->m_frame_rendered!=Device.dwFrame && g_pGamePersistent){
+            try{CDetailManager::SSwingValue swing;swing.lerp(m->swing_desc[0],m->swing_desc[1],g_pGamePersistent->Environment().wind_strength_factor);
+                PrepareInto(*m,KichR4_DetailFrame().meshes,staging,swing);error.clear();}
+            catch(const std::exception& e){error=e.what();}catch(...){error="detail prepare failed on the parallel thread";}
+            done_frame=Device.dwFrame;ready=true;}
+        lock.Leave();}
+};
+ParallelPrepare& Parallel(){static ParallelPrepare* parallel=new ParallelPrepare();return *parallel;} // outlives static teardown of the thread
+}
+fastdelegate::FastDelegate0<> KichR4_DetailParallel(CDetailManager* manager){ParallelPrepare& p=Parallel();p.manager=manager;return fastdelegate::FastDelegate0<>(&p,&ParallelPrepare::Run);}
+void KichR4_DetailParallelStop(){ParallelPrepare& p=Parallel();p.lock.Enter();p.manager=NULL;p.ready=false;p.done_frame=u32(-1);p.lock.Leave();}
+// Render thread, after MT_SYNC: publish the parallel result or prepare here.
+void KichR4_DetailPrepare(CDetailManager& manager){
+    kich_r4_detail::Frame& frame=KichR4_DetailFrame();ParallelPrepare& p=Parallel();
+    p.lock.Enter();
+    const bool parallel=p.ready && p.done_frame==Device.dwFrame && p.manager==&manager;
+    std::string error;
+    if(parallel){p.ready=false;error.swap(p.error);if(error.empty()){frame.ClearFrame(Device.dwFrame);Publish(frame,p.staging);kich_r4_queue::Global().Add(kich_r4_queue::DetailWorker,frame.prepare_ms);}}
+    else{p.done_frame=Device.dwFrame;p.ready=false; // a late parallel run must not repeat this frame
+        try{PrepareInto(manager,frame.meshes,frame,manager.swing_current);}catch(...){p.lock.Leave();throw;}}
+    p.lock.Leave();
+    if(!error.empty())throw std::runtime_error(error);
 }

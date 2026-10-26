@@ -2,10 +2,61 @@
 #include "../../xr_3da/KichR4DetailData.h"
 #include <limits>
 DetailDevice Device={};
+DetailPersistent persistent={{.5f}};DetailPersistent* g_pGamePersistent=&persistent;
 float ps_r__Detail_radius=50.f,r_ssaDISCARD=1.e-6f;
 #include "frontend_under_test.cpp"
 static unsigned checks=0;
-void Require(bool good){++checks;if(!good)throw std::runtime_error("detail frontend check failed");}
+void RequireAt(bool good,int line){++checks;if(!good)throw std::runtime_error("detail frontend check failed at line "+std::to_string(line));}
+#define Require(condition) RequireAt((condition),__LINE__)
+// P0-S11 PERF02: the bit test equals Finite (finite and |v| < 1e20) everywhere.
+void FiniteBitsMatchFinite(){
+    float limit=1.e20f;uint32_t bits;memcpy(&bits,&limit,4);Require(bits==kich_r4_detail::Frame::FiniteLimitBits);
+    const float specials[]={0.f,-0.f,1.f,-1.f,1.e20f,-1.e20f,std::nextafter(1.e20f,0.f),-std::nextafter(1.e20f,0.f),3.e38f,1.e-45f,
+        std::numeric_limits<float>::infinity(),-std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN(),-std::numeric_limits<float>::quiet_NaN()};
+    for(float v:specials)Require(kich_r4_detail::Frame::FiniteBits(&v,1)==kich_r4_detail::Finite(v));
+    uint32_t seed=7;for(unsigned i=0;i<200000;++i){seed=seed*1664525u+1013904223u;float v;memcpy(&v,&seed,4);Require(kich_r4_detail::Frame::FiniteBits(&v,1)==kich_r4_detail::Finite(v));}
+    float row[4]={1,2,3,4};Require(kich_r4_detail::Frame::FiniteBits(row,4));row[3]=std::numeric_limits<float>::quiet_NaN();Require(!kich_r4_detail::Frame::FiniteBits(row,4));
+}
+// P0-S11 PERF02: the instance assembly on the engine's parallel thread
+// publishes exactly the frame the render thread would have assembled.
+void ParallelMatchesRenderThread(){
+    CDetail::fvfVertexIn vertices[3]={{{0,0,0},0,0},{{1,2,0},1,1},{{0,1,1},0,.5f}};uint16_t indices[3]={0,1,2};
+    CDetail mesh={vertices,indices,3,3,{{0,0,0},{1,2,1}},NULL,{2}};CDetailManager manager;manager.objects.push_back(&mesh);
+    manager.swing_desc[0]={8,16,.05f,.1f,1};manager.swing_desc[1]={12,24,.15f,.3f,1};manager.swing_current.lerp(manager.swing_desc[0],manager.swing_desc[1],.5f);
+    for(unsigned i=0;i<3;++i)manager.m_visibles[i].resize(1);
+    CDetailManager::SlotItem item={2,{1,0,0,0,0,1,0,0,0,0,1,0,4,5,6,1},.25f,.75f,3,2},behind=item;behind.mRotY._43=-6;
+    CDetailManager::SlotItemVec items;items.push_back(&item);
+    auto& cell=manager.cache_pool[0];cell.empty=false;cell.sx=-1;cell.sz=-2;cell.G[0].id=0;cell.G[0].items.push_back(&behind);cell.vis.sphere.P={0,0,-5};
+    KichR4_DetailLoad(manager);auto& frame=KichR4_DetailFrame();Device.fTimeGlobal=23;
+    auto fill=[&]{for(unsigned i=0;i<3;++i)manager.m_visibles[i][0].push_back(&items);};
+    fill();Device.dwFrame=500;KichR4_DetailPrepare(manager);
+    const auto instances=frame.instances;const auto shadows=frame.shadow_instances;const auto groups=frame.groups.size();const auto cells=frame.shadow_instance_cells;
+    float wind[3][4];memcpy(wind,frame.wind,sizeof(wind));
+    Require(!instances.empty() && !shadows.empty());
+    // Next frame: the parallel thread runs after MT_CALC, then the render thread publishes.
+    fill();Device.dwFrame=501;manager.m_frame_calc=501;manager.m_frame_rendered=500;
+    auto job=KichR4_DetailParallel(&manager);job();
+    Require(frame.instances.size()==instances.size() && manager.m_visibles[0][0].empty()); // the job consumed the lists, published nothing yet
+    Device.fTimeGlobal=23;frame.ClearFrame(501);KichR4_DetailPrepare(manager);
+    Require(frame.engine_frame==501 && frame.instances.size()==instances.size() && frame.groups.size()==groups && frame.shadow_instance_cells==cells);
+    Require(!memcmp(frame.instances.data(),instances.data(),instances.size()*sizeof(instances[0])) && !memcmp(frame.shadow_instances.data(),shadows.data(),shadows.size()*sizeof(shadows[0])));
+    Require(!memcmp(frame.wind,wind,sizeof(wind))); // swing lerped from the environment, as Render sets swing_current
+    // A late job for a frame the render thread already prepared does nothing.
+    fill();Device.dwFrame=502;manager.m_frame_calc=502;manager.m_frame_rendered=501;KichR4_DetailPrepare(manager);
+    const size_t prepared=frame.instances.size();fill();job();Require(manager.m_visibles[0][0].size()==1 && frame.instances.size()==prepared);
+    manager.m_visibles[0][0].clear();manager.m_visibles[1][0].clear();manager.m_visibles[2][0].clear();
+    // No MT_CALC for this frame on the parallel thread: the job leaves it to Render.
+    fill();Device.dwFrame=503;manager.m_frame_calc=502;job();Require(manager.m_visibles[0][0].size()==1);
+    KichR4_DetailPrepare(manager);Require(frame.engine_frame==503 && frame.instances.size()==instances.size());
+    // A failure on the parallel thread surfaces on the render thread.
+    auto bad=item;bad.mRotY._11=std::numeric_limits<float>::quiet_NaN();items[0]=&bad;
+    fill();Device.dwFrame=504;manager.m_frame_calc=504;manager.m_frame_rendered=503;job();
+    bool rejected=false;try{KichR4_DetailPrepare(manager);}catch(const std::exception&){rejected=true;}Require(rejected);
+    for(unsigned i=0;i<3;++i)manager.m_visibles[i][0].clear(); // the failed assembly stopped before consuming them
+    KichR4_DetailParallelStop();fill();Device.dwFrame=505;manager.m_frame_calc=505;manager.m_frame_rendered=504;job();Require(manager.m_visibles[0][0].size()==1); // stopped: no manager
+    for(unsigned i=0;i<3;++i)manager.m_visibles[i][0].clear();
+    KichR4_DetailUnload();
+}
 void CoherentCachedPose(){
     const float saved_radius=ps_r__Detail_radius,saved_discard=r_ssaDISCARD;
     ps_r__Detail_radius=60;r_ssaDISCARD=.0005f;
@@ -113,5 +164,5 @@ int main(){try{
     const auto generation=frame.generation;KichR4_DetailUnload();Require(frame.meshes.empty() && frame.instances.empty() && frame.shadow_cells.empty() && frame.shadow_instance_cells.empty() && frame.generation==generation+1);
     mesh.bv_bb.max.y=0;mesh.bv_bb.min.y=0;KichR4_DetailLoad(manager);Require(frame.meshes[0].vertices[2].misc[2]==0);
     indices[2]=99;rejected=false;try{KichR4_DetailLoad(manager);}catch(const std::exception&){rejected=true;}Require(rejected);
-    CoherentCachedPose();printf("G3b real detail frontend: %u checks passed\n",checks);return 0;
+    CoherentCachedPose();ParallelMatchesRenderThread();FiniteBitsMatchFinite();printf("G3b real detail frontend: %u checks passed\n",checks);return 0;
 }catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}
