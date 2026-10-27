@@ -88,10 +88,10 @@ void Frame(){
         for(size_t i=0;i<draw_entries.size();++i){
             Require(draw_entries[i]!="PSPostprocess","diagnostic bypasses postprocess");
             if(draw_entries[i]=="PSCelestial"){++isolated;
-                Require(mode>=10 && draw_passes[i].colors[0]==game.deferred.final_color,"isolated source bypasses scene composition");
+                Require(kich_r4_optics::CelestialView(mode) && draw_passes[i].colors[0]==game.deferred.final_color,"isolated source bypasses scene composition");
                 Require(draw_constants[i].screen[2]==mode && !draw_passes[i].depth,"mask/triangle diagnostic selected explicitly");
                 if(mode==12)Require(!draw_descriptions[i].state.blend_enable,"triangle colors cannot be altered by blend");}}
-        Require(isolated==(mode>=10?1u:0u),"source submitted once only in source diagnostic modes");
+        Require(isolated==(kich_r4_optics::CelestialView(mode)?1u:0u),"source submitted once only in source diagnostic modes (not P0-S11 SHADOW_CLASSES)");
         Require(game.frame.Present()==0,"finish diagnostic frame");
     }
     batch.Begin(960,540,8);batch.renderer_seen=batch.ui_seen=true;input.engine_frame=8;

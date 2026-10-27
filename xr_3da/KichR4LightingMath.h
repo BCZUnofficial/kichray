@@ -119,12 +119,30 @@ inline bool SunContactShadow(const KichR4LightingFrame& lighting,Matrix& out){
     if(!lighting.sun_contact_valid || !Finite(lighting.sun_contact[3]) || lighting.sun_contact[3]<=0)return false;
     out=SunCascade(lighting,lighting.sun_contact,lighting.sun_contact[3]);return true;
 }
+/* P0-S11 contact cascade span as R2 render_sun_near sizes its near map
+ * (spherical_range, r2_sun_near_border 1): fov_degrees and aspect are
+ * Device.fFOV/fASPECT, near_plane r2_sun_near. 49.05 m at 67.5 degrees, 16:9
+ * and 25 m: 2.4 cm texels on 2048, where the enclosing sphere of P0-S2
+ * (72.8 m) gave 3.55 cm and texel squares 1.5 times R2's. Both spans depend
+ * on the camera's projection only, so turning it never rescales the map; the
+ * frustum corners the square leaves out fall to the 128 m cascade (R2 crops
+ * them from its near map). Two guard texels per edge as kich_sun::extent. */
+inline float SunContactSpan(float near_plane,float fov_degrees,float aspect,unsigned resolution){
+    const float pi=3.14159265358979323846f,a0=fov_degrees*aspect*pi/360.f,a1=fov_degrees*pi/360.f;
+    const float c0=near_plane/cosf(a0),c1=near_plane/cosf(a1),k0=2*c0*sinf(a0),k1=2*c1*sinf(a1);
+    const float border_alpha=(fov_degrees-10)/(90-10),near_border=border_alpha+1.136363636364f*(1-border_alpha);
+    const float c=c0>c1?c0:c1,k=(k0>k1?k0:k1)*1.414213562373f,range=near_border*(c>k?c:k);
+    return resolution>4?range*float(resolution)/float(resolution-4):range;
+}
 inline float LocalShadowNear(float range){return range<.4f?range*.25f:.1f;}
+// P0-S11: a spot's map spans its cone + 3.5 degrees, as R2 compute_xf_spot
+// (and the projector, KichR4LightProjector.h): the filter footprint at the
+// cone's edge stays inside rendered texels.
 inline Matrix LocalShadow(const KichR4LocalLight& l,unsigned face,unsigned resolution=512){
     static const Vec3 axes[6]={{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
     const Vec3 eye={l.position[0],l.position[1],l.position[2]};
     const Vec3 dir=l.type==2?Vec3{l.direction[0],l.direction[1],l.direction[2]}:axes[face%6];
-    Matrix projection=Projection(l.type==2?l.cone:1.57079632679f,LocalShadowNear(l.range),l.range);
+    Matrix projection=Projection(l.type==2?l.cone+3.5f*3.14159265358979323846f/180.f:1.57079632679f,LocalShadowNear(l.range),l.range);
     if(l.type!=2){
         // Three rendered texels around each 90-degree face keep the complete
         // PCFWide footprint (+-3 texels, P0-S7) inside real geometry at

@@ -17,6 +17,19 @@ enum KichR4CullMode {KICH_R4_CULL_BACK=0,KICH_R4_CULL_FRONT=1,KICH_R4_CULL_NONE=
  * and boards cast from both sides), 2 back faces. */
 #ifdef __cplusplus
 inline uint32_t KichR4SunShadowCull(uint32_t cull,int32_t mode){return mode==1?(uint32_t)KICH_R4_CULL_NONE:mode==2?(uint32_t)KICH_R4_CULL_BACK:cull;}
+/* P0-S11 r4_sun_shadow_faces, under r2_sun_shadow_cull 0: the faces of
+ * one-sided (back-culled) casters a sun cascade stores. 0 front faces in
+ * every cascade; 1 the R2 layout: the contact cascade (R2 sun near, CULL_CCW)
+ * front faces, the 128/512 m cascades (R2 sun far, CULL_CW) back faces only,
+ * so a lit surface never shadows itself or its lit neighbours (whole road
+ * triangles dark under a low moon); 2 back faces in every cascade. Two-sided
+ * materials stay two-sided; r2_sun_shadow_cull 1/2 keep their meaning. */
+inline uint32_t KichR4SunCasterCull(uint32_t cull,int32_t mode,uint32_t faces,bool contact){
+    if(mode)return KichR4SunShadowCull(cull,mode);
+    const bool back=faces==2 || (faces==1 && !contact);
+    return back && cull==(uint32_t)KICH_R4_CULL_BACK?(uint32_t)KICH_R4_CULL_FRONT:cull;}
+// The contact cascade's pass is "sun_2" (KichR4DeferredSession, P0-S2).
+inline bool KichR4SunContactPhase(const char* phase){return phase && phase[0]=='s' && phase[1]=='u' && phase[2]=='n' && phase[3]=='_' && phase[4]=='2';}
 #endif
 enum KichR4DepthMode {KICH_R4_DEPTH_OFF=0,KICH_R4_DEPTH_ON=1};
 #pragma pack(push,4)

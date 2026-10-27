@@ -68,7 +68,8 @@ inline int32_t Preflight(KichR4FrameSession& frame,KichR4LevelSession& level,
     if(!shared_plan){if(scene)fallback.Begin(level.scene,level.revision,input.tree_wind[0],input.tree_wind[2]);shared_plan=&fallback;}
     kich_r4_scene::Matrix camera;memcpy(camera.m,input.view_projection,sizeof(camera.m));
     if(scene && shared_plan==&fallback)shared_plan->sun_casters=kich_r4_visibility::BuildSunCasterVolume(camera,input.lighting.sun_direction);
-    if(scene)details.EnsureVisibilityFrame(input.engine_frame,shared_plan->sun_casters);
+    // P0-S11 PERF02: the detail BVH waits for the detail block below, where
+    // this frame's grass is published (kich_r4_detail::FinishFrame).
     std::vector<kich_r4_scene::Matrix> shadows;
     std::vector<unsigned char> shadow_sun,shadow_grass;
     std::vector<unsigned char> shadow_static(level.scene.draws.size(),0);
@@ -80,7 +81,7 @@ inline int32_t Preflight(KichR4FrameSession& frame,KichR4LevelSession& level,
         // Selected projectors share the full-frame residency plan; never load
         // their DDS or evict a material later during local accumulation.
         for(unsigned i=0;i<input.lighting.count && i<input.lighting.projectors.size();++i)
-            if(input.lighting.lights[i].type==2)demand.NeedTexture(input.lighting.projectors[i].texture,LIGHTING);
+            if(input.lighting.lights[i].type==2)demand.NeedTexture(KichR4SpotProjector(input.lighting.projectors[i].texture),LIGHTING);
         // Combine hmodel() samples both weather env cubemaps every scene frame.
         for(unsigned i=0;i<2;++i)if(!input.lighting.env_textures[i].empty())demand.NeedTexture(input.lighting.env_textures[i],LIGHTING);
         if(kich_r4_visibility::SunEnabled(input.lighting)){
@@ -132,6 +133,9 @@ inline int32_t Preflight(KichR4FrameSession& frame,KichR4LevelSession& level,
         }else if((c.has_material?kich_r4_material::AlphaFunction(c.material,true):kich_r4_material::AlphaFunction(c.style,true))!=8 && AnyView(c,shadows,shadow_sun,shared_plan->sun_casters)){
             demand.NeedTexture(c.has_material && !c.material.base.empty()?c.material.base:c.texture,SHADOW_ALPHA);}
     }
+    // First reader of this frame's grass: the parallel assembly had the frame
+    // plan and everything above to finish (P0-S11 PERF02).
+    if(scene){kich_r4_detail::FinishFrame();details.EnsureVisibilityFrame(input.engine_frame,shared_plan->sun_casters);}
     const kich_r4_detail::Frame* source=details.source;
     if(scene && source && source->source_frame_known && source->engine_frame==input.engine_frame){
         // P0-S5: detail atlases ship with one level; request the generated chain first.

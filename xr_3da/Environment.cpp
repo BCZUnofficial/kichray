@@ -23,6 +23,9 @@
 
 #include "D3DUtils.h"
 #include "xrCore.h"
+#if !defined(DEDICATED_SERVER) && !defined(_EDITOR)
+extern ENGINE_API Fvector4 ps_env_sun_override; // P0-S11, xr_ioc_cmd.cpp
+#endif
 
 //////////////////////////////////////////////////////////////////////
 // Construction/Destruction
@@ -440,6 +443,20 @@ void CEnvironment::OnFrame()
 	int t_id = (current_weight < 0.5f) ? Current[0]->tb_id : Current[1]->tb_id;
 	eff_Thunderbolt->OnFrame(t_id, CurrentEnv.bolt_period, CurrentEnv.bolt_duration);
 	eff_Rain->OnFrame();
+
+#if !defined(DEDICATED_SERVER) && !defined(_EDITOR)
+	// P0-S11 env_sun_override (xr_ioc_cmd.cpp): one sun direction, as
+	// CEffect_Thunderbolt::Bolt builds it (setHP from where it shines, then
+	// inverted), plus an optional added colour, for R2 and R4 alike. A flash
+	// still lights sky and fog but no longer moves the sun.
+	if (ps_env_sun_override.w > .5f)
+	{
+		Fvector direction;
+		direction.setHP(deg2rad(ps_env_sun_override.y), deg2rad(ps_env_sun_override.x)).invert();
+		CurrentEnv.sun_dir.set(direction);
+		CurrentEnv.sun_color.add(ps_env_sun_override.z);
+	}
+#endif
 
 	if(KichR4_NativeActive())return;
 	// ******************** Environment params (setting)

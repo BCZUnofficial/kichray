@@ -61,6 +61,9 @@ struct Frame {
         if(!valid || cascade>=3)return NULL;
         Configure(sun[cascade],frame,cascade,map,generation,resolution,span,matrix,0);return &sun[cascade];
     }
+    // P0-S11 r4_sun_far_interval: a cascade drawn from an earlier render keeps
+    // that render's record, so the trace sees its unchanged matrix and casters.
+    void Reused(unsigned cascade,const Pass& rendered){if(valid && cascade<3)sun[cascade]=rendered;}
     Pass* Local(uint32_t face,uint64_t map,uint64_t generation,uint32_t resolution,const float* matrix,uint64_t source){
         if(!valid)return NULL;
         ++local_attempted;local_resolution=resolution;local_generation=generation;

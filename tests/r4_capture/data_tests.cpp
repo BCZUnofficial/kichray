@@ -176,5 +176,30 @@ void LampFade(){
     Require(near_seen && mid_seen && plain_seen,"near full, mid scaled by LOD, unshadowed untouched");
     KichR4LightingFrame direct;state.SelectLights(camera,direct);Require(direct.count==4 && !direct.lamp_faded,"no window (direct/test producers): no fade");
 }
-int main(){try{Models();ModelBudgets();HUD();SnapshotCapture();ABI();LampFade();printf("B4.3b OGF / skinning / stream ownership / state validation: %d checks passed\n",checks);return 0;}
+// P0-S11 r4_npc_torch_shadows 0: an NPC torch (torch projector, unshadowed
+// omni twin at its exact position) loses its shadow map; the actor's torch (no
+// twin) and a hanging lamp spot with its ambient point (own texture) keep theirs.
+void NpcTorches(){
+    State state;const float camera[3]={0,0,0};
+    KichR4LocalLight spot={};spot.type=2;spot.range=13;spot.direction[2]=1;spot.cone=1.0471976f;spot.color[0]=spot.color[1]=spot.color[2]=1.2f;
+    KichR4LocalLight omni={};omni.type=1;omni.range=.75f;omni.color[0]=omni.color[1]=omni.color[2]=.5f;
+    auto put=[&](uintptr_t id,KichR4LocalLight l,float x,const char* texture,bool shadow){l.position[0]=x;l.position[1]=1.7f;
+        void* key=reinterpret_cast<void*>(id);state.Light(key,l,true);if(texture)state.light_projectors[key].texture=texture;if(!shadow)state.unshadowed_lights.insert(key);};
+    put(1,spot,15,"internal\\internal_light_torch_r2",true);put(2,omni,15,NULL,false);       // NPC torch + light_omni
+    put(3,spot,.3f,"Internal\\Internal_Light_Torch_R2",true);                                // actor: light_omni inactive
+    put(4,spot,20,"internal\\internal_light_attenuated",true);put(5,omni,20,NULL,false);    // hanging lamp + ambient point
+    put(6,spot,25,"internal\\internal_light_torch_r2",true);put(7,omni,25.001f,NULL,false); // a point that is not its twin
+    auto shadowed=[&](const KichR4LightingFrame& f,float x){for(unsigned i=0;i<f.count;++i)if(f.lights[i].position[0]==x && f.lights[i].type==2)return f.CastsShadow(i);
+        throw std::runtime_error("spot missing from the frame");};
+    KichR4LightingFrame keep;state.SelectLights(camera,keep);
+    Require(keep.count==7 && shadowed(keep,15) && shadowed(keep,.3f) && shadowed(keep,20) && shadowed(keep,25),"direct/test producers keep every requested shadow");
+    KichR4LightingFrame off;off.npc_torch_shadows=0;state.SelectLights(camera,off);
+    Require(off.count==7 && !shadowed(off,15),"r4_npc_torch_shadows 0: the NPC torch lights without a shadow map");
+    Require(shadowed(off,.3f),"the actor's torch has no omni twin and keeps its shadow");
+    Require(shadowed(off,20),"a hanging lamp spot with its ambient point keeps its shadow (own texture)");
+    Require(shadowed(off,25),"only an exact position match is a twin");
+    for(unsigned i=0;i<off.count;++i)if(off.lights[i].position[0]==15 && off.lights[i].type==2)Require(off.lights[i].color[0]==1.2f,"the NPC torch keeps its full light");
+    Require(KichR4TorchProjector("internal\\internal_light_torch_r2") && !KichR4TorchProjector("internal\\internal_light_attenuated") && !KichR4TorchProjector(""),"torch projector by its texture");
+}
+int main(){try{Models();ModelBudgets();HUD();SnapshotCapture();ABI();LampFade();NpcTorches();printf("B4.3b OGF / skinning / stream ownership / state validation: %d checks passed\n",checks);return 0;}
 catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

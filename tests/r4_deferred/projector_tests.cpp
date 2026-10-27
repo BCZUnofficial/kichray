@@ -19,6 +19,13 @@ void Math(){
     light.type=1;kich_r4_projector::Configure(level,light,&source,c,maps);Require(!kich_r4_projector::Enabled(c) && maps[1]==45 && maps[5]==16,"point disables projector without replacing any cube face");light.type=2;
     for(unsigned mode=0;mode<5;++mode){auto saved=entry;if(mode==0)entry.faces=6;if(mode==1)entry.handle=99;if(mode==2)entry.choice=UINT32_MAX;if(mode==3)entry.planned=0;if(mode==4)entry.handle=0;
         kich_r4_projector::Configure(level,light,&source,c,maps);Require(!kich_r4_projector::Enabled(c) && maps[1]==0 && maps[0]==11,"unavailable/budget/stale/cube/debug cookie keeps analytic spot");entry=saved;}
+    // P0-S11 R2 s_accum_spot: a spot without a texture of its own projects lights\lights_spot01.
+    KichR4LightProjector plain;kich_r4_projector::Configure(level,light,&plain,c,maps);
+    Require(!kich_r4_projector::Enabled(c) && maps[1]==0,"without a resident lights_spot01 the plain spot stays analytic");
+    auto& spot01=level.texture_registry.entries["lights\\lights_spot01"];spot01.faces=1;spot01.handle=46;spot01.planned=level.texture_registry.epoch;
+    kich_r4_projector::Configure(level,light,&plain,c,maps);Require(kich_r4_projector::Enabled(c) && maps[1]==46,"a spot without a texture projects R2's lights_spot01");
+    kich_r4_projector::Configure(level,light,NULL,c,maps);Require(kich_r4_projector::Enabled(c) && maps[1]==46,"so does a spot without a projector record");
+    Require(KichR4SpotProjector("")=="lights\\lights_spot01" && KichR4SpotProjector("lights\\torch")=="lights\\torch","default projector name");
 }
 void Submission(bool available){
     Fixture fixture;f=&fixture;ResetDeferredRecorder();const KichR4LevelFiles fs={Open,Close};kich_r4_game::Session game(DeferredAPIs(),fs,"l01_escape",NULL);

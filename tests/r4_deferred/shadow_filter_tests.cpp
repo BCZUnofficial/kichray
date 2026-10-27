@@ -51,6 +51,7 @@ float4 operator+(float4 a,float b){return b+a;}
 float4 operator-(float4 a,float4 b){return float4(a.x-b.x,a.y-b.y,a.z-b.z,a.w-b.w);}
 float4 operator/(float4 a,float b){return float4(a.x/b,a.y/b,a.z/b,a.w/b);}
 float4 abs(float4 a){return float4(std::fabs(a.x),std::fabs(a.y),std::fabs(a.z),std::fabs(a.w));}
+float3 abs(float3 a){return float3(std::fabs(a.x),std::fabs(a.y),std::fabs(a.z));}
 struct bool4 {bool x,y,z,w;};
 bool4 operator<(float4 a,float4 b){return {a.x<b.x,a.y<b.y,a.z<b.z,a.w<b.w};}
 bool all(bool4 v){return v.x && v.y && v.z && v.w;}
@@ -59,6 +60,7 @@ float2 clamp(float2 v,float lo,float hi){return float2(std::max(lo,std::min(hi,v
 using std::sqrt;
 // fog.w: P0-S10 shadow options (bit 0 wide filter, 4 x quarter-texel lift).
 float4 screen,camera,sun_color,sun_direction,fog;int shadow_surface=0,surface=0;
+float4 light_position,light_color,alpha; // P0-S11 LocalVisibility (LampSeam)
 kich_r4_scene::Matrix shadow[6];
 kich_r4_scene::Matrix inverse_vp,receiver_inverse;
 float4 mul(float4 p,const kich_r4_scene::Matrix& m);
@@ -521,9 +523,149 @@ void CompactCases(){
     fog=float4(0,0,0,4*6);Require(!ShadowWide() && SunReachMasked() && ShadowNormalBias()==1.5f,"shadow options: compact, mask on");
     fog=float4();
 }
+// P0-S11 shadow terminator on a convex ridge, light along +z (the 128 m
+// cascade, compact filter, 2 texel lean). The lit facet z = d + S x (10
+// degrees from the light) is the map; past the ridge x = 0 the map is empty.
+// The facet beyond the ridge folds back behind it, turned `turn` degrees away
+// from the light: P(t) = (-t sin(turn), y, d + t cos(turn)) at t metres from
+// the ridge, facet normal (cos(turn),0,sin(turn)). Its shading normal still
+// faces the light by `facing` (N.L), as a smooth or mapped normal does there.
+float Ridge(float turn,float t,float facing,unsigned centimetres,float roof=0){using namespace kich_r4_lighting;
+    const float pi=3.14159265f,g=turn*pi/180,d=10,S=1/std::tan(10*pi/180),span=128;
+    const float origin[3]={0,0,0},direction[3]={0,0,1};
+    std::memset(shadow,0,sizeof(shadow));shadow[0]=SunShadow(origin,direction,span,2048);shadow[1]=SunShadow(origin,direction,512,2048);
+    screen.w=2048;camera=float4(0,0,0,0);sun_color=float4(1,1,1,1);sun_direction=float4(0,0,1,0);
+    fog=float4(0,0,0,float(4*8+(centimetres<<7)));
+    shadow0={S*span/1024.,0,(512+d-S*span/2)/1024.,false,1000,.5}; // lit facet; nothing past the ridge
+    const float3 p(-t*std::sin(g),.2f,d+t*std::cos(g)),facet(std::cos(g),0,std::sin(g)),towards(0,0,-1);
+    if(roof>0)shadow0={0,0,(512+p.z-roof)/1024.,false,0,0}; // a blocker `roof` metres up the light
+    const float3 n=normalize(facet+towards*(std::sin(g)+facing)); // N.L ~ facing
+    const float3 dx=float3(-std::sin(g),0,std::cos(g))*.01f,dy(0,.01f,0);
+    const float lit=SunVisibility(p,n,dx,dy);std::memset(shadow,0,sizeof(shadow));fog=float4();return lit;
+}
+// P0-S11 r4_sun_shadow_faces 1/2: the 128 m map holds back faces only, so the
+// turned facet of Ridge stores itself (its back side faces the light) and the
+// lit facet stores nothing. faces: the option bits the shader reads.
+float RidgeBack(float turn,float t,float facing,unsigned centimetres,unsigned faces){using namespace kich_r4_lighting;
+    const float pi=3.14159265f,g=turn*pi/180,d=10,span=128,S=-1/std::tan(g); // the turned facet: z = d - x cot(turn)
+    const float origin[3]={0,0,0},direction[3]={0,0,1};
+    std::memset(shadow,0,sizeof(shadow));shadow[0]=SunShadow(origin,direction,span,2048);shadow[1]=SunShadow(origin,direction,512,2048);
+    screen.w=2048;camera=float4(0,0,0,0);sun_color=float4(1,1,1,1);sun_direction=float4(0,0,1,0);
+    fog=float4(0,0,0,float(4*8+(centimetres<<7)+(faces<<14)));
+    shadow0={S*span/1024.,0,(512+d-S*span/2)/1024.,false,1000,.5}; // nothing past the ridge (x>0)
+    const float3 p(-t*std::sin(g),.2f,d+t*std::cos(g)),facet(std::cos(g),0,std::sin(g)),towards(0,0,-1);
+    const float3 n=normalize(facet+towards*(std::sin(g)+facing));
+    const float3 dx=float3(-std::sin(g),0,std::cos(g))*.01f,dy(0,.01f,0);
+    const float lit=SunVisibility(p,n,dx,dy);std::memset(shadow,0,sizeof(shadow));fog=float4();return lit;
+}
+// P0-S11 r4_sun_receiver: a ground receiver at a mesh seam. The map holds the
+// ground itself, a plane 20 degrees from the light (+z) rising along x, lit by
+// its shading normal; the 2x2 quad spans two meshes, so the facet from screen
+// derivatives is (-1,0,0), across the light along the slope. dx/dy order
+// decides that sign, pixel by pixel.
+float Seam(bool normal_receiver,bool seam,float t){using namespace kich_r4_lighting;
+    const float pi=3.14159265f,d=10,S=1/std::tan(20*pi/180),span=128;
+    const float origin[3]={0,0,0},direction[3]={0,0,1};
+    std::memset(shadow,0,sizeof(shadow));shadow[0]=SunShadow(origin,direction,span,2048);shadow[1]=SunShadow(origin,direction,512,2048);
+    screen.w=2048;camera=float4(0,0,0,0);sun_color=float4(1,1,1,1);sun_direction=float4(0,0,1,0);
+    fog=float4(0,0,0,float(4*8+(25<<7)+(normal_receiver?1<<16:0)));
+    shadow0={S*span/1024.,0,(512+d-S*span/2)/1024.,false,0,0};
+    const float3 p(t,.2f,d+S*t),n=normalize(float3(S,0,-1));
+    const float3 dx=seam?float3(0,0,.01f):float3(.01f,0,.01f*S),dy(0,.01f,0);
+    const float lit=SunVisibility(p,n,dx,dy);std::memset(shadow,0,sizeof(shadow));fog=float4();return lit;
+}
+// The same seam lit by a point lamp at the origin (LocalVisibility): its +z
+// cube face (4) holds the ground plane z = d + S x, 20 degrees from the light,
+// in the perspective depth of PlaneCases. The seam facet (cos 10, 0, sin 10)
+// is turned 10 degrees towards the lamp once ShadowLean faces it to the light,
+// so its lean runs up the slope's lit side; the terminator lift is off here
+// (it would read that facet as turned away and lift instead of leaning).
+float LampSeam(bool normal_receiver,bool seam,float x){using namespace kich_r4_lighting;
+    const float pi=3.14159265f,d=10,S=1/std::tan(20*pi/180);const unsigned size=512;
+    KichR4LocalLight light={};light.type=1;light.range=40;
+    std::memset(shadow,0,sizeof(shadow));for(unsigned f=0;f<6;++f)shadow[f]=LocalShadow(light,f,size);
+    const double A=shadow[4].m[10],B=shadow[4].m[14],s=shadow[4].m[0];
+    shadow4={-2*B*S/(s*d),0,A+B/d*(1+S/s),false};dimension_override=size;
+    light_position=float4(0,0,0,light.range);light_color=float4(1,1,1,1);alpha=float4(0,0,0,1);camera=float4(0,0,0,0);
+    fog=float4(0,0,0,float(4*8+(normal_receiver?1<<16:0)));
+    const float3 p(x,0,d+S*x),n=normalize(float3(S,0,-1));
+    const float3 dx=seam?float3(.0017365f,0,-.0098481f):float3(.01f,0,.01f*S),dy(0,.01f,0);
+    const float lit=LocalVisibility(p,n,dx,dy);
+    std::memset(shadow,0,sizeof(shadow));fog=alpha=float4();dimension_override=0;return lit;
+}
+// P0-S11 contact cascade sized as R2 render_sun_near: at 67.5 degrees, 16:9 and
+// r2_sun_near 25 its near map spans 49.06 m (snapshot SUN_NEAR matrix).
+void ContactSpan(){using namespace kich_r4_lighting;
+    const float aspect=1080.f/1920,r2=SunContactSpan(25,67.5f,aspect,0);
+    Require(std::fabs(r2-49.059f)<.01f,"contact span is R2's near map (49.06 m)");
+    const float span=SunContactSpan(25,67.5f,aspect,2048);
+    Require(std::fabs(span-r2*2048/2044)<1e-3f && span/2048<.02401f,"two guard texels per edge; 2.4 cm texels, not the sphere's 3.55 cm");
+    Require(SunContactSpan(12.5f,67.5f,aspect,0)<r2 && SunContactSpan(25,90,aspect,0)>r2,"follows r2_sun_near and the field of view only");
+}
+void SeamCases(){ContactSpan();
+    for(float x:{-.3f,-.05f,.2f}){
+        Require(LampSeam(false,false,x)>.99f && LampSeam(true,false,x)>.99f,"lamp: plain ground 20 degrees from it is lit by either lean");
+        Require(LampSeam(false,true,x)<.01f,"lamp: facet lean at a seam shadows the ground itself");
+        Require(LampSeam(true,true,x)>.99f,"lamp: shading-normal lean keeps the seam receiver lit");}
+    for(float t:{-.3f,-.05f,.2f}){
+        Require(Seam(false,false,t)>.99f && Seam(true,false,t)>.99f,"plain ground under a 20 degree light is lit by either lean");
+        // The facet lean puts the receiver 2 texels down the slope's light side:
+        // behind its own ground, dark texel by texel (squares at seams).
+        Require(Seam(false,true,t)<.01f,"facet lean at a seam: the ground shadows itself");
+        Require(Seam(true,true,t)>.99f,"shading-normal lean: the seam receiver stays lit");}
+    fog=float4(0,0,0,float(4*8+(25<<7)+(2<<14)+(1<<16)));
+    Require(ShadowNormalReceiver() && ShadowCasterFaces()==2 && ShadowNormalBias()==2 && std::fabs(ShadowTerminatorLimit()-.25f)<1e-6f,"options: shading-normal receiver in bit 16");
+    fog=float4(0,0,0,float(4*16+(100<<7)+(2<<14)));Require(!ShadowNormalReceiver(),"options: bit 16 clear below it");fog=float4();
+    Require(KichR4ShadowOptions(false,true,2,.25f,0,true)==float(32+(25<<7)+(1<<16)) && KichR4ShadowOptions(false,true,2,.25f)==float(32+(25<<7)),"KichR4ShadowOptions packs r4_shadow_receiver");
+}
+void TerminatorCases(){
+    // Back-face maps: the turned facet compares with its own back face and is
+    // lit along its whole length; the lift, kept for front-face maps, would put
+    // it behind that face (the "no change" of r4_sun_shadow_faces in 19:02).
+    for(float turn:{5.f,20.f,40.f})for(float t:{.3f,1.5f,4.f}){
+        Require(RidgeBack(turn,t,.15f,25,1)>.99f && RidgeBack(turn,t,.15f,25,2)>.99f,"back-face map: the turned facet is lit whatever its length");
+        Require(RidgeBack(turn,t,.15f,0,0)>.99f,"its own face without a lift is lit too");}
+    // A lift that does not reach past the ridge leaves the receiver L/sin(turn)
+    // behind the facet's own back face: long triangles stayed dark.
+    Require(RidgeBack(20,4,.15f,25,0)<.01f,"a lift against a map holding the facet itself shadows it short of the ridge");
+    fog=float4(0,0,0,float(4*8+(25<<7)+(2<<14)));Require(ShadowCasterFaces()==2 && ShadowNormalBias()==2 && std::fabs(ShadowTerminatorLimit()-.25f)<1e-6f,"options: caster faces in bits 14..15");fog=float4();
+    // Options decode next to the P0-S10 fields.
+    fog=float4(0,0,0,float(4*6+3+(25<<7)));Require(ShadowWide() && !SunReachMasked() && ShadowNormalBias()==1.5f && std::fabs(ShadowTerminatorLimit()-.25f)<1e-6f,"options: terminator in bits 7..13");
+    fog=float4(0,0,0,float(4*16+(100<<7)));Require(ShadowNormalBias()==4 && std::fabs(ShadowTerminatorLimit()-1)<1e-6f,"options: largest bias and terminator do not overlap");
+    // Weight: only facets turned from the light whose shading normal faces it.
+    fog=float4(0,0,0,float(25<<7));const float3 towards(0,0,-1);
+    Require(ShadowTerminatorWeight(float3(0,0,-1),float3(0,0,-1),towards)==0,"a facet facing the light is never lifted");
+    // A grazing facet still facing the light (a floor under a lamp lying on it)
+    // is not lifted for any mapped normal: no bump pattern in the shadow.
+    for(float tilt:{-.6f,-.2f,0.f,.3f,.8f})Require(ShadowTerminatorWeight(float3(1,0,-.005f),normalize(float3(1,tilt,-.4f)),towards)==0 &&
+        ShadowTerminatorWeight(float3(1,0,0),normalize(float3(1,tilt,-.4f)),towards)==0,"grazing facet facing the light: no lift whatever the bump");
+    Require(ShadowTerminatorWeight(float3(1,0,.1f),normalize(float3(1,0,-.3f)),towards)==1,"turned facet, lit shading normal: full lift");
+    Require(ShadowTerminatorWeight(float3(-1,0,-.1f),normalize(float3(1,0,-.3f)),towards)==1,"the facet sign follows the shading normal");
+    Require(ShadowTerminatorWeight(float3(1,0,.1f),normalize(float3(1,0,.2f)),towards)==0,"shading normal turned away: no lift (no direct light)");
+    fog=float4(0,0,0,0);Require(ShadowTerminatorWeight(float3(1,0,.1f),normalize(float3(1,0,-.3f)),towards)==0,"r4_shadow_terminator 0 lifts nothing");
+    // Off: the turned facet shadows itself along its whole length (the bug).
+    for(float turn:{5.f,20.f})for(float t:{.3f,.8f,1.5f})Require(Ridge(turn,t,.15f,0)<.01f,"without the lift the turned facet darkens whole");
+    // 25 cm grown by 1+8 sin(turn) (at most 4x): clears lift*cos/sin(turn)
+    // minus the filter support, then stops.
+    for(float t:{.3f,.8f,1.5f,3.f})Require(Ridge(5,t,.15f,25)>.99f,"5 degrees: lit to 3 m from the ridge");
+    Require(Ridge(20,.3f,.15f,25)>.99f && Ridge(20,1.5f,.15f,25)>.99f && Ridge(20,4,.15f,25)<.01f,"20 degrees: lit to 1.5 m, bounded at 4 m");
+    Require(Ridge(40,.8f,.15f,25)>.99f && Ridge(40,2.5f,.15f,25)<.01f,"40 degrees: the 4x lift clears 0.8 m, bounded at 2.5 m");
+    // Never a real blocker: a roof a metre up the light stays dark.
+    for(float t:{.3f,1.5f})Require(Ridge(5,t,.15f,25,1)<.01f && Ridge(20,t,.15f,100,1.5f)<.01f,"a blocker a metre up the light keeps its shadow");
+    // A shading normal turned away from the light is not lifted.
+    Require(Ridge(5,.8f,-.05f,25)<.01f,"no lift where the shading normal faces away");
+    // The light (N.L x visibility) rises continuously from the terminator:
+    // the lift grows with N.L, so the facet never switches lit at once, and the
+    // light stays within 0.05 N.L (a 3 degree terminator shift) of the smooth
+    // surface's. Measured: lit from N.L 0.045 to 0.09, steps <= 0.0061 per 0.002.
+    {float previous=-1,largest=0,deficit=0;for(unsigned i=0;i<=100;++i){const float facing=i*.002f,v=facing*Ridge(5,.8f,facing,25);
+            if(previous>=0)largest=std::max(largest,std::fabs(v-previous));previous=v;deficit=std::max(deficit,facing-v);}
+        Require(Ridge(5,.8f,.2f,25)>.99f,"terminator ramp ends lit");
+        Require(largest<.01f && deficit<.05f,"no light step across the terminator ramp, within 0.05 N.L of the smooth surface");}
+}
 #include "receiver_raster_tests.h"
 int main(){try{
-    CreaseCases();GrazingLeak();BasementCeiling();WideCases();CascadeSelection(1);CascadeSelection(24);CompactCases();NormalPlaneFallback();PlaneCases();Continuity();CubeGuard();GrazingReceiver();ReceiverReconstruction();ReceiverRasterization();
+    TerminatorCases();SeamCases();CreaseCases();GrazingLeak();BasementCeiling();WideCases();CascadeSelection(1);CascadeSelection(24);CompactCases();NormalPlaneFallback();PlaneCases();Continuity();CubeGuard();GrazingReceiver();ReceiverReconstruction();ReceiverRasterization();
     float2 gradient;Require(!ShadowGradient(float3(0,0,1),float3(0,0,2),gradient),"singular UV Jacobian requests bounded fallback");
     Require(!ShadowGradient(float3(1,0,std::numeric_limits<float>::infinity()),float3(0,1,1),gradient),"nonfinite slope requests bounded fallback");
     Require(ShadowPlaneStable(4,.01f,0) && !ShadowPlaneStable(4,10000,10000),"noncoplanar jump does not become a receiver plane");

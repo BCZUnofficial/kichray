@@ -23,13 +23,17 @@ struct Profile {
     Profile(){Reset();measuring=false;memset(frame,0,sizeof(frame));memset(count,0,sizeof(count));}
     void Reset(){memset(sum,0,sizeof(sum));memset(peak,0,sizeof(peak));memset(count_sum,0,sizeof(count_sum));frames=0;}
     // Capture begin: this frame measures iff the recorder does.
-    void Begin(bool measured){measuring=measured;memset(frame,0,sizeof(frame));memset(count,0,sizeof(count));}
+    void Begin(bool measured){measuring=measured;finished=false;memset(frame,0,sizeof(frame));memset(peak_late,0,sizeof(peak_late));memset(count,0,sizeof(count));}
     void Add(Stage s,double ms){if(measuring)frame[s]+=ms;}
     void Count(Counter c,uint64_t n=1){if(measuring)count[c]+=n;}
     // Native submit: fold the finished queue into the report window.
-    void Finish(){if(!measuring)return;++frames;measuring=false;
+    void Finish(){finished=measuring;if(!measuring)return;++frames;measuring=false;
         for(unsigned s=0;s<StageCount;++s){sum[s]+=frame[s];if(frame[s]>peak[s])peak[s]=frame[s];}
         for(unsigned c=0;c<CounterCount;++c)count_sum[c]+=count[c];}
+    // Work of this frame done after the queue ended (inside the native submit),
+    // added to the frame that was just folded. P0-S11: the deferred detail publish.
+    void AddFinished(Stage s,double ms){if(!finished || !frames)return;sum[s]+=ms;peak_late[s]+=ms;if(peak_late[s]>peak[s])peak[s]=peak_late[s];}
+    bool finished=false;double peak_late[StageCount]={};
 };
 inline Profile& Global(){static Profile profile;return profile;}
 // One stage scope; nothing is read when the frame is not measured.

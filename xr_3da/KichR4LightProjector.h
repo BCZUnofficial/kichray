@@ -45,9 +45,11 @@ template<class Level> inline const char* Configure(const Level& level,const Kich
     constants.sun_direction[3]=0;
     if(light.type!=2)return "POINT_NO_2D_PROJECTOR";
     maps[MapIndex]=0;
-    if(!projector)return "ANALYTIC_NO_METADATA";
-    const char* status;const uint64_t cookie=Resident(level,projector->texture,status);
-    if(cookie){constants.shadow[MatrixIndex]=Projection(light,*projector);constants.sun_direction[3]=1;maps[MapIndex]=cookie;}
+    // P0-S11 R2 s_accum_spot: a spot without a texture of its own (or any
+    // projector record) projects lights\lights_spot01 (KichR4SpotProjector).
+    static const KichR4LightProjector none;const KichR4LightProjector& source=projector?*projector:none;
+    const char* status;const uint64_t cookie=Resident(level,KichR4SpotProjector(source.texture),status);
+    if(cookie){constants.shadow[MatrixIndex]=Projection(light,source);constants.sun_direction[3]=1;maps[MapIndex]=cookie;}
     return status;
 }
 }

@@ -9,6 +9,7 @@
 #include "fbasicvisual.h"
 #include "cameramanager.h"
 #include "environment.h"
+#include "IGame_Persistent.h"
 #include "xr_input.h"
 #include "CustomHUD.h"
 #include "SkeletonAnimated.h"
@@ -91,7 +92,7 @@ public:
         if(view==kich_r4_optics::DebugViewCount){unsigned value=0,i=0;
             for(;args[i]>='0' && args[i]<='9' && i<3;++i)value=value*10+unsigned(args[i]-'0');
             if(i && !args[i] && value<kich_r4_optics::DebugViewCount)view=value;}
-        if(view>=kich_r4_optics::DebugViewCount){Msg("! usage: r4_debug_view normal|hemi|baked_rgb|sun_mask|sun_shadow or 0..12");return;}
+        if(view>=kich_r4_optics::DebugViewCount){Msg("! usage: r4_debug_view normal|hemi|baked_rgb|sun_mask|sun_shadow or 0..%u",unsigned(kich_r4_optics::DebugViewCount)-1);return;}
         KichR4_RecordView(view);Msg("[R4 record] debug_view=%u %s; diagnostic frames excluded from normal FPS",view,kich_r4_optics::DebugView(view));
     }
     void Status(TStatus& value){sprintf_s(value,"%u",KichR4_RecordView());}
@@ -99,6 +100,34 @@ public:
 };
 #endif
 // End E1.7 recording commands.
+#if !defined(DEDICATED_SERVER) && !defined(_EDITOR)
+// P0-S11 env_sun_override <altitude_deg> <heading_deg> [added_colour]: hold the
+// sun/moon at one direction (heading and altitude it shines from, as the F9 log
+// and CEffect_Thunderbolt::Bolt measure them) and optionally add a colour to it,
+// as a thunderbolt adds 0.9 of its flash. CEnvironment::OnFrame applies it in
+// the engine, so R2 and R4 render the same light at one pose: a lightning flash
+// (altitude 10..20, about the sun's heading) is otherwise random. "off" releases
+// it; no arguments print the current sun. Not saved.
+ENGINE_API Fvector4 ps_env_sun_override = {0, 0, 0, 0}; // altitude, heading, added colour, enabled
+class CCC_EnvSunOverride : public IConsole_Command {
+public:
+    CCC_EnvSunOverride(LPCSTR name):IConsole_Command(name){bEmptyArgsHandled=TRUE;}
+    void Execute(LPCSTR args){
+        if(!args || !args[0]){
+            if(g_pGamePersistent){Fvector from;from.set(g_pGamePersistent->Environment().CurrentEnv.sun_dir).invert();float h,p;from.getHP(h,p);
+                Msg("env_sun_override: sun from heading %.1f altitude %.1f deg; override %s",rad2deg(h),rad2deg(p),ps_env_sun_override.w>.5f?"on":"off");}
+            return;}
+        if(!xr_strcmp(args,"off")){ps_env_sun_override.w=0;Msg("env_sun_override: off");return;}
+        float altitude=0,heading=0,added=0;const int read=sscanf(args,"%f %f %f",&altitude,&heading,&added);
+        if(read<2 || !_valid(altitude) || !_valid(heading) || !_valid(added)){
+            Msg("! usage: env_sun_override <altitude_deg 1..89> <heading_deg> [added_colour] | off");return;}
+        ps_env_sun_override.set(clampr(altitude,1.f,89.f),heading,_max(added,0.f),1.f);
+        Msg("env_sun_override: from heading %.1f altitude %.1f deg, colour +%.2f",ps_env_sun_override.y,ps_env_sun_override.x,ps_env_sun_override.z);
+    }
+    void Status(TStatus& value){if(ps_env_sun_override.w>.5f)sprintf_s(value,"%.1f %.1f %.2f",ps_env_sun_override.x,ps_env_sun_override.y,ps_env_sun_override.z);else strcpy_s(value,"off");}
+    void Save(IWriter*){}
+};
+#endif
 //-----------------------------------------------------------------------
 class CCC_Quit : public IConsole_Command
 {
@@ -693,15 +722,28 @@ ENGINE_API float ps_r4_sun_shafts_intensity = 1.f;
 ENGINE_API int ps_r4_sun_shadow_size = 4096;
 // P0-S7 R4 512 m sun cascade resolution (rounded to 2048/4096/8192): its texels are the widest.
 ENGINE_API int ps_r4_sun_far_size = 8192;
+// P0-S11 R4 512 m sun cascade rendered once every N frames, reused in between (1 = every frame).
+ENGINE_API int ps_r4_sun_far_interval = 2;
+// P0-S11 R4 sun caster faces: 0 front, 1 R2 layout (contact front, 128/512 m back faces), 2 back faces.
+ENGINE_API int ps_r4_sun_shadow_faces = 1;
 // P0-S7 R4 grass in lamp (local light) shadow maps; R2 never draws it there. Leaves stay out either way.
 ENGINE_API int ps_r4_lamp_grass_shadows = 0;
 // P0-S9: 0 disables lamp shadow maps (diagnostic, and a performance option).
 ENGINE_API int ps_r4_lamp_shadows = 1;
+// P0-S11 R4 NPC torch shadows: 1 as R2 (every torch that passes the lamp selection casts); 0 NPC torches
+// light without a shadow map (the actor's torch keeps its shadow).
+ENGINE_API int ps_r4_npc_torch_shadows = 1;
 // P0-S10 R4 shadow filter for the sun and lamps: 0 compact (four bilinear comparisons, receiver lifted
 // along its normal), 1 wide (P0-S5..S9 plane-extrapolated 6x6). Sun reach mask and the lift in texels.
 ENGINE_API int ps_r4_shadow_filter = 0;
 ENGINE_API int ps_r4_sun_mask = 1;
 ENGINE_API float ps_r4_shadow_normal_bias = 2.f;
+// P0-S11 R4 shadow terminator: cm a receiver on a triangle turned from the light is lifted (0 = off, as R2,
+// which has no per-facet receiver: the lift lit whole triangles and 2x2 quads unlike their neighbours).
+ENGINE_API int ps_r4_shadow_terminator = 0;
+// P0-S11 R4 shadow receiver lean (sun and lamps): 1 along the G-buffer (shading) normal, compact filter;
+// 0 along the facet from screen derivatives (P0-S10), which is neither surface at mesh seams and creases.
+ENGINE_API int ps_r4_shadow_receiver = 1;
 // P0-S10 R4 shadowed-lamp fade with screen size over the r__geometry_lod window (0 = off).
 ENGINE_API float ps_r4_lamp_fade = 1.f;
 // P0-S11 R4 HDR probe: records the next N frames' combine terms at the screen centre in the log (counts down).
@@ -712,6 +754,8 @@ ENGINE_API int ps_r4_lamp_face_hold = 100;
 ENGINE_API int ps_r4_dds_async = 1;
 // P0-S11 R4 detail cache/visibility and HOM on the engine's parallel thread, as R2 r2_mt (0 = on the render thread).
 ENGINE_API int ps_r4_mt_details = 1;
+// P0-S11 R4 helper threads that share the grass instance assembly with its thread (0 = that thread alone).
+ENGINE_API int ps_r4_detail_threads = 3;
 // P0-S5 R4 grass draw distance = r__detail_radius x this (cache: 192 m); grass shadows keep r__detail_radius.
 ENGINE_API float ps_r4_detail_radius_scale = 3.f;
 void CCC_Register()
@@ -722,20 +766,27 @@ void CCC_Register()
     CMD1(CCC_LogMark, "log_mark");
     CMD1(CCC_LogWatch, "log_watch");
     CMD1(CCC_R4DebugView, "r4_debug_view");
+    CMD1(CCC_EnvSunOverride, "env_sun_override");
     CMD4(CCC_Integer, "r4_sun_shafts", &ps_r4_sun_shafts, 0, 3);
     CMD4(CCC_Float, "r4_sun_shafts_intensity", &ps_r4_sun_shafts_intensity, 0.f, 2.f);
     CMD4(CCC_Integer, "r4_sun_shadow_size", &ps_r4_sun_shadow_size, 1024, 4096);
     CMD4(CCC_Integer, "r4_sun_far_size", &ps_r4_sun_far_size, 2048, 8192);
+    CMD4(CCC_Integer, "r4_sun_far_interval", &ps_r4_sun_far_interval, 1, 4);
+    CMD4(CCC_Integer, "r4_sun_shadow_faces", &ps_r4_sun_shadow_faces, 0, 2);
     CMD4(CCC_Integer, "r4_lamp_grass_shadows", &ps_r4_lamp_grass_shadows, 0, 1);
     CMD4(CCC_Integer, "r4_lamp_shadows", &ps_r4_lamp_shadows, 0, 1);
+    CMD4(CCC_Integer, "r4_npc_torch_shadows", &ps_r4_npc_torch_shadows, 0, 1);
     CMD4(CCC_Integer, "r4_shadow_filter", &ps_r4_shadow_filter, 0, 1);
     CMD4(CCC_Integer, "r4_sun_mask", &ps_r4_sun_mask, 0, 1);
     CMD4(CCC_Float, "r4_shadow_normal_bias", &ps_r4_shadow_normal_bias, 0.f, 4.f);
+    CMD4(CCC_Integer, "r4_shadow_terminator", &ps_r4_shadow_terminator, 0, 100);
+    CMD4(CCC_Integer, "r4_shadow_receiver", &ps_r4_shadow_receiver, 0, 1);
     CMD4(CCC_Float, "r4_lamp_fade", &ps_r4_lamp_fade, 0.f, 2.f);
     CMD4(CCC_Integer, "r4_hdr_probe", &ps_r4_hdr_probe, 0, 600);
     CMD4(CCC_Integer, "r4_lamp_face_hold", &ps_r4_lamp_face_hold, 0, 1000);
     CMD4(CCC_Integer, "r4_dds_async", &ps_r4_dds_async, 0, 1);
     CMD4(CCC_Integer, "r4_mt_details", &ps_r4_mt_details, 0, 1);
+    CMD4(CCC_Integer, "r4_detail_threads", &ps_r4_detail_threads, 0, 8);
     CMD4(CCC_Float, "r4_detail_radius_scale", &ps_r4_detail_radius_scale, 1.f, 3.f);
 #endif
 	CMD1(CCC_Help, "help");

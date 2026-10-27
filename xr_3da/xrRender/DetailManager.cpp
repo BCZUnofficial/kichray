@@ -351,7 +351,7 @@ void CDetailManager::Render()
 	}
 
 #ifdef KICH_R4_NATIVE_FRONTEND
-	{kich_r4_queue::Scope stage(kich_r4_queue::DetailPrepare);KichR4_DetailPrepare(*this);}
+	KichR4_DetailDefer(*this); // P0-S11: published at its first reader in the native submit
 #else
 	RCache.set_CullMode(CULL_NONE);
 	RCache.set_xform_world(Fidentity);

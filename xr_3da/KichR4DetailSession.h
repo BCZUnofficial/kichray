@@ -6,6 +6,7 @@
 #include "KichR4ShadowRecord.h"
 #include "KichR4Visibility.h"
 #include "KichR4FrameMetrics.h"
+#include "KichR4ParallelFor.h"
 #include "RenderSnapshot.h"
 #include <array>
 #include <map>
@@ -100,7 +101,7 @@ struct KichR4DetailSession {
         RenderSnapshot_Text("MEMORY","detail_cpu_instance_scope","RETAINED_FRONTEND_STORAGE; MAY_BE_FROM_PRIOR_FRAME");
         }catch(...){RenderSnapshot_Text("TELEMETRY_LOSS","r4_detail_summary","ALLOCATION_FAILED; PARTIAL_SUMMARY");}
     }
-    struct ShadowBounds {float low[3],high[3];bool known;ShadowBounds():known(false){memset(low,0,sizeof(low));memset(high,0,sizeof(high));}};
+    typedef kich_r4_detail::Bounds ShadowBounds;
     struct ShadowSelection {std::vector<uint32_t> instances;std::vector<kich_r4_detail::Group> groups;uint64_t candidates=0;bool valid=true;};
     typedef std::array<uint32_t,17> ShadowViewKey;
     struct ShadowCandidate {ShadowBounds bounds;uint32_t instance,group;float origin[3];uint32_t next;};
@@ -140,22 +141,7 @@ struct KichR4DetailSession {
         KnownBoundsChanged=8, EmptyOrInvalid=16, NoRetainedTopology=32, CellLayoutChanged=64 };
     uint32_t shadow_rebuild_reasons=0;
     ShadowBounds BoundsFor(const kich_r4_detail::Mesh& mesh,const KichR4DetailInstance& instance,uint32_t variant)const{
-        ShadowBounds result;if(!mesh.bounds_known || !source || variant>2)return result;
-        // P0-S8: the AABB of the transformed mesh box directly (centre plus
-        // |row|.half-extent), the same box as its eight transformed corners.
-        const float centre[3]={(mesh.minimum[0]+mesh.maximum[0])*.5f,(mesh.minimum[1]+mesh.maximum[1])*.5f,(mesh.minimum[2]+mesh.maximum[2])*.5f};
-        const float half[3]={(mesh.maximum[0]-mesh.minimum[0])*.5f,(mesh.maximum[1]-mesh.minimum[1])*.5f,(mesh.maximum[2]-mesh.minimum[2])*.5f};
-        for(unsigned a=0;a<3;++a){const float* r=instance.row[a];
-            const float middle=r[0]*centre[0]+r[1]*centre[1]+r[2]*centre[2]+r[3];
-            const float extent=std::fabs(r[0])*half[0]+std::fabs(r[1])*half[1]+std::fabs(r[2])*half[2];
-            if(!kich_r4_detail::Finite(middle) || !kich_r4_detail::Finite(extent))return result;
-            result.low[a]=middle-extent;result.high[a]=middle+extent;}
-        if(variant){const float height=std::max(std::fabs(result.low[1]-instance.row[1][3]),std::fabs(result.high[1]-instance.row[1][3]));
-            for(unsigned a=0;a<3;a+=2){const float pad=std::fabs(source->wind[variant][a])*height*mesh.height_factor;result.low[a]-=pad;result.high[a]+=pad;}}
-        // Invalid authoring/wind data must never poison a merged node and
-        // make another instance disappear. Preserve it as an unbounded leaf.
-        for(unsigned a=0;a<3;++a)if(!kich_r4_detail::Finite(result.low[a]) || !kich_r4_detail::Finite(result.high[a]) || result.low[a]>result.high[a])return result;
-        result.known=true;return result;
+        return source?kich_r4_detail::InstanceBounds(mesh,instance,variant,source->wind):ShadowBounds();
     }
     bool ShadowVisible(const kich_r4_detail::Mesh& mesh,const KichR4DetailInstance& instance,uint32_t variant,const kich_r4_scene::Matrix& vp)const{
         const ShadowBounds bounds=BoundsFor(mesh,instance,variant);return !bounds.known || kich_r4_visibility::Visible(bounds.low,bounds.high,vp);
@@ -188,18 +174,27 @@ struct KichR4DetailSession {
         for(unsigned a=0;a<3;++a){bounds.low[a]-=pad;bounds.high[a]+=pad;}
         return kich_r4_visibility::Visible(bounds.low,bounds.high,vp) && (!sun || sun_casters.Visible(bounds.low,bounds.high));
     }
-    void TestShadowCandidate(uint32_t index,const kich_r4_scene::Matrix& vp,bool sun){
-        const ShadowBounds& bounds=shadow_bounds[index].bounds;++shadow_visibility_tests;
-        if(kich_r4_visibility::Visible(bounds.low,bounds.high,vp) && (!sun || sun_casters.Visible(bounds.low,bounds.high)))shadow_hits.push_back(index);
+    /* P0-S11 PERF02: the frame's candidate layout and each view's selection run
+     * on R4's helper threads (r4_detail_threads, kich_r4_parallel::Shared). A
+     * chunk is one subtree of a view's traversal, then one index range of its
+     * assembly; the merged selection equals the serial one exactly. */
+    struct SelectChunk {std::vector<uint32_t> hits,groups;uint64_t tests=0,nodes=0;ShadowSelection local;};
+    std::vector<SelectChunk> select_chunks;std::vector<uint32_t> select_tasks;
+    std::vector<size_t> layout_cuts,group_at;std::vector<uint32_t> layout_changes;
+    int helpers_override=-1; // tests: a fixed helper count instead of the published one
+    unsigned Helpers()const{return helpers_override>=0?unsigned(helpers_override):kich_r4_parallel::SharedHelpers().load();}
+    void TestShadowCandidate(uint32_t index,const kich_r4_scene::Matrix& vp,bool sun,SelectChunk& out)const{
+        const ShadowBounds& bounds=shadow_bounds[index].bounds;++out.tests;
+        if(kich_r4_visibility::Visible(bounds.low,bounds.high,vp) && (!sun || sun_casters.Visible(bounds.low,bounds.high)))out.hits.push_back(index);
     }
-    void VisitShadowNode(uint32_t id,const kich_r4_scene::Matrix& vp,bool sun){
-        const ShadowNode& node=shadow_nodes[id];++shadow_node_tests;if(!ShadowBoundsVisible(node.bounds,vp,sun))return;
-        if(node.left!=UINT32_MAX){VisitShadowNode(node.left,vp,sun);VisitShadowNode(node.right,vp,sun);return;}
+    void VisitShadowNode(uint32_t id,const kich_r4_scene::Matrix& vp,bool sun,SelectChunk& out)const{
+        const ShadowNode& node=shadow_nodes[id];++out.nodes;if(!ShadowBoundsVisible(node.bounds,vp,sun))return;
+        if(node.left!=UINT32_MAX){VisitShadowNode(node.left,vp,sun,out);VisitShadowNode(node.right,vp,sun,out);return;}
         for(uint32_t j=0;j<node.count;++j){const uint32_t index=shadow_order[node.first+j];
             if(shadow_cell_mode){const ShadowCell& cell=shadow_cells[index];
                 if(cell.first==UINT32_MAX || !ShadowBoundsVisible(cell.bounds,vp,sun))continue;
-                for(uint32_t item=cell.first;item!=UINT32_MAX;item=shadow_bounds[item].next)TestShadowCandidate(item,vp,sun);
-            }else TestShadowCandidate(index,vp,sun);}
+                for(uint32_t item=cell.first;item!=UINT32_MAX;item=shadow_bounds[item].next)TestShadowCandidate(item,vp,sun,out);
+            }else TestShadowCandidate(index,vp,sun,out);}
     }
     void PrepareShadowSpatial(){
         if(shadow_spatial_ready)return;
@@ -265,21 +260,33 @@ struct KichR4DetailSession {
             if(visibility_valid){
                 PrepareShadowCells(probing);
                 if(!shadow_cell_mode && shadow_bounds.size()!=shadow_source_candidates){shadow_topology_valid=false;if(probing)shadow_rebuild_reasons|=CountChanged;}
-                shadow_bounds.resize(static_cast<size_t>(shadow_source_candidates));size_t at=0;
-                for(size_t i=0;i<source->shadow_groups.size();++i){const kich_r4_detail::Group& g=source->shadow_groups[i];
-                    for(uint32_t j=0;j<g.count;++j,++at){const auto& instance=source->shadow_instances[g.first+j];
-                        ShadowCandidate candidate={BoundsFor(source->meshes[g.mesh],instance,g.variant),g.first+j,static_cast<uint32_t>(i),{instance.row[0][3],instance.row[1][3],instance.row[2][3]},UINT32_MAX};
-                        if(shadow_cell_mode){
-                            if(candidate.bounds.known){ShadowCell& cell=shadow_cells[source->shadow_instance_cells[g.first+j]];
-                                candidate.next=cell.first;cell.first=static_cast<uint32_t>(at);IncludeShadowBounds(cell.bounds,candidate.bounds);}
-                            else shadow_unknown.push_back(static_cast<uint32_t>(at));
-                        }else{
-                            const ShadowCandidate& previous=shadow_bounds[at];
-                            const bool known_changed=previous.bounds.known!=candidate.bounds.known;
-                            const bool origin_changed=memcmp(previous.origin,candidate.origin,sizeof(candidate.origin))!=0;
-                            if(known_changed || origin_changed){shadow_topology_valid=false;
-                                if(probing)shadow_rebuild_reasons|=(known_changed?KnownBoundsChanged:0)|(origin_changed?OriginOrderChanged:0);}}
-                        shadow_bounds[at]=candidate;++shadow_bounds_built;}}
+                shadow_bounds.resize(static_cast<size_t>(shadow_source_candidates));
+                // P0-S11 PERF02: the assembly threads already computed the same
+                // InstanceBounds; frames without them compute them here.
+                const bool assembled=source->shadow_bounds.size()==source->shadow_instances.size();
+                // P0-S11 PERF02: candidates are filled in parallel runs of whole
+                // groups at their serial positions; the cell lists are linked
+                // afterwards in candidate order, as the serial loop linked them.
+                const size_t groups=source->shadow_groups.size();group_at.resize(groups+1);group_at[0]=0;
+                for(size_t i=0;i<groups;++i)group_at[i+1]=group_at[i]+source->shadow_groups[i].count;
+                const unsigned helpers=Helpers();
+                kich_r4_parallel::Cuts(groups,shadow_bounds.size(),helpers?kich_r4_parallel::Parts(helpers):1,[&](size_t i){return group_at[i];},layout_cuts);
+                layout_changes.assign(layout_cuts.size()-1,0);const bool cells=shadow_cell_mode;
+                kich_r4_parallel::Shared().For(layout_changes.size(),helpers,[&](size_t c){uint32_t changes=0;
+                    for(size_t i=layout_cuts[c];i<layout_cuts[c+1];++i){const kich_r4_detail::Group& g=source->shadow_groups[i];size_t at=group_at[i];
+                        for(uint32_t j=0;j<g.count;++j,++at){const auto& instance=source->shadow_instances[g.first+j];
+                            const ShadowCandidate candidate={assembled?source->shadow_bounds[g.first+j]:BoundsFor(source->meshes[g.mesh],instance,g.variant),g.first+j,static_cast<uint32_t>(i),{instance.row[0][3],instance.row[1][3],instance.row[2][3]},UINT32_MAX};
+                            if(!cells){const ShadowCandidate& previous=shadow_bounds[at];
+                                if(previous.bounds.known!=candidate.bounds.known)changes|=KnownBoundsChanged;
+                                if(memcmp(previous.origin,candidate.origin,sizeof(candidate.origin))!=0)changes|=OriginOrderChanged;}
+                            shadow_bounds[at]=candidate;}}
+                    layout_changes[c]=changes;});
+                for(size_t c=0;c<layout_changes.size();++c)if(layout_changes[c]){shadow_topology_valid=false;if(probing)shadow_rebuild_reasons|=layout_changes[c];}
+                shadow_bounds_built+=shadow_bounds.size();
+                if(cells)for(size_t at=0;at<shadow_bounds.size();++at){ShadowCandidate& candidate=shadow_bounds[at];
+                    if(candidate.bounds.known){ShadowCell& cell=shadow_cells[source->shadow_instance_cells[candidate.instance]];
+                        candidate.next=cell.first;cell.first=static_cast<uint32_t>(at);IncludeShadowBounds(cell.bounds,candidate.bounds);}
+                    else shadow_unknown.push_back(static_cast<uint32_t>(at));}
             }
         }else shadow_bounds.clear();
         if(!visibility_valid)shadow_bounds.clear();
@@ -288,6 +295,9 @@ struct KichR4DetailSession {
         if(!shadow_topology_valid){shadow_nodes.clear();shadow_order.clear();if(!shadow_cell_mode)shadow_unknown.clear();}
         shadow_bounds_ms=kich_r4_metrics::Elapsed(started);shadow_index_ms=shadow_bounds_ms;
     }
+    // P0-S11: a new frame plan; the next EnsureVisibilityFrame rebuilds, as
+    // BeginFramePlan's own BeginVisibilityFrame did, once the grass is published.
+    void InvalidateVisibilityFrame(){visibility_frame=UINT32_MAX;}
     void EnsureVisibilityFrame(uint32_t frame,const kich_r4_visibility::SunCasterVolume& volume){
         if(visibility_frame!=frame || visibility_source!=source || visibility_generation!=(source?source->generation:UINT64_MAX))BeginVisibilityFrame(frame,volume);
     }
@@ -300,6 +310,50 @@ struct KichR4DetailSession {
         if(candidate.group!=previous){const auto& source_group=source->shadow_groups[candidate.group];
             const kich_r4_detail::Group group={source_group.mesh,source_group.variant,static_cast<uint32_t>(selected.instances.size()),0};selected.groups.push_back(group);previous=candidate.group;}
         selected.instances.push_back(candidate.instance);++selected.groups.back().count;
+    }
+    // AppendShadowHit that also records each new group's source group.
+    void AppendTracked(ShadowSelection& selected,std::vector<uint32_t>& sources,uint32_t index,uint32_t& previous)const{
+        const size_t before=selected.groups.size();AppendShadowHit(selected,index,previous);if(selected.groups.size()!=before)sources.push_back(previous);
+    }
+    // Spatial selection of one view (P0-S11 PERF02 parallel form). The first
+    // tree levels are tested here until there are enough subtrees; each
+    // subtree is visited in its own chunk. Hits are unordered sets, so the
+    // assembly (marked scan or sorted list) gives the serial selection; the
+    // marked scan runs as index ranges merged in order, joining a group
+    // split by a range boundary.
+    void SpatialSelect(const kich_r4_scene::Matrix& vp,bool sun,ShadowSelection& selected){
+        const unsigned helpers=Helpers();const size_t parts=helpers?kich_r4_parallel::Parts(helpers):1;
+        uint64_t nodes=0;select_tasks.clear();if(!shadow_nodes.empty())select_tasks.push_back(0);
+        for(size_t at=0;at<select_tasks.size() && select_tasks.size()<parts;){const ShadowNode& node=shadow_nodes[select_tasks[at]];
+            if(node.left==UINT32_MAX){++at;continue;} // a leaf is visited as a task
+            ++nodes;const uint32_t left=node.left,right=node.right;const bool visible=ShadowBoundsVisible(node.bounds,vp,sun);
+            select_tasks.erase(select_tasks.begin()+at);if(visible){select_tasks.push_back(left);select_tasks.push_back(right);}}
+        if(select_chunks.size()<(std::max)(select_tasks.size(),parts))select_chunks.resize((std::max)(select_tasks.size(),parts));
+        for(size_t c=0;c<select_tasks.size();++c){SelectChunk& k=select_chunks[c];k.hits.clear();k.tests=k.nodes=0;}
+        kich_r4_parallel::Shared().For(select_tasks.size(),helpers,[&](size_t c){VisitShadowNode(select_tasks[c],vp,sun,select_chunks[c]);});
+        uint64_t tests=shadow_unknown.size();size_t hits=shadow_unknown.size();
+        for(size_t c=0;c<select_tasks.size();++c){tests+=select_chunks[c].tests;nodes+=select_chunks[c].nodes;hits+=select_chunks[c].hits.size();}
+        shadow_visibility_tests+=tests;shadow_node_tests+=nodes;
+        selected.instances.reserve(hits);
+        if(hits>shadow_bounds.size()/8){
+            // Wide cascades may retain almost everything. A linear mark/scan
+            // avoids sorting all accepted leaf ordinals.
+            shadow_hit_marks.assign(shadow_bounds.size(),0);for(size_t i=0;i<shadow_unknown.size();++i)shadow_hit_marks[shadow_unknown[i]]=1;
+            for(size_t c=0;c<select_tasks.size();++c){const std::vector<uint32_t>& h=select_chunks[c].hits;for(size_t i=0;i<h.size();++i)shadow_hit_marks[h[i]]=1;}
+            const size_t n=shadow_bounds.size();
+            kich_r4_parallel::Shared().For(parts,helpers,[&](size_t c){SelectChunk& k=select_chunks[c];k.local.instances.clear();k.local.groups.clear();k.groups.clear();
+                uint32_t previous=UINT32_MAX;for(size_t i=c*n/parts;i<(c+1)*n/parts;++i)if(shadow_hit_marks[i])AppendTracked(k.local,k.groups,static_cast<uint32_t>(i),previous);});
+            uint32_t previous=UINT32_MAX;
+            for(size_t c=0;c<parts;++c){const SelectChunk& k=select_chunks[c];const uint32_t base=static_cast<uint32_t>(selected.instances.size());
+                for(size_t g=0;g<k.local.groups.size();++g){kich_r4_detail::Group group=k.local.groups[g];
+                    if(k.groups[g]==previous && !selected.groups.empty())selected.groups.back().count+=group.count;
+                    else{group.first+=base;selected.groups.push_back(group);}
+                    previous=k.groups[g];}
+                selected.instances.insert(selected.instances.end(),k.local.instances.begin(),k.local.instances.end());}
+        }else{shadow_hits=shadow_unknown;
+            for(size_t c=0;c<select_tasks.size();++c)shadow_hits.insert(shadow_hits.end(),select_chunks[c].hits.begin(),select_chunks[c].hits.end());
+            std::sort(shadow_hits.begin(),shadow_hits.end());uint32_t previous=UINT32_MAX;
+            for(size_t i=0;i<shadow_hits.size();++i)AppendShadowHit(selected,shadow_hits[i],previous);}
     }
     const ShadowSelection& SelectShadow(const kich_r4_scene::Matrix& vp,bool sun){
         ++shadow_queries;ShadowViewKey key;memcpy(key.data(),vp.m,64);key[16]=sun?1u:0u;
@@ -317,16 +371,7 @@ struct KichR4DetailSession {
                 if(!spatial){
                     for(size_t i=0;i<shadow_bounds.size();++i){const ShadowBounds& bounds=shadow_bounds[i].bounds;++shadow_visibility_tests;
                         if(!bounds.known || (kich_r4_visibility::Visible(bounds.low,bounds.high,vp) && (!sun || sun_casters.Visible(bounds.low,bounds.high))))AppendShadowHit(selected,static_cast<uint32_t>(i),previous);}
-                }else{
-                    shadow_hits=shadow_unknown;shadow_visibility_tests+=shadow_unknown.size();if(!shadow_nodes.empty())VisitShadowNode(0,vp,sun);
-                    selected.instances.reserve(shadow_hits.size());
-                    if(shadow_hits.size()>shadow_bounds.size()/8){
-                        // Wide cascades may retain almost everything. A linear
-                        // mark/scan avoids sorting all accepted leaf ordinals.
-                        shadow_hit_marks.assign(shadow_bounds.size(),0);for(size_t i=0;i<shadow_hits.size();++i)shadow_hit_marks[shadow_hits[i]]=1;
-                        for(size_t i=0;i<shadow_hit_marks.size();++i)if(shadow_hit_marks[i])AppendShadowHit(selected,static_cast<uint32_t>(i),previous);
-                    }else{std::sort(shadow_hits.begin(),shadow_hits.end());for(size_t i=0;i<shadow_hits.size();++i)AppendShadowHit(selected,shadow_hits[i],previous);}
-                }
+                }else SpatialSelect(vp,sun,selected);
             }
         }
         const double elapsed=kich_r4_metrics::Elapsed(started);shadow_select_ms+=elapsed;

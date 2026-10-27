@@ -523,6 +523,15 @@ struct State {
             LightObservation o={light,active,valid,frame.engine_frame};light_observations[id]=o;
         }else ++light_observation_overflow;}catch(...){++light_observation_overflow;}
     }
+    // P0-S11 r4_npc_torch_shadows (KichR4TorchProjector): a torch spot with an
+    // active unshadowed point light at exactly its position.
+    bool NpcTorch(const void* id,const KichR4LocalLight& l)const {
+        if(l.type!=2)return false;const auto projector=light_projectors.find(id);
+        if(projector==light_projectors.end() || !KichR4TorchProjector(projector->second.texture))return false;
+        for(auto it=lights.begin();it!=lights.end();++it)if(it->first!=id && it->second.type==1 && unshadowed_lights.count(it->first) &&
+            it->second.position[0]==l.position[0] && it->second.position[1]==l.position[1] && it->second.position[2]==l.position[2])return true;
+        return false;
+    }
     bool StaticLightDisabled(const void* id,bool r1_lights_enabled)const {
         const auto source=light_sources.find(id);
         // Match R2 CLight_DB::add_light. Neither position, controller nor
@@ -546,7 +555,7 @@ struct State {
             if(brightness<=0 || (camera_vp && !kich_r4_visibility::VisibleSphere(l.position,l.range,vp)))continue;
             // P0-S10 r4_lamp_fade: shadowed lamps fade with screen size; below
             // LOD 0.001 they are dropped before any occlusion query (R2 order).
-            const bool shadow=unshadowed_lights.count(it->first)==0;KichR4LocalLight light=l;
+            const bool shadow=unshadowed_lights.count(it->first)==0 && (out.npc_torch_shadows || !NpcTorch(it->first,l));KichR4LocalLight light=l;
             if(shadow){const float lod=KichR4LampLOD(l,camera,out.lamp_fade);
                 if(lod<=.001f){++out.lamp_faded;continue;}
                 for(unsigned a=0;a<3;++a)light.color[a]*=lod;}
@@ -555,7 +564,7 @@ struct State {
                 KichR4LightIdentity identity={};const auto source=light_sources.find(it->first);
                 if(source!=light_sources.end())identity=source->second;
                 else identity.process_handle=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(it->first));
-                if(admission)visible=admission->Observe(identity,visible,unshadowed_lights.count(it->first)?0u:l.type==2?1u:6u);
+                if(admission)visible=admission->Observe(identity,visible,!shadow?0u:l.type==2?1u:6u);
                 if(!visible){out.occlusion_rejected.push_back(identity);continue;}}
             Choice c={brightness*l.range*l.range/(distance+1)+(l.type==2 && distance<4?1.e10f:0),light,shadow,it->first};choices.push_back(c);
         }
@@ -622,6 +631,7 @@ struct State {
             Text("LIGHT",id,"selection_reason",reason);
             Text("LIGHT",id,"policy","BSTATIC_REQUIRES_R2FLAG_R1LIGHTS; ALL_VISIBLE_POSITIVE_SOURCES; NO_NUMERIC_DEDUP");
             U64("LIGHT",id,"shadow_requested",unshadowed_lights.count(it->first)==0);U64("LIGHT",id,"last_update_frame",o.frame);
+            U64("LIGHT",id,"npc_torch",NpcTorch(it->first,l));U64("LIGHT",id,"npc_torch_shadows",selected.npc_torch_shadows);
             // P0-S11: the published plan of each shadow face and why.
             if(chosen && size_t(slot)*6+6<=selected.shadow_face_reasons.size() && selected.CastsShadow(slot)){char faces[160];size_t used=0;faces[0]=0;
                 for(unsigned f=0;f<(l.type==2?1u:6u);++f){const int n=snprintf(faces+used,sizeof(faces)-used,"%s%u:%s",f?",":"",f,kich_r4_local_shadow::FaceReasonName(selected.shadow_face_reasons[size_t(slot)*6+f]));

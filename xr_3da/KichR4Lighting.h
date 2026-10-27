@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <math.h>
+#include <ctype.h>
 #include <vector>
 #include <string>
 /* CPU snapshots only. type follows IRender_Light: POINT=1, SPOT=2. */
@@ -16,6 +17,24 @@ struct KichR4LightProjector {
     float right[3];
     KichR4LightProjector():right(){}
 };
+/* P0-S11 r4_npc_torch_shadows: an NPC torch (xrGame CTorch) is a spot with the
+ * torch projector (torch_definition spot_texture, internal_light_torch_r2)
+ * and an active unshadowed point light at exactly its position: CTorch::Switch
+ * activates light_omni for every owner but the actor, and UpdateCL puts both
+ * at the same bone position. The actor's torch has no such twin and keeps its
+ * shadow; a CHangingLamp spot with its ambient point on the light bone has its
+ * own texture. A torch shining along the ground from 15 m drew every terrain
+ * fold it grazed as a hard dark triangle (Cordon, 27.10). */
+/* P0-S11: the texture a spot projects. R2 light::set_texture("") drops the
+ * light's s_spot, and accum_spot then draws with s_accum_spot
+ * (r2_rendertarget.cpp: "r2\accum_spot_s", "lights\lights_spot01"), whose
+ * accum_spot_* shaders always multiply by their projector (USE_LMAP), shadowed
+ * or not. R4 without it used an analytic cone edge for such spots. */
+inline std::string KichR4SpotProjector(const std::string& texture){return texture.empty()?std::string("lights\\lights_spot01"):texture;}
+inline bool KichR4TorchProjector(const std::string& texture){
+    std::string name(texture);for(size_t i=0;i<name.size();++i)name[i]=char(tolower(static_cast<unsigned char>(name[i])));
+    return name.find("light_torch")!=std::string::npos;
+}
 enum KichR4LightRole {KICH_R4_LIGHT_ROLE_UNKNOWN=0,KICH_R4_LIGHT_ROLE_RUNTIME=1,KICH_R4_LIGHT_ROLE_LEVEL=2};
 enum KichR4LightFlags {KICH_R4_LIGHT_STATIC=1u};
 enum {KICH_R4_LIGHT_REGISTRY_CAPACITY=4096};
@@ -66,6 +85,13 @@ struct KichR4LightingFrame {
     // Direct/test producers keep the E1.9 2048. P0-S7 r4_sun_far_size: the 512 m
     // cascade's own (zero = sun_map_size); PCFWide reads each map's dimensions.
     uint32_t sun_map_size,sun_far_size;
+    // P0-S11 r4_sun_far_interval: the 512 m cascade is rendered once every N
+    // frames (KichR4SunFarReuse.h). Direct/test producers render it each frame.
+    uint32_t sun_far_interval;
+    // P0-S11 r4_sun_shadow_faces (KichR4SunCasterCull): 0 front faces, 1 R2
+    // layout (contact front, 128/512 m back faces), 2 back faces. Direct/test
+    // producers keep 0.
+    uint32_t sun_shadow_faces;
     std::vector<KichR4LocalLight> lights;
     std::vector<KichR4LightIdentity> sources;
     std::vector<KichR4LightProjector> projectors;
@@ -108,6 +134,9 @@ struct KichR4LightingFrame {
     uint32_t face_hold_ms;std::vector<uint8_t> shadow_face_reasons;
     // P0-S11 r4_dds_async: world DDS reads leave the frame (KichR4TextureIO.h).
     uint32_t dds_async;
+    // P0-S11 r4_npc_torch_shadows 0: NPC torches light without a shadow map
+    // (KichR4TorchProjector). Direct/test producers keep every requested shadow.
+    uint32_t npc_torch_shadows;
     bool ShadowPlanned()const{return count && shadow_faces.size()>=count && shadow_sizes.size()>=count;}
     uint32_t ShadowFaceMask(unsigned index)const{
         if(index>=count || index>=lights.size())return 0;
@@ -116,8 +145,8 @@ struct KichR4LightingFrame {
     // Small direct/test producers can still fill the original first eight
     // entries. Captured frames resize to every visible registry source.
     KichR4LightingFrame():valid(0),count(0),shadow_mask(0),sun_direction(),sun_color(),ambient(),hemi(),fog(),fog_near(0),fog_far(0),fog_valid(0),
-        env_ambient(),env_color(),gloss_factor(1),env_valid(0),sun_mode(KICH_R4_SUN_DEFAULT),sunmask(),sunmask_valid(0),sun_contact(),sun_contact_valid(0),sun_basis(),sun_basis_valid(0),sun_shadow_cull(0),sun_shafts(),sun_map_size(2048),sun_far_size(0),lights(8),sources(8),projectors(8),visibility_vp(),visibility_valid(0),r1_lights_requested(0),r1_lights_applied(0),occlusion_enabled(0),occlusion_tested(0),
-        selection_frame(0),local_shadow_size(0),shadow_plan_faces(0),shadow_resolution_changes(0),shadow_resolution_reason(0),local_shadow_quality(1),local_detail_shadows(1),local_shadows(1),shadow_options(32),lamp_fade(),lamp_faded(0),hdr_probe(0),face_hold_ms(100),dds_async(1){
+        env_ambient(),env_color(),gloss_factor(1),env_valid(0),sun_mode(KICH_R4_SUN_DEFAULT),sunmask(),sunmask_valid(0),sun_contact(),sun_contact_valid(0),sun_basis(),sun_basis_valid(0),sun_shadow_cull(0),sun_shafts(),sun_map_size(2048),sun_far_size(0),sun_far_interval(1),sun_shadow_faces(0),lights(8),sources(8),projectors(8),visibility_vp(),visibility_valid(0),r1_lights_requested(0),r1_lights_applied(0),occlusion_enabled(0),occlusion_tested(0),
+        selection_frame(0),local_shadow_size(0),shadow_plan_faces(0),shadow_resolution_changes(0),shadow_resolution_reason(0),local_shadow_quality(1),local_detail_shadows(1),local_shadows(1),shadow_options(32),lamp_fade(),lamp_faded(0),hdr_probe(0),face_hold_ms(100),dds_async(1),npc_torch_shadows(1){
         const float defaults[8]={.3f,3.3f,.7f,1.f,0.f,.75f,.5f,0.f};memcpy(bloom,defaults,sizeof(bloom));
         const float tonemap[5]={0.f,.25f,.001f,5.f,0.f};memcpy(exposure,tonemap,sizeof(exposure));}
     bool CastsShadow(unsigned index)const {
@@ -152,10 +181,15 @@ inline uint32_t KichR4SunMode(const float* sun_color,float gloss_factor,bool sun
     return sun_flag && specular>.00001f?KICH_R4_SUN_DYNAMIC:KICH_R4_SUN_DISABLED;
 }
 // P0-S10 HLSL fog.w shadow options: bit 0 wide filter, bit 1 sun reach mask
-// off, plus 4 x the receiver lift in quarter texels (0..4 texels).
-inline float KichR4ShadowOptions(bool wide,bool sun_mask,float normal_bias){
+// off, plus 4 x the receiver lift in quarter texels (0..4 texels, bits 2..6).
+// P0-S11 bits 7..13: the terminator lift in cm (0..1 m, ShadowTerminatorLift);
+// bits 14..15: the faces the sun cascades store (ShadowCasterFaces, 0..2);
+// bit 16: the shading-normal receiver of sun and lamps (r4_shadow_receiver, ShadowNormalReceiver).
+inline float KichR4ShadowOptions(bool wide,bool sun_mask,float normal_bias,float terminator_m=0,unsigned caster_faces=0,bool normal_receiver=false){
     const float bias=normal_bias>0?(normal_bias<4?normal_bias:4.f):0.f;
-    return float((wide?1u:0u)|(sun_mask?0u:2u)|(unsigned(bias*4+.5f)<<2));
+    const float terminator=terminator_m>0?(terminator_m<1?terminator_m:1.f):0.f;
+    return float((wide?1u:0u)|(sun_mask?0u:2u)|(unsigned(bias*4+.5f)<<2)|(unsigned(terminator*100+.5f)<<7)|((caster_faces<2?caster_faces:2u)<<14)|
+        (normal_receiver?1u<<16:0u));
 }
 /* P0-S10 R4 lamp fade (r4_lamp_fade). A shadow-casting lamp loses colour with
  * its screen-space size, the measure of R2 light::get_LOD: ssa = fade*R/d^2 of

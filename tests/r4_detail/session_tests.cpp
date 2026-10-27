@@ -81,6 +81,59 @@ void SharedShadowSelection(){auto source=Source();source.meshes[0].CalculateBoun
     ++source.generation;source.shadow_groups[0].count=UINT32_MAX;details.EnsureVisibilityFrame(source.engine_frame,volume);
     Require(!details.SelectShadow(shadow,false).valid,"invalid candidate group fails validation before cached range access");
 }
+// P0-S11 PERF02: the candidate layout and every view's selection on R4 helper
+// threads equal the serial ones exactly (candidates, cell lists, selected
+// instances and groups, test counters), with groups that span cells and
+// range boundaries, flat clutter, unknown bounds and both assembly paths.
+struct SelectionCopy {bool valid;uint64_t candidates;std::vector<uint32_t> instances;std::vector<kich_r4_detail::Group> groups;};
+struct LayoutCopy {std::vector<KichR4DetailSession::ShadowCandidate> candidates;std::vector<KichR4DetailSession::ShadowCell> cells;std::vector<uint32_t> unknown;
+    std::vector<SelectionCopy> views;uint64_t tests,nodes,built;};
+kich_r4_detail::Frame GridSource(bool assembled){kich_r4_detail::Frame source;source.generation=9;source.ClearFrame(300);
+    for(unsigned m=0;m<3;++m){kich_r4_detail::Mesh mesh;mesh.vertices.resize(3);mesh.vertices[0]={};mesh.vertices[1]={};mesh.vertices[2]={};
+        mesh.vertices[1].position[0]=.4f;mesh.vertices[2].position[1]=m==1?.05f:.8f;mesh.vertices[2].misc[2]=1;mesh.indices={0,1,2};mesh.CalculateBounds();source.meshes.push_back(mesh);} // mesh 1: flat clutter
+    source.wind[1][0]=.2f;source.wind[2][2]=-.3f;
+    const unsigned side=20;source.shadow_cells.resize(side*side);
+    for(unsigned c=0;c<side*side;++c){auto& cell=source.shadow_cells[c];cell.ready=(c%17)!=5;cell.sx=int(c%side);cell.sz=int(c/side);
+        cell.center[0]=float(c%side)*2-20;cell.center[1]=0;cell.center[2]=float(c/side)*2-20;}
+    for(unsigned m=0;m<3;++m)for(unsigned v=0;v<3;++v){kich_r4_detail::Group g={m,v,static_cast<uint32_t>(source.shadow_instances.size()),0};
+        for(unsigned c=0;c<side*side;++c){if(!source.shadow_cells[c].ready || (c+m+v)%3==0)continue;
+            for(unsigned k=0;k<1+(c+v)%3;++k){KichR4DetailInstance instance={};const float s=.6f+.1f*k;
+                instance.row[0][0]=instance.row[1][1]=instance.row[2][2]=s;instance.row[0][3]=source.shadow_cells[c].center[0]+.3f*k;
+                instance.row[1][3]=.1f*float((c*7+k)%5);instance.row[2][3]=source.shadow_cells[c].center[2]-.2f*k;
+                if(c==125 && m==2 && v==1 && k==0)instance.row[0][0]=1.e30f; // unknown bounds: always a candidate
+                source.shadow_instances.push_back(instance);source.shadow_instance_cells.push_back(c);++g.count;}}
+        if(g.count)source.shadow_groups.push_back(g);}
+    if(assembled)for(const auto& g:source.shadow_groups)for(uint32_t i=0;i<g.count;++i)
+        source.shadow_bounds.push_back(kich_r4_detail::InstanceBounds(source.meshes[g.mesh],source.shadow_instances[g.first+i],g.variant,source.wind));
+    return source;}
+LayoutCopy RunLayout(const kich_r4_detail::Frame& source,int helpers){
+    KichR4DetailSession details;details.source=&source;details.helpers_override=helpers;
+    const float camera[3]={0,0,0},sun[3]={.3f,-.9f,.2f};
+    const kich_r4_scene::Matrix wide=kich_r4_lighting::SunShadow(camera,sun,128,2048),narrow=kich_r4_lighting::SunShadow(camera,sun,12,2048);
+    details.BeginVisibilityFrame(300,kich_r4_visibility::BuildSunCasterVolume(wide,sun));
+    LayoutCopy out;out.candidates=details.shadow_bounds;out.cells=details.shadow_cells;out.unknown=details.shadow_unknown;
+    KichR4LocalLight lamp={};lamp.type=1;lamp.range=15;lamp.position[0]=3;lamp.position[1]=2;
+    const kich_r4_scene::Matrix views[]={wide,narrow,kich_r4_lighting::LocalShadow(lamp,0),kich_r4_lighting::LocalShadow(lamp,4),wide};
+    const bool suns[]={true,true,false,false,false};
+    for(unsigned i=0;i<5;++i){const auto& s=details.SelectShadow(views[i],suns[i]);const SelectionCopy copy={s.valid,s.candidates,s.instances,s.groups};out.views.push_back(copy);}
+    out.tests=details.shadow_visibility_tests;out.nodes=details.shadow_node_tests;out.built=details.shadow_bounds_built;return out;}
+void ParallelSelection(){
+    for(bool assembled:{false,true}){const auto source=GridSource(assembled);const LayoutCopy serial=RunLayout(source,0);
+        Require(serial.candidates.size()==source.shadow_instances.size() && serial.unknown.size()==1,"grid layout with one unknown candidate");
+        size_t marked=0,sorted=0;for(const auto& v:serial.views){Require(v.valid,"valid views");(v.instances.size()>serial.candidates.size()/8?marked:sorted)+=1;}
+        Require(marked>=2 && sorted>=1 && serial.views[0].groups.size()>2,"both assembly paths and many groups are exercised");
+        for(int helpers:{1,3,8}){const LayoutCopy threaded=RunLayout(source,helpers);
+            Require(threaded.candidates.size()==serial.candidates.size() && threaded.cells.size()==serial.cells.size() && threaded.unknown==serial.unknown,"same layout sizes");
+            for(size_t i=0;i<serial.candidates.size();++i){const auto& a=serial.candidates[i];const auto& b=threaded.candidates[i];
+                Require(a.instance==b.instance && a.group==b.group && a.next==b.next && a.bounds.known==b.bounds.known &&
+                    !memcmp(a.bounds.low,b.bounds.low,12) && !memcmp(a.bounds.high,b.bounds.high,12) && !memcmp(a.origin,b.origin,12),"threaded candidate equals serial, cell links included");}
+            for(size_t i=0;i<serial.cells.size();++i)Require(serial.cells[i].first==threaded.cells[i].first && !memcmp(serial.cells[i].bounds.low,threaded.cells[i].bounds.low,12) && !memcmp(serial.cells[i].bounds.high,threaded.cells[i].bounds.high,12),"same cell lists and bounds");
+            for(size_t v=0;v<serial.views.size();++v){const auto& a=serial.views[v];const auto& b=threaded.views[v];
+                Require(a.valid==b.valid && a.candidates==b.candidates && a.instances==b.instances && a.groups.size()==b.groups.size(),"threaded selection equals serial");
+                for(size_t g=0;g<a.groups.size();++g)Require(a.groups[g].mesh==b.groups[g].mesh && a.groups[g].variant==b.groups[g].variant && a.groups[g].first==b.groups[g].first && a.groups[g].count==b.groups[g].count,"same selected groups, split groups rejoined");}
+            Require(threaded.tests==serial.tests && threaded.nodes==serial.nodes && threaded.built==serial.built,"same visibility test counters");}
+        for(const auto& v:serial.views)for(const auto& g:v.groups)Require(g.mesh!=1,"flat clutter is never selected");}
+}
 int ScenarioDetail(int fail=0){Fixture fixture;f=&fixture;f->fail=fail;ResetDeferredRecorder();detail_pipelines.clear();uploaded.clear();instance_uploads=detail_draws=0;
     const KichR4LevelFiles files={Open,Close};kich_r4_game::Session game(DeferredAPIs(),files,"l01_escape",NULL);
     auto source=Source();auto& details=game.deferred.details;details.source=&source;details.api={sizeof(details.api),KICH_R4_DETAIL_ABI,sizeof(void*),0,DetailPipeline,Instances,UploadInstances,DetailDraw};game.deferred.native_mode=true;
@@ -168,6 +221,6 @@ void IndependentShadowLists(){Fixture fixture;f=&fixture;ResetDeferredRecorder()
 int main(int argc,char** argv){try{(void)&Scenario;(void)&DDraw;Require(argc==2,"snapshot output directory");snapshot_directory=argv[1];
     Require(!ValidDetailCapacity(0) && !ValidDetailCapacity(UINT32_MAX) && ValidDetailCapacity(KICH_R4_MAX_DETAIL_INSTANCES),"instance budget boundaries");
     Require(!ValidDetailRange(UINT32_MAX,1,16) && !ValidDetailRange(1,UINT32_MAX,16) && !ValidDetailRange(0,0,16) && ValidDetailRange(16,1,17),"overflow-safe instance ranges");
-    DetailBounds();SharedShadowSelection();DetailSourceIdentity();IndependentShadowLists();const int positions=ScenarioDetail();for(int i=1;i<=positions;++i)ScenarioDetail(i);
+    DetailBounds();SharedShadowSelection();ParallelSelection();DetailSourceIdentity();IndependentShadowLists();const int positions=ScenarioDetail();for(int i=1;i<=positions;++i)ScenarioDetail(i);
     printf("G3b native detail submission: %d checks; %d failure positions passed\n",checks,positions);return 0;
 }catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

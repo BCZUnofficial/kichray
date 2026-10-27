@@ -62,7 +62,7 @@ for name in ("NormalSign", "EncodeNormal", "DecodeNormal", "PackMaterial", "Mate
     body = re.sub(r"n\.xy=([^;]+);", r"SetXY(n,\1);", body)
     body = body.replace("n.xy", "float2(n.x,n.y)").replace("n.yx", "float2(n.y,n.x)")
     body = body.replace("max(dot(abs(n),float3(1,1,1)),1e-8)", "max(dot(abs(n),float3(1,1,1)),1e-8f)")
-    body = body.replace("max(spot?range*.95:range,.0001)", "max(spot?range*.95f:range,.0001f)")
+    body = body.replace("max(shortened?range*.95:range,.0001)", "max(shortened?range*.95f:range,.0001f)")
     body = body.replace("max(0,dot(color", "max(0.f,dot(color").replace("env_ambient.w", "env_ambient.a")
     body = body.replace("[branch]", "")
     body = body.replace("max(dot(mask,1),.0001)", "max(dot(mask,1),.0001f)")
@@ -117,7 +117,8 @@ int main(){
     for(float3 n:{float3(0,0,1),float3(0,0,-1),float3(0,1,0),float3(1,0,0)})
         assert(dot(n,DecodeNormal(EncodeNormal(n)))>.99999f);
     // MaterialResponse samples the R2 s_material table: run_material_lut_tests.py.
-    // q-linear falloff: R2 accum_spot uses range*.95, accum_point the full range.
+    // q-linear falloff: R2 accum_spot (every spot, every shadowed point's OMNIPART
+    // faces) uses range*.95, accum_point (an unshadowed point) the full range.
     assert(LocalAttenuation(0,10,true)==1 && LocalAttenuation(100,10,true)==0);
     assert(abs(LocalAttenuation(9.5f*9.5f*.25f,10,true)-.75f)<1e-6);
     assert(abs(LocalAttenuation(9.5f*9.5f,10,true))<1e-6);

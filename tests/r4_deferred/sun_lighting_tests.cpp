@@ -46,6 +46,10 @@ float dot(float3 a,float3 b){return a.x*b.x+a.y*b.y+a.z*b.z;}
 float dot(float4 a,float4 b){return a.x*b.x+a.y*b.y+a.z*b.z+a.w*b.w;}
 float length(float3 a){return std::sqrt(dot(a,a));}
 float3 cross(float3 a,float3 b){return float3(a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x);}
+float rsqrt(float a){return 1.f/std::sqrt(a);} // P0-S11 ShadowFacet (SHADOW_CLASSES)
+// P0-S11 F9 14 reads the maps directly; the shadow suite owns map sampling.
+float3 ShadowOccluderView(float3,bool,float){return float3(0,1,1);}
+float3 ShadowCascadeView(float3,bool,float){return float3(0,1,0);} // F9 15 likewise
 float3 normalize(float3 a){return a*(1.f/length(a));}
 float3& operator+=(float3& a,float3 b){a=a+b;return a;}
 float2 xy(float4 a){return float2(a.x,a.y);}
@@ -146,13 +150,19 @@ int main(){try{
     image1.value.r=1;Check(PSSun(receiver),float3(),0,"sky cannot receive surface lighting");
     image1.value.r=.5f;screen.z=8;visibility=.25f;surface_normal=float3(0,1,0);
     Check(PSSun(receiver),splat3(.25f),0,"shadow diagnostic must show current map visibility");
-    // P0-S3: a non-coplanar quad (zero derivatives) reaches the shadow maps with
-    // a plane from the shading normal, in lighting and in the diagnostic view.
-    screen_plane=false;surface_normal=float3(0,1,0);
+    // P0-S3: under the wide filter a non-coplanar quad (zero derivatives) reaches
+    // the shadow maps with a plane from the shading normal, in lighting and in
+    // the diagnostic view.
+    screen_plane=false;surface_normal=float3(0,1,0);fog.w=1;
     PSSun(receiver);Near(dot(last_dx,last_dx)>0 && dot(last_dy,last_dy)>0?1.f:0.f,1,"diagnostic fallback uses the normal plane");
     screen.z=0;PSSun(receiver);Near(dot(last_dx,last_dx)>0 && dot(last_dy,last_dy)>0?1.f:0.f,1,"lighting fallback uses the normal plane");
     PSForwardSun(receiver,true);Near(dot(last_dx,last_dx)>0?1.f:0.f,1,"forward fallback uses the normal plane");
-    screen_plane=true;PSSun(receiver);Near(last_dx.x,.01f,"a valid screen plane is passed through unchanged");
+    // P0-S11: the compact filter and the shading-normal receiver build no
+    // per-quad plane (it moved those quads alone: squares along mesh seams).
+    for(float options:{0.f,float(1<<16),float(1+(1<<16))}){fog.w=options;PSSun(receiver);
+        Near(dot(last_dx,last_dx)+dot(last_dy,last_dy),0,"compact filter: no normal-plane quad");
+        PSForwardSun(receiver,true);Near(dot(last_dx,last_dx),0,"compact filter: none in forward either");}
+    fog.w=0;screen_plane=true;PSSun(receiver);Near(last_dx.x,.01f,"a valid screen plane is passed through unchanged");
     // P0-S4 R2 SUN_FARPLANE: the receiver is 3 m below the camera, so forward
     // (0,-60,0) puts it at 180 m view depth and (0,-30,0) at 90 m.
     surface_normal=float3(0,1,0);visibility=1;sun_color.w=1;image0.value=float4(0,0,.37f,PackMaterial(1,2));
@@ -161,7 +171,8 @@ int main(){try{
     Near(far_light.x,near_light.x*.333f,"dynamic sun fades to 1/3 at 180 m");Near(far_light.w,near_light.w*.333f,"specular fades with it");
     forward=float3(0,-30,0);Near(PSSun(receiver).x,near_light.x*(1-.667f*.25f),"fade is quadratic in view depth");
     forward=float3(0,-120,0);Near(PSSun(receiver).x,near_light.x*.333f,"fade saturates beyond 180 m");
-    screen.z=8;Near(PSSun(receiver).x,1,"shadow diagnostic stays raw visibility");screen.z=0;
+    screen.z=8;Near(PSSun(receiver).x,1,"shadow diagnostic stays raw visibility");
+    screen.z=13;{const float4 c=PSSun(receiver);Near(c.x+c.y+c.z,3,"SHADOW_CLASSES: a lit receiver without the lift is white");}screen.z=0;
     sun_color.w=2;shadow2.value.a=.5f;forward=float3(0,0,1);const float4 static_near=PSSun(receiver);forward=float3(0,-60,0);
     Near(PSSun(receiver).x,static_near.x,"R2 static sun has no far fade");forward=float3(0,0,1);sun_color.w=1;
     // P0-S10 sun reach: hemi x sqrt(luminance) x N.L above 0.1/255.

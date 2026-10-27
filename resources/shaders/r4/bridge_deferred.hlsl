@@ -215,7 +215,7 @@ GeometryOutput PSGeometry(Varying v,bool front:SV_IsFrontFace){GeometryOutput o;
     if((int)screen.z==6)o.albedo.rgb=baked;
     if((int)screen.z==9){float3 n=v.n.xyz;if(dot(n,n)<.05)n=cross(ddy(v.w),ddx(v.w));
         n=dot(n,n)>1e-6?normalize(n):float3(0,1,0);o.albedo.rgb=(front?n:-n)*.5+.5;}
-    if((int)screen.z==8)o.baked=0;
+    if((int)screen.z==8 || ((int)screen.z>=13 && (int)screen.z<=15))o.baked=0;
     // D3D11 PS SV_Position.w is interpolated clip W (not reciprocal W).
     o.receiver_depth=v.p.w;
     return o;}
@@ -470,11 +470,50 @@ float PCFWide(uint map,float4 projected,float4 dx,float4 dy,float2 crease){if(pr
 }
 // P0-S10 shadow options, fog.w = flags + 4 * normal offset in quarter texels:
 // bit 0 wide filter (r4_shadow_filter 1), bit 1 sun reach mask off
-// (r4_sun_mask 0); r4_shadow_normal_bias. Zero (test/direct producers):
-// compact filter, mask on, no normal offset.
+// (r4_sun_mask 0); r4_shadow_normal_bias (bits 2..6). P0-S11 bits 7..13:
+// r4_shadow_terminator in cm. Zero (test/direct producers): compact filter,
+// mask on, no normal offset, no terminator lift.
 bool ShadowWide(){return ((uint)fog.w&1)!=0;}
 bool SunReachMasked(){return ((uint)fog.w&2)==0;}
-float ShadowNormalBias(){return float((uint)fog.w>>2)*.25;}
+float ShadowNormalBias(){return float(((uint)fog.w>>2)&31)*.25;}
+float ShadowTerminatorLimit(){return float(((uint)fog.w>>7)&127)*.01;}
+// P0-S11 bits 14..15: the faces the sun cascades store (r4_sun_shadow_faces,
+// KichR4SunCasterCull): 0 front faces, 1 R2 layout (contact front, 128/512 m
+// back faces), 2 back faces everywhere.
+uint ShadowCasterFaces(){return ((uint)fog.w>>14)&3;}
+// P0-S11 bit 16 (r4_shadow_receiver 1): the shading-normal receiver of the
+// sun (SunVisibility) and the lamps (LocalVisibility).
+bool ShadowNormalReceiver(){return (((uint)fog.w>>16)&1)!=0;}
+// P0-S11 shadow terminator (Hanika 2021, "Hacking the shadow terminator").
+// A coarse mesh is lit by its smooth or mapped shading normal, but the shadow
+// map holds its flat triangles. Near the terminator a triangle that has turned
+// away from a grazing light (lightning, a flashlight along the ground) lies
+// behind its lit neighbours in the map and darkens whole while its shading
+// normal still faces the light: dark triangles on bends. On a convex bend the
+// triangles lie under the smooth surface, and a point lifted onto it whose
+// shading normal faces the light sees past them. Without the vertices the
+// bulge is unknown, so such a receiver is lifted along its facet normal by up
+// to r4_shadow_terminator metres: it clears a triangle turned by g up to
+// limit*cot(g) from its lit edge (2.9 m at 5 degrees for 25 cm), never a
+// roof or a body metres away. Only facets turned away from the light are
+// lifted (a facet facing it is not shadowed by convex neighbours, so the
+// weight can follow the facet without showing its edges), fading in with the
+// shading N.L, where the direct light itself fades in. A facet still facing
+// the light, however grazing (a floor under an artefact lying on it), is
+// never lifted: there the mapped normal alone would switch the lift pixel by
+// pixel and draw the bump pattern into the shadow.
+float ShadowTerminatorWeight(float3 facet,float3 n,float3 towards){
+    if(ShadowTerminatorLimit()<=0)return 0;
+    if(dot(facet,n)<0)facet=-facet;
+    return saturate(dot(n,towards)*8)*saturate(-dot(facet,towards)*25);}
+// The lift grows with the turn: the point must leave the lit neighbour's
+// shadow sideways by t*sin(turn) at t metres from the lit edge, so the base
+// lift (r4_shadow_terminator) is scaled by 1+8*sin(turn), at most 4x: 25 cm
+// clears 4.9 m at 5 degrees, 2.7 m at 20 and 1.3 m at 40, still across open
+// air above a convex bend (Cordon slopes under a low moon).
+float3 ShadowTerminatorLift(float3 facet,float3 n,float3 towards,float weight){
+    if(dot(facet,n)<0)facet=-facet;
+    return facet*(ShadowTerminatorLimit()*weight*min(4,1+8*max(-dot(facet,towards),0)));}
 // P0-S10 compact filter (default): four bilinear comparisons at +-0.6 texel,
 // each the 2x2 Gather around the tap weighted by its fractions. The support is
 // +-1.6 texels (PCFWide: +-3) and nothing is extrapolated along a receiver
@@ -539,12 +578,31 @@ float ShadowCascadeWeight(float edge){return 1-saturate((edge-.9)*10);}
 // lifts the receiver by ShadowLean in this map's own texels; the wide one
 // keeps the P0-S8/S9 plane, crease allowance and rise limit.
 float SunCascade(uint map,uint cascade,float3 p,float3 lean,float3 dx,float3 dy,float rise){float texel=SunTexel(cascade,map),lit=0;
-    [branch] if(!ShadowWide())lit=PCFCompact(map,mul(float4(p+lean*texel,1),shadow[cascade]));
+    [branch] if(!ShadowWide() || ShadowNormalReceiver())lit=PCFCompact(map,mul(float4(p+lean*texel,1),shadow[cascade]));
     else lit=PCFWide(map,mul(float4(p,1),shadow[cascade]),mul(float4(dx,0),shadow[cascade]),mul(float4(dy,0),shadow[cascade]),ShadowCrease(dx,dy,-sun_direction.xyz,ShadowRiseLimit(rise,texel)));
     return lit;}
 float SunVisibility(float3 p,float3 n,float3 dx,float3 dy){
     if(sun_color.w<=0 || sun_color.w>1.5)return 0;
-    float3 lean=ShadowLean(ShadowFacet(dx,dy,n),-sun_direction.xyz);
+    // P0-S11: a lifted terminator receiver drops the lean, which on a facet
+    // turned away from the light points back into the mesh. The lift belongs
+    // to front-face maps only: a back-face map (r4_sun_shadow_faces) holds the
+    // turned facet itself, and lifted outward the receiver would fall behind
+    // its own back face; there it compares with that face, leaned as usual.
+    // P0-S11 r4_shadow_receiver 1: the lean follows the G-buffer (shading) normal,
+    // as the KichRay R2 reference displaces its receivers (deffer_*.ps store the
+    // position def_virtualh/2 along the normal), not the facet from screen
+    // derivatives. Where the 2x2 quad spans two meshes (a road on terrain, a
+    // wall on the ground) or a crease, that plane is neither surface: a ground
+    // pixel leaned 2 texels sideways along it lies behind its own slope and
+    // darkens texel by texel (squares at mesh seams). The size stays R4's, in
+    // texels of the map read: R2's fixed 2.5 cm + 3.4 cm clear its 2.4 cm near
+    // texels but not the 3.6/6.25 cm contact/128 m ones (ground under a 20
+    // degree moon would shadow itself). The compact filter is kept, the wide
+    // one being the screen plane itself.
+    float3 facet=ShadowFacet(dx,dy,n);float terminator=ShadowTerminatorWeight(facet,n,-sun_direction.xyz);
+    float3 lift=ShadowTerminatorLift(facet,n,-sun_direction.xyz,terminator);
+    float3 lean_back=ShadowLean(ShadowNormalReceiver()?n:facet,-sun_direction.xyz),lean_front=lean_back*(1-terminator);
+    const uint faces=ShadowCasterFaces();const bool contact_back=faces==2,pair_back=faces>=1;
     // Precision allowance only: plane correction handles the filter footprint.
     p=ShadowNumericalOffset(p,dx,dy,-sun_direction.xyz)-sun_direction.xyz*.01;
     float4 contact_position=mul(float4(p,1),shadow[2]),near_position=mul(float4(p,1),shadow[0]),far_position=mul(float4(p,1),shadow[1]);
@@ -563,9 +621,9 @@ float SunVisibility(float3 p,float3 n,float3 dx,float3 dy){
     {float3 q=far_position.xyz/far_position.w;float edge=max(max(abs(q.x),abs(q.y)),abs(q.z*2-1));
         if(edge<1)far_weight=rest*ShadowCascadeWeight(edge);}
     float result=rest-far_weight;
-    [branch] if(contact_weight>0)result+=contact_weight*SunCascade(5,2,p,lean,dx,dy,.6);
-    [branch] if(near_weight>0)result+=near_weight*SunCascade(0,0,p,lean,dx,dy,.6);
-    [branch] if(far_weight>0)result+=far_weight*SunCascade(1,1,p,lean,dx,dy,2);
+    [branch] if(contact_weight>0)result+=contact_weight*SunCascade(5,2,contact_back?p:p+lift,contact_back?lean_back:lean_front,dx,dy,.6);
+    [branch] if(near_weight>0)result+=near_weight*SunCascade(0,0,pair_back?p:p+lift,pair_back?lean_back:lean_front,dx,dy,.6);
+    [branch] if(far_weight>0)result+=far_weight*SunCascade(1,1,pair_back?p:p+lift,pair_back?lean_back:lean_front,dx,dy,2);
     return result;
 }
 // P0-S1 R2 shadow.h sunmask(): sunmask.dds alpha through m_sunmask, 1/500 m
@@ -629,8 +687,14 @@ void ShadowNormalPlane(float3 n,float3 towards,inout float3 p,inout float3 dx,in
         float3 t=normalize(cross(n,axis));
         dx=t*.01;dy=cross(n,t)*.01;p+=towards*.01;}
 }
+// P0-S11: the normal-plane fallback serves only the wide filter, whose PCF
+// needs a receiver plane. Under the compact filter it moved just the 2x2
+// quads without a screen plane 1 cm toward the light and gave them the
+// shading normal as facet (another terminator lift than their neighbours'):
+// pixel squares along mesh seams, where such quads lie. R2 has no per-quad
+// receiver at all.
 float SunShadowing(float3 p,float3 n,float3 dx,float3 dy,float static_sun){
-    ShadowNormalPlane(n,-sun_direction.xyz,p,dx,dy);return SunDirect(p,n,dx,dy,static_sun);}
+    if(ShadowWide() && !ShadowNormalReceiver())ShadowNormalPlane(n,-sun_direction.xyz,p,dx,dy);return SunDirect(p,n,dx,dy,static_sun);}
 float4 SunLighting(float3 p,float3 n,float gloss,float m,float3 dx,float3 dy,float static_sun){
     // R2/1.6 use baked/ROS sun occlusion only in static-sun mode, where the
     // dynamic sun pass is disabled. Here the current shadow maps own visibility;
@@ -659,16 +723,25 @@ float LocalVisibility(float3 p,float3 n,float3 dx,float3 dy){if(alpha.w<.5)retur
     // A 90-degree cube face (or a narrower spot) spans 2*distance over its size.
     float3 towards=light_position.xyz-p;float distance=max(length(towards),.003),texel=2*distance/ShadowMapSize(face);
     float3 direction=towards/distance;
-    p=ShadowNumericalOffset(p,dx,dy,direction)+direction*.003;
+    // P0-S11 terminator lift, as SunVisibility (the flashlight along the ground),
+    // at most a quarter of the distance: never past a lamp close to the surface.
+    float3 facet=ShadowFacet(dx,dy,n);float terminator=ShadowTerminatorWeight(facet,n,direction);
+    float3 lift=ShadowTerminatorLift(facet,n,direction,terminator);float lifted=length(lift);
+    if(lifted>.25*distance)lift*=.25*distance/lifted;
+    p=ShadowNumericalOffset(p,dx,dy,direction)+direction*.003+lift;
     // P0-S10: the compact filter, lifted in this face's texels at the receiver.
     // P0-S7: lamps share the sun's filters (each face map's own size; culled
-    // faces bind a 16x16 lit map).
+    // faces bind a 16x16 lit map). P0-S11 r4_shadow_receiver 1: leaned along
+    // the shading normal as the sun (R2 accum_spot reads the same displaced
+    // G-buffer position): the screen facet is neither mesh at a seam.
     float lit=0;
-    [branch] if(!ShadowWide())lit=PCFCompact(face,mul(float4(p+ShadowLean(ShadowFacet(dx,dy,n),direction)*texel,1),shadow[face]));
+    [branch] if(!ShadowWide() || ShadowNormalReceiver())lit=PCFCompact(face,mul(float4(p+ShadowLean(ShadowNormalReceiver()?n:facet,direction)*(texel*(1-terminator)),1),shadow[face]));
     else lit=PCFWide(face,mul(float4(p,1),shadow[face]),mul(float4(dx,0),shadow[face]),mul(float4(dy,0),shadow[face]),ShadowCrease(dx,dy,direction,ShadowRiseLimit(.6,texel)));
     return lit;}
-// R2 accum_point uses 1/(range*range); only accum_spot shortens to range*.95.
-float LocalAttenuation(float distance_squared,float range,bool spot){float radius=max(spot?range*.95:range,.0001);
+// R2 accum_point (an unshadowed point) uses 1/(range*range); accum_spot
+// shortens to range*.95, and it draws every spot and, as six OMNIPART spots
+// (light::_export), every shadowed point too. shortened: spot or shadowed.
+float LocalAttenuation(float distance_squared,float range,bool shortened){float radius=max(shortened?range*.95:range,.0001);
     return saturate(1-distance_squared/(radius*radius));}
 // SPOT-only input alias: t3/shadow[1] is the independent projector. Point
 // lights retain t3 as shadow face 1. The texture's alpha modulates specular.
@@ -677,14 +750,16 @@ float4 LocalProjector(float3 p){float4 projected=mul(float4(p,1),shadow[1]);
     float2 uv=projected.xy/projected.w*float2(.5,-.5)+.5;
     return shadow1.Sample(surface3,uv);}
 float4 LocalLight(float3 p,float3 n,float gloss,float m,float3 dx,float3 dy){float3 delta=light_position.xyz-p;float distance=length(delta);
-    float3 direction=delta/max(distance,.0001);float attenuation=LocalAttenuation(dot(delta,delta),light_position.w,light_color.w>1.5);
+    float3 direction=delta/max(distance,.0001);float attenuation=LocalAttenuation(dot(delta,delta),light_position.w,light_color.w>1.5 || alpha.w>.5);
     float4 profile=1;
     if(light_color.w>1.5){float angle=dot(-direction,light_direction.xyz);
         if(sun_direction.w>.5){if(angle<light_direction.w)return 0;profile=LocalProjector(p);}
         else attenuation*=saturate((angle-light_direction.w)/max(.001,(1-light_direction.w)*.2));}
     if(attenuation<=0)return 0;
-    // P0-S7: fence edges and thin boards get the G-buffer normal plane, as the sun.
-    float3 shadow_p=p,shadow_dx=dx,shadow_dy=dy;ShadowNormalPlane(n,direction,shadow_p,shadow_dx,shadow_dy);
+    // P0-S7: fence edges and thin boards get the G-buffer normal plane, as the
+    // sun; P0-S11: only for the wide filter (SunShadowing).
+    float3 shadow_p=p,shadow_dx=dx,shadow_dy=dy;
+    if(ShadowWide() && !ShadowNormalReceiver())ShadowNormalPlane(n,direction,shadow_p,shadow_dx,shadow_dy);
     return DirectLight(p,n,direction,light_color.rgb,gloss,m)*(attenuation*LocalVisibility(shadow_p,n,shadow_dx,shadow_dy))*profile;}
 float3 CameraForward(){float4 n=mul(float4(0,0,0,1),inverse_vp),f=mul(float4(0,0,.5,1),inverse_vp);
     float3 d=f.xyz/f.w-n.xyz/n.w;return d*rsqrt(max(dot(d,d),1e-12));}
@@ -703,14 +778,59 @@ float SunReach(float h,float3 n){
     float strength=sqrt(max(dot(sun_color.rgb,float3(.3,.48,.22)),0));
     return h*strength*dot(n,-sun_direction.xyz);}
 bool SunReaches(float h,float3 n){return !SunReachMasked() || sun_color.w>1.5 || SunReach(h,n)>.1/255;}
+// P0-S11 F9 14/15: the sun map that owns p, in SunVisibility's order (contact,
+// 128 m, 512 m) without its blend bands: 5, 0 or 1, 6 for none; q its
+// projected position.
+uint SunOwner(float3 p,out float3 q){
+    float4 h=mul(float4(p,1),shadow[2]);q=h.xyz/h.w;
+    if(shadow[2][3][3]>.5 && max(abs(q.x),abs(q.y))<1)return 5;
+    h=mul(float4(p,1),shadow[0]);q=h.xyz/h.w;if(q.z>=0 && q.z<=1 && max(abs(q.x),abs(q.y))<1)return 0;
+    h=mul(float4(p,1),shadow[1]);q=h.xyz/h.w;if(max(max(abs(q.x),abs(q.y)),abs(q.z*2-1))<1)return 1;
+    return 6;}
+// P0-S11 F9 15 SHADOW_CASCADE: which sun map shadows a receiver and how large
+// its texels are there. Green contact, blue 128 m, orange 512 m, black none;
+// texels alternate full and 70%, so texel squares in a shadow can be matched
+// to their map; the dark side keeps a third. Grey no sun reach.
+float3 ShadowCascadeView(float3 p,bool reaches,float visibility){
+    if(!reaches)return float3(.3,.3,.3);
+    float3 q;const uint map=SunOwner(p,q);if(map>5)return 0;
+    const float3 c=map==5?float3(0,1,0):map==0?float3(0,.45,1):float3(1,.45,0);
+    const float2 texel=floor(float2(q.x*.5+.5,.5-q.y*.5)*ShadowMapSize(map));
+    return c*(fmod(texel.x+texel.y,2)<.5?1:.7)*lerp(.33,1,saturate(visibility));}
+// P0-S11 F9 14 SHADOW_OCCLUDER: what shadows a dark receiver, by the distance
+// along the light from it to the nearest caster stored around its texel in
+// the cascade that owns it (contact, 128 m, 512 m; 1/1024 depth per metre).
+// White lit; red < .25 m (its own or a touching surface); yellow < 2 m
+// (bumps, kerbs, grass); blue < 20 m (trees, buildings); magenta farther
+// (hills); grey no sun reach; cyan dark with nothing nearer stored (filter).
+float3 ShadowOccluderView(float3 p,bool reaches,float visibility){
+    if(!reaches)return float3(.3,.3,.3);
+    if(visibility>=.5)return float3(1,1,1);
+    float3 q;const uint map=SunOwner(p,q);if(map>5)return float3(0,1,1);
+    float size=ShadowMapSize(map);float2 uv=float2(q.x*.5+.5,.5-q.y*.5);
+    float4 stored=ShadowGather(map,(floor(uv*size-.5)+1)/size);
+    float d=(saturate(q.z)-min(min(stored.x,stored.y),min(stored.z,stored.w)))*1024;
+    return d<=0?float3(0,1,1):d<.25?float3(1,0,0):d<2?float3(1,1,0):d<20?float3(0,0,1):float3(1,0,1);}
 float4 PSSun(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=image1.Load(int3(at,0)).r;
     float3 relative=LoadReceiverPosition(v.p.xy,depth),p=relative+camera.xyz,dx,dy;ShadowDerivatives(relative,dx,dy);
     if(depth>=1)return 0;float4 n=image0.Load(int3(at,0));ShadowDerivativesLoaded(v.p.xy,relative,dx,dy);
     // Albedo alpha (t4) is source sun occlusion: R2 static sun only, never dynamic.
     float static_sun=sun_color.w>1.5?shadow2.Load(int3(at,0)).a:0;
     float3 normal=DecodeNormal(n.xy);float visibility=0;
-    [branch] if(SunReaches(n.z,normal))visibility=SunShadowing(p,normal,dx,dy,static_sun);
+    const bool reaches=SunReaches(n.z,normal);
+    [branch] if(reaches)visibility=SunShadowing(p,normal,dx,dy,static_sun);
     if((int)screen.z==8)return float4(visibility.xxx,0);
+    // P0-S11 F9 SHADOW_CLASSES: why a receiver is dark. White lit; red lit by
+    // the terminator lift; blue dark on a facet turned from the light (the lift
+    // fell short); yellow dark on a grazing facet still facing it (N.L < .15);
+    // black any other shadow (a real caster); grey no sun reach (the mapped
+    // normal faces away, or a closed room), where no direct light falls anyway.
+    if((int)screen.z==13){float3 facet=ShadowFacet(dx,dy,normal);if(dot(facet,normal)<0)facet=-facet;
+        const float facing=dot(facet,-sun_direction.xyz);const bool lifted=ShadowCasterFaces()<2 && ShadowTerminatorWeight(facet,normal,-sun_direction.xyz)>0;
+        float3 c=!reaches?float3(.3,.3,.3):visibility>=.5?(lifted?float3(1,0,0):float3(1,1,1)):facing<0?float3(0,0,1):facing<.15?float3(1,1,0):float3(0,0,0);
+        return float4(c,0);}
+    if((int)screen.z==14)return float4(ShadowOccluderView(p,reaches,visibility),0);
+    if((int)screen.z==15)return float4(ShadowCascadeView(p,reaches,visibility),0);
     // Indirect light is R2 hmodel in combine, applied once per receiver.
     return DirectLight(p,normal,-sun_direction.xyz,sun_color.rgb,MaterialGloss(n.w),MaterialClass(n.w))*visibility*SunFarFade(relative);}
 float4 PSLocal(Varying v):SV_Target {int2 at=int2(v.p.xy);float depth=image1.Load(int3(at,0)).r;
@@ -746,6 +866,7 @@ float4 CombineColor(Varying v){int2 at=int2(v.p.xy);float depth=shadow1.Load(int
         else if(mode==2)result=float4(DecodeNormal(n.xy)*.5+.5,1);
         else if(mode==3)result=float4(saturate(length(LoadReceiverPosition(v.p.xy,depth))/camera.w).xxx,1);
         else if(mode==4 || mode==8)result=float4(light.rgb+light.aaa,1);
+        else if(mode>=13 && mode<=15)result=float4(light.rgb,1); // P0-S11 SHADOW_CLASSES / OCCLUDER / CASCADE (PSSun)
         else if(mode==5)result=float4(n.zzz,1);
         else if(mode==7)result=float4(a.aaa,1);
         else{float3 hdiffuse,hspecular,relative=CombineIndirect(v.p.xy,depth,n,hdiffuse,hspecular);

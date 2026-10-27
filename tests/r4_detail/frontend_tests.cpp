@@ -4,6 +4,7 @@
 DetailDevice Device={};
 DetailPersistent persistent={{.5f}};DetailPersistent* g_pGamePersistent=&persistent;
 float ps_r__Detail_radius=50.f,r_ssaDISCARD=1.e-6f;
+int ps_r4_detail_threads=3;
 #include "frontend_under_test.cpp"
 static unsigned checks=0;
 void RequireAt(bool good,int line){++checks;if(!good)throw std::runtime_error("detail frontend check failed at line "+std::to_string(line));}
@@ -53,9 +54,71 @@ void ParallelMatchesRenderThread(){
     fill();Device.dwFrame=504;manager.m_frame_calc=504;manager.m_frame_rendered=503;job();
     bool rejected=false;try{KichR4_DetailPrepare(manager);}catch(const std::exception&){rejected=true;}Require(rejected);
     for(unsigned i=0;i<3;++i)manager.m_visibles[i][0].clear(); // the failed assembly stopped before consuming them
-    KichR4_DetailParallelStop();fill();Device.dwFrame=505;manager.m_frame_calc=505;manager.m_frame_rendered=504;job();Require(manager.m_visibles[0][0].size()==1); // stopped: no manager
+    // A job that starts after Details->Render deferred the frame still assembles it; the first reader publishes it.
+    items[0]=&item;fill();Device.dwFrame=506;manager.m_frame_calc=506;KichR4_DetailDefer(manager);manager.m_frame_rendered=506;job();
+    Require(manager.m_visibles[0][0].empty());kich_r4_detail::FinishFrame();
+    Require(frame.engine_frame==506 && frame.instances.size()==instances.size());
+    // Rendered without a deferral: the job leaves the frame to Render.
+    fill();Device.dwFrame=507;manager.m_frame_calc=507;manager.m_frame_rendered=507;job();Require(manager.m_visibles[0][0].size()==1);
+    for(unsigned i=0;i<3;++i)manager.m_visibles[i][0].clear();items[0]=&bad;
+    KichR4_DetailParallelStop();
+    // Details->Render defers; the first reader publishes once, the shadow radius is known at once.
+    for(unsigned i=0;i<3;++i)manager.m_visibles[i][0].clear();
+    items[0]=&item;fill();Device.dwFrame=520;frame.ClearFrame(520);KichR4_DetailDefer(manager);
+    Require(frame.instances.empty() && frame.shadow_radius==50.f && manager.m_visibles[0][0].size()==1);
+    kich_r4_detail::FinishFrame();Require(frame.instances.size()==instances.size() && manager.m_visibles[0][0].empty());
+    const size_t published=frame.instances.size();fill();kich_r4_detail::FinishFrame();Require(frame.instances.size()==published && manager.m_visibles[0][0].size()==1);
+    for(unsigned i=0;i<3;++i)manager.m_visibles[i][0].clear();items[0]=&bad;
+    fill();Device.dwFrame=505;manager.m_frame_calc=505;manager.m_frame_rendered=504;job();Require(manager.m_visibles[0][0].size()==1); // stopped: no manager
     for(unsigned i=0;i<3;++i)manager.m_visibles[i][0].clear();
     KichR4_DetailUnload();
+}
+// P0-S11 PERF02: the R4 helper threads assemble exactly the serial frame,
+// shadow bounds included, for every thread count; a bad instance anywhere
+// still fails the frame.
+void ThreadsMatchSerial(){
+    const int saved_threads=ps_r4_detail_threads;
+    CDetail::fvfVertexIn vertices[3]={{{0,0,0},0,0},{{1,2,0},1,1},{{0,1,1},0,.5f}};uint16_t indices[3]={0,1,2};
+    CDetail mesh={vertices,indices,3,3,{{0,0,0},{1,2,1}},NULL,{2}},other=mesh;CDetailManager manager;
+    manager.objects.push_back(&mesh);manager.objects.push_back(&other);manager.swing_current={10,20,.1f,.2f,1};
+    for(unsigned i=0;i<3;++i)manager.m_visibles[i].resize(2);
+    std::vector<CDetailManager::SlotItem> items(400);
+    for(size_t i=0;i<items.size();++i){const float x=float(i%13)-6,z=float(i%17)-8;
+        items[i]={.5f+.001f*i,{1,0,0,0,0,1,0,0,0,0,1,0,x,.1f*float(i%5),z,1},.25f,.75f,1+.002f*i,u32(i%3)};}
+    for(unsigned cell=0;cell<dm_cache_size;++cell){auto& slot=manager.cache_pool[cell];slot.empty=false;slot.sx=int(cell%3)-1;slot.sz=int(cell/3)-1;
+        slot.vis.sphere.P={float(cell%3)*6-6,0,float(cell/3)*6-6};
+        for(unsigned part=0;part<2;++part){slot.G[part].id=part;slot.G[part].items.clear();
+            for(size_t i=0;i<20;++i)slot.G[part].items.push_back(&items[(cell*40+part*20+i)%items.size()]);
+            for(unsigned v=0;v<3;++v)slot.G[part].r_items[v].clear();
+            if((cell+part)%3)slot.G[part].r_items[(cell+part)%3].assign(slot.G[part].items.begin(),slot.G[part].items.begin()+5);}}
+    KichR4_DetailLoad(manager);auto& frame=KichR4_DetailFrame();Device.fTimeGlobal=11;Device.vCameraPosition={0,0,0};
+    auto fill=[&]{for(unsigned cell=0;cell<dm_cache_size;++cell)for(unsigned part=0;part<2;++part)for(unsigned v=0;v<3;++v){
+        auto& list=manager.cache_pool[cell].G[part].r_items[v];if(!list.empty())manager.m_visibles[v][part].push_back(&list);}};
+    struct Copy {std::vector<kich_r4_detail::Group> groups,shadow_groups;std::vector<KichR4DetailInstance> instances,shadow;std::vector<uint32_t> cells;std::vector<kich_r4_detail::Bounds> bounds;};
+    auto take=[&]{Copy c={frame.groups,frame.shadow_groups,frame.instances,frame.shadow_instances,frame.shadow_instance_cells,frame.shadow_bounds};return c;};
+    ps_r4_detail_threads=0;fill();Device.dwFrame=700;KichR4_DetailPrepare(manager);const Copy serial=take();
+    Require(!serial.instances.empty() && !serial.shadow.empty() && serial.bounds.size()==serial.shadow.size() && serial.groups.size()>2 && serial.shadow_groups.size()>2);
+    for(const auto& g:serial.shadow_groups)for(uint32_t i=0;i<g.count;++i){
+        const auto expected=kich_r4_detail::InstanceBounds(frame.meshes[g.mesh],serial.shadow[g.first+i],g.variant,frame.wind);const auto& got=serial.bounds[g.first+i];
+        Require(got.known==expected.known && !memcmp(got.low,expected.low,sizeof(got.low)) && !memcmp(got.high,expected.high,sizeof(got.high)));}
+    for(int threads=1;threads<=8;threads+=threads<4?1:4){
+        ps_r4_detail_threads=threads;fill();KichR4_DetailPrepare(manager);const Copy threaded=take();
+        Require(threaded.groups.size()==serial.groups.size() && !memcmp(threaded.groups.data(),serial.groups.data(),serial.groups.size()*sizeof(serial.groups[0])));
+        Require(threaded.shadow_groups.size()==serial.shadow_groups.size() && !memcmp(threaded.shadow_groups.data(),serial.shadow_groups.data(),serial.shadow_groups.size()*sizeof(serial.shadow_groups[0])));
+        Require(threaded.instances.size()==serial.instances.size() && !memcmp(threaded.instances.data(),serial.instances.data(),serial.instances.size()*sizeof(serial.instances[0])));
+        Require(threaded.shadow.size()==serial.shadow.size() && !memcmp(threaded.shadow.data(),serial.shadow.data(),serial.shadow.size()*sizeof(serial.shadow[0])));
+        Require(threaded.cells==serial.cells && threaded.bounds.size()==serial.bounds.size());
+        for(size_t i=0;i<serial.bounds.size();++i)Require(threaded.bounds[i].known==serial.bounds[i].known &&
+            !memcmp(threaded.bounds[i].low,serial.bounds[i].low,sizeof(serial.bounds[i].low)) && !memcmp(threaded.bounds[i].high,serial.bounds[i].high,sizeof(serial.bounds[i].high)));
+        for(unsigned v=0;v<3;++v)for(unsigned part=0;part<2;++part)Require(manager.m_visibles[v][part].empty());
+    }
+    // A nonfinite shadow-only item (off camera) fails the frame on any thread.
+    ps_r4_detail_threads=3;const auto saved=items[10];items[10].mRotY._11=std::numeric_limits<float>::quiet_NaN(); // cell 0, part 0: off camera
+    bool rejected=false;fill();try{KichR4_DetailPrepare(manager);}catch(const std::exception& e){rejected=std::string(e.what())=="nonfinite detail transform";}
+    Require(rejected && frame.instances.empty() && frame.shadow_instances.empty() && frame.shadow_bounds.empty());
+    items[10]=saved;for(unsigned v=0;v<3;++v)for(unsigned part=0;part<2;++part)manager.m_visibles[v][part].clear();
+    for(unsigned cell=0;cell<dm_cache_size;++cell){manager.cache_pool[cell]=CDetailManager::Slot();}
+    KichR4_DetailUnload();ps_r4_detail_threads=saved_threads;
 }
 void CoherentCachedPose(){
     const float saved_radius=ps_r__Detail_radius,saved_discard=r_ssaDISCARD;
@@ -164,5 +227,5 @@ int main(){try{
     const auto generation=frame.generation;KichR4_DetailUnload();Require(frame.meshes.empty() && frame.instances.empty() && frame.shadow_cells.empty() && frame.shadow_instance_cells.empty() && frame.generation==generation+1);
     mesh.bv_bb.max.y=0;mesh.bv_bb.min.y=0;KichR4_DetailLoad(manager);Require(frame.meshes[0].vertices[2].misc[2]==0);
     indices[2]=99;rejected=false;try{KichR4_DetailLoad(manager);}catch(const std::exception&){rejected=true;}Require(rejected);
-    CoherentCachedPose();ParallelMatchesRenderThread();FiniteBitsMatchFinite();printf("G3b real detail frontend: %u checks passed\n",checks);return 0;
+    CoherentCachedPose();ParallelMatchesRenderThread();ThreadsMatchSerial();FiniteBitsMatchFinite();printf("G3b real detail frontend: %u checks passed\n",checks);return 0;
 }catch(const std::exception& e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

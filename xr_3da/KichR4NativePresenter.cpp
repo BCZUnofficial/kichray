@@ -288,7 +288,11 @@ bool KichR4_NativeReadPixels(std::vector<unsigned char>& out,uint32_t& w,uint32_
     out.resize(size_t(w)*h*4);
     return native.api.tools.read_pixels(c.frame.device,out.data(),static_cast<uint32_t>(out.size()),&w,&h)==0;
 }
-bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)return false;
+bool KichR4_NativePresent(const KichR4GameFrame& input){
+    // P0-S11: a frame that never reached preflight still consumes its deferred
+    // grass, so the detail visibility lists never carry into the next frame.
+    struct DetailFrameEnd {~DetailFrameEnd(){try{kich_r4_detail::FinishFrame();}catch(...){}}} detail_frame_end;
+    if(!native.context)return false;
     const bool measure=kich_r4_record::Measure(g_render_snapshot_active);
     const int64_t prelude_started=measure?kich_r4_phases::Counter():0;
     const int64_t record_clock=measure?prelude_started:native.record.active?kich_r4_phases::Counter():0;
@@ -312,6 +316,7 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
     if(g_render_snapshot_active){RenderSnapshot_Text("MEMORY","registered_gpu_payload_bytes","NOT_AVAILABLE");RenderSnapshot_Text("MEMORY","resource_stats_status","NOT_QUERIED");
         RenderSnapshot_Text("MEMORY","registered_gpu_payload_scope","DEVICE_RESOURCE_REGISTRY_PAYLOAD; NOT_VRAM_RESIDENCY");RenderSnapshot_Text("MEMORY","cpu_capture_bytes","NOT_AVAILABLE");
         RenderSnapshot_Text("MODEL_RENDERER","frame_status","NOT_SUBMITTED");
+        kich_r4_detail::FinishFrame(); // P0-S11: the summary reads this frame's grass
         context->deferred.details.SnapshotSummary(input.engine_frame,false);}
     try{if(context->name!=native.desired){if(!ResetContext())return false;context=native.context.get();}
         Context& c=*context;
@@ -343,9 +348,10 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
             }
         }
         const kich_r4_capture::Batch* batch=KichR4_CapturedFrame();if(!batch || !batch->Ready()){Write("[R4 native B5] rejected CPU frame: %s",batch?batch->error.c_str():"queue unavailable");return false;}
+        kich_r4_submit::Global().Begin(measure); // P0-S11 PERF02 submit stages
         const auto plan_started=kich_r4_metrics::Start(g_render_snapshot_active);
         if(c.loaded && scene_requested)c.deferred.BeginFramePlan(c.level,input);
-        const double plan_ms=kich_r4_metrics::Elapsed(plan_started);
+        const double plan_ms=kich_r4_metrics::Elapsed(plan_started);kich_r4_submit::Global().Add(kich_r4_submit::Plan,plan_ms);
         const auto preflight_started=kich_r4_metrics::Start(g_render_snapshot_active);
         const int32_t preflight=kich_r4_texture::Preflight(c.frame,c.level,*batch,input,c.deferred.details,c.loaded && scene_requested,c.loaded && scene_requested?&c.deferred.visibility_plan:NULL,input.warmup);
         if(preflight==KICH_R4_FRAME_SUSPENDED){
@@ -355,7 +361,7 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
             if(g_render_snapshot_active){RenderSnapshot_GPUTiming(RenderSnapshot_CaptureID(),input.engine_frame,RenderSnapshot_RenderFrameID(),"CANCELLED",NULL,0);ForgetTiming(RenderSnapshot_CaptureID(),input.engine_frame,RenderSnapshot_RenderFrameID());}
             RenderSnapshot_PresentID(native.successful_presents,false);RenderSnapshot_End("PRECACHE_CANCELLED");snapshot_guard.complete=true;return true;}
         if(preflight!=KICH_R4_OK)return false;
-        const double preflight_ms=kich_r4_metrics::Elapsed(preflight_started);
+        const double preflight_ms=kich_r4_metrics::Elapsed(preflight_started);kich_r4_submit::Global().Add(kich_r4_submit::Preflight,preflight_ms);
         if(g_render_snapshot_active){const KichR4LevelSession::AsyncCounters& a=c.level.preflight_probe.async;
             RenderSnapshot_U64("DDS_ASYNC","enabled",c.level.texture_io?1:0);RenderSnapshot_U64("DDS_ASYNC","frame_requests",a.requests);
             RenderSnapshot_U64("DDS_ASYNC","frame_staged",a.staged);RenderSnapshot_U64("DDS_ASYNC","frame_staged_bytes",a.staged_bytes);
@@ -365,7 +371,11 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
             RenderSnapshot_Text("DDS_ASYNC","policy","WORLD_ROLES_BACKGROUND_READ; UI_HUD_AND_PRECACHE_SYNC; MAIN_THREAD_LOOKUP_ONLY; WORKER_WIN32_READ_AND_LZO; PENDING_BASE_WHITE_EFFECT_TRANSPARENT_OPTIONAL_CHECKER");}
         if(c.stream.PrepareUI(c.frame,c.level,*batch)<0)return false;
         if(input.debug_down && !native.debug_key){native.debug=(native.debug+1)%kich_r4_optics::DebugViewCount;
-            Write("[R4 G3e] F9 view=%u %s; diagnostic views bypass postprocess",native.debug,kich_r4_optics::DebugView(native.debug));}native.debug_key=input.debug_down;
+            // P0-S11: the sun (or moon) this view shows and the caster faces of its maps.
+            const float* d=input.lighting.sun_direction;const float length=sqrtf(d[0]*d[0]+d[1]*d[1]+d[2]*d[2]);
+            const float elevation=length>0?asinf((std::max)(-1.f,(std::min)(1.f,-d[1]/length)))*57.29578f:0;
+            Write("[R4 G3e] F9 view=%u %s; diagnostic views bypass postprocess; sun_direction=[%.3f %.3f %.3f] elevation_deg=%.1f sun_mode=%u r2_sun_shadow_cull=%d r4_sun_shadow_faces=%u",
+                native.debug,kich_r4_optics::DebugView(native.debug),d[0],d[1],d[2],elevation,input.lighting.sun_mode,input.lighting.sun_shadow_cull,input.lighting.sun_shadow_faces);}native.debug_key=input.debug_down;
         if(!c.frame.rendered){const float* p=input.postprocess;Write("[R4 native B5] output: gamma=%.3f brightness=%.3f contrast=%.3f balance=[%.3f %.3f %.3f] PP_base=[%.3f %.3f %.3f] PP_add=[%.3f %.3f %.3f]",
             p[0],p[1],p[2],p[19],p[20],p[21],p[10],p[11],p[12],p[13],p[14],p[15]);}
         const KichR4FrameColor color={sizeof(color),{((native.color>>16)&255)/255.f,((native.color>>8)&255)/255.f,(native.color&255)/255.f,1}};
@@ -404,6 +414,7 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
         if(hr==0){hr=c.frame.api.present(c.frame.device,native.interval);if(!hr){++c.frame.rendered;++native.successful_presents;}}
         if(measure){QueryPerformanceCounter(&end);
             kich_r4_phases::Global().Span(input.engine_frame,kich_r4_phases::NativeSubmit,submitted.QuadPart-start.QuadPart);
+            if(hr==0)kich_r4_submit::Global().Finish(double(submitted.QuadPart-start.QuadPart)*1000.0/double(frequency.QuadPart));else kich_r4_submit::Global().Cancel();
             kich_r4_phases::Global().Span(input.engine_frame,kich_r4_phases::Present,end.QuadPart-submitted.QuadPart);
             phase_tail.started=end.QuadPart;}
         RenderSnapshot_PresentID(native.successful_presents,hr==0);
@@ -583,6 +594,12 @@ bool KichR4_NativePresent(const KichR4GameFrame& input){if(!native.context)retur
                         for(unsigned k=0;k<kich_r4_queue::CounterCount && used>0 && size_t(used)<sizeof(text);++k){const int n=snprintf(text+used,sizeof(text)-used," %s=%.1f",kich_r4_queue::CounterName(k),double(q.count_sum[k])/q.frames);if(n<0)break;used+=n;}
                         native.record.Emit("%s; stage_ms=mean/max_per_frame; counters=mean_per_frame; model_capture_and_stream_capture_are_nested_in_the_other_stages_not_additive",text);}
                     q.Reset();}
+                {kich_r4_submit::Profile& p=kich_r4_submit::Global(); // P0-S11 PERF02 native submit stages
+                    if(p.frames){char text[1200];int used=snprintf(text,sizeof(text),"[R4 P0-S11 submit] frames=%u",p.frames);
+                        for(unsigned s=0;s<kich_r4_submit::StageCount && used>0 && size_t(used)<sizeof(text);++s){const int n=snprintf(text+used,sizeof(text)-used," %s_ms=%.3f/%.3f",kich_r4_submit::StageName(s),p.sum[s]/p.frames,p.peak[s]);if(n<0)break;used+=n;}
+                        for(unsigned k=0;k<kich_r4_submit::CounterCount && used>0 && size_t(used)<sizeof(text);++k){const int n=snprintf(text+used,sizeof(text)-used," %s=%.2f",kich_r4_submit::CounterName(k),double(p.count_sum[k])/p.frames);if(n<0)break;used+=n;}
+                        native.record.Emit("%s; stage_ms=mean/max_per_frame; consecutive_CPU_laps_add_up_to_native_submit; counters=mean_per_frame",text);}
+                    p.Reset();}
                 if(world_current){const auto& shadows=c.deferred.shadow_record;
                 for(unsigned cascade=0;cascade<3;++cascade){const auto& pass=shadows.sun[cascade]; // 2 = P0-S2 contact
                     native.record.Emit("[R4 E1.7 sun] frame=%u cascade=%u valid=%u begun=%u completed=%u map=%llu map_generation=%llu resolution=%u span_m=%.3f texel_m=%.5f; world_to_shadow; blend_near_clip_edge=0.9..1.0; point_comparison_valid_plane_9tap_invalid_plane_1tap_PCF",

@@ -4,7 +4,12 @@
 #include "KichR4CaptureInput.h"
 namespace kich_r4_optics {
 enum { CelestialSource = 9 };
-enum { DebugViewCount = 13 };
+enum { DebugViewCount = 16 };
+// P0-S11 F9 13 SHADOW_CLASSES: the sun pass colours why a receiver is dark;
+// 14 SHADOW_OCCLUDER: how far along the light its caster is; 15
+// SHADOW_CASCADE: which sun map shadows it, with its texels.
+inline bool CelestialView(unsigned view){return view>=10 && view<=12;}
+inline bool SunOnlyView(unsigned view){return view==8 || (view>=13 && view<=15);}
 struct GlowVisibility {
     float value,camera[3];uint32_t time;bool known;
     GlowVisibility():value(0),time(0),known(false){camera[0]=camera[1]=camera[2]=0;}
@@ -28,7 +33,7 @@ inline void GlowStyle(kich_r4_capture::Style& style){
 inline const char* DebugView(unsigned view){
     const char* names[]={"NORMAL","ALBEDO","MAPPED_NORMAL","DISTANCE","TOTAL_LIGHT","HEMI",
         "BAKED_RGB_RAW","BAKED_SUN_MASK_RAW","SUN_PCF_VISIBILITY","SOURCE_NORMAL",
-        "CELESTIAL_ONLY_MASKED","CELESTIAL_ONLY_UNMASKED","CELESTIAL_TRIANGLES"};
+        "CELESTIAL_ONLY_MASKED","CELESTIAL_ONLY_UNMASKED","CELESTIAL_TRIANGLES","SHADOW_CLASSES","SHADOW_OCCLUDER","SHADOW_CASCADE"};
     return view<DebugViewCount?names[view]:"INVALID";
 }
 // P0-S11 debug pass mask. BAKED_RGB_RAW (6) and SOURCE_NORMAL (9) write their

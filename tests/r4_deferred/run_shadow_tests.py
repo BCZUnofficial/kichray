@@ -13,7 +13,7 @@ def function(signature):
     while depth:
         depth+=(source[at]=='{')-(source[at]=='}');at+=1
     return source[start:at]
-helpers='\n'.join(function(x) for x in ('float3 RelativePosition(', 'float3 WorldPosition(', 'float3 ReceiverPosition(', 'float3 ShadowNumericalOffset(', 'bool ShadowPlaneStable(', 'float ShadowPlaneErrorSquared(', 'bool ShadowGradient(', 'float ShadowTent(', 'float3 ShadowDerivative(', 'float PCF(', 'void ShadowWideTexel(', 'float ShadowRiseLimit(','float2 ShadowCrease(', 'float ShadowMapSize(', 'float4 ShadowGather(', 'float ShadowCompare(', 'float PCFWide(', 'bool ShadowWide(', 'bool SunReachMasked(', 'float ShadowNormalBias(', 'float ShadowBilinearTap(', 'float PCFCompact(', 'float3 ShadowFacet(', 'float3 ShadowLean(', 'void ShadowNormalPlane('))
+helpers='\n'.join(function(x) for x in ('float3 RelativePosition(', 'float3 WorldPosition(', 'float3 ReceiverPosition(', 'float3 ShadowNumericalOffset(', 'bool ShadowPlaneStable(', 'float ShadowPlaneErrorSquared(', 'bool ShadowGradient(', 'float ShadowTent(', 'float3 ShadowDerivative(', 'float PCF(', 'void ShadowWideTexel(', 'float ShadowRiseLimit(','float2 ShadowCrease(', 'float ShadowMapSize(', 'float4 ShadowGather(', 'float ShadowCompare(', 'float PCFWide(', 'bool ShadowWide(', 'bool SunReachMasked(', 'float ShadowNormalBias(', 'float ShadowTerminatorLimit(', 'uint ShadowCasterFaces(', 'bool ShadowNormalReceiver(', 'float ShadowTerminatorWeight(', 'float3 ShadowTerminatorLift(', 'float ShadowBilinearTap(', 'float PCFCompact(', 'float3 ShadowFacet(', 'float3 ShadowLean(', 'void ShadowNormalPlane('))
 helpers=helpers.replace('float PCF(Texture2D map','float PCF(const Texture2D& map').replace('float PCFWide(Texture2D map','float PCFWide(const Texture2D& map').replace('[unroll]','').replace('[branch]','').replace('inout float3','float3&').replace('inout float','float&').replace('projected.xyz','xyz(projected)').replace('derivative.xyz','xyz(derivative)')
 helpers=helpers.replace('p.xyz','xyz(p)').replace('camera.xyz','xyz(camera)')
 helpers=helpers.replace('out float2 gradient','float2& gradient')
@@ -21,7 +21,7 @@ helpers=helpers.replace('receiver_inverse[3][3]', 'receiver_inverse.m[15]')
 helpers=helpers.replace('return mul(float4(ndc*linear_depth,linear_depth,1),receiver_inverse).xyz;', 'return xyz(mul(float4(ndc*linear_depth,linear_depth,1),receiver_inverse));')
 # P0-S6 cascade selection: production ShadowCascadeWeight/SunVisibility.
 import re
-cascades='\n'.join(function(x) for x in ('float ShadowCascadeWeight(','float SunTexel(','float SunCascade(','float SunVisibility('))
+cascades='\n'.join(function(x) for x in ('float ShadowCascadeWeight(','float SunTexel(','float SunCascade(','float SunVisibility(','uint CubeFace(','float LocalVisibility('))
 cascades=re.sub(r'\b(\w+)\.xyz\b',r'xyz(\1)',cascades.replace('[branch]','').replace('shadow[2][3][3]','shadow[2].m[15]'))
 helpers+='\n'+cascades
 # The vector arithmetic shims preserve the production branch/sample order.

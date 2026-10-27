@@ -58,6 +58,9 @@ def windows(path):
             elif '[R4 P0-S11 queue]' in line:
                 for key, value in fields(line).items():
                     current['q_' + key] = value
+            elif '[R4 P0-S11 submit]' in line:
+                for key, value in fields(line).items():
+                    current['s_' + key] = value
             elif '[R4 E1.7 gpu]' in line and 'gpu_shadow' not in current:
                 f = fields(line)
                 current.update(gpu_shadow=f.get('resource_shadow_ms', 0), gpu_gbuffer=f.get('gbuffer_ms', 0),
@@ -69,8 +72,13 @@ def windows(path):
 
 COLUMNS = [('fps', 'fps'), ('low1', '1%low'), ('cycle', 'cycle'), ('cycle_max', 'cyc_max'), ('phase_frame_move', 'move'),
            ('phase_native_submit', 'submit'), ('q_details_ms', 'details'), ('q_detail_sync_ms', 'd_sync'), ('q_detail_prepare_ms', 'd_prep'),
-           ('q_submit_ms', 'models'), ('q_renderables_ms', 'objects'), ('preflight', 'preflt'), ('plan', 'plan'), ('sun_select', 'sun_sel'),
+           ('q_submit_ms', 'q_subm'), ('q_renderables_ms', 'q_rend'), ('preflight', 'preflt'), ('plan', 'plan'), ('sun_select', 'sun_sel'),
            ('detail_bounds', 'd_bnds'), ('gpu_shadow', 'g_shad'), ('gpu_gbuffer', 'g_gbuf'), ('gpu_lighting', 'g_lit')]
+# P0-S11 [R4 P0-S11 submit]: consecutive CPU stages of the native submit.
+SUBMIT = [('s_setup_ms', 'setup'), ('s_sun_128m_ms', 'sun128'), ('s_sun_512m_ms', 'sun512'), ('s_sun_contact_ms', 'contact'),
+          ('s_local_shadows_ms', 'local'), ('s_gbuffer_ms', 'gbuffer'), ('s_lighting_ms', 'light'), ('s_combine_ms', 'combine'),
+          ('s_forward_ms', 'forward'), ('s_post_hud_ms', 'post'), ('s_other_ms', 'other'), ('s_sun_512m_reused', 'reused'),
+          ('s_local_faces', 'faces')]
 
 
 def show(rows, title):
@@ -91,6 +99,12 @@ def main():
     for key, label in COLUMNS:
         values = [r[key] for r in rows if key in r]
         if values:
+            print('  %-8s mean=%8.3f min=%8.3f max=%8.3f' % (label, mean(values), min(values), max(values)))
+    submit = [(key, label) for key, label in SUBMIT if any(key in r for r in rows)]
+    if submit:
+        print('native submit stages (per frame, ms; sun512 includes reused frames; reused/faces are counts):')
+        for key, label in submit:
+            values = [r[key] for r in rows if key in r]
             print('  %-8s mean=%8.3f min=%8.3f max=%8.3f' % (label, mean(values), min(values), max(values)))
     show(sorted(rows, key=lambda r: r.get('cycle', 0), reverse=True)[:10], 'slowest windows by mean cycle:')
     if '--windows' in sys.argv:

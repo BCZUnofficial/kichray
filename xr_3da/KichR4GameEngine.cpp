@@ -7,7 +7,6 @@
 #include "Environment.h"
 #include "ResourceManager.h"
 #include "xrRender/xrRender_console.h"
-#include "xrRender_R2/kich_sun_stability.h"
 #include "CameraManager.h"
 #include "xr_object.h"
 #include "KichR4RecordControl.h"
@@ -38,11 +37,16 @@ extern ENGINE_API int ps_r4_sun_shafts;
 extern ENGINE_API float ps_r4_sun_shafts_intensity;
 extern ENGINE_API int ps_r4_sun_shadow_size;
 extern ENGINE_API int ps_r4_sun_far_size;
+extern ENGINE_API int ps_r4_sun_far_interval;
+extern ENGINE_API int ps_r4_sun_shadow_faces;
 extern ENGINE_API int ps_r4_lamp_grass_shadows;
 extern ENGINE_API int ps_r4_lamp_shadows;
 extern ENGINE_API int ps_r4_shadow_filter;
 extern ENGINE_API int ps_r4_sun_mask;
 extern ENGINE_API float ps_r4_shadow_normal_bias;
+extern ENGINE_API int ps_r4_shadow_terminator;
+extern ENGINE_API int ps_r4_shadow_receiver;
+extern ENGINE_API int ps_r4_npc_torch_shadows;
 extern ENGINE_API float ps_r4_lamp_fade;
 extern ENGINE_API int ps_r4_hdr_probe;
 extern ENGINE_API int ps_r4_lamp_face_hold;
@@ -105,20 +109,24 @@ void KichR4_CopyEngineEnvironment(KichR4LightingFrame& frame)
     const float exposure[5]={ps_r2_ls_flags.test(R2FLAG_TONEMAP)?ps_r2_tonemap_amount:0.f,ps_r2_tonemap_middlegray,
         ps_r2_tonemap_low_lum,ps_r2_tonemap_adaptation,Device.fTimeDelta};
     memcpy(frame.exposure,exposure,sizeof(exposure));
-    // Contact cascade: the r2_sun_near slice of the camera frustum enclosed in
-    // a rotation-invariant sphere, so turning the camera never rescales it.
+    // Contact cascade: the r2_sun_near slice of the camera frustum, centred
+    // halfway along it; P0-S11 sized as R2's near map (SunContactSpan), which
+    // depends on the projection only, so turning the camera never rescales it.
     // P0-S5 r4_sun_shadow_size, rounded to 1024/2048/4096.
     frame.sun_map_size=ps_r4_sun_shadow_size>=3072?4096u:ps_r4_sun_shadow_size>=1536?2048u:1024u;
     // P0-S7 r4_sun_far_size, rounded to 2048/4096/8192: the 512 m cascade only.
     frame.sun_far_size=ps_r4_sun_far_size>=6144?8192u:ps_r4_sun_far_size>=3072?4096u:2048u;
+    // P0-S11 r4_sun_far_interval: render the 512 m cascade once every 1..4 frames.
+    frame.sun_far_interval=static_cast<uint32_t>(ps_r4_sun_far_interval<1?1:ps_r4_sun_far_interval>4?4:ps_r4_sun_far_interval);
     frame.sun_contact_valid=0;
-    if(ps_r2_sun_near>0 && Device.mProject._11>0 && Device.mProject._22>0){
-        const float radius=kich_sun::radius(0.f,ps_r2_sun_near,Device.mProject._11,Device.mProject._22);
+    if(ps_r2_sun_near>0 && Device.fFOV>0 && Device.fASPECT>0){
         Fvector center;center.mad(Device.vCameraPosition,Device.vCameraDirection,ps_r2_sun_near*.5f);
         frame.sun_contact[0]=center.x;frame.sun_contact[1]=center.y;frame.sun_contact[2]=center.z;
-        frame.sun_contact[3]=2*kich_sun::extent(radius,frame.sun_map_size);
+        frame.sun_contact[3]=kich_r4_lighting::SunContactSpan(ps_r2_sun_near,Device.fFOV,Device.fASPECT,frame.sun_map_size);
         frame.sun_contact_valid=_valid(center) && _valid(frame.sun_contact[3])?1u:0u;}
     frame.sun_shadow_cull=ps_r2_sun_shadow_cull;
+    // P0-S11 r4_sun_shadow_faces: which caster faces the sun cascades store.
+    frame.sun_shadow_faces=static_cast<uint32_t>(ps_r4_sun_shadow_faces<0?0:ps_r4_sun_shadow_faces>2?2:ps_r4_sun_shadow_faces);
     // P0-S5 R4's own r4_sun_shafts/_intensity; segments as R2 accum_direct_volumetric:
     // 0..r2_sun_near and near..min(180, far_plane).
     frame.sun_shafts[0]=float(ps_r4_sun_shafts);frame.sun_shafts[1]=ps_r4_sun_shafts_intensity;
@@ -128,8 +136,14 @@ void KichR4_CopyEngineEnvironment(KichR4LightingFrame& frame)
     frame.local_shadow_quality=ps_r2_ls_squality;
     frame.local_detail_shadows=ps_r4_lamp_grass_shadows?1u:0u;
     frame.local_shadows=ps_r4_lamp_shadows?1u:0u; // P0-S9 r4_lamp_shadows
+    frame.npc_torch_shadows=ps_r4_npc_torch_shadows?1u:0u; // P0-S11 r4_npc_torch_shadows (the actor's torch keeps its shadow)
     // P0-S10 R4 shadow filter, sun reach mask and receiver lift (sun and lamps).
-    frame.shadow_options=KichR4ShadowOptions(ps_r4_shadow_filter!=0,ps_r4_sun_mask!=0,ps_r4_shadow_normal_bias);
+    // P0-S11 r4_shadow_terminator (cm): terminator lift of facets turned from the light.
+    // The shader learns the faces the sun maps hold; r2_sun_shadow_cull 1/2
+    // store front faces (two-sided or front), so the lift applies there.
+    // r4_shadow_receiver 1: sun and lamps lean along the shading normal instead.
+    frame.shadow_options=KichR4ShadowOptions(ps_r4_shadow_filter!=0,ps_r4_sun_mask!=0,ps_r4_shadow_normal_bias,ps_r4_shadow_terminator*.01f,
+        ps_r2_sun_shadow_cull?0u:frame.sun_shadow_faces,ps_r4_shadow_receiver!=0);
     // P0-S10 r4_lamp_fade: shadowed lamps fade with screen size over the
     // r__geometry_lod window (KichR4LampLOD); 0 keeps them at full colour.
     KichR4LampFadeWindow(frame.lamp_fade,ps_r4_lamp_fade,Device.dwWidth,Device.dwHeight,Device.fFOV,ps_r__LOD,ps_r__GLOD_ssa_start,ps_r__GLOD_ssa_end);
